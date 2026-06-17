@@ -1,0 +1,275 @@
+[
+  {
+    "test_year": 2024,
+    "feature_set": "adj_scoring_streaks",
+    "train_years": [
+      2020,
+      2021,
+      2022,
+      2023
+    ],
+    "total_games": 1326,
+    "mae": 11.13,
+    "err_mean": -0.31,
+    "err_std": 14.28,
+    "within_5": 0.296,
+    "ats": {
+      "correct": 669,
+      "incorrect": 633,
+      "pushes": 24,
+      "total": 1326,
+      "pct": 50.5
+    },
+    "feature_importance": [
+      {
+        "feature": "implied_margin",
+        "importance": 0.1114
+      },
+      {
+        "feature": "ml_spread_mismatch",
+        "importance": 0.1082
+      },
+      {
+        "feature": "h_implied",
+        "importance": 0.0895
+      },
+      {
+        "feature": "a_implied",
+        "importance": 0.071
+      },
+      {
+        "feature": "spread",
+        "importance": 0.0429
+      },
+      {
+        "feature": "a_wins_10",
+        "importance": 0.0311
+      },
+      {
+        "feature": "a_ats_margin_5",
+        "importance": 0.0311
+      },
+      {
+        "feature": "h_ats_margin_5",
+        "importance": 0.0305
+      },
+      {
+        "feature": "travel_miles",
+        "importance": 0.0298
+      },
+      {
+        "feature": "h_adj_def_20",
+        "importance": 0.0298
+      },
+      {
+        "feature": "rest_diff",
+        "importance": 0.0296
+      },
+      {
+        "feature": "h_adj_off_20",
+        "importance": 0.0291
+      },
+      {
+        "feature": "a_adj_off_20",
+        "importance": 0.029
+      },
+      {
+        "feature": "a_adj_def_20",
+        "importance": 0.0289
+      },
+      {
+        "feature": "a_adj_def_10",
+        "importance": 0.0288
+      },
+      {
+        "feature": "spread_movement",
+        "importance": 0.0286
+      },
+      {
+        "feature": "h_wins_5",
+        "importance": 0.0271
+      },
+      {
+        "feature": "h_ats_wins_5",
+        "importance": 0.0268
+      },
+      {
+        "feature": "h_wins_10",
+        "importance": 0.0265
+      },
+      {
+        "feature": "a_adj_off_10",
+        "importance": 0.0257
+      },
+      {
+        "feature": "a_wins_5",
+        "importance": 0.0254
+      },
+      {
+        "feature": "h_adj_def_10",
+        "importance": 0.025
+      },
+      {
+        "feature": "rest_h",
+        "importance": 0.0245
+      },
+      {
+        "feature": "rest_a",
+        "importance": 0.024
+      },
+      {
+        "feature": "a_ats_wins_5",
+        "importance": 0.0239
+      },
+      {
+        "feature": "h_adj_off_10",
+        "importance": 0.022
+      },
+      {
+        "feature": "home_b2b",
+        "importance": 0.0
+      },
+      {
+        "feature": "away_b2b",
+        "importance": 0.0
+      }
+    ]
+  },
+  {
+    "test_year": 2025,
+    "feature_set": "adj_scoring_streaks",
+    "train_years": [
+      2020,
+      2021,
+      2022,
+      2023,
+      2024
+    ],
+    "total_games": 1324,
+    "mae": 11.51,
+    "err_mean": -0.27,
+    "err_std": 14.65,
+    "within_5": 0.279,
+    "ats": {
+      "correct": 676,
+      "incorrect": 638,
+      "pushes": 10,
+      "total": 1324,
+      "pct": 51.1
+    },
+    "feature_importance": [
+      {
+        "feature": "implied_margin",
+        "importance": 0.1315
+      },
+      {
+        "feature": "a_implied",
+        "importance": 0.1148
+      },
+      {
+        "feature": "ml_spread_mismatch",
+        "importance": 0.1133
+      },
+      {
+        "feature": "h_implied",
+        "importance": 0.0779
+      },
+      {
+        "feature": "spread",
+        "importance": 0.0316
+      },
+      {
+        "feature": "h_ats_margin_5",
+        "importance": 0.0285
+      },
+      {
+        "feature": "a_adj_off_20",
+        "importance": 0.0271
+      },
+      {
+        "feature": "a_ats_margin_5",
+        "importance": 0.0268
+      },
+      {
+        "feature": "h_adj_def_20",
+        "importance": 0.0268
+      },
+      {
+        "feature": "rest_diff",
+        "importance": 0.0266
+      },
+      {
+        "feature": "travel_miles",
+        "importance": 0.0264
+      },
+      {
+        "feature": "h_adj_off_20",
+        "importance": 0.0262
+      },
+      {
+        "feature": "a_adj_def_20",
+        "importance": 0.0261
+      },
+      {
+        "feature": "h_ats_wins_5",
+        "importance": 0.0256
+      },
+      {
+        "feature": "a_wins_5",
+        "importance": 0.0255
+      },
+      {
+        "feature": "a_wins_10",
+        "importance": 0.0248
+      },
+      {
+        "feature": "h_wins_10",
+        "importance": 0.0247
+      },
+      {
+        "feature": "spread_movement",
+        "importance": 0.0247
+      },
+      {
+        "feature": "h_wins_5",
+        "importance": 0.0244
+      },
+      {
+        "feature": "rest_a",
+        "importance": 0.0244
+      },
+      {
+        "feature": "a_adj_def_10",
+        "importance": 0.0243
+      },
+      {
+        "feature": "a_adj_off_10",
+        "importance": 0.0233
+      },
+      {
+        "feature": "a_ats_wins_5",
+        "importance": 0.0229
+      },
+      {
+        "feature": "rest_h",
+        "importance": 0.0225
+      },
+      {
+        "feature": "h_adj_off_10",
+        "importance": 0.0203
+      },
+      {
+        "feature": "h_adj_def_10",
+        "importance": 0.02
+      },
+      {
+        "feature": "away_b2b",
+        "importance": 0.0092
+      },
+      {
+        "feature": "home_b2b",
+        "importance": 0.0
+      }
+    ]
+  }
+]

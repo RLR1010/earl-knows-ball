@@ -1,0 +1,375 @@
+{
+  "run_time": "0:02:02.139908",
+  "results": [
+    {
+      "test_year": 2025,
+      "train_years": [
+        2021,
+        2022,
+        2023,
+        2024
+      ],
+      "feature_set": "mlb_ml",
+      "total_games": 2400,
+      "accuracy": 0.5463,
+      "correct": 1311,
+      "incorrect": 1089,
+      "auc": 0.5561,
+      "brier": 0.253,
+      "log_loss": 0.7019,
+      "opening_baseline": {
+        "accuracy": 0.5579,
+        "correct": 1339,
+        "incorrect": 1061
+      },
+      "closing_baseline": {
+        "accuracy": 0.5687,
+        "correct": 1365,
+        "incorrect": 1035
+      },
+      "roi_by_threshold": {
+        "0.5": {
+          "bets": 2400,
+          "wins": 1311,
+          "losses": 1089,
+          "pct": 54.6,
+          "roi": -1.6
+        },
+        "0.55": {
+          "bets": 1692,
+          "wins": 949,
+          "losses": 743,
+          "pct": 56.1,
+          "roi": -1.0
+        },
+        "0.6": {
+          "bets": 1092,
+          "wins": 627,
+          "losses": 465,
+          "pct": 57.4,
+          "roi": -1.1
+        },
+        "0.65": {
+          "bets": 646,
+          "wins": 379,
+          "losses": 267,
+          "pct": 58.7,
+          "roi": -1.5
+        }
+      },
+      "monthly": [
+        {
+          "month": 3,
+          "games": 62,
+          "accuracy": 0.5323
+        },
+        {
+          "month": 4,
+          "games": 388,
+          "accuracy": 0.6057
+        },
+        {
+          "month": 5,
+          "games": 402,
+          "accuracy": 0.5522
+        },
+        {
+          "month": 6,
+          "games": 393,
+          "accuracy": 0.514
+        },
+        {
+          "month": 7,
+          "games": 364,
+          "accuracy": 0.4973
+        },
+        {
+          "month": 8,
+          "games": 419,
+          "accuracy": 0.5632
+        },
+        {
+          "month": 9,
+          "games": 372,
+          "accuracy": 0.543
+        }
+      ],
+      "feature_importance": [
+        {
+          "feature": "h_home_rf",
+          "importance": 0.0487
+        },
+        {
+          "feature": "h_winpct",
+          "importance": 0.0486
+        },
+        {
+          "feature": "a_bullpen_era_l5",
+          "importance": 0.0478
+        },
+        {
+          "feature": "a_winpct",
+          "importance": 0.0472
+        },
+        {
+          "feature": "travel_miles",
+          "importance": 0.047
+        },
+        {
+          "feature": "a_away_rf",
+          "importance": 0.0469
+        },
+        {
+          "feature": "h_pitcher_era_l20",
+          "importance": 0.0468
+        },
+        {
+          "feature": "h_bullpen_ip_l5",
+          "importance": 0.0465
+        },
+        {
+          "feature": "a_bullpen_ip_l5",
+          "importance": 0.0461
+        },
+        {
+          "feature": "a_pitcher_era_l20",
+          "importance": 0.046
+        },
+        {
+          "feature": "h_bullpen_era_l5",
+          "importance": 0.0455
+        },
+        {
+          "feature": "h_ra10",
+          "importance": 0.0453
+        },
+        {
+          "feature": "a_pitcher_era_l5",
+          "importance": 0.0451
+        },
+        {
+          "feature": "a_ra10",
+          "importance": 0.045
+        },
+        {
+          "feature": "h_rf10",
+          "importance": 0.045
+        },
+        {
+          "feature": "ml_implied_movement",
+          "importance": 0.0445
+        },
+        {
+          "feature": "a_rf10",
+          "importance": 0.0436
+        },
+        {
+          "feature": "home_implied",
+          "importance": 0.0435
+        },
+        {
+          "feature": "h_pitcher_era_l5",
+          "importance": 0.0435
+        },
+        {
+          "feature": "is_div",
+          "importance": 0.0434
+        },
+        {
+          "feature": "a_form_l10",
+          "importance": 0.043
+        },
+        {
+          "feature": "rest_diff",
+          "importance": 0.0426
+        },
+        {
+          "feature": "h_form_l10",
+          "importance": 0.0418
+        },
+        {
+          "feature": "is_dome",
+          "importance": 0.0
+        }
+      ]
+    },
+    {
+      "test_year": 2026,
+      "train_years": [
+        2021,
+        2022,
+        2023,
+        2024,
+        2025
+      ],
+      "feature_set": "mlb_ml",
+      "total_games": 1046,
+      "accuracy": 0.5344,
+      "correct": 559,
+      "incorrect": 487,
+      "auc": 0.5447,
+      "brier": 0.252,
+      "log_loss": 0.6978,
+      "opening_baseline": {
+        "accuracy": 0.5535,
+        "correct": 579,
+        "incorrect": 467
+      },
+      "closing_baseline": {
+        "accuracy": 0.5535,
+        "correct": 579,
+        "incorrect": 467
+      },
+      "roi_by_threshold": {
+        "0.5": {
+          "bets": 1046,
+          "wins": 559,
+          "losses": 487,
+          "pct": 53.4,
+          "roi": -2.6
+        },
+        "0.55": {
+          "bets": 714,
+          "wins": 387,
+          "losses": 327,
+          "pct": 54.2,
+          "roi": -3.0
+        },
+        "0.6": {
+          "bets": 394,
+          "wins": 226,
+          "losses": 168,
+          "pct": 57.4,
+          "roi": 0.7
+        },
+        "0.65": {
+          "bets": 220,
+          "wins": 128,
+          "losses": 92,
+          "pct": 58.2,
+          "roi": 0.5
+        }
+      },
+      "monthly": [
+        {
+          "month": 3,
+          "games": 71,
+          "accuracy": 0.5634
+        },
+        {
+          "month": 4,
+          "games": 395,
+          "accuracy": 0.5316
+        },
+        {
+          "month": 5,
+          "games": 419,
+          "accuracy": 0.5322
+        },
+        {
+          "month": 6,
+          "games": 161,
+          "accuracy": 0.5342
+        }
+      ],
+      "feature_importance": [
+        {
+          "feature": "travel_miles",
+          "importance": 0.0489
+        },
+        {
+          "feature": "h_home_rf",
+          "importance": 0.0484
+        },
+        {
+          "feature": "a_winpct",
+          "importance": 0.0482
+        },
+        {
+          "feature": "h_pitcher_era_l20",
+          "importance": 0.048
+        },
+        {
+          "feature": "h_winpct",
+          "importance": 0.0473
+        },
+        {
+          "feature": "h_bullpen_era_l5",
+          "importance": 0.046
+        },
+        {
+          "feature": "h_pitcher_era_l5",
+          "importance": 0.046
+        },
+        {
+          "feature": "a_away_rf",
+          "importance": 0.046
+        },
+        {
+          "feature": "h_ra10",
+          "importance": 0.0458
+        },
+        {
+          "feature": "a_bullpen_ip_l5",
+          "importance": 0.0456
+        },
+        {
+          "feature": "ml_implied_movement",
+          "importance": 0.0453
+        },
+        {
+          "feature": "a_rf10",
+          "importance": 0.0453
+        },
+        {
+          "feature": "a_bullpen_era_l5",
+          "importance": 0.0452
+        },
+        {
+          "feature": "h_bullpen_ip_l5",
+          "importance": 0.0452
+        },
+        {
+          "feature": "a_ra10",
+          "importance": 0.0449
+        },
+        {
+          "feature": "a_pitcher_era_l20",
+          "importance": 0.0449
+        },
+        {
+          "feature": "h_rf10",
+          "importance": 0.0449
+        },
+        {
+          "feature": "a_pitcher_era_l5",
+          "importance": 0.0448
+        },
+        {
+          "feature": "is_div",
+          "importance": 0.0437
+        },
+        {
+          "feature": "home_implied",
+          "importance": 0.0435
+        },
+        {
+          "feature": "rest_diff",
+          "importance": 0.0432
+        },
+        {
+          "feature": "h_form_l10",
+          "importance": 0.0427
+        },
+        {
+          "feature": "a_form_l10",
+          "importance": 0.04
+        },
+        {
+          "feature": "is_dome",
+          "importance": 0.0
+        }
+      ]
+    }
+  ]
+}

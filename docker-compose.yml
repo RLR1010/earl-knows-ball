@@ -1,0 +1,42 @@
+services:
+  db:
+    build:
+      context: .
+      dockerfile: docker_db/Dockerfile
+    image: earl-postgres-pgvector
+    environment:
+      POSTGRES_USER: earl
+      POSTGRES_PASSWORD: "earl_dev_pass"
+      POSTGRES_DB: earl_knows_football
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    restart: always
+
+  api:
+    build: ./backend
+    env_file: ./backend/.env
+    network_mode: host
+    devices:
+      - /dev/nvidia0:/dev/nvidia0
+      - /dev/nvidia1:/dev/nvidia1
+      - /dev/nvidiactl:/dev/nvidiactl
+      - /dev/nvidia-modeset:/dev/nvidia-modeset
+      - /dev/nvidia-uvm:/dev/nvidia-uvm
+      - /dev/nvidia-uvm-tools:/dev/nvidia-uvm-tools
+    volumes:
+      - ./backend:/app
+    depends_on:
+      - db
+    restart: always
+
+  frontend:
+    build: ./frontend
+    network_mode: host
+    depends_on:
+      - api
+    restart: always
+
+volumes:
+  pgdata:

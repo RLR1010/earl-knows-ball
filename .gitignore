@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+.env
+*.egg-info/
+.venv/
+venv/
+dist/
+build/
+.next/
+node_modules/
+*.pkl
+logs/
+memory/
+backend/data/
+*.tsbuildinfo

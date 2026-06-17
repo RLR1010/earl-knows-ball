@@ -1,0 +1,537 @@
+[
+  {
+    "test_year": 2021,
+    "train_years": [
+      2020,
+      2019,
+      2018,
+      2017,
+      2016
+    ],
+    "total_games": 272,
+    "mae": 11.36,
+    "err_mean": 0.52,
+    "err_std": 14.21,
+    "within_3": 0.136,
+    "within_5": 0.279,
+    "ats": {
+      "correct": 137,
+      "incorrect": 135,
+      "total": 272,
+      "pct": 50.4
+    },
+    "ou": {
+      "correct": 133,
+      "incorrect": 136,
+      "pushes": 3,
+      "total": 272,
+      "pct": 49.4
+    },
+    "ml": {
+      "correct": 170,
+      "incorrect": 102,
+      "total": 272,
+      "pct": 62.5
+    },
+    "feature_importance": [
+      {
+        "feature": "spread",
+        "importance": 0.1911
+      },
+      {
+        "feature": "travel_miles",
+        "importance": 0.0633
+      },
+      {
+        "feature": "aimp",
+        "importance": 0.0627
+      },
+      {
+        "feature": "dpa",
+        "importance": 0.0607
+      },
+      {
+        "feature": "tz_diff",
+        "importance": 0.0582
+      },
+      {
+        "feature": "dpf",
+        "importance": 0.058
+      },
+      {
+        "feature": "dimp",
+        "importance": 0.0564
+      },
+      {
+        "feature": "spread_movement",
+        "importance": 0.0538
+      },
+      {
+        "feature": "temp",
+        "importance": 0.0513
+      },
+      {
+        "feature": "apa",
+        "importance": 0.0482
+      },
+      {
+        "feature": "wind",
+        "importance": 0.0478
+      },
+      {
+        "feature": "himp",
+        "importance": 0.0456
+      },
+      {
+        "feature": "is_short",
+        "importance": 0.0444
+      },
+      {
+        "feature": "apf",
+        "importance": 0.0422
+      },
+      {
+        "feature": "rest_diff",
+        "importance": 0.0418
+      },
+      {
+        "feature": "hpa",
+        "importance": 0.04
+      },
+      {
+        "feature": "is_div",
+        "importance": 0.0345
+      }
+    ],
+    "ou_mae": 11.09,
+    "ou_model": "baseline"
+  },
+  {
+    "test_year": 2022,
+    "train_years": [
+      2021,
+      2020,
+      2019,
+      2018,
+      2017
+    ],
+    "total_games": 271,
+    "mae": 9.12,
+    "err_mean": 0.39,
+    "err_std": 11.86,
+    "within_3": 0.218,
+    "within_5": 0.395,
+    "ats": {
+      "correct": 139,
+      "incorrect": 132,
+      "total": 271,
+      "pct": 51.3
+    },
+    "ou": {
+      "correct": 148,
+      "incorrect": 120,
+      "pushes": 3,
+      "total": 271,
+      "pct": 55.2
+    },
+    "ml": {
+      "correct": 169,
+      "incorrect": 102,
+      "total": 271,
+      "pct": 62.4
+    },
+    "feature_importance": [
+      {
+        "feature": "spread",
+        "importance": 0.1849
+      },
+      {
+        "feature": "is_short",
+        "importance": 0.0639
+      },
+      {
+        "feature": "spread_movement",
+        "importance": 0.0604
+      },
+      {
+        "feature": "tz_diff",
+        "importance": 0.0585
+      },
+      {
+        "feature": "dimp",
+        "importance": 0.0576
+      },
+      {
+        "feature": "travel_miles",
+        "importance": 0.0549
+      },
+      {
+        "feature": "aimp",
+        "importance": 0.0542
+      },
+      {
+        "feature": "dpf",
+        "importance": 0.0528
+      },
+      {
+        "feature": "dpa",
+        "importance": 0.0499
+      },
+      {
+        "feature": "temp",
+        "importance": 0.0489
+      },
+      {
+        "feature": "himp",
+        "importance": 0.0484
+      },
+      {
+        "feature": "wind",
+        "importance": 0.048
+      },
+      {
+        "feature": "apa",
+        "importance": 0.0477
+      },
+      {
+        "feature": "apf",
+        "importance": 0.0471
+      },
+      {
+        "feature": "rest_diff",
+        "importance": 0.0424
+      },
+      {
+        "feature": "is_div",
+        "importance": 0.0419
+      },
+      {
+        "feature": "hpa",
+        "importance": 0.0386
+      }
+    ],
+    "ou_mae": 10.7,
+    "ou_model": "baseline"
+  },
+  {
+    "test_year": 2023,
+    "train_years": [
+      2022,
+      2021,
+      2020,
+      2019,
+      2018
+    ],
+    "total_games": 272,
+    "mae": 10.44,
+    "err_mean": 0.55,
+    "err_std": 13.59,
+    "within_3": 0.232,
+    "within_5": 0.353,
+    "ats": {
+      "correct": 136,
+      "incorrect": 136,
+      "total": 272,
+      "pct": 50.0
+    },
+    "ou": {
+      "correct": 144,
+      "incorrect": 126,
+      "pushes": 2,
+      "total": 272,
+      "pct": 53.3
+    },
+    "ml": {
+      "correct": 176,
+      "incorrect": 96,
+      "total": 272,
+      "pct": 64.7
+    },
+    "feature_importance": [
+      {
+        "feature": "spread",
+        "importance": 0.169
+      },
+      {
+        "feature": "spread_movement",
+        "importance": 0.0646
+      },
+      {
+        "feature": "dimp",
+        "importance": 0.061
+      },
+      {
+        "feature": "himp",
+        "importance": 0.06
+      },
+      {
+        "feature": "tz_diff",
+        "importance": 0.0567
+      },
+      {
+        "feature": "aimp",
+        "importance": 0.0554
+      },
+      {
+        "feature": "rest_diff",
+        "importance": 0.0543
+      },
+      {
+        "feature": "dpf",
+        "importance": 0.0542
+      },
+      {
+        "feature": "apa",
+        "importance": 0.0539
+      },
+      {
+        "feature": "dpa",
+        "importance": 0.0537
+      },
+      {
+        "feature": "travel_miles",
+        "importance": 0.0501
+      },
+      {
+        "feature": "temp",
+        "importance": 0.0497
+      },
+      {
+        "feature": "is_short",
+        "importance": 0.0491
+      },
+      {
+        "feature": "apf",
+        "importance": 0.0487
+      },
+      {
+        "feature": "wind",
+        "importance": 0.0423
+      },
+      {
+        "feature": "hpa",
+        "importance": 0.0422
+      },
+      {
+        "feature": "is_div",
+        "importance": 0.0349
+      }
+    ],
+    "ou_mae": 10.44,
+    "ou_model": "baseline"
+  },
+  {
+    "test_year": 2024,
+    "train_years": [
+      2023,
+      2022,
+      2021,
+      2020,
+      2019
+    ],
+    "total_games": 272,
+    "mae": 10.11,
+    "err_mean": 0.43,
+    "err_std": 13.34,
+    "within_3": 0.25,
+    "within_5": 0.379,
+    "ats": {
+      "correct": 132,
+      "incorrect": 140,
+      "total": 272,
+      "pct": 48.5
+    },
+    "ou": {
+      "correct": 136,
+      "incorrect": 133,
+      "pushes": 3,
+      "total": 272,
+      "pct": 50.6
+    },
+    "ml": {
+      "correct": 181,
+      "incorrect": 91,
+      "total": 272,
+      "pct": 66.5
+    },
+    "feature_importance": [
+      {
+        "feature": "spread",
+        "importance": 0.1741
+      },
+      {
+        "feature": "spread_movement",
+        "importance": 0.0693
+      },
+      {
+        "feature": "aimp",
+        "importance": 0.0595
+      },
+      {
+        "feature": "himp",
+        "importance": 0.0561
+      },
+      {
+        "feature": "travel_miles",
+        "importance": 0.0559
+      },
+      {
+        "feature": "dpa",
+        "importance": 0.0554
+      },
+      {
+        "feature": "dpf",
+        "importance": 0.055
+      },
+      {
+        "feature": "apa",
+        "importance": 0.0541
+      },
+      {
+        "feature": "dimp",
+        "importance": 0.0507
+      },
+      {
+        "feature": "temp",
+        "importance": 0.0504
+      },
+      {
+        "feature": "is_short",
+        "importance": 0.0488
+      },
+      {
+        "feature": "tz_diff",
+        "importance": 0.0486
+      },
+      {
+        "feature": "rest_diff",
+        "importance": 0.0464
+      },
+      {
+        "feature": "is_div",
+        "importance": 0.0463
+      },
+      {
+        "feature": "apf",
+        "importance": 0.0448
+      },
+      {
+        "feature": "wind",
+        "importance": 0.0439
+      },
+      {
+        "feature": "hpa",
+        "importance": 0.0407
+      }
+    ],
+    "ou_mae": 10.24,
+    "ou_model": "baseline"
+  },
+  {
+    "test_year": 2025,
+    "train_years": [
+      2024,
+      2023,
+      2022,
+      2021,
+      2020
+    ],
+    "total_games": 272,
+    "mae": 10.12,
+    "err_mean": -0.03,
+    "err_std": 12.96,
+    "within_3": 0.21,
+    "within_5": 0.324,
+    "ats": {
+      "correct": 137,
+      "incorrect": 135,
+      "total": 272,
+      "pct": 50.4
+    },
+    "ou": {
+      "correct": 136,
+      "incorrect": 136,
+      "pushes": 0,
+      "total": 272,
+      "pct": 50.0
+    },
+    "ml": {
+      "correct": 175,
+      "incorrect": 97,
+      "total": 272,
+      "pct": 64.3
+    },
+    "feature_importance": [
+      {
+        "feature": "spread",
+        "importance": 0.1832
+      },
+      {
+        "feature": "spread_movement",
+        "importance": 0.0823
+      },
+      {
+        "feature": "tz_diff",
+        "importance": 0.0574
+      },
+      {
+        "feature": "travel_miles",
+        "importance": 0.055
+      },
+      {
+        "feature": "aimp",
+        "importance": 0.0542
+      },
+      {
+        "feature": "dpf",
+        "importance": 0.0542
+      },
+      {
+        "feature": "himp",
+        "importance": 0.0511
+      },
+      {
+        "feature": "temp",
+        "importance": 0.0495
+      },
+      {
+        "feature": "is_div",
+        "importance": 0.0495
+      },
+      {
+        "feature": "dpa",
+        "importance": 0.0482
+      },
+      {
+        "feature": "apa",
+        "importance": 0.048
+      },
+      {
+        "feature": "is_short",
+        "importance": 0.0473
+      },
+      {
+        "feature": "dimp",
+        "importance": 0.047
+      },
+      {
+        "feature": "apf",
+        "importance": 0.0465
+      },
+      {
+        "feature": "hpa",
+        "importance": 0.0457
+      },
+      {
+        "feature": "wind",
+        "importance": 0.042
+      },
+      {
+        "feature": "rest_diff",
+        "importance": 0.039
+      }
+    ],
+    "ou_mae": 11.02,
+    "ou_model": "baseline"
+  }
+]

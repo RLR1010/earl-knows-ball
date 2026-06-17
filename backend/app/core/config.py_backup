@@ -1,0 +1,36 @@
+from pydantic_settings import BaseSettings
+
+
+class Settings(BaseSettings):
+    app_name: str = "EarlKnowsBall"
+    database_url: str = "postgresql+asyncpg://earl:earl@localhost:5432/earl_knows_football"
+
+    # The Odds API
+    odds_api_key: str = ""                                          # Paid tier (Professional, 20k/mo)
+    odds_api_key_free: str = ""                                     # Free tier (500/mo)
+
+    # DeepSeek
+    deepseek_api_key: str = ""
+    deepseek_model: str = "deepseek-chat"
+
+    # Cognee (OpenClaw memory)
+    cognee_url: str = "http://localhost:8000"
+
+    # JWT
+    jwt_secret: str = "change-me-in-production"
+    jwt_algorithm: str = "HS256"
+    jwt_expire_minutes: int = 1440  # 24h
+
+    # Stripe
+    stripe_secret_key: str = ""
+    stripe_webhook_secret: str = ""
+    stripe_publishable_key: str = ""
+
+    # App
+    base_url: str = "http://localhost:3000"
+    admin_email: str = "admin@earlknowsball.com"
+
+    model_config = {"env_file": ".env"}
+
+
+settings = Settings()

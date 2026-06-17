@@ -1,0 +1,223 @@
+
+==========
+== CUDA ==
+==========
+
+CUDA Version 12.4.0
+
+Container image Copyright (c) 2016-2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+This container image and its contents are governed by the NVIDIA Deep Learning Container License.
+By pulling and using the container, you accept the terms and conditions of this license:
+https://developer.nvidia.com/ngc/nvidia-deep-learning-container-license
+
+A copy of this license is made available in this container at /NGC-DL-CONTAINER-LICENSE for your convenience.
+
+WARNING: The NVIDIA Driver was not detected.  GPU functionality will not be available.
+   Use the NVIDIA Container Toolkit to start this container with GPU support; see
+   https://docs.nvidia.com/datacenter/cloud-native/ .
+
+"""
+Multi-sport pgvector embedding runner.
+Embeds NFL, NBA, and MLB articles via Ollama nomic-embed-text.
+Stores vectors in each sport's article_embeddings table.
+Runs in an infinite loop, processing one sport at a time.
+"""
+import asyncio
+import time
+import logging
+import sys
+import traceback
+from datetime import datetime, timezone
+
+import httpx
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
+from sqlalchemy import text, select
+
+sys.path.insert(0, "/app")
+from app.core.config import settings
+from app.models import Article
+from app.models.nba import NBAArticle
+from app.models.mlb import MLBArticle
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+)
+logger = logging.getLogger("earl.embed_pgvector_all")
+
+OLLAMA_EMBED_URL = "http://localhost:11434/api/embed"
+BATCH_SIZE = 20
+SLEEP_BETWEEN = 60  # seconds between full cycles
+
+# Sport configurations: model class, embedding table, article table
+SPORTS = [
+    {
+        "name": "NFL",
+        "model": Article,
+        "embed_table": "nfl.article_embeddings",
+        "article_table": "nfl.articles",
+    },
+    {
+        "name": "NBA",
+        "model": NBAArticle,
+        "embed_table": "nba.article_embeddings",
+        "article_table": "nba.articles",
+    },
+    {
+        "name": "MLB",
+        "model": MLBArticle,
+        "embed_table": "mlb.article_embeddings",
+        "article_table": "mlb.articles",
+    },
+]
+
+
+async def embed_content(client: httpx.AsyncClient, content: str) -> str | None:
+    """Embed text via Ollama, return vector string or None."""
+    try:
+        resp = await client.post(
+            OLLAMA_EMBED_URL,
+            json={"model": "nomic-embed-text", "input": content},
+            timeout=30.0,
+        )
+        if resp.status_code != 200:
+            logger.warning(f"Ollama returned {resp.status_code}")
+            return None
+        embedding = resp.json()["embeddings"][0]
+        return "[" + ",".join(str(round(x, 8)) for x in embedding) + "]"
+    except Exception as e:
+        logger.error(f"Ollama error: {e}")
+        return None
+
+
+async def batch_embed_sport(
+    db: AsyncSession,
+    sport: dict,
+    limit: int = BATCH_SIZE,
+) -> dict:
+    """
+    Embed a batch of un-embedded articles for one sport.
+    Returns stats dict.
+    """
+    model = sport["model"]
+    embed_table = sport["embed_table"]
+    article_table = sport["article_table"]
+    sport_name = sport["name"]
+
+    # Find articles without embeddings
+    r = await db.execute(
+        select(model)
+        .where(model.embedded_at.is_(None))
+        .order_by(model.id)
+        .limit(limit)
+    )
+    articles = r.scalars().all()
+
+    if not articles:
+        return {"sport": sport_name, "total": 0, "embedded": 0}
+
+    total = len(articles)
+    embedded = 0
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        for article in articles:
+            content = f"{article.title}\n\n{article.body or ''}"[:2500]
+            if len(content.strip()) < 10:
+                # Mark as skipped (use epoch sentinel)
+                article.embedded_at = datetime.fromtimestamp(0, tz=timezone.utc)
+                embedded += 1
+                continue
+
+            emb_str = await embed_content(client, content)
+            if emb_str is None:
+                continue
+
+            # Insert into sport-specific article_embeddings table
+            # NOTE: must interpolate emb_str into SQL — asyncpg can't handle named params + ::vector cast
+            sql = text(
+                f"INSERT INTO {embed_table} (article_id, embedding) VALUES (:aid, '{emb_str}'::vector)"
+            )
+            await db.execute(sql, {"aid": article.id})
+            article.embedded_at = datetime.now(timezone.utc)
+            embedded += 1
+
+            if embedded % 10 == 0:
+                await db.flush()
+                logger.info(f"  [{sport_name}] {embedded}/{total} in batch...")
+
+        await db.commit()
+
+    return {"sport": sport_name, "total": total, "embedded": embedded}
+
+
+async def run():
+    logger.info("=" * 50)
+    logger.info("Multi-Sport pgvector Embedding Runner Started")
+    logger.info(f"Ollama: {OLLAMA_EMBED_URL}")
+    logger.info(f"Batch size: {BATCH_SIZE}")
+    logger.info(f"Sports: {[s['name'] for s in SPORTS]}")
+    logger.info("=" * 50)
+
+    engine = create_async_engine(settings.database_url, pool_size=3)
+    SessionLocal = async_sessionmaker(
+        engine, class_=AsyncSession, expire_on_commit=False
+    )
+
+    totals = {s["name"]: 0 for s in SPORTS}
+    t0 = time.time()
+
+    while True:
+        for sport in SPORTS:
+            sport_name = sport["name"]
+            try:
+                async with SessionLocal() as db:
+                    result = await batch_embed_sport(db, sport, limit=BATCH_SIZE)
+
+                    totals[sport_name] += result["embedded"]
+                    elapsed = time.time() - t0
+                    rate = totals[sport_name] / elapsed if elapsed > 0 else 0
+
+                    logger.info(
+                        f"[{sport_name}] Batch: {result['embedded']}/{result['total']} "
+                        f"| Total this run: {totals[sport_name]} | {rate:.1f}/s"
+                    )
+
+            except Exception as e:
+                logger.error(f"[{sport_name}] Batch error: {e}")
+                traceback.print_exc()
+                continue
+
+        # Check if any sport has pending work
+        any_pending = False
+        try:
+            async with SessionLocal() as db:
+                for sport in SPORTS:
+                    model = sport["model"]
+                    r = await db.execute(
+                        select(model)
+                        .where(model.embedded_at.is_(None))
+                        .limit(1)
+                    )
+                    if r.scalars().first() is not None:
+                        any_pending = True
+                        break
+        except Exception:
+            pass
+
+        if not any_pending:
+            total_all = sum(totals.values())
+            elapsed = time.time() - t0
+            logger.info(
+                f"✅ All sports embedded! Total: {total_all} | "
+                f"Elapsed: {elapsed:.0f}s | Sleeping {SLEEP_BETWEEN}s..."
+            )
+            await asyncio.sleep(SLEEP_BETWEEN)
+        else:
+            await asyncio.sleep(1)  # small delay between cycles
+
+    await engine.dispose()
+
+
+if __name__ == "__main__":
+    asyncio.run(run())

@@ -1,0 +1,777 @@
+[
+  {
+    "test_year": 2021,
+    "train_years": [
+      2020,
+      2019,
+      2018,
+      2017
+    ],
+    "total_games": 272,
+    "mae": 11.5,
+    "err_mean": 0.51,
+    "err_std": 14.69,
+    "within_3": 0.147,
+    "within_5": 0.276,
+    "ats": {
+      "correct": 142,
+      "incorrect": 130,
+      "total": 272,
+      "pct": 52.2
+    },
+    "feature_importance": [
+      {
+        "feature": "home_margin_r10",
+        "importance": 0.0774
+      },
+      {
+        "feature": "away_margin_r10",
+        "importance": 0.0704
+      },
+      {
+        "feature": "home_win_pct_r5",
+        "importance": 0.0523
+      },
+      {
+        "feature": "away_win_pct_r5",
+        "importance": 0.0471
+      },
+      {
+        "feature": "travel_miles",
+        "importance": 0.0463
+      },
+      {
+        "feature": "home_margin_r3",
+        "importance": 0.0423
+      },
+      {
+        "feature": "away_season_ats_pct",
+        "importance": 0.0401
+      },
+      {
+        "feature": "aimp",
+        "importance": 0.0399
+      },
+      {
+        "feature": "dimp",
+        "importance": 0.0388
+      },
+      {
+        "feature": "spread_movement",
+        "importance": 0.0386
+      },
+      {
+        "feature": "away_margin_r3",
+        "importance": 0.0385
+      },
+      {
+        "feature": "dpa",
+        "importance": 0.0384
+      },
+      {
+        "feature": "home_season_ats_pct",
+        "importance": 0.0373
+      },
+      {
+        "feature": "away_cover_pct_r5",
+        "importance": 0.0372
+      },
+      {
+        "feature": "is_dome",
+        "importance": 0.0367
+      },
+      {
+        "feature": "dpf",
+        "importance": 0.0339
+      },
+      {
+        "feature": "apa",
+        "importance": 0.0323
+      },
+      {
+        "feature": "himp",
+        "importance": 0.0316
+      },
+      {
+        "feature": "sp_a_odds_mvmt",
+        "importance": 0.0316
+      },
+      {
+        "feature": "home_cover_pct_r5",
+        "importance": 0.03
+      },
+      {
+        "feature": "away_embarrassed",
+        "importance": 0.0293
+      },
+      {
+        "feature": "hpa",
+        "importance": 0.0292
+      },
+      {
+        "feature": "sp_h_odds_mvmt",
+        "importance": 0.0288
+      },
+      {
+        "feature": "apf",
+        "importance": 0.0265
+      },
+      {
+        "feature": "home_embarrassed",
+        "importance": 0.0232
+      },
+      {
+        "feature": "hpf",
+        "importance": 0.0222
+      }
+    ],
+    "features": [
+      "hpf",
+      "hpa",
+      "apf",
+      "apa",
+      "dpf",
+      "dpa",
+      "himp",
+      "aimp",
+      "dimp",
+      "spread_movement",
+      "sp_h_odds_mvmt",
+      "sp_a_odds_mvmt",
+      "home_win_pct_r5",
+      "away_win_pct_r5",
+      "home_margin_r3",
+      "away_margin_r3",
+      "home_cover_pct_r5",
+      "away_cover_pct_r5",
+      "home_embarrassed",
+      "away_embarrassed",
+      "home_season_ats_pct",
+      "away_season_ats_pct",
+      "home_margin_r10",
+      "away_margin_r10",
+      "travel_miles",
+      "is_dome"
+    ]
+  },
+  {
+    "test_year": 2022,
+    "train_years": [
+      2021,
+      2020,
+      2019,
+      2018
+    ],
+    "total_games": 271,
+    "mae": 9.69,
+    "err_mean": 0.11,
+    "err_std": 12.6,
+    "within_3": 0.21,
+    "within_5": 0.328,
+    "ats": {
+      "correct": 142,
+      "incorrect": 129,
+      "total": 271,
+      "pct": 52.4
+    },
+    "feature_importance": [
+      {
+        "feature": "home_margin_r10",
+        "importance": 0.0766
+      },
+      {
+        "feature": "away_margin_r10",
+        "importance": 0.0687
+      },
+      {
+        "feature": "travel_miles",
+        "importance": 0.0493
+      },
+      {
+        "feature": "home_margin_r3",
+        "importance": 0.0481
+      },
+      {
+        "feature": "is_dome",
+        "importance": 0.048
+      },
+      {
+        "feature": "dimp",
+        "importance": 0.0427
+      },
+      {
+        "feature": "aimp",
+        "importance": 0.0405
+      },
+      {
+        "feature": "sp_h_odds_mvmt",
+        "importance": 0.0398
+      },
+      {
+        "feature": "spread_movement",
+        "importance": 0.0386
+      },
+      {
+        "feature": "home_season_ats_pct",
+        "importance": 0.0385
+      },
+      {
+        "feature": "home_win_pct_r5",
+        "importance": 0.0377
+      },
+      {
+        "feature": "dpf",
+        "importance": 0.0369
+      },
+      {
+        "feature": "away_cover_pct_r5",
+        "importance": 0.0369
+      },
+      {
+        "feature": "away_margin_r3",
+        "importance": 0.0365
+      },
+      {
+        "feature": "sp_a_odds_mvmt",
+        "importance": 0.0352
+      },
+      {
+        "feature": "away_season_ats_pct",
+        "importance": 0.0351
+      },
+      {
+        "feature": "apa",
+        "importance": 0.0341
+      },
+      {
+        "feature": "dpa",
+        "importance": 0.0336
+      },
+      {
+        "feature": "himp",
+        "importance": 0.0329
+      },
+      {
+        "feature": "apf",
+        "importance": 0.0305
+      },
+      {
+        "feature": "away_win_pct_r5",
+        "importance": 0.0294
+      },
+      {
+        "feature": "hpa",
+        "importance": 0.0285
+      },
+      {
+        "feature": "hpf",
+        "importance": 0.0283
+      },
+      {
+        "feature": "home_cover_pct_r5",
+        "importance": 0.0264
+      },
+      {
+        "feature": "home_embarrassed",
+        "importance": 0.0257
+      },
+      {
+        "feature": "away_embarrassed",
+        "importance": 0.0214
+      }
+    ],
+    "features": [
+      "hpf",
+      "hpa",
+      "apf",
+      "apa",
+      "dpf",
+      "dpa",
+      "himp",
+      "aimp",
+      "dimp",
+      "spread_movement",
+      "sp_h_odds_mvmt",
+      "sp_a_odds_mvmt",
+      "home_win_pct_r5",
+      "away_win_pct_r5",
+      "home_margin_r3",
+      "away_margin_r3",
+      "home_cover_pct_r5",
+      "away_cover_pct_r5",
+      "home_embarrassed",
+      "away_embarrassed",
+      "home_season_ats_pct",
+      "away_season_ats_pct",
+      "home_margin_r10",
+      "away_margin_r10",
+      "travel_miles",
+      "is_dome"
+    ]
+  },
+  {
+    "test_year": 2023,
+    "train_years": [
+      2022,
+      2021,
+      2020,
+      2019
+    ],
+    "total_games": 272,
+    "mae": 10.14,
+    "err_mean": 0.75,
+    "err_std": 13.18,
+    "within_3": 0.228,
+    "within_5": 0.342,
+    "ats": {
+      "correct": 154,
+      "incorrect": 118,
+      "total": 272,
+      "pct": 56.6
+    },
+    "feature_importance": [
+      {
+        "feature": "away_win_pct_r5",
+        "importance": 0.0703
+      },
+      {
+        "feature": "home_margin_r10",
+        "importance": 0.0649
+      },
+      {
+        "feature": "away_margin_r10",
+        "importance": 0.062
+      },
+      {
+        "feature": "home_win_pct_r5",
+        "importance": 0.0601
+      },
+      {
+        "feature": "home_margin_r3",
+        "importance": 0.0446
+      },
+      {
+        "feature": "aimp",
+        "importance": 0.0424
+      },
+      {
+        "feature": "dpf",
+        "importance": 0.0411
+      },
+      {
+        "feature": "spread_movement",
+        "importance": 0.0383
+      },
+      {
+        "feature": "travel_miles",
+        "importance": 0.0375
+      },
+      {
+        "feature": "home_season_ats_pct",
+        "importance": 0.0365
+      },
+      {
+        "feature": "away_margin_r3",
+        "importance": 0.0363
+      },
+      {
+        "feature": "apa",
+        "importance": 0.0361
+      },
+      {
+        "feature": "away_season_ats_pct",
+        "importance": 0.0353
+      },
+      {
+        "feature": "home_cover_pct_r5",
+        "importance": 0.0343
+      },
+      {
+        "feature": "away_cover_pct_r5",
+        "importance": 0.0335
+      },
+      {
+        "feature": "dpa",
+        "importance": 0.0335
+      },
+      {
+        "feature": "himp",
+        "importance": 0.0335
+      },
+      {
+        "feature": "apf",
+        "importance": 0.0329
+      },
+      {
+        "feature": "sp_h_odds_mvmt",
+        "importance": 0.0328
+      },
+      {
+        "feature": "sp_a_odds_mvmt",
+        "importance": 0.0326
+      },
+      {
+        "feature": "dimp",
+        "importance": 0.0322
+      },
+      {
+        "feature": "hpa",
+        "importance": 0.0295
+      },
+      {
+        "feature": "hpf",
+        "importance": 0.0276
+      },
+      {
+        "feature": "is_dome",
+        "importance": 0.0267
+      },
+      {
+        "feature": "away_embarrassed",
+        "importance": 0.0239
+      },
+      {
+        "feature": "home_embarrassed",
+        "importance": 0.0214
+      }
+    ],
+    "features": [
+      "hpf",
+      "hpa",
+      "apf",
+      "apa",
+      "dpf",
+      "dpa",
+      "himp",
+      "aimp",
+      "dimp",
+      "spread_movement",
+      "sp_h_odds_mvmt",
+      "sp_a_odds_mvmt",
+      "home_win_pct_r5",
+      "away_win_pct_r5",
+      "home_margin_r3",
+      "away_margin_r3",
+      "home_cover_pct_r5",
+      "away_cover_pct_r5",
+      "home_embarrassed",
+      "away_embarrassed",
+      "home_season_ats_pct",
+      "away_season_ats_pct",
+      "home_margin_r10",
+      "away_margin_r10",
+      "travel_miles",
+      "is_dome"
+    ]
+  },
+  {
+    "test_year": 2024,
+    "train_years": [
+      2023,
+      2022,
+      2021,
+      2020
+    ],
+    "total_games": 272,
+    "mae": 10.55,
+    "err_mean": -0.67,
+    "err_std": 13.49,
+    "within_3": 0.173,
+    "within_5": 0.331,
+    "ats": {
+      "correct": 130,
+      "incorrect": 142,
+      "total": 272,
+      "pct": 47.8
+    },
+    "feature_importance": [
+      {
+        "feature": "home_margin_r10",
+        "importance": 0.0728
+      },
+      {
+        "feature": "away_margin_r10",
+        "importance": 0.0627
+      },
+      {
+        "feature": "away_win_pct_r5",
+        "importance": 0.0578
+      },
+      {
+        "feature": "is_dome",
+        "importance": 0.0473
+      },
+      {
+        "feature": "home_margin_r3",
+        "importance": 0.0456
+      },
+      {
+        "feature": "aimp",
+        "importance": 0.0452
+      },
+      {
+        "feature": "dpf",
+        "importance": 0.0418
+      },
+      {
+        "feature": "away_season_ats_pct",
+        "importance": 0.041
+      },
+      {
+        "feature": "travel_miles",
+        "importance": 0.0389
+      },
+      {
+        "feature": "dpa",
+        "importance": 0.0386
+      },
+      {
+        "feature": "home_season_ats_pct",
+        "importance": 0.0383
+      },
+      {
+        "feature": "spread_movement",
+        "importance": 0.038
+      },
+      {
+        "feature": "home_win_pct_r5",
+        "importance": 0.0348
+      },
+      {
+        "feature": "sp_h_odds_mvmt",
+        "importance": 0.0348
+      },
+      {
+        "feature": "home_cover_pct_r5",
+        "importance": 0.0348
+      },
+      {
+        "feature": "home_embarrassed",
+        "importance": 0.0341
+      },
+      {
+        "feature": "sp_a_odds_mvmt",
+        "importance": 0.034
+      },
+      {
+        "feature": "apa",
+        "importance": 0.0329
+      },
+      {
+        "feature": "himp",
+        "importance": 0.0321
+      },
+      {
+        "feature": "dimp",
+        "importance": 0.0301
+      },
+      {
+        "feature": "away_margin_r3",
+        "importance": 0.0295
+      },
+      {
+        "feature": "away_embarrassed",
+        "importance": 0.0279
+      },
+      {
+        "feature": "hpa",
+        "importance": 0.0278
+      },
+      {
+        "feature": "hpf",
+        "importance": 0.0272
+      },
+      {
+        "feature": "apf",
+        "importance": 0.0262
+      },
+      {
+        "feature": "away_cover_pct_r5",
+        "importance": 0.0259
+      }
+    ],
+    "features": [
+      "hpf",
+      "hpa",
+      "apf",
+      "apa",
+      "dpf",
+      "dpa",
+      "himp",
+      "aimp",
+      "dimp",
+      "spread_movement",
+      "sp_h_odds_mvmt",
+      "sp_a_odds_mvmt",
+      "home_win_pct_r5",
+      "away_win_pct_r5",
+      "home_margin_r3",
+      "away_margin_r3",
+      "home_cover_pct_r5",
+      "away_cover_pct_r5",
+      "home_embarrassed",
+      "away_embarrassed",
+      "home_season_ats_pct",
+      "away_season_ats_pct",
+      "home_margin_r10",
+      "away_margin_r10",
+      "travel_miles",
+      "is_dome"
+    ]
+  },
+  {
+    "test_year": 2025,
+    "train_years": [
+      2024,
+      2023,
+      2022,
+      2021
+    ],
+    "total_games": 272,
+    "mae": 10.45,
+    "err_mean": -0.63,
+    "err_std": 13.58,
+    "within_3": 0.224,
+    "within_5": 0.338,
+    "ats": {
+      "correct": 146,
+      "incorrect": 126,
+      "total": 272,
+      "pct": 53.7
+    },
+    "feature_importance": [
+      {
+        "feature": "home_margin_r10",
+        "importance": 0.0795
+      },
+      {
+        "feature": "away_margin_r10",
+        "importance": 0.0675
+      },
+      {
+        "feature": "home_win_pct_r5",
+        "importance": 0.0527
+      },
+      {
+        "feature": "home_margin_r3",
+        "importance": 0.0494
+      },
+      {
+        "feature": "away_win_pct_r5",
+        "importance": 0.0488
+      },
+      {
+        "feature": "away_embarrassed",
+        "importance": 0.0453
+      },
+      {
+        "feature": "away_cover_pct_r5",
+        "importance": 0.0433
+      },
+      {
+        "feature": "home_season_ats_pct",
+        "importance": 0.0397
+      },
+      {
+        "feature": "dpf",
+        "importance": 0.0396
+      },
+      {
+        "feature": "travel_miles",
+        "importance": 0.0386
+      },
+      {
+        "feature": "dimp",
+        "importance": 0.0382
+      },
+      {
+        "feature": "away_season_ats_pct",
+        "importance": 0.038
+      },
+      {
+        "feature": "sp_h_odds_mvmt",
+        "importance": 0.0377
+      },
+      {
+        "feature": "aimp",
+        "importance": 0.0376
+      },
+      {
+        "feature": "spread_movement",
+        "importance": 0.0372
+      },
+      {
+        "feature": "dpa",
+        "importance": 0.037
+      },
+      {
+        "feature": "sp_a_odds_mvmt",
+        "importance": 0.0342
+      },
+      {
+        "feature": "away_margin_r3",
+        "importance": 0.0337
+      },
+      {
+        "feature": "apf",
+        "importance": 0.0333
+      },
+      {
+        "feature": "himp",
+        "importance": 0.0332
+      },
+      {
+        "feature": "is_dome",
+        "importance": 0.0305
+      },
+      {
+        "feature": "apa",
+        "importance": 0.0305
+      },
+      {
+        "feature": "hpa",
+        "importance": 0.0266
+      },
+      {
+        "feature": "hpf",
+        "importance": 0.0218
+      },
+      {
+        "feature": "home_cover_pct_r5",
+        "importance": 0.0207
+      },
+      {
+        "feature": "home_embarrassed",
+        "importance": 0.0052
+      }
+    ],
+    "features": [
+      "hpf",
+      "hpa",
+      "apf",
+      "apa",
+      "dpf",
+      "dpa",
+      "himp",
+      "aimp",
+      "dimp",
+      "spread_movement",
+      "sp_h_odds_mvmt",
+      "sp_a_odds_mvmt",
+      "home_win_pct_r5",
+      "away_win_pct_r5",
+      "home_margin_r3",
+      "away_margin_r3",
+      "home_cover_pct_r5",
+      "away_cover_pct_r5",
+      "home_embarrassed",
+      "away_embarrassed",
+      "home_season_ats_pct",
+      "away_season_ats_pct",
+      "home_margin_r10",
+      "away_margin_r10",
+      "travel_miles",
+      "is_dome"
+    ]
+  }
+]

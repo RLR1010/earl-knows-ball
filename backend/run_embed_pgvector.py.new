@@ -1,0 +1,171 @@
+
+==========
+== CUDA ==
+==========
+
+CUDA Version 12.4.0
+
+Container image Copyright (c) 2016-2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+This container image and its contents are governed by the NVIDIA Deep Learning Container License.
+By pulling and using the container, you accept the terms and conditions of this license:
+https://developer.nvidia.com/ngc/nvidia-deep-learning-container-license
+
+A copy of this license is made available in this container at /NGC-DL-CONTAINER-LICENSE for your convenience.
+
+WARNING: The NVIDIA Driver was not detected.  GPU functionality will not be available.
+   Use the NVIDIA Container Toolkit to start this container with GPU support; see
+   https://docs.nvidia.com/datacenter/cloud-native/ .
+
+"""
+Standalone pgvector embedding runner.
+Embeds articles directly via Ollama, stores vectors in PostgreSQL.
+Runs ~0.5s/article instead of 15-30s via Cognee.
+"""
+import asyncio, time, logging, sys, traceback
+from datetime import datetime, timezone
+from pathlib import Path
+
+import httpx
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
+from sqlalchemy import text, select
+
+sys.path.insert(0, '/app')
+from app.core.config import settings
+from app.models import Article
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+)
+logger = logging.getLogger("earl.embed_pgvector")
+
+OLLAMA_EMBED_URL = "http://localhost:11434/api/embed"
+BATCH_SIZE = 20
+SLEEP_BETWEEN = 10  # seconds
+
+
+async def embed_article(client: httpx.AsyncClient, article) -> bool:
+    """Embed a single article and store in pgvector. Returns True on success."""
+    content = f"{article.title}\n\n{article.body or ''}"[:2500]
+    if len(content.strip()) < 10:
+        return False
+
+    try:
+        resp = await client.post(OLLAMA_EMBED_URL, json={
+            "model": "nomic-embed-text",
+            "input": content,
+        }, timeout=30.0)
+        if resp.status_code != 200:
+            logger.warning(f"Ollama returned {resp.status_code} for article {article.id}")
+            return False
+
+        embedding = resp.json()["embeddings"][0]
+        emb_str = "[" + ",".join(str(round(x, 8)) for x in embedding) + "]"
+        return emb_str
+    except Exception as e:
+        logger.error(f"Ollama error for article {article.id}: {e}")
+        return False
+
+
+async def batch_embed(db: AsyncSession, limit: int = BATCH_SIZE) -> dict:
+    """Embed a batch of un-embedded articles."""
+    r = await db.execute(
+        select(Article)
+        .where(Article.embedded_at.is_(None))
+        .order_by(Article.id)
+        .limit(limit)
+    )
+    articles = r.scalars().all()
+    if not articles:
+        return {"total": 0, "embedded": 0}
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        total = len(articles)
+        embedded = 0
+
+        for article in articles:
+            content = f"{article.title}\n\n{article.body or ''}"[:2500]
+            if len(content.strip()) < 10:
+                article.embedded_at = datetime.fromtimestamp(0, tz=timezone.utc)  # mark as skipped
+                embedded += 1
+                continue
+
+            try:
+                resp = await client.post(OLLAMA_EMBED_URL, json={
+                    "model": "nomic-embed-text",
+                    "input": content,
+                }, timeout=30.0)
+
+                if resp.status_code != 200:
+                    logger.warning(f"Ollama error {resp.status_code} for article {article.id}")
+                    continue
+
+                embedding = resp.json()["embeddings"][0]
+                emb_str = "[" + ",".join(str(round(x, 8)) for x in embedding) + "]"
+
+                await db.execute(
+                    text(f"INSERT INTO nfl.article_embeddings (article_id, embedding) VALUES (:aid, '{emb_str}'::vector)"),
+                    {"aid": article.id}
+                )
+                article.embedded_at = datetime.now(timezone.utc)
+                embedded += 1
+
+                if embedded % 10 == 0:
+                    await db.flush()
+                    logger.info(f"  {embedded}/{total} in batch...")
+
+            except Exception as e:
+                logger.error(f"Failed article {article.id}: {e}")
+                continue
+
+        await db.commit()
+
+    return {"total": total, "embedded": embedded}
+
+
+async def run():
+    logger.info("=" * 50)
+    logger.info("pgvector Embedding Runner Started")
+    logger.info(f"Ollama: {OLLAMA_EMBED_URL}")
+    logger.info(f"Batch size: {BATCH_SIZE}")
+    logger.info("=" * 50)
+
+    engine = create_async_engine(settings.database_url, pool_size=2)
+    SessionLocal = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+    total_embedded = 0
+    t0 = time.time()
+
+    while True:
+        try:
+            async with SessionLocal() as db:
+                result = await batch_embed(db, limit=BATCH_SIZE)
+
+                total_embedded += result["embedded"]
+                elapsed = time.time() - t0
+                rate = total_embedded / elapsed if elapsed > 0 else 0
+
+                logger.info(
+                    f"Batch: {result['embedded']}/{result['total']} embedded "
+                    f"| Total: {total_embedded} | {rate:.1f}/s"
+                )
+
+                if result["total"] == 0:
+                    logger.info("All articles embedded! Sleeping 60s...")
+                    await asyncio.sleep(60)
+                    continue
+
+        except Exception as e:
+            logger.error(f"Batch error: {e}")
+            traceback.print_exc()
+            await asyncio.sleep(SLEEP_BETWEEN)
+            continue
+
+        await asyncio.sleep(1)  # small delay between batches
+
+    await engine.dispose()
+
+
+if __name__ == "__main__":
+    asyncio.run(run())

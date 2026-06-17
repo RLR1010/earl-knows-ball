@@ -1,0 +1,862 @@
+"use client";
+import { useCallback, useEffect, useState } from "react";
+import { useParams, useSearchParams } from "next/navigation";
+import Link from "next/link";
+
+// ── Shared Types ─────────────────────────────────────────────
+
+interface GameInfo {
+  id: number; week: number; game_type: string; status: string; date: string;
+  venue: string | null; roof_type: string | null;
+  home_team: string; away_team: string;
+  home_score: number | null; away_score: number | null;
+}
+
+interface BoxScoreStats {
+  total_yards: number | null; pass_yards: number | null;
+  rush_yards: number | null; turnovers: number | null;
+  first_downs: number | null; third_down_pct: number | null;
+  time_of_possession: string | null;
+  penalties: number | null; penalty_yards: number | null;
+  top_players: any[];
+}
+
+interface NFLBoxScore { game: GameInfo; home_stats: BoxScoreStats | null; away_stats: BoxScoreStats | null; }
+
+interface GamePrediction {
+  game_id: number; season: number; week: number;
+  home_team: string; away_team: string; date: string | null;
+  predicted: { home_score: number; away_score: number; total: number; margin: number };
+  actual: { home_score: number; away_score: number; total: number; margin: number };
+  results: { ats: string; ou: string; ml: string };
+  confidence?: { overall: number | null; ats: number | null; ou: number | null; ml: number | null };
+  line?: { spread: number | null; over_under: number | null };
+}
+
+function StatRow({ label, home, away, fmt, better }: {
+  label: string; home: number | null | undefined; away: number | null | undefined;
+  fmt?: (v: number) => string; better?: "high" | "low";
+}) {
+  const f = fmt || ((v: number) => v.toFixed(0));
+  const hVal = home != null ? f(home) : "-";
+  const aVal = away != null ? f(away) : "-";
+  return (
+    <tr className="border-t border-white/5">
+      <td className="px-3 py-1.5 text-right font-medium text-gray-400">{aVal}</td>
+      <td className="px-3 py-1 text-center text-gray-500">{label}</td>
+      <td className="px-3 py-1.5 text-left font-medium text-gray-400">{hVal}</td>
+    </tr>
+  );
+}
+
+// ── Player rows for NFL boxscore ──
+function NFLPlayerRows(stats: BoxScoreStats | null) {
+  if (!stats?.top_players || stats.top_players.length === 0) {
+    return <tr><td colSpan={5} className="px-3 py-4 text-center text-gray-600">No player stats available</td></tr>;
+  }
+  return stats.top_players.filter((p: any) => ["QB","RB","WR","TE"].includes(p.position)).slice(0, 8).map((p: any, i: number) => {
+    const pass = p.pass_yards ? `${p.pass_completions}/${p.pass_attempts}, ${p.pass_yards}yds, ${p.pass_tds}TD` : "";
+    const rush = p.rush_yards ? `${p.rush_attempts}car, ${p.rush_yards}yds, ${p.rush_tds}TD` : "";
+    const recv = p.receptions ? `${p.receptions}rec, ${p.receiving_yards}yds, ${p.receiving_tds}TD` : "";
+    const summary = [pass, rush, recv].filter(Boolean).join(" | ");
+    return (
+      <tr key={i} className="border-t border-white/5">
+        <td className="px-3 py-1.5 text-gray-300">{p.player_name}</td>
+        <td className="px-3 py-1.5 text-gray-500">{p.position}</td>
+        <td className="px-3 py-1.5 text-gray-400 text-xs" colSpan={3}>{summary}</td>
+      </tr>
+    );
+  });
+}
+
+// ── NFL Pick Card Display ──
+function formatSpreadLine(spread: number | null | undefined, homeTeam: string): string {
+  if (spread == null) return "";
+  if (spread > 0) return `${homeTeam} +${spread}`;
+  if (spread < 0) return `${homeTeam} ${spread}`;
+  return "PK";
+}
+
+function formatLineAway(spread: number | null | undefined, awayTeam: string): string {
+  if (spread == null) return "";
+  if (spread > 0) return `${awayTeam} -${spread}`;
+  if (spread < 0) return `${awayTeam} +${Math.abs(spread)}`;
+  return "PK";
+}
+
+function ConfidenceBar({ score, size = "md" }: { score: number | null | undefined; size?: "sm" | "md" }) {
+  if (score == null) return null;
+  const pct = Math.round(score * 100);
+  const color = pct >= 70 ? "bg-green-500" : pct >= 55 ? "bg-yellow-500" : "bg-gray-500";
+  const label = pct >= 70 ? "High" : pct >= 55 ? "Med" : "Low";
+  const h = size === "sm" ? "h-1" : "h-1.5";
+  return (
+    <div className="flex items-center gap-2 mt-1">
+      <div className={`flex-1 ${h} bg-white/10 rounded-full overflow-hidden`}>
+        <div className={`${h} rounded-full ${color} transition-all`} style={{ width: `${pct}%` }} />
+      </div>
+      <span className={`text-[10px] font-semibold ${pct >= 70 ? "text-green-400" : pct >= 55 ? "text-yellow-400" : "text-gray-500"}`}>{pct}%</span>
+    </div>
+  );
+}
+
+function NFLPickCard({ pred }: { pred: GamePrediction }) {
+  const predicted = pred?.predicted || {};
+  const actual = pred?.actual || {};
+  const results = pred?.results || {};
+  const line = pred?.line;
+  const conf = pred?.confidence;
+  const noPrediction = !results.ats || results.ats === "N/A";
+  return (
+    <div className="border border-white/10 rounded-xl p-4 bg-gradient-to-br from-earl-900/20 to-transparent mt-6">
+      <div className="text-xs text-gray-500 uppercase tracking-wider mb-3">Earl's Prediction</div>
+
+      {/* Closing line display */}
+      {line?.spread != null && (
+        <div className="text-center mb-4">
+          <span className="inline-block px-5 py-2 rounded-lg bg-gradient-to-r from-earl-800/40 via-earl-600/50 to-earl-800/40 border border-earl-500/50 text-base font-bold tracking-wide">
+            <span className="text-earl-200">{formatLineAway(line.spread, pred?.away_team || "")}</span>
+            <span className="mx-3 text-gray-500">|</span>
+            <span className="text-earl-300">{formatSpreadLine(line.spread, pred?.home_team || "")}</span>
+            {line.over_under != null && (
+              <>
+                <span className="mx-3 text-gray-500">|</span>
+                <span className="text-white">O/U {line.over_under}</span>
+              </>
+            )}
+          </span>
+        </div>
+      )}
+
+      {/* Overall confidence badge */}
+      {conf?.overall != null && (
+        <div className="text-center mb-4">
+          <span className={`inline-block px-4 py-1 rounded-lg text-sm font-bold tracking-wide ${
+            conf.overall >= 0.7 ? "bg-green-900/30 text-green-400 border border-green-500/40" :
+            conf.overall >= 0.55 ? "bg-yellow-900/30 text-yellow-400 border border-yellow-500/40" :
+            "bg-gray-800/30 text-gray-400 border border-gray-500/40"
+          }`}>
+            Overall Confidence: {Math.round(conf.overall * 100)}%
+          </span>
+        </div>
+      )}
+
+      {noPrediction ? (
+        <div className="text-sm text-gray-500 text-center">No prediction available for this game.</div>
+      ) : (
+        <div className="grid grid-cols-3 gap-4">
+          <div className="text-center p-3 rounded-lg bg-white/[0.03]">
+            <div className="text-[10px] text-gray-500 uppercase">ATS</div>
+            <div className={`text-lg font-bold mt-1 ${results.ats === "Win" ? "text-green-400" : "text-red-400"}`}>{results.ats || "-"}</div>
+            <ConfidenceBar score={conf?.ats ?? conf?.overall} />
+            <div className="text-xs text-gray-400 mt-1">Pred: {predicted.home_score || "?"}-{predicted.away_score || "?"} | Act: {actual.home_score || "?"}-{actual.away_score || "?"}</div>
+          </div>
+          <div className="text-center p-3 rounded-lg bg-white/[0.03]">
+            <div className="text-[10px] text-gray-500 uppercase">O/U</div>
+            <div className={`text-lg font-bold mt-1 ${results.ou === "Win" ? "text-green-400" : "text-red-400"}`}>{results.ou || "-"}</div>
+            <ConfidenceBar score={conf?.ou ?? conf?.overall} />
+            <div className="text-xs text-gray-400 mt-1">Pred: {predicted.total || "?"} | Act: {actual.total || "?"}</div>
+          </div>
+          <div className="text-center p-3 rounded-lg bg-white/[0.03]">
+            <div className="text-[10px] text-gray-500 uppercase">ML</div>
+            <div className={`text-lg font-bold mt-1 ${results.ml === "Win" ? "text-green-400" : "text-red-400"}`}>{results.ml || "-"}</div>
+            <ConfidenceBar score={conf?.ml ?? conf?.overall} />
+            <div className="text-xs text-gray-400 mt-1">{pred?.away_team || ""} @ {pred?.home_team || ""}</div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── NFL Box Score ──
+function NFLBoxScore({ data }: { data: NFLBoxScore }) {
+  const { game, home_stats, away_stats } = data;
+  const isFinal = game.status?.toLowerCase() === "final";
+  const badge = isFinal ? { label: "FINAL", cls: "text-green-400" } : { label: game.status?.toUpperCase() || "SCHEDULED", cls: "text-earl-400" };
+  const hWon = isFinal && (game.home_score ?? 0) > (game.away_score ?? 0);
+  const aWon = isFinal && (game.away_score ?? 0) > (game.home_score ?? 0);
+
+  return (
+    <div className="space-y-6">
+      <div className="border border-white/10 rounded-xl p-6 bg-gradient-to-r from-white/5 to-white/0 text-center">
+        <span className={`text-sm font-bold ${badge.cls}`}>{badge.label}</span>
+        {game.week && <span className="text-sm text-gray-500 ml-3">Week {game.week}</span>}
+        <div className="flex items-center justify-center gap-8 md:gap-16 mt-4">
+          <div className="text-right">
+            <div className="text-lg font-semibold text-gray-300">{game.away_team}</div>
+            <div className={`text-5xl font-bold mt-1 ${aWon ? "text-earl-400" : "text-gray-400"}`}>
+              {(isFinal || badge.label === "LIVE") && game.away_score != null ? game.away_score : "-"}
+            </div>
+          </div>
+          <div className="text-3xl text-gray-600 font-bold">@</div>
+          <div className="text-left">
+            <div className="text-lg font-semibold text-gray-300">{game.home_team}</div>
+            <div className={`text-5xl font-bold mt-1 ${hWon ? "text-earl-400" : "text-gray-400"}`}>
+              {(isFinal || badge.label === "LIVE") && game.home_score != null ? game.home_score : "-"}
+            </div>
+          </div>
+        </div>
+        <div className="text-sm text-gray-500 mt-4">{game.venue ? `${game.date} - ${game.venue}` : game.date}</div>
+      </div>
+      <div className="border border-white/10 rounded-xl overflow-hidden">
+        <div className="bg-white/5 px-4 py-2 text-sm font-semibold text-earl-400">Team Stats</div>
+        <table className="w-full text-xs">
+          <thead><tr className="bg-white/[0.03] text-gray-500 uppercase text-[10px] tracking-wider">
+            <th className="px-3 py-1.5 text-right w-[40%]">{game.away_team}</th><th className="px-3 py-1.5 text-center w-[20%]"></th><th className="px-3 py-1.5 text-left w-[40%]">{game.home_team}</th>
+          </tr></thead>
+          <tbody>
+            <StatRow label="Score" home={game.home_score} away={game.away_score} fmt={(v:number)=>v.toFixed(0)} better="high" />
+            <StatRow label="Total Yards" home={home_stats?.total_yards} away={away_stats?.total_yards} better="high" />
+            <StatRow label="Pass Yards" home={home_stats?.pass_yards} away={away_stats?.pass_yards} better="high" />
+            <StatRow label="Rush Yards" home={home_stats?.rush_yards} away={away_stats?.rush_yards} better="high" />
+            <StatRow label="Turnovers" home={home_stats?.turnovers} away={away_stats?.turnovers} better="low" />
+            <StatRow label="First Downs" home={home_stats?.first_downs} away={away_stats?.first_downs} better="high" />
+            <StatRow label="Penalties" home={home_stats?.penalties} away={away_stats?.penalties} better="low" />
+          </tbody>
+        </table>
+      </div>
+      {away_stats && <div className="border border-white/10 rounded-xl overflow-hidden">
+        <div className="bg-white/5 px-4 py-2 text-sm font-semibold">{game.away_team} - Key Players</div>
+        <table className="w-full text-xs"><thead><tr className="bg-white/[0.03] text-gray-500 uppercase text-[10px] tracking-wider">
+          <th className="px-3 py-1.5 text-left">Player</th><th className="px-3 py-1.5 text-left">Pos</th><th className="px-3 py-1.5 text-left">Stats</th>
+        </tr></thead><tbody>{NFLPlayerRows(away_stats)}</tbody></table>
+      </div>}
+      {home_stats && <div className="border border-white/10 rounded-xl overflow-hidden">
+        <div className="bg-white/5 px-4 py-2 text-sm font-semibold">{game.home_team} - Key Players</div>
+        <table className="w-full text-xs"><thead><tr className="bg-white/[0.03] text-gray-500 uppercase text-[10px] tracking-wider">
+          <th className="px-3 py-1.5 text-left">Player</th><th className="px-3 py-1.5 text-left">Pos</th><th className="px-3 py-1.5 text-left">Stats</th>
+        </tr></thead><tbody>{NFLPlayerRows(home_stats)}</tbody></table>
+      </div>}
+    </div>
+  );
+}
+
+// ── Main Page ──
+export default function GameDetailPage() {
+  const params = useParams<{ sport: string; id: string }>();
+  const searchParams = useSearchParams();
+  const sport = params?.sport; const gameId = params?.id;
+  const isNfl = sport === "nfl";
+  // Preserve the originating schedule context
+  const returnYear = searchParams.get('year');
+  const returnWeek = searchParams.get('week');
+  const returnDate = searchParams.get('date');
+  const backHref = returnDate
+    ? `/${sport}/schedule?year=${returnYear || ''}&date=${returnDate}`
+    : `/${sport}/schedule${returnYear ? `?year=${returnYear}&week=${returnWeek}` : ''}`;
+
+  const [nflBoxScore, setNflBoxScore] = useState<NFLBoxScore | null>(null);
+  const [prediction, setPrediction] = useState<GamePrediction | null>(null);
+  const [gameLine, setGameLine] = useState<{ spread: number | null; over_under: number | null } | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  // NFL data fetching
+  useEffect(() => {
+    if (!gameId || !isNfl) { if (!isNfl) setLoading(false); return; }
+    const gid = parseInt(gameId);
+    Promise.all([
+      fetch(`/api/games/${gid}/box-score`).then(r => r.json()).catch(() => null),
+      fetch(`/api/handicapping/predictions/${gid}`).then(r => r.json()).catch(() => null),
+      fetch(`/api/games/${gid}`).then(r => r.json()).catch(() => null),
+    ]).then(([box, pred, game]) => {
+      if (box?.game) setNflBoxScore(box as NFLBoxScore);
+      if (pred?.game_id) setPrediction(pred as GamePrediction);
+      // Always get the line from the game API (or fallback from predictions endpoint)
+      const line = game?.spread != null ? { spread: game.spread, over_under: game.over_under } :
+                   pred?.line?.spread != null ? pred.line : null;
+      if (line) setGameLine(line);
+      if (!box?.game && !pred?.game_id && !game) setError("Game not found");
+      setLoading(false);
+    }).catch(() => setLoading(false));
+  }, [gameId, isNfl]);
+
+  // MLB: show classic boxscore page
+  if (sport === "mlb") {
+    return <MLBClassicPage gameId={gameId} />;
+  }
+
+  if (loading) return <div className="text-center py-12 text-gray-500">Loading...</div>;
+
+  if (error || (!nflBoxScore && !prediction)) {
+    return <div className="text-center py-12"><div className="text-gray-500 mb-4">{error || "Game not found."}</div>
+      <Link href={backHref} className="text-sm text-earl-400 hover:text-earl-300">← Back to Schedule</Link></div>;
+  }
+
+  // Create a 'fake' prediction with just line data for the pick card
+  const lineOnlyPred: GamePrediction | null = gameLine && !prediction ? {
+    game_id: parseInt(gameId || "0"), season: 0, week: 0,
+    home_team: nflBoxScore?.game?.home_team || "",
+    away_team: nflBoxScore?.game?.away_team || "",
+    date: nflBoxScore?.game?.date || null,
+    predicted: { home_score: 0, away_score: 0, total: 0, margin: 0 },
+    actual: { home_score: 0, away_score: 0, total: 0, margin: 0 },
+    results: { ats: "N/A", ou: "N/A", ml: "N/A" },
+    confidence: { overall: null, ats: null, ou: null, ml: null },
+    line: gameLine,
+  } : null;
+
+  return (
+    <div className="max-w-4xl mx-auto space-y-6">
+      {/* Closing line banner - always show at top */}
+      {(gameLine || prediction?.line) && (
+        <div className="border border-white/10 rounded-xl p-4 bg-gradient-to-br from-earl-900/20 to-transparent text-center">
+          <div className="text-xs text-gray-500 uppercase tracking-wider mb-3">Closing Line</div>
+          <span className="inline-block px-6 py-2.5 rounded-lg bg-gradient-to-r from-earl-800/40 via-earl-600/50 to-earl-800/40 border border-earl-500/50 text-lg font-bold tracking-wide">
+            <span className="text-earl-200">{formatLineAway((gameLine || prediction?.line)?.spread || null, nflBoxScore?.game?.away_team || "")}</span>
+            <span className="mx-4 text-gray-500">|</span>
+            <span className="text-earl-300">{formatSpreadLine((gameLine || prediction?.line)?.spread || null, nflBoxScore?.game?.home_team || "")}</span>
+            {(gameLine || prediction?.line)?.over_under != null && (
+              <>
+                <span className="mx-4 text-gray-500">|</span>
+                <span className="text-white">O/U {(gameLine || prediction?.line)?.over_under}</span>
+              </>
+            )}
+          </span>
+        </div>
+      )}
+      {nflBoxScore && <NFLBoxScore data={nflBoxScore} />}
+      {prediction && <NFLPickCard pred={prediction} />}
+      {lineOnlyPred && <NFLPickCard pred={lineOnlyPred} />}
+      <div className="text-center pt-4">
+        <Link href={backHref} className="text-sm text-earl-400 hover:text-earl-300 transition">← Back to Schedule</Link>
+      </div>
+    </div>
+  );
+}
+
+// ── MLB Classic Box Score Page (restored from original) ──
+
+interface MLBBoxScoreResponse {
+  game: any; boxscore: any; linescore: any;
+  betting_lines: any[]; pick_card: any; splits: any;
+  lineups: { home: {order:number;name:string;position:string;stats?:{avg?:string;era?:string;ops?:string}}[]; away: {order:number;name:string;position:string;stats?:{avg?:string;era?:string;ops?:string}}[] } | null;
+}
+
+function MLBClassicPage({ gameId }: { gameId: string | undefined }) {
+  const [data, setData] = useState<MLBBoxScoreResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!gameId) return;
+    console.log('MLBClassicPage fetching for game', gameId);
+    fetch(`/api/mlb/games/${gameId}/boxscore`)
+      .then(r => {
+        console.log('MLBClassicPage response status', r.status);
+        return r.json();
+      })
+      .then(d => {
+        console.log('MLBClassicPage data received', d ? Object.keys(d) : 'null');
+        setData(d);
+        setLoading(false);
+      })
+      .catch(e => {
+        console.error('MLBClassicPage fetch error', e);
+        setLoading(false);
+      });
+  }, [gameId]);
+
+  if (loading) return <div className="text-center py-12 text-gray-500">Loading...</div>;
+  if (!data) return <div className="text-center py-12 text-gray-500">Game not found.</div>;
+
+  const { game, boxscore, linescore, betting_lines, pick_card, splits, lineups } = data;
+  const isUpcoming = game?.status?.toLowerCase() === "scheduled" || game?.status?.toLowerCase() === "pregame";
+  const isLive = game?.status?.toLowerCase() === "in_progress";
+  const isFinal = game?.status?.toLowerCase() === "final";
+  const awaySide = boxscore?.teams?.away;
+  const homeSide = boxscore?.teams?.home;
+
+  function formatDate(iso: string) { const d = new Date(iso); return d.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric", timeZone: "America/Chicago" }); }
+  function formatTime(iso: string) { const d = new Date(iso); return d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: "America/Chicago" }); }
+  function statusBadge(status: string) {
+    switch (status?.toLowerCase()) {
+      case "final": return { label: "FINAL", cls: "text-green-400" };
+      case "in_progress": return { label: "LIVE", cls: "text-red-400 animate-pulse" };
+      case "postponed": return { label: "PPD", cls: "text-yellow-400" };
+      case "cancelled": return { label: "CANC", cls: "text-gray-500" };
+      default: return { label: isUpcoming ? formatTime(game.date) : "SCHEDULED", cls: "text-earl-400" };
+    }
+  }
+  const badge = statusBadge(game?.status || "");
+  const hWon = isFinal && (game.home_score ?? 0) > (game.away_score ?? 0);
+  const aWon = isFinal && (game.away_score ?? 0) > (game.home_score ?? 0);
+  const totalRuns = (game.home_score ?? 0) + (game.away_score ?? 0);
+
+  function confidenceBar(conf: number) { return conf >= 0.7 ? "bg-green-500" : conf >= 0.4 ? "bg-yellow-500" : "bg-gray-500"; }
+  function confidenceLabel(conf: number) { return conf >= 0.7 ? "HIGH" : conf >= 0.4 ? "MED" : conf > 0 ? "LOW" : "-"; }
+  function formatOdds(odds: number | null) { if (!odds) return "-"; return odds > 0 ? `+${odds}` : `${odds}`; }
+
+  // Innings for linescore display
+  const maxInnings = Math.max(linescore?.innings?.length || 0, 9);
+  const innings = linescore?.innings || [];
+  const inningLabels = Array.from({ length: maxInnings }, (_, i) => `${i + 1}`);
+  if (linescore?.teams?.home?.runs != null && maxInnings > 0) inningLabels.push("R", "H", "E");
+
+  return (
+    <div className="max-w-6xl mx-auto space-y-6">
+      {/* Scoreboard */}
+      <div className="border border-white/10 rounded-xl p-6 bg-gradient-to-r from-white/5 to-white/0 text-center">
+        <span className={`text-sm font-bold ${badge.cls}`}>{badge.label}</span>
+        {isLive && linescore?.currentInning && (
+          <span className="text-sm font-semibold text-white ml-3">
+            {linescore.inningState === "Top" ? "▲" : "▼"} {linescore.currentInningOrdinal || `${linescore.currentInning}`}
+          </span>
+        )}
+        {game.date && <span className="text-xs text-gray-500 ml-3">{formatDate(game.date)}</span>}
+        <div className="flex items-center justify-center gap-8 md:gap-16 mt-4">
+          <div className="text-right">
+            <div className="text-lg font-semibold text-gray-300">{game.away_team}</div>
+            <div className={`text-5xl font-bold mt-1 ${aWon ? "text-earl-400" : "text-gray-400"}`}>
+              {game.away_score != null ? game.away_score : "-"}
+            </div>
+          </div>
+          <div className="text-3xl text-gray-600 font-bold">@</div>
+          <div className="text-left">
+            <div className="text-lg font-semibold text-gray-300">{game.home_team}</div>
+            <div className={`text-5xl font-bold mt-1 ${hWon ? "text-earl-400" : "text-gray-400"}`}>
+              {game.home_score != null ? game.home_score : "-"}
+            </div>
+          </div>
+        </div>
+        <div className="text-sm text-gray-500 mt-3">
+          {game.venue && <span>{game.venue} | </span>}
+          {game.attendance && <span>Att: {game.attendance.toLocaleString()} | </span>}
+          {game.duration_minutes && <span>{Math.floor(game.duration_minutes / 60)}:{String(game.duration_minutes % 60).padStart(2, "0")}</span>}
+        </div>
+      </div>
+
+      {/* Innings Linescore */}
+      {innings.length > 0 && (
+        <div className="overflow-x-auto border border-white/10 rounded-xl">
+          <table className="w-full text-center text-xs">
+            <thead><tr className="bg-white/[0.03] text-gray-500 uppercase text-[10px] tracking-wider border-b border-white/10">
+              <th className="px-2 py-1.5 text-left"></th>
+              {inningLabels.map((l, i) => <th key={i} className="px-2 py-1.5 w-8">{l}</th>)}
+            </tr></thead>
+            <tbody>
+              {[{ side: "away", label: game.away_team }, { side: "home", label: game.home_team }].map(({ side, label }) => (
+                <tr key={side} className="border-t border-white/5">
+                  <td className="px-2 py-1 text-left font-medium text-gray-300">{label}</td>
+                  {inningLabels.map((_, i) => (
+                    <td key={i} className="px-2 py-1 text-gray-400 font-medium">
+                      {i < innings.length ? (side === "away" ? innings[i].away?.runs : innings[i].home?.runs) ?? "-" : i >= maxInnings - 3 && innings.length > 0
+                        ? side === "away" ? linescore.teams.away[["runs","hits","errors"][i - maxInnings + 3]] : linescore.teams.home[["runs","hits","errors"][i - maxInnings + 3]]
+                        : "-"}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Betting Lines - shown whenever available */}
+      {betting_lines?.length > 0 && (
+        <div className="border border-white/10 rounded-xl p-4 bg-white/5">
+          <div className="text-xs text-gray-500 uppercase tracking-wider mb-3">Betting Lines</div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div className="text-center p-3 rounded-lg bg-white/[0.03]">
+              <div className="text-[10px] text-gray-500 uppercase">Moneyline</div>
+              <div className="text-sm mt-1"><span className="text-earl-400">{game.home_team}</span> {formatOdds(betting_lines[0]?.home_moneyline)}<span className="text-gray-600 mx-2">|</span><span className="text-gray-400">{game.away_team}</span> {formatOdds(betting_lines[0]?.away_moneyline)}</div>
+            </div>
+            <div className="text-center p-3 rounded-lg bg-white/[0.03]">
+              <div className="text-[10px] text-gray-500 uppercase">Run Line</div>
+              <div className="text-sm mt-1">
+                {betting_lines[0]?.spread != null ? (
+                  <>
+                    <span className="text-earl-400">{game.home_team}</span> {betting_lines[0].spread > 0 ? "+"+betting_lines[0].spread : betting_lines[0].spread}
+                    <span className="text-gray-500 text-xs ml-1">({formatOdds(betting_lines[0]?.spread_home_odds ?? -110)})</span>
+                    <span className="text-gray-600 mx-1">|</span>
+                    <span className="text-gray-400">{game.away_team}</span>
+                    <span className="text-gray-500 text-xs ml-1">({formatOdds(betting_lines[0]?.spread_away_odds ?? -110)})</span>
+                  </>
+                ) : "-"}
+              </div>
+            </div>
+            <div className="text-center p-3 rounded-lg bg-white/[0.03]">
+              <div className="text-[10px] text-gray-500 uppercase">Over/Under</div>
+              <div className="text-sm mt-1 font-semibold">
+                {betting_lines[0]?.over_under != null ? (
+                  <>
+                    O/U {betting_lines[0].over_under}
+                    <span className="text-gray-500 text-xs ml-2 font-normal">Over {formatOdds(betting_lines[0]?.over_odds ?? -110)}</span>
+                    <span className="text-gray-500 text-xs ml-2 font-normal">Under {formatOdds(betting_lines[0]?.under_odds ?? -110)}</span>
+                  </>
+                ) : "-"}
+              </div>
+            </div>
+            <div className="text-center p-3 rounded-lg bg-white/[0.03]">
+              <div className="text-[10px] text-gray-500 uppercase">Source</div>
+              <div className="text-xs mt-1 text-gray-400">{betting_lines[0]?.sportsbook || betting_lines[0]?.source}</div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Lineups - warm-up / pregame only, hide once game is live */}
+      {isUpcoming && lineups && (lineups.home?.length > 0 || lineups.away?.length > 0) && (
+        <div className="border border-white/10 rounded-xl p-4 bg-gradient-to-r from-blue-900/20 to-transparent">
+          <div className="text-xs text-gray-500 uppercase tracking-wider mb-3">Starting Lineups</div>
+          <div className="grid grid-cols-2 gap-4">
+            {(["away", "home"] as const).map(side => {
+              const pitcher = (lineups[side] || []).find((l: any) => l.order === 0);
+              const batters = (lineups[side] || []).filter((l: any) => l.order >= 1 && l.order <= 9);
+              return (
+                <div key={side}>
+                  <h4 className={`text-sm font-semibold ${side === "away" ? "text-blue-300" : "text-red-300"} mb-2`}>{game[side === "away" ? "away_team" : "home_team"]}</h4>
+                  {pitcher && (
+                    <div className="text-xs text-gray-300 font-medium mb-2 pb-2 border-b border-white/10">
+                      <span className="text-earl-400 text-[10px] uppercase font-semibold mr-2">SP</span>
+                      {pitcher.name}
+                      {pitcher.stats?.era != null && <span className="text-gray-500 ml-2">ERA {pitcher.stats.era}</span>}
+                    </div>
+                  )}
+                  <ol className="text-xs space-y-1">
+                    {batters.map((l: any, i: number) => (
+                      <li key={i} className="flex gap-2 text-gray-300">
+                        <span className="text-gray-500 w-4 shrink-0">{l.order}.</span>
+                        <span className="font-medium">{l.name}</span>
+                        <span className="text-gray-500">{l.position}</span>
+                        {l.stats?.avg && <span className="text-gray-400 ml-auto">{l.stats.avg}</span>}
+                      </li>
+                    ))}
+                  </ol>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Pick Card - only shown when prediction data exists */}
+      {pick_card && (
+        <div className="border border-white/10 rounded-xl p-4 bg-gradient-to-br from-earl-900/20 to-transparent">
+          <div className="text-xs text-gray-500 uppercase tracking-wider mb-3">Earl's Pick Card</div>
+
+          {/* Predicted score - like NFL format */}
+          {pick_card.predictions?.home_runs != null && (
+            <div className="text-center mb-4">
+              <div className="inline-block border border-white/10 rounded-lg px-6 py-2 bg-white/5">
+                <span className="text-xs text-gray-500">Predicted</span>
+                <div className="text-lg font-bold tracking-tight">
+                  <span className="text-gray-300">{game.away_team}</span>
+                  <span className="text-white mx-2">{pick_card.predictions.away_runs}</span>
+                  <span className="text-gray-600">@</span>
+                  <span className="text-white mx-2">{pick_card.predictions.home_runs}</span>
+                  <span className="text-gray-300">{game.home_team}</span>
+                </div>
+                <div className="text-xs text-gray-500 mt-1">
+                  Total: {pick_card.predictions.total} | Margin: {pick_card.predictions.margin >= 0 ? "+" : ""}{pick_card.predictions.margin}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Actual score - for completed games */}
+          {isFinal && pick_card.actual?.home_runs != null && (
+            <div className="text-center mb-4">
+              <div className="inline-block border border-white/10 rounded-lg px-6 py-2 bg-white/5">
+                <span className="text-xs text-gray-500">Actual</span>
+                <div className="text-lg font-bold tracking-tight">
+                  <span className={pick_card.actual.away_runs > pick_card.actual.home_runs ? "text-green-400" : "text-gray-300"}>{game.away_team}</span>
+                  <span className="text-white mx-2">{pick_card.actual.away_runs}</span>
+                  <span className="text-gray-600">@</span>
+                  <span className="text-white mx-2">{pick_card.actual.home_runs}</span>
+                  <span className={pick_card.actual.home_runs > pick_card.actual.away_runs ? "text-green-400" : "text-gray-300"}>{game.home_team}</span>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Three-model results - matches NFL style */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              {/* Run Line (ATS) */}
+              <div className="rounded-lg p-3 border border-earl-500/40 bg-earl-500/10">
+                <div className="text-[10px] text-gray-500 uppercase">Run Line</div>
+                {isFinal && pick_card.results?.run_line ? (
+                  <>
+                    <div className={`text-lg font-bold mt-1 ${pick_card.results.run_line === "Win" ? "text-green-400" : pick_card.results.run_line === "Loss" ? "text-red-400" : "text-gray-400"}`}>
+                      {pick_card.results.run_line}
+                    </div>
+                    <div className="flex items-center gap-2 mt-1">
+                      <div className="h-1.5 w-full bg-gray-700 rounded-full overflow-hidden">
+                        <div className={`h-full rounded-full ${pick_card.confidence?.rl != null ? confidenceBar(pick_card.confidence.rl) : "bg-gray-500"}`} 
+                          style={{width: `${Math.round((pick_card.confidence?.rl || 0) * 100)}%`}}/>
+                      </div>
+                      <span className="text-[10px] font-semibold text-gray-400">{Math.round((pick_card.confidence?.rl || 0) * 100)}%</span>
+                    </div>
+                    <div className="text-xs text-gray-500 mt-1">
+                      Pick: {pick_card.picks?.run_line || "-"}
+                    </div>
+                  </>
+                ) : pick_card.picks?.run_line && pick_card.picks.run_line !== "-" ? (
+                  <>
+                    <div className="text-lg font-bold mt-1 text-blue-400">{pick_card.picks.run_line}</div>
+                    {pick_card.confidence?.rl != null && (
+                      <div className="flex items-center gap-2 mt-1">
+                        <div className="h-1.5 w-full bg-gray-700 rounded-full overflow-hidden">
+                          <div className={`h-full rounded-full ${confidenceBar(pick_card.confidence.rl)}`} 
+                            style={{width: `${Math.round(pick_card.confidence.rl * 100)}%`}}/>
+                        </div>
+                        <span className="text-[10px] font-semibold text-gray-400">{Math.round(pick_card.confidence.rl * 100)}%</span>
+                      </div>
+                    )}
+                    <div className="text-xs text-gray-500 mt-1">
+                      {pick_card.lines?.run_line != null && pick_card.picks?.run_line && pick_card.picks.run_line !== "-" && (
+                        <>{pick_card.picks.run_line} {pick_card.lines.away_run_line != null && pick_card.picks.run_line === game.away_team ? (pick_card.lines.away_run_line >= 0 ? "+" : "") + pick_card.lines.away_run_line : ""}{pick_card.lines.home_run_line != null && pick_card.picks.run_line === game.home_team ? (pick_card.lines.home_run_line >= 0 ? "+" : "") + pick_card.lines.home_run_line : ""}</>
+                      )}
+                    </div>
+                  </>
+                ) : (
+                  <div className="text-xs text-gray-400 mt-1">No RL data</div>
+                )}
+              </div>
+
+              {/* Over/Under */}
+              <div className="rounded-lg p-3 border border-yellow-500/40 bg-yellow-500/10">
+                <div className="text-[10px] text-gray-500 uppercase">Over/Under</div>
+                {isFinal && pick_card.results?.over_under && pick_card.results.over_under !== "Push" ? (
+                  <>
+                    <div className={`text-lg font-bold mt-1 ${pick_card.results.over_under === "Win" ? "text-green-400" : "text-red-400"}`}>
+                      {pick_card.results.over_under}
+                    </div>
+                    <div className="flex items-center gap-2 mt-1">
+                      <div className="h-1.5 w-full bg-gray-700 rounded-full overflow-hidden">
+                        <div className={`h-full rounded-full ${pick_card.confidence?.ou != null ? confidenceBar(pick_card.confidence.ou) : "bg-gray-500"}`}
+                          style={{width: `${Math.round((pick_card.confidence?.ou || 0) * 100)}%`}}/>
+                      </div>
+                      <span className="text-[10px] font-semibold text-gray-400">{Math.round((pick_card.confidence?.ou || 0) * 100)}%</span>
+                    </div>
+                    <div className="text-xs text-gray-500 mt-1">
+                      Pick: {pick_card.picks?.over_under || "-"}
+                    </div>
+                  </>
+                ) : isFinal && pick_card.results?.over_under === "Push" ? (
+                  <div className="text-sm font-bold mt-1 text-gray-400">Push</div>
+                ) : pick_card.picks?.over_under && pick_card.picks.over_under !== "-" ? (
+                  <>
+                    <div className="text-lg font-bold mt-1 text-yellow-400">{pick_card.picks.over_under.toUpperCase()}</div>
+                    {pick_card.confidence?.ou != null && (
+                      <div className="flex items-center gap-2 mt-1">
+                        <div className="h-1.5 w-full bg-gray-700 rounded-full overflow-hidden">
+                          <div className={`h-full rounded-full ${confidenceBar(pick_card.confidence.ou)}`}
+                            style={{width: `${Math.round(pick_card.confidence.ou * 100)}%`}}/>
+                        </div>
+                        <span className="text-[10px] font-semibold text-gray-400">{Math.round(pick_card.confidence.ou * 100)}%</span>
+                      </div>
+                    )}
+                    <div className="text-xs text-gray-500 mt-1">
+                      {pick_card.lines?.over_under != null && `O/U ${pick_card.lines.over_under}`}
+                    </div>
+                  </>
+                ) : (
+                  <div className="text-xs text-gray-400 mt-1">No OU data</div>
+                )}
+              </div>
+
+              {/* Moneyline */}
+              <div className="rounded-lg p-3 border border-cyan-500/40 bg-cyan-500/10">
+                <div className="text-[10px] text-gray-500 uppercase">Moneyline</div>
+                {isFinal && pick_card.results?.moneyline ? (
+                  <>
+                    <div className={`text-lg font-bold mt-1 ${pick_card.results.moneyline === "Win" ? "text-green-400" : "text-red-400"}`}>
+                      {pick_card.results.moneyline}
+                    </div>
+                    <div className="flex items-center gap-2 mt-1">
+                      <div className="h-1.5 w-full bg-gray-700 rounded-full overflow-hidden">
+                        <div className={`h-full rounded-full ${pick_card.confidence?.ml != null ? confidenceBar(pick_card.confidence.ml) : "bg-gray-500"}`}
+                          style={{width: `${Math.round((pick_card.confidence?.ml || 0) * 100)}%`}}/>
+                      </div>
+                      <span className="text-[10px] font-semibold text-gray-400">{Math.round((pick_card.confidence?.ml || 0) * 100)}%</span>
+                    </div>
+                    <div className="text-xs text-gray-500 mt-1">
+                      Pick: {pick_card.picks?.moneyline === "home" ? game.home_team : pick_card.picks?.moneyline === "away" ? game.away_team : pick_card.picks?.moneyline || "-"}
+                    </div>
+                  </>
+                ) : pick_card.picks?.moneyline && pick_card.picks.moneyline !== "-" ? (
+                  <>
+                    <div className="text-lg font-bold mt-1 text-cyan-400">
+                      {pick_card.picks.moneyline === "home" ? game.home_team :
+                       pick_card.picks.moneyline === "away" ? game.away_team : pick_card.picks.moneyline}
+                    </div>
+                    {pick_card.confidence?.ml != null && pick_card.confidence.ml > 0 && (
+                      <div className="flex items-center gap-2 mt-1">
+                        <div className="h-1.5 w-full bg-gray-700 rounded-full overflow-hidden">
+                          <div className={`h-full rounded-full ${confidenceBar(pick_card.confidence.ml)}`}
+                            style={{width: `${Math.round(pick_card.confidence.ml * 100)}%`}}/>
+                        </div>
+                        <span className="text-[10px] font-semibold text-gray-400">{Math.round(pick_card.confidence.ml * 100)}%</span>
+                      </div>
+                    )}
+                    <div className="text-xs text-gray-500 mt-1">
+                      {pick_card.lines?.home_moneyline != null && pick_card.lines.away_moneyline != null && (
+                        <>{game.home_team} {formatOdds(pick_card.lines.home_moneyline)} | {game.away_team} {formatOdds(pick_card.lines.away_moneyline)}</>
+                      )}
+                    </div>
+                  </>
+                ) : betting_lines && betting_lines[0]?.home_moneyline != null ? (
+                  <>
+                    <div className="text-xs text-gray-500 mt-1">Waiting for edge</div>
+                    {pick_card.confidence?.ml != null && pick_card.confidence.ml > 0 && (
+                      <div className="flex items-center gap-2 mt-1">
+                        <div className="h-1.5 w-full bg-gray-700 rounded-full overflow-hidden">
+                          <div className="h-full rounded-full bg-cyan-500"
+                            style={{width: `${Math.round(pick_card.confidence.ml * 100)}%`}}/>
+                        </div>
+                        <span className="text-[10px] font-semibold text-gray-400">{Math.round(pick_card.confidence.ml * 100)}%</span>
+                      </div>
+                    )}
+                    <div className="text-xs text-gray-500 mt-1">
+                      {game.home_team} {formatOdds(betting_lines[0].home_moneyline)} | {game.away_team} {formatOdds(betting_lines[0].away_moneyline)}
+                    </div>
+                  </>
+                ) : (
+                  <div className="text-xs text-gray-400 mt-1">No ML data</div>
+                )}
+              </div>
+        </div>
+
+        {/* Handicapper stats - team stats, situational, splits stored in game_predictions */}
+        {pick_card?.team_stats && (pick_card.team_stats.home || pick_card.team_stats.away) && (
+        <div className="border border-white/10 rounded-xl p-4 bg-gradient-to-br from-blue-900/20 to-transparent mt-4">
+          <div className="text-xs text-gray-500 uppercase tracking-wider mb-3">Handicapper Analysis</div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {/* Team Stats */}
+            {["away", "home"].map(side => {
+              const st = pick_card.team_stats[side];
+              if (!st) return null;
+              const team = side === "home" ? game.home_team : game.away_team;
+              return (
+                <div key={side} className="text-xs">
+                  <div className="text-sm font-semibold text-white mb-2">{team} - Season Stats</div>
+                  <div className="grid grid-cols-2 gap-x-4 gap-y-1">
+                    <span className="text-gray-500">Record:</span><span className="text-white">{st.win_pct ? (st.last_10_wins || 0)+(st.last_10_losses || 0) : st.games}g</span>
+                    <span className="text-gray-500">RPG For:</span><span className="text-white">{st.rpg_for}</span>
+                    <span className="text-gray-500">RPG Against:</span><span className="text-white">{st.rpg_against}</span>
+                    <span className="text-gray-500">Run Margin:</span><span className="text-white">{st.run_margin >=0 ? '+':''}{st.run_margin}</span>
+                    {st.win_pct != null && <><span className="text-gray-500">Win%:</span><span className="text-white">{(st.win_pct*100).toFixed(0)}%</span></>}
+                    {st.ats_pct != null && <><span className="text-gray-500">ATS%:</span><span className="text-white">{(st.ats_pct*100).toFixed(0)}%</span></>}
+                    {st.over_pct != null && <><span className="text-gray-500">Over%:</span><span className="text-white">{(st.over_pct*100).toFixed(0)}%</span></>}
+                    <span className="text-gray-500">Form:</span><span className="text-white font-mono text-[10px]">{st.recent_form}</span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          {/* Situational Factors */}
+          {pick_card.situational && (
+          <div className="mt-4 pt-4 border-t border-white/10">
+            <div className="text-xs text-gray-500 mb-2">Situational Factors</div>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
+              {pick_card.situational.rest_home != null && <div><span className="text-gray-500">Rest (H):</span><span className="text-white ml-1">{pick_card.situational.rest_home}d</span></div>}
+              {pick_card.situational.rest_away != null && <div><span className="text-gray-500">Rest (A):</span><span className="text-white ml-1">{pick_card.situational.rest_away}d</span></div>}
+              {pick_card.situational.rest_diff != null && <div><span className="text-gray-500">Rest Diff:</span><span className="text-white ml-1">{pick_card.situational.rest_diff > 0 ? '+':''}{pick_card.situational.rest_diff}d</span></div>}
+              {pick_card.situational.travel_miles != null && <div><span className="text-gray-500">Travel:</span><span className="text-white ml-1">{pick_card.situational.travel_miles.toLocaleString()}mi</span></div>}
+              {pick_card.situational.tz_diff != null && <div><span className="text-gray-500">TZ Diff:</span><span className="text-white ml-1">{pick_card.situational.tz_diff}h</span></div>}
+              {pick_card.situational.is_division != null && <div><span className="text-gray-500">Division:</span><span className={`text-white ml-1 ${pick_card.situational.is_division ? 'text-yellow-400' : ''}`}>{pick_card.situational.is_division ? 'Yes' : 'No'}</span></div>}
+              {pick_card.situational.is_short_week != null && <div><span className="text-gray-500">Short Week:</span><span className={`text-white ml-1 ${pick_card.situational.is_short_week ? 'text-yellow-400' : ''}`}>{pick_card.situational.is_short_week ? 'Yes' : 'No'}</span></div>}
+              {pick_card.situational.travel_advantage != null && <div><span className="text-gray-500">Travel Adv:</span><span className="text-white ml-1">{pick_card.situational.travel_advantage}</span></div>}
+              {pick_card.situational.situation_score != null && <div><span className="text-gray-500">Situ Score:</span><span className={`text-white ml-1 ${pick_card.situational.situation_score > 0 ? 'text-green-400' : pick_card.situational.situation_score < 0 ? 'text-red-400' : ''}`}>{pick_card.situational.situation_score > 0 ? '+':''}{pick_card.situational.situation_score}</span></div>}
+            </div>
+          </div>
+          )}
+          {/* Betting Splits */}
+          {pick_card.splits && (
+          <div className="mt-4 pt-4 border-t border-white/10">
+            <div className="text-xs text-gray-500 mb-2">Betting Splits</div>
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-2 text-xs">
+              {pick_card.splits.spread_movement != null && <div><span className="text-gray-500">Line Move:</span><span className={`text-white ml-1 ${pick_card.splits.spread_movement > 0 ? 'text-green-400' : pick_card.splits.spread_movement < 0 ? 'text-red-400' : ''}`}>{pick_card.splits.spread_movement > 0 ? '+':''}{pick_card.splits.spread_movement.toFixed(1)}</span></div>}
+              {pick_card.splits.opening_spread != null && <div><span className="text-gray-500">Open:</span><span className="text-white ml-1">{pick_card.splits.opening_spread > 0 ? '+':''}{pick_card.splits.opening_spread.toFixed(1)}</span></div>}
+              {pick_card.splits.current_spread != null && <div><span className="text-gray-500">Current:</span><span className="text-white ml-1">{pick_card.splits.current_spread > 0 ? '+':''}{pick_card.splits.current_spread.toFixed(1)}</span></div>}
+              {pick_card.splits.home_side_pct != null && <div><span className="text-gray-500">Public on H:</span><span className="text-white ml-1">{pick_card.splits.home_side_pct.toFixed(0)}%</span></div>}
+              {pick_card.splits.home_ml_implied != null && <div><span className="text-gray-500">ML H-implied:</span><span className="text-white ml-1">{(pick_card.splits.home_ml_implied*100).toFixed(0)}%</span></div>}
+              {pick_card.splits.away_ml_implied != null && <div><span className="text-gray-500">ML A-implied:</span><span className="text-white ml-1">{(pick_card.splits.away_ml_implied*100).toFixed(0)}%</span></div>}
+            </div>
+          </div>
+          )}
+        </div>
+        )}
+        </div>
+      )}
+{/* Full Box Score for completed/live games */}
+      {(isFinal || isLive) && boxscore && (
+        <div className="space-y-6">
+          {/* Batting */}
+          {(["away", "home"] as const).map(side => {
+            const s = side === "away" ? awaySide : homeSide;
+            if (!s?.players) return null;
+            const battersList = s.batters || [];
+            // MLB Stats API uses "ID" + numeric id as keys ("ID660271"),
+            // but batters/pitchers arrays contain raw numeric IDs (660271)
+            const batters = battersList.map((pid: any) => s.players[`ID${pid}`] || s.players[pid]).filter(Boolean)
+              .filter((p: any) => p.stats?.batting || (!p.stats?.pitching && !p.stats?.fielding));
+            const pitchersList = s.pitchers || [];
+            const pitchers = pitchersList.map((pid: any) => s.players[`ID${pid}`] || s.players[pid]).filter(Boolean)
+              .filter((p: any) => p.stats?.pitching);
+
+            return (
+              <div key={side} className="border border-white/10 rounded-xl overflow-hidden">
+                <div className="bg-white/5 px-4 py-2 text-sm font-semibold text-earl-400">{s.team?.name} - Batting</div>
+                <div className="overflow-x-auto"><table className="w-full text-xs"><thead><tr className="bg-white/[0.03] text-gray-500 uppercase text-[10px] tracking-wider">
+                  {["Player", "Pos", "AB", "R", "H", "RBI", "BB", "SO", "AVG", "OPS"].map(h => <th key={h} className="px-2 py-1 text-right first:text-left">{h}</th>)}
+                </tr></thead><tbody>{batters.map((p: any) => {
+                  const bs = p.stats?.batting || {};
+                  const ss = p.seasonStats?.batting || {};
+                  const ops = ss.obp && ss.slg ? (parseFloat(ss.obp) + parseFloat(ss.slg)).toFixed(3) : "-";
+                  return <tr key={p.person.id} className="border-t border-white/5 hover:bg-white/[0.02]"><td className="px-2 py-1 text-left font-medium text-gray-200">{p.person.fullName}</td>
+                    <td className="px-2 py-1 text-right text-gray-400">{p.position?.abbreviation || ""}</td>
+                    <td className="px-2 py-1 text-right">{bs.atBats ?? "-"}</td>
+                    <td className="px-2 py-1 text-right">{bs.runs ?? "-"}</td>
+                    <td className="px-2 py-1 text-right font-medium">{bs.hits ?? "-"}</td>
+                    <td className="px-2 py-1 text-right">{bs.rbi ?? "-"}</td>
+                    <td className="px-2 py-1 text-right">{bs.baseOnBalls ?? "-"}</td>
+                    <td className="px-2 py-1 text-right">{bs.strikeOuts ?? "-"}</td>
+                    <td className="px-2 py-1 text-right text-gray-400">{ss.avg || "-"}</td>
+                    <td className="px-2 py-1 text-right text-gray-400">{ops}</td>
+                  </tr>})}</tbody></table></div>
+
+                {pitchers.length > 0 && <><div className="bg-white/5 px-4 py-2 text-sm font-semibold text-earl-400 mt-4">Pitching</div>
+                <div className="overflow-x-auto"><table className="w-full text-xs"><thead><tr className="bg-white/[0.03] text-gray-500 uppercase text-[10px] tracking-wider">
+                  {["Player", "IP", "H", "R", "ER", "BB", "SO", "HR", "ERA"].map(h => <th key={h} className="px-2 py-1 text-right first:text-left">{h}</th>)}
+                </tr></thead><tbody>{pitchers.map((p: any) => {
+                  const ps = p.stats?.pitching || {};
+                  const pss = p.seasonStats?.pitching || {};
+                  return <tr key={p.person.id} className="border-t border-white/5"><td className="px-2 py-1 text-left font-medium text-gray-200">{p.person.fullName}</td>
+                    <td className="px-2 py-1 text-right">{ps.inningsPitched ?? "-"}</td>
+                    <td className="px-2 py-1 text-right">{ps.hits ?? "-"}</td>
+                    <td className="px-2 py-1 text-right">{ps.runs ?? "-"}</td>
+                    <td className="px-2 py-1 text-right font-medium">{ps.earnedRuns ?? "-"}</td>
+                    <td className="px-2 py-1 text-right">{ps.baseOnBalls ?? "-"}</td>
+                    <td className="px-2 py-1 text-right font-semibold">{ps.strikeOuts ?? "-"}</td>
+                    <td className="px-2 py-1 text-right text-orange-400">{ps.homeRuns ?? "-"}</td>
+                    <td className="px-2 py-1 text-right text-gray-400">{pss.era || ps.era || "-"}</td>
+                  </tr>})}</tbody></table></div></>}
+              </div>);
+          })}
+
+          {/* Team Totals */}
+          <div className="border border-white/10 rounded-xl overflow-hidden">
+            <div className="bg-white/5 px-4 py-2 text-sm font-semibold text-earl-400">Team Totals</div>
+            <table className="w-full text-xs"><thead><tr className="bg-white/[0.03] text-gray-500 uppercase text-[10px] tracking-wider">
+              <th className="px-3 py-1.5 text-left"></th><th className="px-3 py-1.5 text-right">R</th><th className="px-3 py-1.5 text-right">H</th><th className="px-3 py-1.5 text-right">E</th><th className="px-3 py-1.5 text-right">LOB</th>
+            </tr></thead><tbody>
+              {(["away", "home"] as const).map(side => {
+                const s = (side === "away" ? awaySide : homeSide)?.teamStats?.batting || {};
+                return <tr key={side} className="border-t border-white/5"><td className="px-3 py-1.5 font-medium">{side === "away" ? game.away_team : game.home_team}</td>
+                  <td className="px-3 py-1.5 text-right font-semibold">{s.runs ?? "-"}</td>
+                  <td className="px-3 py-1.5 text-right">{s.hits ?? "-"}</td>
+                  <td className="px-3 py-1.5 text-right text-red-400">{s.errors ?? "-"}</td>
+                  <td className="px-3 py-1.5 text-right">{s.leftOnBase ?? "-"}</td>
+                </tr>;
+              })}
+            </tbody></table>
+          </div>
+        </div>
+      )}
+
+      <div className="text-center"><Link href="/mlb/schedule" className="text-sm text-earl-400 hover:text-earl-300 transition">← Back to Schedule</Link></div>
+    </div>
+  );
+}

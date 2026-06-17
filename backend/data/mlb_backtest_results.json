@@ -1,0 +1,369 @@
+{
+  "run_time": "0:01:18.328276",
+  "results": [
+    {
+      "test_year": 2025,
+      "train_years": [
+        2021,
+        2022,
+        2023,
+        2024
+      ],
+      "feature_set": "full",
+      "total_games": 2400,
+      "mae": 3.51,
+      "err_mean": 0.09,
+      "err_std": 4.52,
+      "within_3": 0.526,
+      "within_5": 0.765,
+      "ats": {
+        "correct": 1424,
+        "incorrect": 976,
+        "total": 2400,
+        "pct": 59.3
+      },
+      "monthly": [
+        {
+          "month": 3,
+          "games": 62,
+          "mae": 3.6
+        },
+        {
+          "month": 4,
+          "games": 388,
+          "mae": 3.39
+        },
+        {
+          "month": 5,
+          "games": 402,
+          "mae": 3.46
+        },
+        {
+          "month": 6,
+          "games": 393,
+          "mae": 3.55
+        },
+        {
+          "month": 7,
+          "games": 364,
+          "mae": 3.62
+        },
+        {
+          "month": 8,
+          "games": 419,
+          "mae": 3.58
+        },
+        {
+          "month": 9,
+          "games": 372,
+          "mae": 3.43
+        }
+      ],
+      "feature_importance": [
+        {
+          "feature": "a_implied",
+          "importance": 0.0902
+        },
+        {
+          "feature": "h_implied",
+          "importance": 0.0812
+        },
+        {
+          "feature": "is_home_fav",
+          "importance": 0.0344
+        },
+        {
+          "feature": "winpct_diff",
+          "importance": 0.0335
+        },
+        {
+          "feature": "h_winpct",
+          "importance": 0.0328
+        },
+        {
+          "feature": "travel_miles",
+          "importance": 0.0326
+        },
+        {
+          "feature": "rest_diff",
+          "importance": 0.0312
+        },
+        {
+          "feature": "a_home_ra",
+          "importance": 0.0305
+        },
+        {
+          "feature": "h_home_ra",
+          "importance": 0.0304
+        },
+        {
+          "feature": "a_ra10",
+          "importance": 0.0304
+        },
+        {
+          "feature": "a_home_rf",
+          "importance": 0.0302
+        },
+        {
+          "feature": "a_ra20",
+          "importance": 0.03
+        },
+        {
+          "feature": "a_rf20",
+          "importance": 0.03
+        },
+        {
+          "feature": "h_ra20",
+          "importance": 0.0296
+        },
+        {
+          "feature": "rest_a",
+          "importance": 0.029
+        },
+        {
+          "feature": "a_winpct",
+          "importance": 0.0288
+        },
+        {
+          "feature": "h_home_rf",
+          "importance": 0.0287
+        },
+        {
+          "feature": "h_rf20",
+          "importance": 0.0286
+        },
+        {
+          "feature": "a_rf10",
+          "importance": 0.0283
+        },
+        {
+          "feature": "is_summer",
+          "importance": 0.0283
+        },
+        {
+          "feature": "tz_diff",
+          "importance": 0.0283
+        },
+        {
+          "feature": "h_ra10",
+          "importance": 0.0277
+        },
+        {
+          "feature": "month",
+          "importance": 0.0276
+        },
+        {
+          "feature": "a_rf5",
+          "importance": 0.0274
+        },
+        {
+          "feature": "rest_h",
+          "importance": 0.0269
+        },
+        {
+          "feature": "a_ra5",
+          "importance": 0.0265
+        },
+        {
+          "feature": "h_rf10",
+          "importance": 0.0253
+        },
+        {
+          "feature": "h_ra5",
+          "importance": 0.0243
+        },
+        {
+          "feature": "ou_line",
+          "importance": 0.0238
+        },
+        {
+          "feature": "is_div",
+          "importance": 0.0218
+        },
+        {
+          "feature": "h_rf5",
+          "importance": 0.0217
+        },
+        {
+          "feature": "is_dome",
+          "importance": 0.0
+        }
+      ]
+    },
+    {
+      "test_year": 2026,
+      "train_years": [
+        2021,
+        2022,
+        2023,
+        2024,
+        2025
+      ],
+      "feature_set": "full",
+      "total_games": 1052,
+      "mae": 3.51,
+      "err_mean": 0.04,
+      "err_std": 4.44,
+      "within_3": 0.523,
+      "within_5": 0.757,
+      "ats": {
+        "correct": 636,
+        "incorrect": 416,
+        "total": 1052,
+        "pct": 60.5
+      },
+      "monthly": [
+        {
+          "month": 3,
+          "games": 71,
+          "mae": 3.26
+        },
+        {
+          "month": 4,
+          "games": 395,
+          "mae": 3.52
+        },
+        {
+          "month": 5,
+          "games": 419,
+          "mae": 3.58
+        },
+        {
+          "month": 6,
+          "games": 167,
+          "mae": 3.46
+        }
+      ],
+      "feature_importance": [
+        {
+          "feature": "a_implied",
+          "importance": 0.1094
+        },
+        {
+          "feature": "h_implied",
+          "importance": 0.0756
+        },
+        {
+          "feature": "is_div",
+          "importance": 0.037
+        },
+        {
+          "feature": "a_winpct",
+          "importance": 0.034
+        },
+        {
+          "feature": "a_ra10",
+          "importance": 0.0325
+        },
+        {
+          "feature": "winpct_diff",
+          "importance": 0.0321
+        },
+        {
+          "feature": "h_winpct",
+          "importance": 0.0316
+        },
+        {
+          "feature": "a_home_ra",
+          "importance": 0.0315
+        },
+        {
+          "feature": "travel_miles",
+          "importance": 0.0312
+        },
+        {
+          "feature": "h_home_rf",
+          "importance": 0.0311
+        },
+        {
+          "feature": "h_home_ra",
+          "importance": 0.0305
+        },
+        {
+          "feature": "a_home_rf",
+          "importance": 0.0302
+        },
+        {
+          "feature": "h_rf20",
+          "importance": 0.0302
+        },
+        {
+          "feature": "h_ra10",
+          "importance": 0.0301
+        },
+        {
+          "feature": "a_rf10",
+          "importance": 0.0297
+        },
+        {
+          "feature": "h_ra20",
+          "importance": 0.0297
+        },
+        {
+          "feature": "tz_diff",
+          "importance": 0.0296
+        },
+        {
+          "feature": "a_rf20",
+          "importance": 0.0296
+        },
+        {
+          "feature": "a_ra20",
+          "importance": 0.029
+        },
+        {
+          "feature": "rest_h",
+          "importance": 0.0285
+        },
+        {
+          "feature": "h_rf10",
+          "importance": 0.0283
+        },
+        {
+          "feature": "rest_a",
+          "importance": 0.0281
+        },
+        {
+          "feature": "month",
+          "importance": 0.0276
+        },
+        {
+          "feature": "rest_diff",
+          "importance": 0.0264
+        },
+        {
+          "feature": "a_rf5",
+          "importance": 0.0255
+        },
+        {
+          "feature": "h_ra5",
+          "importance": 0.0249
+        },
+        {
+          "feature": "is_summer",
+          "importance": 0.0248
+        },
+        {
+          "feature": "h_rf5",
+          "importance": 0.0244
+        },
+        {
+          "feature": "ou_line",
+          "importance": 0.0243
+        },
+        {
+          "feature": "a_ra5",
+          "importance": 0.0226
+        },
+        {
+          "feature": "is_home_fav",
+          "importance": 0.0
+        },
+        {
+          "feature": "is_dome",
+          "importance": 0.0
+        }
+      ]
+    }
+  ]
+}

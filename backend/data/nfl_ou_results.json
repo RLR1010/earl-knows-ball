@@ -1,0 +1,652 @@
+[
+  {
+    "test_year": 2021,
+    "train_years": [
+      2020,
+      2019,
+      2018
+    ],
+    "total_games": 272,
+    "mae": 11.64,
+    "err_mean": -0.63,
+    "err_std": 14.21,
+    "within_3": 0.143,
+    "within_5": 0.246,
+    "ou": {
+      "correct": 134,
+      "incorrect": 135,
+      "pushes": 3,
+      "total": 272,
+      "pct": 49.8
+    },
+    "heuristic_ou_pct": 59.9,
+    "natural_over_rate": 0.456,
+    "correlation": 0.15,
+    "feature_importance": [
+      {
+        "feature": "himp",
+        "importance": 0.0747
+      },
+      {
+        "feature": "aimp",
+        "importance": 0.0563
+      },
+      {
+        "feature": "dimp",
+        "importance": 0.0545
+      },
+      {
+        "feature": "ou_movement",
+        "importance": 0.0528
+      },
+      {
+        "feature": "is_short",
+        "importance": 0.0524
+      },
+      {
+        "feature": "wind",
+        "importance": 0.0503
+      },
+      {
+        "feature": "rest_diff",
+        "importance": 0.0452
+      },
+      {
+        "feature": "a_ypg",
+        "importance": 0.0449
+      },
+      {
+        "feature": "a_var",
+        "importance": 0.0446
+      },
+      {
+        "feature": "h_ypg",
+        "importance": 0.0419
+      },
+      {
+        "feature": "tz_diff",
+        "importance": 0.0411
+      },
+      {
+        "feature": "h_bye",
+        "importance": 0.0409
+      },
+      {
+        "feature": "dpa",
+        "importance": 0.0391
+      },
+      {
+        "feature": "h_var",
+        "importance": 0.0391
+      },
+      {
+        "feature": "travel_miles",
+        "importance": 0.0382
+      },
+      {
+        "feature": "dpf",
+        "importance": 0.038
+      },
+      {
+        "feature": "apa",
+        "importance": 0.0362
+      },
+      {
+        "feature": "temp",
+        "importance": 0.0358
+      },
+      {
+        "feature": "hpa",
+        "importance": 0.0346
+      },
+      {
+        "feature": "is_dome",
+        "importance": 0.034
+      },
+      {
+        "feature": "apf",
+        "importance": 0.0331
+      },
+      {
+        "feature": "is_div",
+        "importance": 0.0257
+      },
+      {
+        "feature": "hpf",
+        "importance": 0.0245
+      },
+      {
+        "feature": "a_bye",
+        "importance": 0.0222
+      },
+      {
+        "feature": "a_ypa",
+        "importance": 0.0
+      },
+      {
+        "feature": "h_ypa",
+        "importance": 0.0
+      }
+    ]
+  },
+  {
+    "test_year": 2022,
+    "train_years": [
+      2021,
+      2020,
+      2019
+    ],
+    "total_games": 271,
+    "mae": 10.67,
+    "err_mean": -0.95,
+    "err_std": 13.85,
+    "within_3": 0.203,
+    "within_5": 0.336,
+    "ou": {
+      "correct": 142,
+      "incorrect": 126,
+      "pushes": 3,
+      "total": 271,
+      "pct": 53.0
+    },
+    "heuristic_ou_pct": 52.2,
+    "natural_over_rate": 0.439,
+    "correlation": 0.226,
+    "feature_importance": [
+      {
+        "feature": "is_dome",
+        "importance": 0.102
+      },
+      {
+        "feature": "himp",
+        "importance": 0.0697
+      },
+      {
+        "feature": "aimp",
+        "importance": 0.0601
+      },
+      {
+        "feature": "ou_movement",
+        "importance": 0.0554
+      },
+      {
+        "feature": "a_ypg",
+        "importance": 0.0459
+      },
+      {
+        "feature": "tz_diff",
+        "importance": 0.0445
+      },
+      {
+        "feature": "a_var",
+        "importance": 0.0431
+      },
+      {
+        "feature": "dimp",
+        "importance": 0.0429
+      },
+      {
+        "feature": "h_var",
+        "importance": 0.0413
+      },
+      {
+        "feature": "h_ypg",
+        "importance": 0.0408
+      },
+      {
+        "feature": "dpa",
+        "importance": 0.0385
+      },
+      {
+        "feature": "wind",
+        "importance": 0.0379
+      },
+      {
+        "feature": "apa",
+        "importance": 0.0374
+      },
+      {
+        "feature": "travel_miles",
+        "importance": 0.0367
+      },
+      {
+        "feature": "h_bye",
+        "importance": 0.0364
+      },
+      {
+        "feature": "rest_diff",
+        "importance": 0.0346
+      },
+      {
+        "feature": "is_short",
+        "importance": 0.0345
+      },
+      {
+        "feature": "dpf",
+        "importance": 0.0341
+      },
+      {
+        "feature": "temp",
+        "importance": 0.0309
+      },
+      {
+        "feature": "is_div",
+        "importance": 0.0306
+      },
+      {
+        "feature": "apf",
+        "importance": 0.0283
+      },
+      {
+        "feature": "hpa",
+        "importance": 0.0272
+      },
+      {
+        "feature": "a_bye",
+        "importance": 0.0247
+      },
+      {
+        "feature": "hpf",
+        "importance": 0.0226
+      },
+      {
+        "feature": "a_ypa",
+        "importance": 0.0
+      },
+      {
+        "feature": "h_ypa",
+        "importance": 0.0
+      }
+    ]
+  },
+  {
+    "test_year": 2023,
+    "train_years": [
+      2022,
+      2021,
+      2020
+    ],
+    "total_games": 272,
+    "mae": 10.75,
+    "err_mean": -0.54,
+    "err_std": 13.5,
+    "within_3": 0.188,
+    "within_5": 0.287,
+    "ou": {
+      "correct": 145,
+      "incorrect": 125,
+      "pushes": 2,
+      "total": 272,
+      "pct": 53.7
+    },
+    "heuristic_ou_pct": 48.1,
+    "natural_over_rate": 0.456,
+    "correlation": 0.248,
+    "feature_importance": [
+      {
+        "feature": "himp",
+        "importance": 0.0661
+      },
+      {
+        "feature": "a_bye",
+        "importance": 0.0651
+      },
+      {
+        "feature": "aimp",
+        "importance": 0.058
+      },
+      {
+        "feature": "dimp",
+        "importance": 0.0528
+      },
+      {
+        "feature": "wind",
+        "importance": 0.0486
+      },
+      {
+        "feature": "h_ypg",
+        "importance": 0.0477
+      },
+      {
+        "feature": "a_var",
+        "importance": 0.0464
+      },
+      {
+        "feature": "is_dome",
+        "importance": 0.0462
+      },
+      {
+        "feature": "dpa",
+        "importance": 0.0436
+      },
+      {
+        "feature": "a_ypg",
+        "importance": 0.0424
+      },
+      {
+        "feature": "h_var",
+        "importance": 0.0415
+      },
+      {
+        "feature": "dpf",
+        "importance": 0.0412
+      },
+      {
+        "feature": "travel_miles",
+        "importance": 0.0387
+      },
+      {
+        "feature": "temp",
+        "importance": 0.0385
+      },
+      {
+        "feature": "h_bye",
+        "importance": 0.0376
+      },
+      {
+        "feature": "ou_movement",
+        "importance": 0.0361
+      },
+      {
+        "feature": "rest_diff",
+        "importance": 0.036
+      },
+      {
+        "feature": "is_short",
+        "importance": 0.0356
+      },
+      {
+        "feature": "tz_diff",
+        "importance": 0.035
+      },
+      {
+        "feature": "apf",
+        "importance": 0.0327
+      },
+      {
+        "feature": "apa",
+        "importance": 0.031
+      },
+      {
+        "feature": "hpa",
+        "importance": 0.0292
+      },
+      {
+        "feature": "hpf",
+        "importance": 0.0274
+      },
+      {
+        "feature": "is_div",
+        "importance": 0.0225
+      },
+      {
+        "feature": "a_ypa",
+        "importance": 0.0
+      },
+      {
+        "feature": "h_ypa",
+        "importance": 0.0
+      }
+    ]
+  },
+  {
+    "test_year": 2024,
+    "train_years": [
+      2023,
+      2022,
+      2021
+    ],
+    "total_games": 272,
+    "mae": 10.6,
+    "err_mean": 1.05,
+    "err_std": 13.61,
+    "within_3": 0.213,
+    "within_5": 0.312,
+    "ou": {
+      "correct": 130,
+      "incorrect": 139,
+      "pushes": 3,
+      "total": 272,
+      "pct": 48.3
+    },
+    "heuristic_ou_pct": 50.2,
+    "natural_over_rate": 0.533,
+    "correlation": 0.125,
+    "feature_importance": [
+      {
+        "feature": "himp",
+        "importance": 0.0673
+      },
+      {
+        "feature": "aimp",
+        "importance": 0.0608
+      },
+      {
+        "feature": "ou_movement",
+        "importance": 0.0564
+      },
+      {
+        "feature": "a_bye",
+        "importance": 0.056
+      },
+      {
+        "feature": "tz_diff",
+        "importance": 0.0522
+      },
+      {
+        "feature": "wind",
+        "importance": 0.0469
+      },
+      {
+        "feature": "dimp",
+        "importance": 0.0446
+      },
+      {
+        "feature": "is_short",
+        "importance": 0.0442
+      },
+      {
+        "feature": "a_var",
+        "importance": 0.0427
+      },
+      {
+        "feature": "a_ypg",
+        "importance": 0.0423
+      },
+      {
+        "feature": "dpa",
+        "importance": 0.0409
+      },
+      {
+        "feature": "rest_diff",
+        "importance": 0.0403
+      },
+      {
+        "feature": "h_ypg",
+        "importance": 0.0403
+      },
+      {
+        "feature": "temp",
+        "importance": 0.0384
+      },
+      {
+        "feature": "dpf",
+        "importance": 0.0374
+      },
+      {
+        "feature": "travel_miles",
+        "importance": 0.0371
+      },
+      {
+        "feature": "h_var",
+        "importance": 0.0368
+      },
+      {
+        "feature": "is_dome",
+        "importance": 0.0367
+      },
+      {
+        "feature": "apf",
+        "importance": 0.0336
+      },
+      {
+        "feature": "is_div",
+        "importance": 0.0332
+      },
+      {
+        "feature": "apa",
+        "importance": 0.032
+      },
+      {
+        "feature": "hpa",
+        "importance": 0.0282
+      },
+      {
+        "feature": "h_bye",
+        "importance": 0.0268
+      },
+      {
+        "feature": "hpf",
+        "importance": 0.0252
+      },
+      {
+        "feature": "a_ypa",
+        "importance": 0.0
+      },
+      {
+        "feature": "h_ypa",
+        "importance": 0.0
+      }
+    ]
+  },
+  {
+    "test_year": 2025,
+    "train_years": [
+      2024,
+      2023,
+      2022
+    ],
+    "total_games": 272,
+    "mae": 11.03,
+    "err_mean": 0.32,
+    "err_std": 13.74,
+    "within_3": 0.176,
+    "within_5": 0.272,
+    "ou": {
+      "correct": 129,
+      "incorrect": 143,
+      "pushes": 0,
+      "total": 272,
+      "pct": 47.4
+    },
+    "heuristic_ou_pct": 48.5,
+    "natural_over_rate": 0.522,
+    "correlation": 0.214,
+    "feature_importance": [
+      {
+        "feature": "aimp",
+        "importance": 0.0627
+      },
+      {
+        "feature": "ou_movement",
+        "importance": 0.0619
+      },
+      {
+        "feature": "himp",
+        "importance": 0.0606
+      },
+      {
+        "feature": "wind",
+        "importance": 0.0534
+      },
+      {
+        "feature": "a_bye",
+        "importance": 0.0525
+      },
+      {
+        "feature": "h_ypg",
+        "importance": 0.0463
+      },
+      {
+        "feature": "dimp",
+        "importance": 0.046
+      },
+      {
+        "feature": "temp",
+        "importance": 0.0456
+      },
+      {
+        "feature": "a_ypg",
+        "importance": 0.0418
+      },
+      {
+        "feature": "a_var",
+        "importance": 0.0414
+      },
+      {
+        "feature": "dpf",
+        "importance": 0.0407
+      },
+      {
+        "feature": "rest_diff",
+        "importance": 0.0405
+      },
+      {
+        "feature": "tz_diff",
+        "importance": 0.0399
+      },
+      {
+        "feature": "h_var",
+        "importance": 0.0392
+      },
+      {
+        "feature": "is_short",
+        "importance": 0.0391
+      },
+      {
+        "feature": "dpa",
+        "importance": 0.0385
+      },
+      {
+        "feature": "travel_miles",
+        "importance": 0.0385
+      },
+      {
+        "feature": "apa",
+        "importance": 0.0365
+      },
+      {
+        "feature": "is_dome",
+        "importance": 0.035
+      },
+      {
+        "feature": "hpa",
+        "importance": 0.031
+      },
+      {
+        "feature": "h_bye",
+        "importance": 0.0303
+      },
+      {
+        "feature": "apf",
+        "importance": 0.0299
+      },
+      {
+        "feature": "is_div",
+        "importance": 0.0252
+      },
+      {
+        "feature": "hpf",
+        "importance": 0.0235
+      },
+      {
+        "feature": "a_ypa",
+        "importance": 0.0
+      },
+      {
+        "feature": "h_ypa",
+        "importance": 0.0
+      }
+    ]
+  }
+]

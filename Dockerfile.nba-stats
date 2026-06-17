@@ -1,0 +1,20 @@
+FROM python:3.12-slim
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends gcc && rm -rf /var/run/apt/lists/*
+
+# Minimal deps: httpx for HTTP, bs4 for HTML parsing, sqlalchemy+asyncpg for DB
+COPY backend/requirements.txt /tmp/requirements.txt
+RUN grep -vE "sentence-transformers|xgboost|scikit-learn|torch|pyarrow|feedparser" /tmp/requirements.txt > /tmp/req-min.txt \
+    && echo "httpx" >> /tmp/req-min.txt \
+    && echo "beautifulsoup4" >> /tmp/req-min.txt \
+    && echo "lxml" >> /tmp/req-min.txt \
+    && pip install --no-cache-dir -r /tmp/req-min.txt
+
+COPY backend/ .
+ENV PYTHONPATH=/app
+
+# Override the fetch delay to 6s for safe BBRef scraping
+RUN sed -i 's/await asyncio.sleep(4)/await asyncio.sleep(6)/' app/ingestion/nba_stats.py
+
+CMD ["python", "-m", "app.ingestion.nba_stats"]
