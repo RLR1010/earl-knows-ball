@@ -13,3 +13,6 @@ logs/
 memory/
 backend/data/
 *.tsbuildinfo
+
+# Parquet play-by-play data (tracked externally)
+backend/app/data/pbp/
