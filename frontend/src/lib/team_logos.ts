@@ -22,7 +22,7 @@ const NBA_TEAMS: Record<string, number> = {
   DET: 1610612765, CHA: 1610612766,
 };
 
-export function getTeamLogoUrl(abbr: string, sport: string): string {
+export function getTeamLogoUrl(abbr: string, sport: string): string | null {
   const upper = abbr.toUpperCase();
   if (sport === "nfl") {
     return `/logos/${upper}.png`;
@@ -30,12 +30,12 @@ export function getTeamLogoUrl(abbr: string, sport: string): string {
   if (sport === "mlb") {
     const id = MLB_TEAMS[upper];
     if (id) return `https://www.mlbstatic.com/team-logos/${id}.svg`;
-    return ""; // fallback
+    return null; // unknown team
   }
   if (sport === "nba") {
     const id = NBA_TEAMS[upper];
     if (id) return `https://cdn.nba.com/logos/nba/${id}/primary/L/logo.svg`;
-    return "";
+    return null;
   }
-  return "";
+  return null;
 }

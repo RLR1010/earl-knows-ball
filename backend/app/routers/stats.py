@@ -59,7 +59,7 @@ async def player_stats(
         p.id AS player_id,
         p.name AS player_name,
         p.position,
-        t.abbreviation AS team_abbr,
+        STRING_AGG(DISTINCT t.abbreviation, '/' ORDER BY t.abbreviation) AS team_abbr,
         COUNT(pws.id)::int AS games,
         SUM(pws.pass_attempts)::int AS pass_attempts,
         SUM(pws.pass_completions)::int AS pass_completions,
@@ -106,7 +106,7 @@ async def player_stats(
     JOIN players p ON p.id = pws.player_id
     JOIN teams t ON t.id = pws.team_id
     WHERE s.year = :year {pos_filter}
-    GROUP BY p.id, p.name, p.position, t.abbreviation
+    GROUP BY p.id, p.name, p.position
     HAVING COUNT(pws.id) >= :min_games
     ORDER BY {sort} {direction} NULLS LAST
     LIMIT :limit OFFSET :offset

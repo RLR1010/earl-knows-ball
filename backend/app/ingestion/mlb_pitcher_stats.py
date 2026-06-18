@@ -82,24 +82,53 @@ def parse_pitchers(boxscore: dict, side: str, team_abbr: str) -> list[dict]:
                 ip = float(ip)
 
         rows.append({
+            # Identifiers
             "pitcher_mlb_id": pid,
             "pitcher_name": person.get("fullName", "Unknown"),
             "team_abbr": team_abbr,
             "is_starter": is_starter,
+
+            # Core counting stats
             "ip": float(ip) if ip is not None else None,
             "er": pitching.get("earnedRuns"),
+            "runs_allowed": pitching.get("runs", 0),
             "h": pitching.get("hits"),
+            "hr": pitching.get("homeRuns"),
             "k": pitching.get("strikeOuts"),
             "bb": pitching.get("baseOnBalls"),
-            "hr": pitching.get("homeRuns"),
+            "intentional_walks": pitching.get("intentionalWalks", 0),
+            "hit_by_pitch": pitching.get("hitByPitch", 0),
+
+            # Pitch count / sequencing
             "pitches_thrown": pitching.get("numberOfPitches"),
+            "strikes": pitching.get("strikes", 0),
+            "batters_faced": pitching.get("battersFaced", 0),
+
+            # Batted ball type
+            "ground_outs": pitching.get("groundOuts", 0),
+            "air_outs": pitching.get("airOuts", 0),
+            "fly_outs": pitching.get("flyOuts", 0),
+            "pop_outs": pitching.get("popOuts", 0),
+            "line_outs": pitching.get("lineOuts", 0),
+            "gidp": pitching.get("groundIntoDoublePlay", 0),
+
+            # Game script
             "game_score": pitching.get("gameScore"),
             "decision": pitching.get("note", ""),
+            "saves": pitching.get("saves", 0),
+            "holds": pitching.get("holds", 0),
+            "blown_saves": pitching.get("blownSaves", 0),
+            "wins": pitching.get("wins", 0),
+            "losses": pitching.get("losses", 0),
+
+            # Misc
+            "wild_pitches": pitching.get("wildPitches", 0),
+            "balks": pitching.get("balks", 0),
         })
     return rows
 
 
-async def ingest_pitcher_stats(year_from: int = 2011, game_limit: int = None, year_only: int = None):
+async def ingest_pitcher_stats(year_from: int = 2011, game_limit: int = None, year_only: int = None, reprocess: bool = False):
     """Ingest pitcher stats for all completed games from year_from onwards."""
     engine = create_async_engine(DB)
     t0 = time.time()
@@ -113,6 +142,9 @@ async def ingest_pitcher_stats(year_from: int = 2011, game_limit: int = None, ye
         else:
             year_filter = f"AND s.year >= {year_from}"
 
+        has_check = "" if reprocess else \
+            "AND g.mlb_game_id NOT IN (SELECT mlb_game_id FROM mlb.pitcher_game_stats)"
+
         r = await conn.execute(text(f"""
             SELECT g.id, g.mlb_game_id, s.year,
                    (SELECT abbreviation FROM mlb.teams WHERE id = g.away_team_id) as away_abbr,
@@ -123,9 +155,7 @@ async def ingest_pitcher_stats(year_from: int = 2011, game_limit: int = None, ye
               AND g.home_score IS NOT NULL
               AND g.away_score IS NOT NULL
               {year_filter}
-              AND g.mlb_game_id NOT IN (
-                  SELECT mlb_game_id FROM mlb.pitcher_game_stats
-              )
+              {has_check}
             ORDER BY s.year, g.date, g.id
         """))
         games = [dict(r._mapping) for r in r.fetchall()]
@@ -172,13 +202,43 @@ async def ingest_pitcher_stats(year_from: int = 2011, game_limit: int = None, ye
                         await conn.execute(text("""
                             INSERT INTO mlb.pitcher_game_stats
                                 (game_id, mlb_game_id, pitcher_mlb_id, pitcher_name,
-                                 team_abbr, is_starter, ip, er, h, k, bb, hr,
-                                 pitches_thrown, game_score, decision)
+                                 team_abbr, is_starter,
+                                 ip, er, runs_allowed, h, hr, k, bb, intentional_walks, hit_by_pitch,
+                                 pitches_thrown, strikes, batters_faced,
+                                 ground_outs, air_outs, fly_outs, pop_outs, line_outs,
+                                 ground_into_double_play,
+                                 game_score, decision,
+                                 saves, holds, blown_saves, wins, losses,
+                                 wild_pitches, balks)
                             VALUES
                                 (:game_id, :mlb_game_id, :pitcher_mlb_id, :pitcher_name,
-                                 :team_abbr, :is_starter, :ip, :er, :h, :k, :bb, :hr,
-                                 :pitches_thrown, :game_score, :decision)
-                            ON CONFLICT (mlb_game_id, pitcher_mlb_id) DO NOTHING
+                                 :team_abbr, :is_starter,
+                                 :ip, :er, :runs_allowed, :h, :hr, :k, :bb, :intentional_walks, :hit_by_pitch,
+                                 :pitches_thrown, :strikes, :batters_faced,
+                                 :ground_outs, :air_outs, :fly_outs, :pop_outs, :line_outs,
+                                 :gidp,
+                                 :game_score, :decision,
+                                 :saves, :holds, :blown_saves, :wins, :losses,
+                                 :wild_pitches, :balks)
+                            ON CONFLICT (mlb_game_id, pitcher_mlb_id) DO UPDATE SET
+                                runs_allowed = EXCLUDED.runs_allowed,
+                                intentional_walks = EXCLUDED.intentional_walks,
+                                hit_by_pitch = EXCLUDED.hit_by_pitch,
+                                strikes = EXCLUDED.strikes,
+                                batters_faced = EXCLUDED.batters_faced,
+                                ground_outs = EXCLUDED.ground_outs,
+                                air_outs = EXCLUDED.air_outs,
+                                fly_outs = EXCLUDED.fly_outs,
+                                pop_outs = EXCLUDED.pop_outs,
+                                line_outs = EXCLUDED.line_outs,
+                                ground_into_double_play = EXCLUDED.ground_into_double_play,
+                                saves = EXCLUDED.saves,
+                                holds = EXCLUDED.holds,
+                                blown_saves = EXCLUDED.blown_saves,
+                                wins = EXCLUDED.wins,
+                                losses = EXCLUDED.losses,
+                                wild_pitches = EXCLUDED.wild_pitches,
+                                balks = EXCLUDED.balks
                         """), {
                             "game_id": g["id"],
                             "mlb_game_id": g["mlb_game_id"],
@@ -188,13 +248,31 @@ async def ingest_pitcher_stats(year_from: int = 2011, game_limit: int = None, ye
                             "is_starter": p["is_starter"],
                             "ip": p["ip"],
                             "er": p["er"],
+                            "runs_allowed": p["runs_allowed"],
                             "h": p["h"],
+                            "hr": p["hr"],
                             "k": p["k"],
                             "bb": p["bb"],
-                            "hr": p["hr"],
+                            "intentional_walks": p["intentional_walks"],
+                            "hit_by_pitch": p["hit_by_pitch"],
                             "pitches_thrown": p["pitches_thrown"],
+                            "strikes": p["strikes"],
+                            "batters_faced": p["batters_faced"],
+                            "ground_outs": p["ground_outs"],
+                            "air_outs": p["air_outs"],
+                            "fly_outs": p["fly_outs"],
+                            "pop_outs": p["pop_outs"],
+                            "line_outs": p["line_outs"],
+                            "gidp": p["gidp"],
                             "game_score": p["game_score"],
                             "decision": p["decision"],
+                            "saves": p["saves"],
+                            "holds": p["holds"],
+                            "blown_saves": p["blown_saves"],
+                            "wins": p["wins"],
+                            "losses": p["losses"],
+                            "wild_pitches": p["wild_pitches"],
+                            "balks": p["balks"],
                         })
                         await conn.commit()
                     inserted += 1
@@ -226,12 +304,14 @@ async def main():
     parser.add_argument("--year", type=int, default=None, help="Only process this year")
     parser.add_argument("--games", type=int, default=None, help="Max games to process")
     parser.add_argument("--from-year", type=int, default=2011, help="Process from this year")
+    parser.add_argument("--reprocess", action="store_true", help="Re-fetch existing games to populate new columns")
     args = parser.parse_args()
 
     await ingest_pitcher_stats(
         year_from=args.from_year,
         game_limit=args.games,
         year_only=args.year,
+        reprocess=args.reprocess,
     )
 
 

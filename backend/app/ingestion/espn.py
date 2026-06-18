@@ -154,17 +154,21 @@ async def ingest_espn_schedule(
     event_season = peek_events[0].get("season", {}).get("year")
 
     if event_season == season_year:
-        # Week-by-week works — use the existing approach
-        for wk in weeks:
-            if wk is None:
-                continue
-            events = await fetch_espn_scoreboard(season_year, seasontype, wk)
-            if not events:
-                break
-            all_events.extend(events)
+        # Week-by-week with force_dates month chunks to avoid pagination issues with season-length date ranges
+        # (The year+week param works, but SEASON_DATE_RANGES causes fetch_espn_scoreboard to paginate
+        #  the entire season for each week when a date range exists. Month-by-month avoids this.)
+        for month in range(9, 13):  # Sep-Dec
+            month_range = f"{season_year}{month:02d}01-{season_year}{month:02d}31"
+            events = await fetch_espn_scoreboard(season_year, seasontype, None, force_dates=month_range)
+            if events:
+                all_events.extend(events)
+        for month in range(1, 3):  # Jan-Feb (next year)
+            month_range = f"{season_year+1}{month:02d}01-{season_year+1}{month:02d}31"
+            events = await fetch_espn_scoreboard(season_year, seasontype, None, force_dates=month_range)
+            if events:
+                all_events.extend(events)
     else:
         # Week param returned stale data — fall back to month-by-month dates
-        # This works because a 1-month date range doesn't trigger pagination issues
         print(f"  [Earl] Week param returned {event_season} data, falling back to month-by-month")
         for month in range(9, 13):  # Sep-Dec
             month_range = f"{season_year}{month:02d}01-{season_year}{month:02d}31"
@@ -215,10 +219,11 @@ async def ingest_espn_schedule(
 
         game_id = int(event["id"])
 
-        # Skip if already exists
-        existing = await session.execute(select(Game).where(Game.id == game_id))
-        if existing.scalar_one_or_none():
-            continue
+        # Skip if already exists (use no_autoflush to avoid query-triggered flush of pending games)
+        with session.no_autoflush:
+            existing = await session.execute(select(Game).where(Game.id == game_id))
+            if existing.scalar_one_or_none():
+                continue
 
         # Get week from the event data
         event_week = event.get("week", {}).get("number", 0)

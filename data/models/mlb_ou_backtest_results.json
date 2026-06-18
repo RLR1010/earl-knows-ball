@@ -1,0 +1,398 @@
+{
+  "run_time": "0:00:58.751212",
+  "results": [
+    {
+      "test_year": 2025,
+      "train_years": [
+        2021,
+        2022,
+        2023,
+        2024
+      ],
+      "feature_set": "mlb_ou",
+      "total_games": 2400,
+      "mae": 3.61,
+      "err_mean": 0.04,
+      "err_std": 4.58,
+      "within_1": 0.167,
+      "within_2": 0.326,
+      "ats": {
+        "correct": 0,
+        "incorrect": 0,
+        "total": 0,
+        "pct": 0
+      },
+      "ou": {
+        "correct": 1168,
+        "incorrect": 1143,
+        "pushes": 89,
+        "total": 2311,
+        "pct": 50.5
+      },
+      "ml": {
+        "correct": 0,
+        "incorrect": 0,
+        "total": 0,
+        "pct": 0
+      },
+      "monthly": [
+        {
+          "month": 3,
+          "games": 62,
+          "mae": 3.53,
+          "ou_pct": 46.8
+        },
+        {
+          "month": 4,
+          "games": 388,
+          "mae": 3.57,
+          "ou_pct": 50.0
+        },
+        {
+          "month": 5,
+          "games": 402,
+          "mae": 3.83,
+          "ou_pct": 46.0
+        },
+        {
+          "month": 6,
+          "games": 393,
+          "mae": 3.73,
+          "ou_pct": 46.1
+        },
+        {
+          "month": 7,
+          "games": 364,
+          "mae": 3.41,
+          "ou_pct": 52.5
+        },
+        {
+          "month": 8,
+          "games": 419,
+          "mae": 3.68,
+          "ou_pct": 52.5
+        },
+        {
+          "month": 9,
+          "games": 372,
+          "mae": 3.42,
+          "ou_pct": 53.8
+        }
+      ],
+      "feature_importance": [
+        {
+          "feature": "opening_ou",
+          "importance": 0.0772
+        },
+        {
+          "feature": "h_home_rf",
+          "importance": 0.0481
+        },
+        {
+          "feature": "tz_diff",
+          "importance": 0.0456
+        },
+        {
+          "feature": "h_ops_l20",
+          "importance": 0.0443
+        },
+        {
+          "feature": "ou_movement",
+          "importance": 0.0439
+        },
+        {
+          "feature": "park_factor",
+          "importance": 0.0429
+        },
+        {
+          "feature": "a_away_rf",
+          "importance": 0.0427
+        },
+        {
+          "feature": "h_ra10",
+          "importance": 0.0416
+        },
+        {
+          "feature": "travel_miles",
+          "importance": 0.0414
+        },
+        {
+          "feature": "a_winpct",
+          "importance": 0.0414
+        },
+        {
+          "feature": "h_winpct",
+          "importance": 0.0413
+        },
+        {
+          "feature": "a_ops_l20",
+          "importance": 0.041
+        },
+        {
+          "feature": "h_ops_l10",
+          "importance": 0.0408
+        },
+        {
+          "feature": "is_div",
+          "importance": 0.0404
+        },
+        {
+          "feature": "a_pitcher_era_l20",
+          "importance": 0.0398
+        },
+        {
+          "feature": "a_ops_l10",
+          "importance": 0.0397
+        },
+        {
+          "feature": "a_ra10",
+          "importance": 0.0389
+        },
+        {
+          "feature": "h_pitcher_era_l20",
+          "importance": 0.0382
+        },
+        {
+          "feature": "a_rf10",
+          "importance": 0.038
+        },
+        {
+          "feature": "h_rf5",
+          "importance": 0.0358
+        },
+        {
+          "feature": "a_rf5",
+          "importance": 0.0353
+        },
+        {
+          "feature": "h_rf10",
+          "importance": 0.0353
+        },
+        {
+          "feature": "over_pct_h_r5",
+          "importance": 0.0336
+        },
+        {
+          "feature": "over_pct_a_r5",
+          "importance": 0.0329
+        },
+        {
+          "feature": "closing_spread_home_odds",
+          "importance": 0.0
+        },
+        {
+          "feature": "closing_away_implied_probability",
+          "importance": 0.0
+        },
+        {
+          "feature": "closing_over_odds",
+          "importance": 0.0
+        },
+        {
+          "feature": "closing_under_odds",
+          "importance": 0.0
+        },
+        {
+          "feature": "closing_home_implied_probability",
+          "importance": 0.0
+        },
+        {
+          "feature": "closing_spread_away_odds",
+          "importance": 0.0
+        },
+        {
+          "feature": "is_dome",
+          "importance": 0.0
+        }
+      ]
+    },
+    {
+      "test_year": 2026,
+      "train_years": [
+        2021,
+        2022,
+        2023,
+        2024,
+        2025
+      ],
+      "feature_set": "mlb_ou",
+      "total_games": 1069,
+      "mae": 3.49,
+      "err_mean": 0.28,
+      "err_std": 4.44,
+      "within_1": 0.195,
+      "within_2": 0.356,
+      "ats": {
+        "correct": 0,
+        "incorrect": 0,
+        "total": 0,
+        "pct": 0
+      },
+      "ou": {
+        "correct": 531,
+        "incorrect": 507,
+        "pushes": 31,
+        "total": 1038,
+        "pct": 51.2
+      },
+      "ml": {
+        "correct": 0,
+        "incorrect": 0,
+        "total": 0,
+        "pct": 0
+      },
+      "monthly": [
+        {
+          "month": 3,
+          "games": 71,
+          "mae": 3.72,
+          "ou_pct": 54.9
+        },
+        {
+          "month": 4,
+          "games": 391,
+          "mae": 3.56,
+          "ou_pct": 53.2
+        },
+        {
+          "month": 5,
+          "games": 416,
+          "mae": 3.44,
+          "ou_pct": 47.8
+        },
+        {
+          "month": 6,
+          "games": 191,
+          "mae": 3.35,
+          "ou_pct": 49.2
+        }
+      ],
+      "feature_importance": [
+        {
+          "feature": "opening_ou",
+          "importance": 0.0754
+        },
+        {
+          "feature": "h_home_rf",
+          "importance": 0.0464
+        },
+        {
+          "feature": "ou_movement",
+          "importance": 0.0452
+        },
+        {
+          "feature": "park_factor",
+          "importance": 0.0448
+        },
+        {
+          "feature": "tz_diff",
+          "importance": 0.043
+        },
+        {
+          "feature": "h_winpct",
+          "importance": 0.0428
+        },
+        {
+          "feature": "is_div",
+          "importance": 0.0421
+        },
+        {
+          "feature": "a_away_rf",
+          "importance": 0.0416
+        },
+        {
+          "feature": "a_ops_l10",
+          "importance": 0.0414
+        },
+        {
+          "feature": "travel_miles",
+          "importance": 0.0411
+        },
+        {
+          "feature": "h_ops_l20",
+          "importance": 0.0401
+        },
+        {
+          "feature": "over_pct_h_r5",
+          "importance": 0.04
+        },
+        {
+          "feature": "a_winpct",
+          "importance": 0.04
+        },
+        {
+          "feature": "h_ops_l10",
+          "importance": 0.0398
+        },
+        {
+          "feature": "a_ra10",
+          "importance": 0.039
+        },
+        {
+          "feature": "h_ra10",
+          "importance": 0.039
+        },
+        {
+          "feature": "a_ops_l20",
+          "importance": 0.0389
+        },
+        {
+          "feature": "h_pitcher_era_l20",
+          "importance": 0.0382
+        },
+        {
+          "feature": "a_rf10",
+          "importance": 0.038
+        },
+        {
+          "feature": "h_rf5",
+          "importance": 0.0379
+        },
+        {
+          "feature": "h_rf10",
+          "importance": 0.0374
+        },
+        {
+          "feature": "over_pct_a_r5",
+          "importance": 0.0364
+        },
+        {
+          "feature": "a_pitcher_era_l20",
+          "importance": 0.0363
+        },
+        {
+          "feature": "a_rf5",
+          "importance": 0.0352
+        },
+        {
+          "feature": "closing_spread_home_odds",
+          "importance": 0.0
+        },
+        {
+          "feature": "closing_away_implied_probability",
+          "importance": 0.0
+        },
+        {
+          "feature": "closing_over_odds",
+          "importance": 0.0
+        },
+        {
+          "feature": "closing_under_odds",
+          "importance": 0.0
+        },
+        {
+          "feature": "closing_home_implied_probability",
+          "importance": 0.0
+        },
+        {
+          "feature": "closing_spread_away_odds",
+          "importance": 0.0
+        },
+        {
+          "feature": "is_dome",
+          "importance": 0.0
+        }
+      ]
+    }
+  ]
+}

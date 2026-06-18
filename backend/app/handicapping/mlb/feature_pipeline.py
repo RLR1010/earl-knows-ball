@@ -41,7 +41,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 logger = logging.getLogger(__name__)
 
-CACHE_DIR = Path(os.environ.get("MODEL_CACHE_DIR", "/app/data"))
+CACHE_DIR = Path(os.environ.get("MODEL_CACHE_DIR", "/home/rich/.openclaw/workspace/earl-knows-football/data/models"))
 CACHE_FILE = CACHE_DIR / "mlb_team_feature_cache.json"
 
 _DEFAULT_DSN = os.environ.get(

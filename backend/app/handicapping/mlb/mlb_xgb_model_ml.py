@@ -143,16 +143,17 @@ async def load_data(engine):
         r = await conn.execute(text("""
             SELECT
                 game_id,
-                home_moneyline, away_moneyline,
-                opening_home_moneyline, opening_away_moneyline,
-                home_implied_probability, away_implied_probability,
-                spread,
-                over_under,
-                ou_source as sportsbook
+                closing_home_ml AS home_moneyline,
+                closing_away_ml AS away_moneyline,
+                opening_home_ml AS opening_home_moneyline,
+                opening_away_ml AS opening_away_moneyline,
+                closing_spread AS spread,
+                closing_ou AS over_under,
+                closing_ou_sportsbook AS sportsbook
             FROM mlb.betting_lines_consolidated
             WHERE has_verified_ou = true
-              AND home_moneyline IS NOT NULL
-              AND away_moneyline IS NOT NULL
+              AND closing_home_ml IS NOT NULL
+              AND closing_away_ml IS NOT NULL
         """))
         lines = pd.DataFrame([dict(r._mapping) for r in r.fetchall()])
 
@@ -162,6 +163,10 @@ async def load_data(engine):
     games = games.rename(columns={"id": "game_id"})
     df = games.merge(lines, on="game_id", how="inner")
     log(f"  Merged: {len(df)} rows with ML data")
+
+    # Moneyline implied probabilities (computed, not stored in DB)
+    df["home_implied_probability"] = df["home_moneyline"].apply(_ml_implied)
+    df["away_implied_probability"] = df["away_moneyline"].apply(_ml_implied)
 
     # ── Load pitcher game stats ──
     log("Loading pitcher game stats...")
@@ -937,7 +942,7 @@ async def run_all_years(
         "run_time": str(datetime.now() - t0),
         "results": all_results,
     }
-    out_path = "/app/data/mlb_ml_backtest_results.json"
+    out_path = "/home/rich/.openclaw/workspace/earl-knows-football/data/models/mlb_ml_backtest_results.json"
     with open(out_path, "w") as f:
         json.dump(out, f, indent=2, default=str)
     log(f"\nResults saved to {out_path}")
@@ -951,7 +956,7 @@ async def run_single(test_year: int = 2025, train_years: list[int] = None):
     feats = build_features(df, pitcher_df)
     await run_backtest(df, feats, test_year=test_year, train_years=train_years)
     await engine.dispose()
-async def train_production_model(save_path: str = "/app/data/mlb_ml_residual_model_prod.pkl"):
+async def train_production_model(save_path: str = "/home/rich/.openclaw/workspace/earl-knows-football/data/models/mlb_ml_residual_model_prod.pkl"):
     """
     Train the final production ML model on all available data.
     Saves model + feature names + config for use in live predictions.
@@ -1029,7 +1034,7 @@ async def train_production_model(save_path: str = "/app/data/mlb_ml_residual_mod
 
 # ── Model management & inference (imported by mlb_engine.py) ──────────
 
-ML_MODEL_PATH = Path("/app/data/mlb_ml_residual_model_prod.pkl")
+ML_MODEL_PATH = Path("/home/rich/.openclaw/workspace/earl-knows-football/data/models/mlb_ml_residual_model_prod.pkl")
 _ml_model = None
 
 

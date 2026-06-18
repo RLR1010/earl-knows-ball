@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from sqlalchemy.orm import joinedload
 from sqlalchemy import func
-from app.models.nba import NBAPlayer, NBAPlayerSeasonStats, NBASeason, NBATeam
+from app.models.nba import NBAGame, NBAPlayer, NBAPlayerSeasonStats, NBASeason, NBATeam
 
 router = APIRouter()
 
@@ -152,6 +152,121 @@ async def nba_players(
     """
     result = await db.execute(text(sql), params)
     return [dict(r) for r in result.mappings().all()]
+
+
+@router.get("/nba/games/{game_id}/boxscore")
+async def nba_game_boxscore(
+    game_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """Return detailed NBA game boxscore with home/away stats."""
+    result = await db.execute(
+        select(NBAGame)
+        .options(joinedload(NBAGame.home_team), joinedload(NBAGame.away_team))
+        .where(NBAGame.id == game_id)
+    )
+    game = result.unique().scalar_one_or_none()
+    if not game:
+        return {"error": "Game not found"}
+
+    from datetime import datetime
+
+    def _get_val(val):
+        if val is not None:
+            return float(val)
+        return None
+
+    home_stats = {
+        "team": game.home_team.abbreviation if game.home_team else None,
+        "team_id": game.home_team.id if game.home_team else None,
+        "score": _get_val(game.home_score),
+        "field_goals_made": _get_val(game.home_field_goals_made),
+        "field_goals_attempted": _get_val(game.home_field_goals_attempted),
+        "three_points_made": _get_val(game.home_three_points_made),
+        "three_points_attempted": _get_val(game.home_three_points_attempted),
+        "free_throws_made": _get_val(game.home_free_throws_made),
+        "free_throws_attempted": _get_val(game.home_free_throws_attempted),
+        "rebounds": _get_val(game.home_rebounds),
+        "assists": _get_val(game.home_assists),
+    }
+    away_stats = {
+        "team": game.away_team.abbreviation if game.away_team else None,
+        "team_id": game.away_team.id if game.away_team else None,
+        "score": _get_val(game.away_score),
+        "field_goals_made": _get_val(game.away_field_goals_made),
+        "field_goals_attempted": _get_val(game.away_field_goals_attempted),
+        "three_points_made": _get_val(game.away_three_points_made),
+        "three_points_attempted": _get_val(game.away_three_points_attempted),
+        "free_throws_made": _get_val(game.away_free_throws_made),
+        "free_throws_attempted": _get_val(game.away_free_throws_attempted),
+        "rebounds": _get_val(game.away_rebounds),
+        "assists": _get_val(game.away_assists),
+    }
+
+    # Compute percentages
+    for side in (home_stats, away_stats):
+        fga = side.get("field_goals_attempted")
+        fgm = side.get("field_goals_made")
+        side["field_goal_pct"] = round(fgm / fga, 3) if fga and fga > 0 else None
+
+        tpa = side.get("three_points_attempted")
+        tpm = side.get("three_points_made")
+        side["three_point_pct"] = round(tpm / tpa, 3) if tpa and tpa > 0 else None
+
+        fta = side.get("free_throws_attempted")
+        ftm = side.get("free_throws_made")
+        side["free_throw_pct"] = round(ftm / fta, 3) if fta and fta > 0 else None
+
+    # Include player stats if available
+    from app.models.nba.player_game_stats import NBAPlayerGameStats
+    player_rows = await db.execute(
+        select(NBAPlayerGameStats)
+        .where(NBAPlayerGameStats.game_id == game_id)
+        .order_by(NBAPlayerGameStats.points.desc().nullslast())
+    )
+    player_stats_list = []
+    for ps in player_rows.scalars().all():
+        # Fetch player name separately
+        p_row = await db.execute(select(NBAPlayer.name).where(NBAPlayer.id == ps.player_id))
+        p_name = p_row.scalar_one_or_none()
+        player_stats_list.append({
+            "player_id": ps.player_id,
+            "name": p_name,
+            "team_id": ps.team_id,
+            "minutes": ps.minutes,
+            "field_goals_made": ps.field_goals_made,
+            "field_goals_attempted": ps.field_goals_attempted,
+            "field_goal_pct": ps.field_goal_pct,
+            "three_pointers_made": ps.three_pointers_made,
+            "three_pointers_attempted": ps.three_pointers_attempted,
+            "three_pointer_pct": ps.three_pointer_pct,
+            "free_throws_made": ps.free_throws_made,
+            "free_throws_attempted": ps.free_throws_attempted,
+            "free_throw_pct": ps.free_throw_pct,
+            "rebounds_offensive": ps.rebounds_offensive,
+            "rebounds_defensive": ps.rebounds_defensive,
+            "rebounds_total": ps.rebounds_total,
+            "assists": ps.assists,
+            "steals": ps.steals,
+            "blocks": ps.blocks,
+            "turnovers": ps.turnovers,
+            "fouls_personal": ps.fouls_personal,
+            "points": ps.points,
+            "plus_minus": ps.plus_minus,
+        })
+
+    return {
+        "game_id": game.id,
+        "nba_game_id": game.nba_game_id,
+        "date": game.date.isoformat() if game.date else None,
+        "status": game.status.value if game.status else "scheduled",
+        "game_type": game.game_type,
+        "venue": game.venue,
+        "attendance": game.attendance,
+        "home": home_stats,
+        "away": away_stats,
+        "players": player_stats_list,
+    }
 
 
 @router.get("/nba/games")

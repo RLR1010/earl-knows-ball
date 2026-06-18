@@ -39,7 +39,7 @@ class UserSubscription(Base):
     __table_args__ = {"schema": "public"}
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    user_id = Column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(String(36), ForeignKey("public.users.id", ondelete="CASCADE"), nullable=False, index=True)
     plan_id = Column(String(36), ForeignKey("public.subscription_plans.id", ondelete="SET NULL"), nullable=True)
     status = Column(String(20), nullable=False, default="incomplete")  # incomplete, active, past_due, canceled, trialing, incomplete_expired
     current_period_start = Column(DateTime(timezone=True), nullable=True)
@@ -66,7 +66,7 @@ class Payment(Base):
     __table_args__ = {"schema": "public"}
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    user_id = Column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(String(36), ForeignKey("public.users.id", ondelete="CASCADE"), nullable=False, index=True)
     subscription_id = Column(String(36), ForeignKey("public.user_subscriptions.id", ondelete="SET NULL"), nullable=True)
     amount_cents = Column(Integer, nullable=False)
     currency = Column(String(3), default="usd")

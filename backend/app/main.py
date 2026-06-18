@@ -3,10 +3,20 @@ from fastapi.middleware.cors import CORSMiddleware
 
 
 import logging
+from contextlib import asynccontextmanager
+
+from app import task_scheduler
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Start scheduler on boot, shut down on stop."""
+    await task_scheduler.start_scheduler()
+    yield
+    await task_scheduler.stop_scheduler()
 
-app = FastAPI(
+
+app = FastAPI(lifespan=lifespan,
     title="Earl Knows Ball",
     version="1.0.0",
     

@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, Header, Query, status
-from sqlalchemy import select, func, case, desc
+from sqlalchemy import select, func, case, desc, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel, EmailStr
 from typing import Optional
@@ -649,25 +649,34 @@ _MLB_OU_DESCRIPTIONS = {
     "__desc__": (
         "26-feature OU model predicting total runs directly. Uses the opening "
         "over/under line as the primary anchor, then adjusts for market movement, "
-        "starting pitcher quality (L5/L20 ERA), bullpen fatigue (IP), team scoring "
-        "and defense (5/10 game rolling windows), home/road scoring splits, "
-        "season win percentage, recent over frequency, travel distance, time zone "
-        "difference, division rivalry, temperature, wind speed, dome status, "
-        "and venue park factor. Trained with a direct total target using "
-        "time-weighted samples across 5-year rolling windows."
+        "closing over/under odds, implied probability, starting pitcher quality "
+        "(L5/L20 ERA), bullpen fatigue (IP), team scoring and defense "
+        "(10/20 game rolling windows), team OPS (10/20 game rolling windows), "
+        "home/road scoring splits, season win percentage, over frequency, "
+        "travel distance, time zone difference, division rivalry, temperature, "
+        "wind speed, dome status, and venue park factor. Trained with a direct "
+        "total target using time-weighted samples across 5-year rolling windows."
     ),
     # Market
     "opening_ou": "Opening over/under total from sportsbook (primary market anchor)",
     "ou_movement": "Closing OU - opening OU (positive = line moved up = sharp money on over)",
+    "closing_over_odds": "Closing American odds on the over (e.g. -110 = 52.4% implied)",
+    "closing_under_odds": "Closing American odds on the under (e.g. -110 = 52.4% implied)",
+    "closing_spread_home_odds": "Closing spread odds for home team (American)",
+    "closing_spread_away_odds": "Closing spread odds for away team (American)",
+    "closing_home_implied_probability": "Implied win % for home team from closing moneyline",
+    "closing_away_implied_probability": "Implied win % for away team from closing moneyline",
     # Teams
-    "h_rf5": "Home team runs scored per game (last 5)",
-    "a_rf5": "Away team runs scored per game (last 5)",
     "h_rf10": "Home team runs scored per game (last 10)",
     "a_rf10": "Away team runs scored per game (last 10)",
     "h_ra10": "Home team runs allowed per game (last 10)",
     "a_ra10": "Away team runs allowed per game (last 10)",
-    "over_pct_h_r5": "Home team over rate last 5 games (recent over streak)",
-    "over_pct_a_r5": "Away team over rate last 5 games (recent over streak)",
+    "h_ops_l10": "Home team OPS (last 10 games)",
+    "a_ops_l10": "Away team OPS (last 10 games)",
+    "h_ops_l20": "Home team OPS (last 20 games)",
+    "a_ops_l20": "Away team OPS (last 20 games)",
+    "over_pct_h_r20": "Home team over rate last 20 games",
+    "over_pct_a_r20": "Away team over rate last 20 games",
     # Starting pitcher
     "h_pitcher_era_l5": "Home starter's ERA in his last 5 starts (recent form)",
     "a_pitcher_era_l5": "Away starter's ERA in his last 5 starts (recent form)",
@@ -693,10 +702,14 @@ _MLB_OU_DESCRIPTIONS = {
 }
 
 _MLB_OU_CATEGORIES = {
-    "Market & Line Movement": ["opening_ou", "ou_movement"],
-    "Team Scoring & Defense": ["h_rf5", "a_rf5", "h_rf10", "a_rf10",
-                                "h_ra10", "a_ra10"],
-    "Over Frequency": ["over_pct_h_r5", "over_pct_a_r5"],
+    "Market & Line Movement": ["opening_ou", "ou_movement",
+                                "closing_over_odds", "closing_under_odds",
+                                "closing_spread_home_odds", "closing_spread_away_odds",
+                                "closing_home_implied_probability",
+                                "closing_away_implied_probability"],
+    "Team Scoring & Offense": ["h_rf10", "a_rf10", "h_ra10", "a_ra10",
+                                "h_ops_l10", "a_ops_l10", "h_ops_l20", "a_ops_l20"],
+    "Over Frequency": ["over_pct_h_r20", "over_pct_a_r20"],
     "Starting Pitcher": ["h_pitcher_era_l5", "a_pitcher_era_l5",
                           "h_pitcher_era_l20", "a_pitcher_era_l20"],
     "Bullpen Fatigue": ["h_bullpen_ip_l5", "a_bullpen_ip_l5"],
@@ -1034,7 +1047,7 @@ async def delete_article(
 # ── Prediction Models ────────────────────────────────────────────────
 
 
-_MODELS_DIR = "/app/data"
+_MODELS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "data")
 
 
 @router.get("/models/{sport}", response_model=SportModelDetailOut)
@@ -2643,3 +2656,110 @@ async def refresh_tasks(admin: User = Depends(get_admin_user)):
     from app.task_scheduler import _update_next_runs
     _update_next_runs()
     return {"status": "refreshed", "jobs": len(_scheduler.get_jobs())}
+
+
+# ── Database Explorer ───────────────────────────────────────────────
+
+
+@router.get("/db/schemas")
+async def db_list_schemas(admin: User = Depends(get_admin_user)):
+    """List all schemas in the database."""
+    # Can't use bindparam for schema name in information_schema, so hardcode the schemas we care about
+    schemas = ["public", "nfl", "nba", "mlb"]
+    return schemas
+
+
+@router.get("/db/schemas/{schema_name}/tables")
+async def db_list_tables(
+    schema_name: str,
+    admin: User = Depends(get_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """List all user tables in the given schema."""
+    result = await db.execute(
+        text("""
+            SELECT tablename AS table_name
+            FROM pg_catalog.pg_tables
+            WHERE schemaname = :schema
+            ORDER BY tablename
+        """),
+        {"schema": schema_name},
+    )
+    rows = result.fetchall()
+    return [{"table_name": r[0]} for r in rows]
+
+
+@router.get("/db/schemas/{schema_name}/tables/{table_name}")
+async def db_get_table(
+    schema_name: str,
+    table_name: str,
+    offset: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=500),
+    admin: User = Depends(get_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get column info and row data for a table."""
+    from sqlalchemy import inspect
+
+    # 1) Column info via information_schema
+    col_result = await db.execute(
+        text("""
+            SELECT
+                c.column_name,
+                c.data_type,
+                CASE WHEN c.is_nullable = 'YES' THEN true ELSE false END AS nullable,
+                CASE WHEN pk.col IS NOT NULL THEN true ELSE false END AS is_pk,
+                c.column_default AS "default"
+            FROM information_schema.columns c
+            LEFT JOIN (
+                SELECT ku.column_name AS col
+                FROM information_schema.table_constraints tc
+                JOIN information_schema.key_column_usage ku
+                    ON tc.constraint_name = ku.constraint_name
+                    AND tc.table_schema = ku.table_schema
+                WHERE tc.constraint_type = 'PRIMARY KEY'
+                  AND tc.table_schema = :schema
+                  AND tc.table_name = :table
+            ) pk ON pk.col = c.column_name
+            WHERE c.table_schema = :schema2
+              AND c.table_name = :table2
+            ORDER BY c.ordinal_position
+        """),
+        {"schema": schema_name, "table": table_name, "schema2": schema_name, "table2": table_name},
+    )
+    columns = [
+        {
+            "column_name": r[0],
+            "data_type": r[1],
+            "nullable": r[2],
+            "is_pk": r[3],
+            "default": r[4],
+        }
+        for r in col_result.fetchall()
+    ]
+
+    # 2) Row count
+    count_result = await db.execute(
+        text(f'SELECT COUNT(*) FROM "{schema_name}"."{table_name}"'),
+    )
+    total_count = count_result.scalar()
+
+    # 3) Row data
+    raw_columns = [c["column_name"] for c in columns]
+    cols_quoted = ", ".join(f'"{c}"' for c in raw_columns)
+    data_result = await db.execute(
+        text(f"SELECT {cols_quoted} FROM \"{schema_name}\".\"{table_name}\" ORDER BY 1 OFFSET :offset LIMIT :limit"),
+        {"offset": offset, "limit": limit},
+    )
+    rows = [dict(zip(raw_columns, r)) for r in data_result.fetchall()]
+
+    return {
+        "schema_name": schema_name,
+        "table_name": table_name,
+        "columns": columns,
+        "rows": rows,
+        "total_count": total_count,
+        "offset": offset,
+        "limit": limit,
+        "has_more": offset + len(rows) < total_count,
+    }

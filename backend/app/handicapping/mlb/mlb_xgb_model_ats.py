@@ -25,6 +25,7 @@ import pandas as pd
 import warnings
 warnings.filterwarnings("ignore")
 from sqlalchemy import text
+from sqlalchemy.ext.asyncio import create_async_engine
 from sklearn.metrics import mean_absolute_error
 import xgboost as xgb
 
@@ -32,10 +33,27 @@ import xgboost as xgb
 async def load_data(engine):
     """Load training data from DB for MLB models."""
     query = """
-        SELECT g.*, bl.*
+        SELECT g.*,
+               h.abbreviation AS ha,
+               a.abbreviation AS aa,
+               h.division AS hdiv,
+               a.division AS adiv,
+               (g.home_score - g.away_score) AS margin,
+               s.year,
+               g.date AS game_date,
+               c.closing_spread AS spread,
+               c.closing_home_ml AS home_moneyline,
+               c.closing_away_ml AS away_moneyline,
+               c.closing_ou AS over_under,
+               c.closing_ou_sportsbook AS sportsbook,
+               c.opening_ou AS opening_total,
+               c.has_verified_ou
         FROM mlb.games g
-        LEFT JOIN mlb.betting_lines bl ON bl.game_id = g.id
-        WHERE g.status = 'final'
+        LEFT JOIN mlb.teams h ON h.id = g.home_team_id
+        LEFT JOIN mlb.teams a ON a.id = g.away_team_id
+        LEFT JOIN mlb.seasons s ON s.id = g.season_id
+        LEFT JOIN mlb.betting_lines_consolidated c ON c.game_id = g.id
+        WHERE g.status = 'FINAL'
         ORDER BY g.date DESC
     """
     async with engine.begin() as conn:
@@ -54,7 +72,7 @@ DSN = DB.replace("+asyncpg", "")  # sync DSN for inference
 
 # ── Team timezone map (IANA, for scheduling) ──
 TZ = {
-    "ARI": -7, "ATL": -5, "BAL": -5, "BOS": -5, "CHC": -6, "CHW": -6,
+    "ARI": -7, "ATL": -5, "BAL": -5, "BOS": -5, "CHC": -6, "CWS": -6,
     "CIN": -5, "CLE": -5, "COL": -7, "DET": -5, "HOU": -6, "KC": -6,
     "LAA": -8, "LAD": -8, "MIA": -5, "MIL": -6, "MIN": -6, "NYM": -5,
     "NYY": -5, "OAK": -8, "PHI": -5, "PIT": -5, "SD": -8, "SEA": -8,
@@ -63,7 +81,7 @@ TZ = {
 
 COORDS = {
     "ARI": (33.4, -112.1), "ATL": (33.7, -84.4), "BAL": (39.3, -76.6),
-    "BOS": (42.3, -71.1), "CHC": (41.9, -87.7), "CHW": (41.8, -87.6),
+    "BOS": (42.3, -71.1), "CHC": (41.9, -87.7), "CWS": (41.8, -87.6),
     "CIN": (39.1, -84.5), "CLE": (41.5, -81.7), "COL": (39.8, -104.9),
     "DET": (42.3, -83.0), "HOU": (29.8, -95.4), "KC": (39.1, -94.5),
     "LAA": (33.8, -117.9), "LAD": (34.1, -118.2), "MIA": (25.8, -80.2),
@@ -443,7 +461,7 @@ async def run_backtest(
     model = xgb.XGBRegressor(**xgb_params)
     model.fit(X_tr, y_tr, sample_weight=w, verbose=False)
     # Save model by test year for engine backtest to use
-    model_dir = Path("/app/data")
+    model_dir = Path("/home/rich/.openclaw/workspace/earl-knows-football/data/models/mlb")
     model_dir.mkdir(parents=True, exist_ok=True)
     save_path = model_dir / f"mlb_ats_{test_year}.pkl"
     with open(save_path, "wb") as f:
@@ -633,11 +651,23 @@ async def run_all_years(
         "run_time": str(datetime.now() - t0),
         "results": all_results,
     }
-    out_path = "/app/data/mlb_backtest_results.json"
+    out_path = "/home/rich/.openclaw/workspace/earl-knows-football/data/models/mlb_backtest_results.json"
     with open(out_path, "w") as f:
         json.dump(out, f, indent=2, default=str)
     log(f"\nResults saved to {out_path}")
     log(f"Total time: {datetime.now() - t0}")
+
+
+def _enrich_df(df: pd.DataFrame) -> pd.DataFrame:
+    """Pre-process raw DB DataFrame: compute derived columns expected by build_features()."""
+    df = df.copy()
+    # game_id alias (games table has 'id')
+    if "game_id" not in df.columns:
+        df["game_id"] = df["id"]
+    # Moneyline implied probabilities
+    df["home_implied_probability"] = df["home_moneyline"].apply(_ml_implied)
+    df["away_implied_probability"] = df["away_moneyline"].apply(_ml_implied)
+    return df
 
 
 async def run_single(test_year: int = 2025, feature_set: str = "full",
@@ -647,9 +677,26 @@ async def run_single(test_year: int = 2025, feature_set: str = "full",
         train_years = [y for y in range(2021, test_year)]
     engine = create_async_engine(DB)
     df = await load_data(engine)
+    df = _enrich_df(df)
     feats = build_features(df)
-    _, _ = await run_backtest(df, feats, test_year=test_year, train_years=train_years, feature_set=feature_set)
+    result, _ = await run_backtest(df, feats, test_year=test_year, train_years=train_years, feature_set=feature_set)
     await engine.dispose()
+    # Write results file for the admin page — merge with existing results
+    import json
+    out_path = Path("/home/rich/.openclaw/workspace/earl-knows-football/data/models/mlb_backtest_results.json")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    if out_path.exists():
+        with open(out_path) as f:
+            existing = json.load(f)
+        # Replace result for this test_year if it exists, otherwise append
+        existing = [r for r in existing if r.get("test_year") != test_year]
+        existing.append(result)
+        data = existing
+    else:
+        data = [result]
+    with open(out_path, "w") as f:
+        json.dump(data, f, indent=2, default=str)
+    print(f"\nResults saved to {out_path}")
 
 
 # ── Helpers ────────────────────────────────────────────────────────────
@@ -662,7 +709,7 @@ def _ml_implied(v):
 
 # ── Model management & inference (imported by mlb_engine.py) ──────────
 
-ATS_MODEL_PATH = Path("/app/data/mlb_margin_model_prod.pkl")
+ATS_MODEL_PATH = Path("/home/rich/.openclaw/workspace/earl-knows-football/data/models/mlb/mlb_margin_model_prod.pkl")
 _ats_model = None
 
 
@@ -789,7 +836,7 @@ async def train_model(year: int, train_years: list[int], feature_set: str = "ful
     model.fit(X_tr, y_tr, sample_weight=w, verbose=False)
     log(f"ATS model trained ({len(features)} features)")
     # Save by test year so engine backtest can use the same model
-    model_dir = Path("/app/data")
+    model_dir = Path("/home/rich/.openclaw/workspace/earl-knows-football/data/models/mlb")
     model_dir.mkdir(parents=True, exist_ok=True)
     for ty in range(year, year + 2):  # save for current + next year
         if ty <= 2026:

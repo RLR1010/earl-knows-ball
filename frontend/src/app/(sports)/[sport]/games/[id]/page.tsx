@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useParams, useSearchParams } from "next/navigation";
 import Link from "next/link";
+import { NBABoxScorePage } from "@/components/NBABoxScore";
 
 // ── Shared Types ─────────────────────────────────────────────
 
@@ -275,6 +276,10 @@ export default function GameDetailPage() {
   // MLB: show classic boxscore page
   if (sport === "mlb") {
     return <MLBClassicPage gameId={gameId} />;
+  }
+
+  if (sport === "nba") {
+    return <NBABoxScorePage gameId={gameId} />;
   }
 
   if (loading) return <div className="text-center py-12 text-gray-500">Loading...</div>;

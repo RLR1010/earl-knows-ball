@@ -42,7 +42,7 @@ DSN = DB.replace("+asyncpg", "")  # sync DSN for inference
 
 # ── Team timezone map ──
 TZ = {
-    "ARI": -7, "ATL": -5, "BAL": -5, "BOS": -5, "CHC": -6, "CHW": -6,
+    "ARI": -7, "ATL": -5, "BAL": -5, "BOS": -5, "CHC": -6, "CWS": -6,
     "CIN": -5, "CLE": -5, "COL": -7, "DET": -5, "HOU": -6, "KC": -6,
     "LAA": -8, "LAD": -8, "MIA": -5, "MIL": -6, "MIN": -6, "NYM": -5,
     "NYY": -5, "OAK": -8, "PHI": -5, "PIT": -5, "SD": -8, "SEA": -8,
@@ -51,7 +51,7 @@ TZ = {
 
 COORDS = {
     "ARI": (33.4, -112.1), "ATL": (33.7, -84.4), "BAL": (39.3, -76.6),
-    "BOS": (42.3, -71.1), "CHC": (41.9, -87.7), "CHW": (41.8, -87.6),
+    "BOS": (42.3, -71.1), "CHC": (41.9, -87.7), "CWS": (41.8, -87.6),
     "CIN": (39.1, -84.5), "CLE": (41.5, -81.7), "COL": (39.8, -104.9),
     "DET": (42.3, -83.0), "HOU": (29.8, -95.4), "KC": (39.1, -94.5),
     "LAA": (33.8, -117.9), "LAD": (34.1, -118.2), "MIA": (25.8, -80.2),
@@ -73,6 +73,12 @@ OU_FEATURES = [
     # ── Market inefficiency (1) ──
     "ou_movement",                    # Closing - opening (smart money direction)
     "opening_ou",                    # Opening O/U line from consolidated table
+    "closing_over_odds",            # Closing over bet odds (American)
+    "closing_under_odds",           # Closing under bet odds (American)
+    "closing_spread_home_odds",     # Closing spread odds for home team (American)
+    "closing_spread_away_odds",     # Closing spread odds for away team (American)
+    "closing_home_implied_probability",  # Closing home win implied probability from moneyline
+    "closing_away_implied_probability",  # Closing away win implied probability from moneyline
     # ── Starting pitcher talent baseline (2) ──
     "h_pitcher_era_l20",              # Home starter's ERA last 20 starts
     "a_pitcher_era_l20",              # Away starter's ERA last 20 starts
@@ -86,6 +92,8 @@ OU_FEATURES = [
     "over_pct_h_r5",                 # Home team over rate last 5 games
     "over_pct_a_r5",
     # ── Team hitting quality (2) ──
+    "h_ops_l10",                      # Home team OPS last 10 games
+    "a_ops_l10",
     "h_ops_l20",                      # Home team OPS last 20 games
     "a_ops_l20",
     # ── Travel / Opponent-adjusted / Situational (9) ──
@@ -148,12 +156,17 @@ async def load_data(engine):
         r = await conn.execute(text("""
             SELECT
                 game_id,
-                over_under,
-                opening_total,
-                home_moneyline, away_moneyline,
-                home_implied_probability, away_implied_probability,
-                spread,
-                ou_source as sportsbook
+                closing_ou as over_under,
+                opening_ou as opening_total,
+                closing_over_odds,
+                closing_under_odds,
+                closing_spread_home_odds,
+                closing_spread_away_odds,
+                closing_home_implied_probability,
+                closing_away_implied_probability,
+                closing_home_ml as home_moneyline, closing_away_ml as away_moneyline,
+                closing_spread as spread,
+                closing_ou_sportsbook as sportsbook
             FROM mlb.betting_lines_consolidated
             WHERE has_verified_ou = true
         """))
@@ -473,64 +486,128 @@ def compute_game_park_factor(feats: pd.DataFrame, game_id: int, venue: str) -> f
 
 def add_pitcher_features(feats: pd.DataFrame, pitcher_df: pd.DataFrame) -> pd.DataFrame:
     """
-    Add pitcher talent baseline features: ERA over last 20 starts.
+    Add pitcher talent baseline features from pitcher_game_stats.
+    Computes rolling ERA, WHIP, K/BB, and FIP-like metrics over last 20 starts.
     Uses shift(1) to prevent look-ahead into the current game.
     """
     ps = pitcher_df.copy()
     ps["game_date_dt"] = pd.to_datetime(ps["game_date"])
     ps["era"] = np.where(ps["ip"] > 0, ps["er"] / ps["ip"] * 9, np.nan)
     
+    # Resolve column names — table has BOTH old (k, bb, hr) and new (strikeouts, etc.)
+    # columns. Whichever has the data, we unify to canonical names as float.
+    for old_n, new_n in [("k", "strikeouts"), ("bb", "base_on_balls"),
+                          ("hr", "home_runs")]:
+        if old_n not in ps.columns:
+            ps[old_n] = 0
+        # Use whichever column has the data — both populated for reprocessed rows
+        ps[new_n] = np.where(
+            ps[new_n].fillna(0).astype(float) > 0,
+            ps[new_n].fillna(0).astype(float),
+            ps[old_n].fillna(0).astype(float)
+        )
+    # hits column is 'h' in the DB (old) — no 'hits' column exists
+    ps["hits"] = ps["h"].fillna(0).astype(float)
+    ps["er"] = ps["er"].fillna(0).astype(float)
+    ps["ip"] = ps["ip"].fillna(0).astype(float)
+    ps["bb_col"] = ps["base_on_balls"]
+    ps["hr_col"] = ps["home_runs"]
+    ps["so_col"] = ps["strikeouts"]
+    ps["hits_col"] = ps["hits"]
+    ps["er_col"] = ps["er"]
+    
+    # Additional per-game pitcher rates
+    ps["whip"] = np.where(
+        ps["ip"] > 0,
+        (ps["hits_col"] + ps["bb_col"]).astype(float) / ps["ip"],
+        np.nan
+    )
+    ps["k_per_9"] = np.where(ps["ip"] > 0, ps["so_col"] / ps["ip"] * 9, np.nan)
+    ps["bb_per_9"] = np.where(ps["ip"] > 0, ps["bb_col"] / ps["ip"] * 9, np.nan)
+    ps["hr_per_9"] = np.where(ps["ip"] > 0, ps["hr_col"] / ps["ip"] * 9, np.nan)
+    ps["k_per_bb"] = np.where(
+        ps["so_col"] + ps["bb_col"] > 0,
+        ps["so_col"] / (ps["so_col"] + ps["bb_col"]),
+        np.nan
+    )
+    ps["gb_rate"] = np.where(
+        ps.get("ground_outs", 0).fillna(0) + ps.get("air_outs", 0).fillna(0)
+        + ps.get("fly_outs", 0).fillna(0) + ps.get("line_outs", 0).fillna(0) > 0,
+        ps.get("ground_outs", 0).fillna(0).astype(float) /
+        (ps.get("ground_outs", 0).fillna(0) + ps.get("air_outs", 0).fillna(0)
+         + ps.get("fly_outs", 0).fillna(0) + ps.get("line_outs", 0).fillna(0)),
+        np.nan
+    )
+    
     # Defaults
     feats["h_pitcher_era_l20"] = 4.0
     feats["a_pitcher_era_l20"] = 4.0
+    feats["h_pitcher_whip_l20"] = 1.3
+    feats["a_pitcher_whip_l20"] = 1.3
+    feats["h_pitcher_k9_l20"] = 8.0
+    feats["a_pitcher_k9_l20"] = 8.0
+    feats["h_pitcher_kbb_rate_l20"] = 0.6
+    feats["a_pitcher_kbb_rate_l20"] = 0.6
+    feats["h_pitcher_home_team_l20"] = 1.0
+    feats["a_pitcher_home_team_l20"] = 1.0
     
-    # ── Starter ERA L20 ──
+    # ── Starters rolling averages L20 ──
     starters = ps[ps["is_starter"] & (ps["ip"] > 0)].copy()
     if len(starters) > 0:
         starters = starters.sort_values(["pitcher_mlb_id", "game_date_dt", "game_id"])
-        starters["era_l20"] = (
-            starters.groupby("pitcher_mlb_id")["era"]
-            .transform(lambda x: x.shift(1).rolling(20, min_periods=1).mean())
-        )
         
-        # Build per-team lookup to avoid merge inflation
-        l20_map = starters[starters["era_l20"].notna()][
-            ["game_id", "team_abbr", "era_l20"]
-        ].drop_duplicates(subset=["game_id", "team_abbr"]).set_index(["game_id", "team_abbr"])["era_l20"]
+        metric_defs = {
+            "era": ("era", 4.0),
+            "whip": ("whip", 1.3),
+            "k9": ("k_per_9", 8.0),
+            "kbb_rate": ("k_per_bb", 0.6),
+            "hr_per_9": ("hr_per_9", 1.2),
+        }
         
-        for team_col, prefix in [("ha", "h"), ("aa", "a")]:
-            feats_indexed = feats.set_index(["game_id", team_col])
-            feats[f"{prefix}_pitcher_era_l20"] = (
-                l20_map.reindex(feats_indexed.index).fillna(4.0).values
+        for suffix_raw, (col, default_val) in metric_defs.items():
+            starters[f"{suffix_raw}_l20"] = (
+                starters.groupby("pitcher_mlb_id")[col]
+                .transform(lambda x: x.shift(1).rolling(20, min_periods=1).mean())
             )
+            mapping = starters[starters[f"{suffix_raw}_l20"].notna()][
+                ["game_id", "team_abbr", f"{suffix_raw}_l20"]
+            ].drop_duplicates(subset=["game_id", "team_abbr"]).set_index(["game_id", "team_abbr"])[f"{suffix_raw}_l20"]
+            
+            for team_col, prefix in [("ha", "h"), ("aa", "a")]:
+                feats_indexed = feats.set_index(["game_id", team_col])
+                feats[f"{prefix}_pitcher_{suffix_raw}_l20"] = (
+                    mapping.reindex(feats_indexed.index).fillna(default_val).values
+                )
     
     return feats
 
 
 def add_hitting_features(feats: pd.DataFrame) -> pd.DataFrame:
     """
-    Add rolling team OPS features from batting_game_stats.
-    Computes per-game team OPS, then rolling averages over L5 and L20 windows.
+    Add rolling team batting features (OPS, K%, BB%, GB rate, HR rate)
+    from batting_game_stats. Uses shift(1) for look-ahead prevention.
     """
     try:
         from sqlalchemy import create_engine as _ce, text as _t
         _e = _ce(DB.replace("+asyncpg", ""))
         
-        # Per-game team batting stats: aggregate all hitters for each team in each game
         with _e.connect() as _c:
             team_games = _c.execute(_t("""
                 SELECT bgs.game_id,
                        CASE WHEN bgs.team_side = 'home' THEN g.home_team_id ELSE g.away_team_id END as team_id,
                        bgs.team_side,
+                       SUM(bgs.plate_appearances) as pa,
                        SUM(bgs.at_bats) as ab,
                        SUM(bgs.hits) as h,
                        SUM(bgs.total_bases) as tb,
                        SUM(bgs.base_on_balls) as bb,
                        SUM(bgs.hit_by_pitch) as hbp,
-                       SUM(bgs.doubles) as dbl,
-                       SUM(bgs.triples) as tri,
                        SUM(bgs.home_runs) as hr,
-                       SUM(bgs.sacrifice_flies) as sf
+                       SUM(bgs.strikeouts) as so,
+                       SUM(bgs.ground_outs) as go,
+                       SUM(bgs.air_outs) as ao,
+                       SUM(bgs.fly_outs) as fo,
+                       SUM(bgs.line_outs) as lo
                 FROM mlb.batting_game_stats bgs
                 JOIN mlb.games g ON g.id = bgs.game_id
                 GROUP BY bgs.game_id, bgs.team_side, g.home_team_id, g.away_team_id
@@ -540,45 +617,73 @@ def add_hitting_features(feats: pd.DataFrame) -> pd.DataFrame:
         
         tg_rows = []
         for r in team_games:
-            gid, tid, side, ab, h, tb, bb, hbp, dbl, tri, hr, sf = r
-            ab = int(ab or 0); h = int(h or 0); tb = int(tb or 0); bb = int(bb or 0); hbp = int(hbp or 0)
-            dbl = int(dbl or 0); tri = int(tri or 0); hr = int(hr or 0); sf = int(sf or 0)
-            singles = max(h - dbl - tri - hr, 0)
-            denom_pa = ab + bb + hbp + sf
-            obp = (h + bb + hbp) / denom_pa if denom_pa > 0 else 0
+            gid, tid, side, pa, ab, h, tb, bb, hbp, hr, so, go, ao, fo, lo = r
+            pa = int(pa or 0); ab = int(ab or 0); h = int(h or 0); tb = int(tb or 0)
+            bb = int(bb or 0); hbp = int(hbp or 0); hr = int(hr or 0); so = int(so or 0)
+            go = int(go or 0); ao = int(ao or 0); fo = int(fo or 0); lo = int(lo or 0)
+            
+            denom_obp = ab + bb + hbp
+            obp = (h + bb + hbp) / denom_obp if denom_obp > 0 else 0
             slg = tb / ab if ab > 0 else 0
             ops = round(obp + slg, 3)
-            tg_rows.append({"game_id": gid, "team_id": tid, "side": side, "ops": ops})
+            k_rate = so / pa if pa > 0 else 0
+            bb_rate = bb / pa if pa > 0 else 0
+            total_out = go + ao + fo + lo
+            gb_rate = go / total_out if total_out > 0 else 0.4
+            hr_rate = hr / pa if pa > 0 else 0
+            
+            tg_rows.append({
+                "game_id": gid, "team_id": tid, "side": side,
+                "ops": ops, "k_rate": k_rate, "bb_rate": bb_rate,
+                "gb_rate": gb_rate, "hr_rate": hr_rate
+            })
         
         tdf = pd.DataFrame(tg_rows)
         
-        # Compute rolling stats per team
+        # ── Rolling stats per team ──
         tdf = tdf.sort_values(["team_id", "game_id"])
-        tdf["ops_l20"] = tdf.groupby("team_id")["ops"].transform(
-            lambda x: x.shift(1).rolling(20, min_periods=1).mean()
-        )
-        tdf["ops_l20"] = tdf.groupby("team_id")["ops"].transform(
-            lambda x: x.shift(1).rolling(20, min_periods=1).mean()
-        )
+        rolling_defs = [
+            ("ops", 10, "ops_l10"),
+            ("ops", 20, "ops_l20"),
+        ]
+        for col_raw, window, col_name in rolling_defs:
+            tdf[col_name] = tdf.groupby("team_id")[col_raw].transform(
+                lambda x: x.shift(1).rolling(window, min_periods=1).mean()
+            )
         
         # Merge into feats by game_id + side
         for side, prefix in [("home", "h"), ("away", "a")]:
-            sub = tdf[tdf["side"] == side][["game_id", "ops_l20"]].copy()
-            sub = sub.rename(columns={"ops_l20": f"{prefix}_ops_l20"})
+            sub = tdf[tdf["side"] == side][["game_id"] + [d[2] for d in rolling_defs]].copy()
+            sub = sub.rename(columns={d[2]: f"{prefix}_{d[2]}" for d in rolling_defs})
             feats = feats.merge(sub, on="game_id", how="left")
         
         # Fill missing (pre-2021 games or games without boxscore data)
-        for col in ["h_ops_l20", "a_ops_l20"]:
+        fill_defaults = {
+            "h_ops_l10": 0.700, "a_ops_l10": 0.700,
+            "h_ops_l20": 0.700, "a_ops_l20": 0.700,
+            "closing_over_odds": -110,
+            "closing_under_odds": -110,
+            "closing_spread_home_odds": -110,
+            "closing_spread_away_odds": -110,
+            "closing_home_implied_probability": 0.500,
+            "closing_away_implied_probability": 0.500,
+
+        }
+        for col, default in fill_defaults.items():
             if col not in feats.columns:
-                feats[col] = 0.700
+                feats[col] = default
             else:
-                feats[col] = feats[col].fillna(0.700)
+                feats[col] = feats[col].fillna(default)
         
         log(f"  Hitting features added: {len(tdf)} team-game rows")
     except Exception as e:
         log(f"  ⚠ Could not add hitting features: {e}")
-        for col in ["h_ops_l20", "a_ops_l20"]:
-            feats[col] = 0.700
+        for col in ["h_ops_l10", "a_ops_l10", "h_ops_l20", "a_ops_l20",
+                     "closing_over_odds", "closing_under_odds",
+                     "closing_spread_home_odds", "closing_spread_away_odds",
+                     "closing_home_implied_probability", "closing_away_implied_probability"]:
+            if col not in feats.columns:
+                feats[col] = 0.0
     
     return feats
 
@@ -712,7 +817,7 @@ async def run_backtest(
     model = xgb.XGBRegressor(**xgb_params)
     model.fit(X_tr, target_tr, sample_weight=w, verbose=False)
     # Save model by test year for engine backtest to use
-    model_dir = Path("/app/data")
+    model_dir = Path("/home/rich/.openclaw/workspace/earl-knows-football/data/models/mlb")
     model_dir.mkdir(parents=True, exist_ok=True)
     save_path = model_dir / f"mlb_ou_{test_year}.pkl"
     with open(save_path, "wb") as f:
@@ -927,7 +1032,7 @@ async def run_all_years(
         "run_time": str(datetime.now() - t0),
         "results": all_results,
     }
-    out_path = "/app/data/mlb_ou_backtest_results.json"
+    out_path = "/home/rich/.openclaw/workspace/earl-knows-football/data/models/mlb_ou_backtest_results.json"
     with open(out_path, "w") as f:
         json.dump(out, f, indent=2, default=str)
     log(f"\nResults saved to {out_path}")
@@ -939,8 +1044,23 @@ async def run_single(test_year: int = 2025, train_years: list[int] = None):
     engine = create_async_engine(DB)
     df, pitcher_df = await load_data(engine)
     feats = build_features(df, pitcher_df)
-    await run_backtest(df, feats, test_year=test_year, train_years=train_years)
+    result, _ = await run_backtest(df, feats, test_year=test_year, train_years=train_years)
     await engine.dispose()
+    # Write results file for the admin page
+    import json
+    out_path = Path("/home/rich/.openclaw/workspace/earl-knows-football/data/models/mlb_ou_backtest_results.json")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    if out_path.exists():
+        with open(out_path) as f:
+            existing = json.load(f)
+        existing = [r for r in existing if r.get("test_year") != test_year]
+        existing.append(result)
+        data = existing
+    else:
+        data = [result]
+    with open(out_path, "w") as f:
+        json.dump(data, f, indent=2, default=str)
+    print(f"\nResults saved to {out_path}")
 
 
 # ── Helpers ────────────────────────────────────────────────────────────
@@ -952,7 +1072,7 @@ def _ml_implied(v):
 
 # ── Model management & inference (imported by mlb_engine.py) ──────────
 
-OU_MODEL_PATH = Path("/app/data/mlb_ou_model_prod.pkl")
+OU_MODEL_PATH = Path("/home/rich/.openclaw/workspace/earl-knows-football/data/models/mlb/mlb_ou_model_prod.pkl")
 _ou_model = None
 
 
@@ -1088,7 +1208,7 @@ async def train_model(year: int, train_years: list[int]) -> object:
     model.fit(X_tr, target_tr, sample_weight=w, verbose=False)
     log(f"OU model trained ({len(features)} features)")
     # Save by test year so engine backtest can use the same model
-    model_dir = Path("/app/data")
+    model_dir = Path("/home/rich/.openclaw/workspace/earl-knows-football/data/models/mlb")
     model_dir.mkdir(parents=True, exist_ok=True)
     for ty in range(year, year + 2):
         if ty <= 2026:

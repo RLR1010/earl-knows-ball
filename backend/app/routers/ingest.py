@@ -30,7 +30,8 @@ try:
     from app.ingestion.mlb_betting_lines import ingest_historical_mlb_lines, ingest_current_mlb_lines, snapshot_mlb_opening_lines, ingest_historical_sbr_mlb_lines, ingest_historical_odds_api_mlb_lines
 except ImportError:
     ingest_historical_mlb_lines = ingest_current_mlb_lines = snapshot_mlb_opening_lines = ingest_historical_sbr_mlb_lines = ingest_historical_odds_api_mlb_lines = None
-from app.ingestion.espn_nba import ingest_nba_schedule, ingest_nba_all_seasons
+from app.ingestion.espn_nba import ingest_nba_schedule, ingest_nba_all_seasons, ingest_nba_games
+from app.database import async_session
 from app.ingestion.dfs_salaries import scrape_draftkings, scrape_fanduel, scrape_all_dfs
 from app.ingestion.nba_betting_lines import fetch_current_lines, snapshot_nba_opening_lines
 from app.ingestion.nfl_pace import ingest_pace_data
@@ -193,15 +194,14 @@ async def ingest_fangraphs_historical(
 
 
 @router.post("/ingest/nba/games")
-async def ingest_nba_games(
+async def nba_games_route(
     season: int = Query(2025, description="Season year (e.g. 2025 = 2025-26 season)"),
-    db: AsyncSession = Depends(get_db),
 ):
     """Load NBA games (all types: preseason, regular, playoffs) from ESPN for a single season.
     NOTE: ESPN's NBA API ignores the seasontype filter. All game types within the season
     date range are loaded and tagged with their actual type from the event data.
     """
-    result = await ingest_nba_schedule(db, season_year=season)
+    result = await ingest_nba_games(season_year=season, db_session=async_session)
     return {"status": "ok", "source": "espn_nba", **result}
 
 

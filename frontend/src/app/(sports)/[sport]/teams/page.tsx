@@ -180,16 +180,20 @@ export default async function TeamsPage({ params }: { params: Promise<{ sport: s
                           height={32}
                           className="object-contain"
                         />
-                      ) : (
-                        <img
-                          src={getTeamLogoUrl(t.abbr, sport)}
-                          alt={t.name}
-                          width={32}
-                          height={32}
-                          className="object-contain"
-                          style={{ filter: 'brightness(1.1)' }}
-                        />
-                      )}
+                      ) : (() => {
+                        const logoUrl = getTeamLogoUrl(t.abbr, sport);
+                        if (!logoUrl) return null;
+                        return (
+                          <img
+                            src={logoUrl}
+                            alt={t.name}
+                            width={32}
+                            height={32}
+                            className="object-contain"
+                            style={{ filter: 'brightness(1.1)' }}
+                          />
+                        );
+                      })()}
                     </span>
                     <span className="font-medium group-hover:text-earl-400 transition">
                       {t.name}
