@@ -151,12 +151,57 @@ function ValuePct({ v, good }: { v: number; good: number }) {
 }
 
 // ── Model Variant Section ──
-function ModelVariantSection({ variant }: { variant: ModelVariant }) {
-  const colors = VARIANT_COLORS[variant.name] || VARIANT_COLORS["ATS"];
+interface TrainingRunInfo {
+  id: string;
+  model_type: string;
+  algorithm: string;
+  trained_at: string;
+  created_at?: string;
+  training_id: string | null;
+  is_current: boolean;
+}
+
+function ModelVariantSection({ variant: _variant, loadedRunInfo, trainingRuns, onSelectRun, onSetCurrent, sport }: { variant: ModelVariant; loadedRunInfo?: ModelVariant | null; trainingRuns?: TrainingRunInfo[]; onSelectRun?: (runId: number) => void; onSetCurrent?: (runId: number) => void; sport?: string }) {
+  const variantSource = loadedRunInfo && typeof loadedRunInfo === "object" && !("error" in loadedRunInfo) ? loadedRunInfo : _variant;
+  const variant = variantSource;
+  const colors = VARIANT_COLORS[variant?.name || "A"] || VARIANT_COLORS["ATS"];
   const [expandedFeat, setExpandedFeat] = useState<string | null>(null);
+  const [selectedRunId, setSelectedRunId] = useState<string>("");
 
   return (
     <div className={`rounded-2xl border ${colors.border} ${colors.bg} p-6`}>
+      {/* Training Run Selector */}
+      {trainingRuns && trainingRuns.length > 0 && onSelectRun && (
+        <div className="flex items-center gap-3 mb-4 pb-4 border-b border-white/10">
+          <label className="text-xs text-gray-400 font-medium whitespace-nowrap">Training Run:</label>
+          <select
+            className="bg-black/40 border border-white/10 rounded-lg px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-earl-500"
+            value={selectedRunId}
+            onChange={(e) => {
+              setSelectedRunId(e.target.value);
+              const val = e.target.value;
+              if (val === "") onSelectRun(0);
+              else onSelectRun(Number(val));
+            }}
+          >
+            <option value="">Current Model</option>
+            {trainingRuns.map((run) => (
+              <option key={run.id} value={run.id}>
+                Run #{run.id} — {new Date(run.trained_at || run.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+              </option>
+            ))}
+          </select>
+          {selectedRunId && onSetCurrent && (
+            <button
+              onClick={() => onSetCurrent(Number(selectedRunId))}
+              className="bg-earl-600 hover:bg-earl-500 text-white text-xs px-3 py-1.5 rounded-lg transition-colors"
+            >
+              Set as Current
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Header */}
       <div className="flex items-center gap-3 mb-6">
         <span className={`text-2xl font-bold ${colors.text}`}>{variant.name} Model</span>
@@ -166,13 +211,13 @@ function ModelVariantSection({ variant }: { variant: ModelVariant }) {
         <span className="text-xs text-gray-500 ml-auto">{variant.algorithm}</span>
       </div>
 
-      <p className="text-sm text-gray-400 mb-6 leading-relaxed">{variant.description}</p>
+      {variant.description && <p className="text-sm text-gray-400 mb-6 leading-relaxed">{variant.description}</p>}
 
       {/* Performance cards */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
         <div className="bg-white/[0.03] border border-white/10 rounded-xl p-4 text-center">
           <div className="text-xs text-gray-500 uppercase font-semibold">MAE</div>
-          <div className={`text-2xl font-bold ${colors.text}`}>{variant.overall_mae.toFixed(2)}</div>
+          <div className={`text-2xl font-bold ${colors.text}`}>{variant.overall_mae != null ? variant.overall_mae.toFixed(2) : "-"}</div>
         </div>
         {variant.overall_ats && (
           <div className="bg-white/[0.03] border border-white/10 rounded-xl p-4 text-center">
@@ -342,6 +387,11 @@ export default function AdminModels() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [expandedFeat, setExpandedFeat] = useState<string | null>(null);
+  const [trainingHistory, setTrainingHistory] = useState<any[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [selectedRunId, setSelectedRunId] = useState<number | null>(null);
+  const [loadingRunDetail, setLoadingRunDetail] = useState(false);
+  const [loadedRunInfo, setLoadedRunInfo] = useState<any | null>(null);
 
   const fetchModel = useCallback(async (s: string) => {
     setLoading(true);
@@ -365,7 +415,54 @@ export default function AdminModels() {
     } finally {
       setLoading(false);
     }
+    // Fetch training history
+    setHistoryLoading(true);
+    try {
+      const hRes = await fetch(`/api/admin/training-runs/${s}?limit=20`, {
+        headers: { Authorization: `Bearer ${token()}` },
+      });
+      if (hRes.ok) {
+        const hData = await hRes.json();
+        setTrainingHistory(hData);
+      }
+    } catch { /* ignore */ }
+    setHistoryLoading(false);
   }, []);
+
+  const loadTrainingRun = useCallback(async (runId: number) => {
+    console.log("loadTrainingRun", runId);
+    setLoadingRunDetail(true);
+    setLoadedRunInfo(null);
+    try {
+      const res = await fetch(`/api/admin/models/${sport}/from-run/${runId}`, {
+        headers: { Authorization: `Bearer ${token()}` },
+      });
+      const json = await res.json();
+      if (res.ok) {
+        setLoadedRunInfo(json.variant || json);
+        setSelectedRunId(String(runId));
+      } else {
+        setLoadedRunInfo({ error: json.detail || "Failed to load" });
+      }
+    } catch (err) {
+      setLoadedRunInfo({ error: "Network error" });
+    }
+    setLoadingRunDetail(false);
+  }, [sport]);
+
+  const setCurrentRun = useCallback(async (runId: number, modelType: string) => {
+    try {
+      const res = await fetch(`/api/admin/training-runs/${sport}/${modelType}/${runId}/set-current`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token()}` },
+      });
+      if (res.ok) {
+        setSelectedRunId(null);
+        setLoadedRunInfo(null);
+        fetchModel(sport);
+      }
+    } catch { /* ignore */ }
+  }, [sport, fetchModel]);
 
   useEffect(() => {
     fetchModel(sport);
@@ -474,7 +571,48 @@ export default function AdminModels() {
             })}
           </div>
 
-          {activeVariant && <ModelVariantSection variant={activeVariant} />}
+          {activeVariant && (() => {
+            // Map variant names to model_type filter
+            const variantModelType: Record<string, string> = {
+              "ATS": "ats",
+              "O/U": "ou",
+              "ML": "ml",
+              "Moneyline": "ml",
+              "Spread": "ats",
+              "Total": "ou",
+            };
+            const mtFilter = variantModelType[activeVariant.name] || activeVariant.name.toLowerCase();
+            const sortedRuns = [...trainingHistory].sort((a: any, b: any) => {
+              const da = new Date(a.trained_at || a.created_at || 0).getTime();
+              const db = new Date(b.trained_at || b.created_at || 0).getTime();
+              return db - da;
+            });
+            const filteredRuns = (sport !== "nfl" && sortedRuns.length > 0)
+              ? sortedRuns.filter((r: any) => (r.model_type || "").toLowerCase() === mtFilter)
+              : undefined;
+            const handleRunSelect = async (runId: number) => {
+              if (runId === 0) {
+                setSelectedRunId(null);
+                setLoadedRunInfo(null);
+              } else {
+                await loadTrainingRun(runId);
+              }
+            };
+            const handleSetCurrent = async (runId: number) => {
+              try {
+                const mtFilter = variantModelType[activeVariant.name] || activeVariant.name.toLowerCase();
+                const res = await fetch(`/api/admin/training-runs/${sport}/${mtFilter}/${runId}/set-current`, {
+                  method: "POST",
+                  headers: { Authorization: `Bearer ${token()}` },
+                });
+                if (res.ok) {
+                  // Refresh the model data to reflect the new current run
+                  await fetchModel(sport);
+                }
+              } catch { /* ignore */ }
+            };
+            return <ModelVariantSection variant={activeVariant} loadedRunInfo={loadedRunInfo} trainingRuns={filteredRuns} onSelectRun={handleRunSelect} onSetCurrent={handleSetCurrent} sport={sport} />;
+          })()}
         </div>
       )}
 
@@ -625,6 +763,99 @@ export default function AdminModels() {
                 </tbody>
               </table>
             </div>
+          </div>
+
+          {/* Training History */}
+          <div className="bg-white/5 rounded-xl border border-white/10 p-6">
+            <h3 className="text-lg font-semibold mb-4">Training History</h3>
+            {historyLoading ? (
+              <div className="text-gray-400">Loading…</div>
+            ) : trainingHistory.length === 0 ? (
+              <div className="text-gray-500 text-sm">No training runs recorded yet.</div>
+            ) : (
+              <>
+                <div className="overflow-x-auto mb-4">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-white/10">
+                        <th className="text-left py-2 px-3 text-gray-400 font-medium">ID</th>
+                        <th className="text-left py-2 px-3 text-gray-400 font-medium">Model</th>
+                        <th className="text-left py-2 px-3 text-gray-400 font-medium">Trained At</th>
+                        <th className="text-center py-2 px-3 text-gray-400 font-medium">Current</th>
+                        <th className="text-left py-2 px-3 text-gray-400 font-medium">PKL</th>
+                        <th className="text-right py-2 px-3 text-gray-400 font-medium">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {trainingHistory.map((run: any) => (
+                        <tr key={run.id} className={`border-b border-white/5 hover:bg-white/[0.02] ${selectedRunId === run.id ? 'bg-blue-500/10' : ''}`}>
+                          <td className="py-2 px-3 text-gray-400 text-xs font-mono">{run.id}</td>
+                          <td className="py-2 px-3 text-gray-300 capitalize">{run.model_type}</td>
+                          <td className="py-2 px-3 text-gray-400 text-xs">
+                            {run.trained_at ? new Date(run.trained_at).toLocaleString() : "—"}
+                          </td>
+                          <td className="py-2 px-3 text-center">
+                            {run.is_current ? (
+                              <span className="text-green-400 text-xs">Active</span>
+                            ) : (
+                              <span className="text-gray-600">—</span>
+                            )}
+                          </td>
+                          <td className="py-2 px-3 text-gray-500 text-xs font-mono truncate max-w-[120px]">
+                            {run.pkl_filename || "—"}
+                          </td>
+                          <td className="py-2 px-3 text-right">
+                            <div className="flex gap-1 justify-end">
+                              <button
+                                onClick={() => loadTrainingRun(run.id)}
+                                disabled={loadingRunDetail}
+                                className="px-2 py-1 text-xs rounded bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white"
+                              >
+                                {loadingRunDetail && selectedRunId === run.id ? "…" : "Load"}
+                              </button>
+                              {!run.is_current && (
+                                <button
+                                  onClick={() => setCurrentRun(run.id, run.model_type)}
+                                  className="px-2 py-1 text-xs rounded bg-emerald-700 hover:bg-emerald-600 text-white"
+                                >
+                                  Set Current
+                                </button>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* Loaded run detail */}
+                {loadedRunInfo && (
+                  <div className="border-t border-white/10 pt-4 mt-2">
+                    {loadedRunInfo.error ? (
+                      <div className="text-red-400 text-sm">Error: {loadedRunInfo.error}</div>
+                    ) : (
+                      <div className="text-sm text-gray-300">
+                        <div className="flex items-center gap-3 mb-3">
+                          <span className="font-medium">Loaded Run (#{selectedRunId || "?"})</span>
+                          <span className="text-gray-500">—</span>
+                          <span className="text-cyan-400">{loadedRunInfo.name?.toUpperCase() || ""}</span>
+                        </div>
+                        {loadedRunInfo.backtest_results?.map((yr: any, i: number) => (
+                          <div key={i} className="flex gap-4 text-xs bg-black/20 rounded px-3 py-1.5 mb-1">
+                            <span className="text-gray-400 min-w-[60px]">{yr.test_year}</span>
+                            <span className={yr.name === "O/U" ? "text-cyan-300" : "text-gray-400"}>O/U: {yr.ou_correct}/{yr.ou_total} ({yr.ou_pct})</span>
+                            <span className="text-gray-500">MAE: {yr.mae}</span>
+                          </div>
+                        )) || (
+                          <div className="text-gray-500 text-xs">No backtest results in this run.</div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </>
+            )}
           </div>
         </>
       )}

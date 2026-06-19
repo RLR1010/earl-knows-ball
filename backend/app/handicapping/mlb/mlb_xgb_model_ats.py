@@ -16,18 +16,31 @@ import json
 import math
 import os
 import pickle
+import shutil
 import sys
 from datetime import datetime, timezone, date
 from typing import Optional, Any
 from pathlib import Path
 import numpy as np
 import pandas as pd
-import warnings
-warnings.filterwarnings("ignore")
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 from sklearn.metrics import mean_absolute_error
 import xgboost as xgb
+
+# ── Training DB persistence (safe import) ──
+try:
+    from app.handicapping.db_training import (
+        save_training_run,
+        update_pkl_filename,
+        get_current_training_run,
+        get_model_pkl_path,
+    )
+    _DB_HELPERS_AVAILABLE = True
+except ImportError:
+    _DB_HELPERS_AVAILABLE = False
+
+warnings.filterwarnings("ignore")
 
 
 async def load_data(engine):
@@ -100,18 +113,16 @@ COORDS = {
 # a_home_rf = away team's runs scored in away games
 FEATURE_SETS = {
     "simple": [
-        "h_rf5", "h_ra5", "a_rf5", "a_ra5",
+        "h_rf10", "h_ra10", "a_rf10", "a_ra10",
         "rest_diff", "is_home_fav",
     ],
     "rolling": [
-        "h_rf5", "h_ra5", "a_rf5", "a_ra5",
         "h_rf10", "h_ra10", "a_rf10", "a_ra10",
         "h_rf20", "h_ra20", "a_rf20", "a_ra20",
         "h_home_rf", "h_home_ra", "a_home_rf", "a_home_ra",
         "rest_diff", "rest_h", "rest_a",
     ],
     "full": [
-        "h_rf5", "h_ra5", "a_rf5", "a_ra5",
         "h_rf10", "h_ra10", "a_rf10", "a_ra10",
         "h_rf20", "h_ra20", "a_rf20", "a_ra20",
         "h_home_rf", "h_home_ra", "a_home_rf", "a_home_ra",
@@ -390,6 +401,7 @@ async def run_backtest(
     train_years: Optional[list] = None,
     feature_set: str = "full",
     xgb_params: Optional[dict] = None,
+    training_id: Optional[str] = None,
 ) -> dict:
     """Run rolling XGBoost backtest for a test year."""
     if train_years is None:
@@ -463,7 +475,8 @@ async def run_backtest(
     # Save model by test year for engine backtest to use
     model_dir = Path("/home/rich/.openclaw/workspace/earl-knows-football/data/models/mlb")
     model_dir.mkdir(parents=True, exist_ok=True)
-    save_path = model_dir / f"mlb_ats_{test_year}.pkl"
+    pkl_name = f"{training_id}-{test_year}.pkl" if training_id else f"mlb_ats_{test_year}.pkl"
+    save_path = model_dir / pkl_name
     with open(save_path, "wb") as f:
         pickle.dump(model, f)
     log(f"  Saved ATS model to {save_path}")
@@ -595,9 +608,13 @@ async def run_all_years(
     engine = create_async_engine(DB)
 
     df = await load_data(engine)
+    df = _enrich_df(df)
     log(f"\nBuilding features...")
     feats = build_features(df)
     log(f"Feature table: {len(feats)} rows, {len(feats.columns)} columns")
+
+    # Temp ID for PKL naming (will be renamed to UUID after save_training_run)
+    training_id = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     all_results = []
 
@@ -612,6 +629,7 @@ async def run_all_years(
                 test_year=year,
                 train_years=train,
                 feature_set=fs,
+                training_id=training_id,
             )
             if "error" not in result:
                 all_results.append(result)
@@ -655,6 +673,73 @@ async def run_all_years(
     with open(out_path, "w") as f:
         json.dump(out, f, indent=2, default=str)
     log(f"\nResults saved to {out_path}")
+
+    # Save best feature set to training_runs DB
+    if _DB_HELPERS_AVAILABLE:
+        # Pick the best feature set (lowest avg MAE)
+        fs_avgs = {}
+        for fs in feature_sets:
+            entries = by_fs.get(fs, [])
+            if entries:
+                fs_avgs[fs] = np.mean([e["mae"] for e in entries])
+        best_fs = min(fs_avgs, key=fs_avgs.get) if fs_avgs else feature_sets[0]
+        log(f"\nSaving best feature set '{best_fs}' to training DB...")
+
+        # Build combined results dict from per-year entries
+        best_entries = by_fs.get(best_fs, [])
+        combined_results = []
+        for entry in best_entries:
+            row = {
+                "test_year": entry["test_year"],
+                "total_games": entry["total_games"],
+                "mae": entry["mae"],
+                "ats": entry.get("ats", {}),
+                "name": "ATS",
+                "ats_correct": entry.get("ats", {}).get("correct", 0),
+                "ats_total": entry.get("ats", {}).get("total", 0),
+                "ats_pct": entry.get("ats", {}).get("pct", 0.0),
+            }
+            # Add feature importance if available
+            if "feature_importance" in entry:
+                row["feature_importance"] = entry["feature_importance"]
+            combined_results.append(row)
+
+        pkl_dir = Path("/home/rich/.openclaw/workspace/earl-knows-football/data/models/mlb")
+        pkl_dir.mkdir(parents=True, exist_ok=True)
+
+        temp_prefix = training_id  # date-based training_id from outer scope, used as temp PKL prefix
+
+        training_id = save_training_run(
+            sport="mlb",
+            model_type="ats",
+            results_json=combined_results,
+            pkl_filename="",
+            algorithm="xgboost",
+            description=f"MLB ATS full backtest: {best_fs} features",
+            test_year=(max(e["test_year"] for e in best_entries) if best_entries else 2025),
+            train_years=[y for y in range(2021, (max(e["test_year"] for e in best_entries) if best_entries else 2025) + 1)],
+        )
+
+        # Rename PKL files from temp_prefix (date-based) to UUID
+        if best_entries:
+            latest_year = max(e["test_year"] for e in best_entries)
+            for yr in best_entries:
+                year = yr["test_year"]
+                temp_pkl = pkl_dir / f"{temp_prefix}-{year}.pkl"
+                uuid_pkl = pkl_dir / f"{training_id}-{year}.pkl"
+                if temp_pkl.exists():
+                    shutil.move(str(temp_pkl), str(uuid_pkl))
+                    log(f"  Renamed {temp_prefix}-{year}.pkl → {training_id}-{year}.pkl")
+
+            # Copy the latest year's PKL as prod model
+            pkl_name = f"{training_id}.pkl"
+            src_pkl = pkl_dir / f"{training_id}-{latest_year}.pkl"
+            pkl_path = pkl_dir / pkl_name
+            if src_pkl.exists():
+                shutil.copy2(str(src_pkl), str(pkl_path))
+                update_pkl_filename("mlb", training_id, pkl_name)
+                log(f"  Prod model saved as {pkl_name}")
+
     log(f"Total time: {datetime.now() - t0}")
 
 
@@ -679,24 +764,48 @@ async def run_single(test_year: int = 2025, feature_set: str = "full",
     df = await load_data(engine)
     df = _enrich_df(df)
     feats = build_features(df)
-    result, _ = await run_backtest(df, feats, test_year=test_year, train_years=train_years, feature_set=feature_set)
+    run_training_id_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    result, _ = await run_backtest(df, feats, test_year=test_year, train_years=train_years, feature_set=feature_set, training_id=run_training_id_ts)
     await engine.dispose()
-    # Write results file for the admin page — merge with existing results
-    import json
-    out_path = Path("/home/rich/.openclaw/workspace/earl-knows-football/data/models/mlb_backtest_results.json")
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    if out_path.exists():
-        with open(out_path) as f:
-            existing = json.load(f)
-        # Replace result for this test_year if it exists, otherwise append
-        existing = [r for r in existing if r.get("test_year") != test_year]
-        existing.append(result)
-        data = existing
+    # Write results to the DB (falls back to JSON file)
+    if _DB_HELPERS_AVAILABLE:
+        pkl_dir = Path("/home/rich/.openclaw/workspace/earl-knows-football/data/models/mlb")
+        pkl_dir.mkdir(parents=True, exist_ok=True)
+
+        training_id = save_training_run(
+            sport="mlb",
+            model_type="ats",
+            results_json=result,
+            pkl_filename="",
+            algorithm="xgboost",
+            description=f"MLB ATS single backtest: {test_year}",
+            test_year=test_year,
+            train_years=train_years,
+        )
+
+        pkl_name = f"{training_id}.pkl"
+        src_pkl = pkl_dir / f"{run_training_id_ts}-{test_year}.pkl"
+        pkl_path = pkl_dir / pkl_name
+        if src_pkl.exists():
+            shutil.copy2(str(src_pkl), str(pkl_path))
+
+        update_pkl_filename("mlb", training_id, pkl_name)
+        print(f"\nResults saved to DB (training_id={training_id}, pkl={pkl_name})")
     else:
-        data = [result]
-    with open(out_path, "w") as f:
-        json.dump(data, f, indent=2, default=str)
-    print(f"\nResults saved to {out_path}")
+        import json
+        out_path = Path("/home/rich/.openclaw/workspace/earl-knows-football/data/models/mlb_backtest_results.json")
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        if out_path.exists():
+            with open(out_path) as f:
+                existing = json.load(f)
+            existing = [r for r in existing if r.get("test_year") != test_year]
+            existing.append(result)
+            data = existing
+        else:
+            data = [result]
+        with open(out_path, "w") as f:
+            json.dump(data, f, indent=2, default=str)
+        print(f"\nResults saved to {out_path}")
 
 
 # ── Helpers ────────────────────────────────────────────────────────────

@@ -13,17 +13,31 @@ Usage:
     docker exec earl-knows-football-api-1 python -m app.handicapping.mlb_backtest_ou --mode all
 """
 import asyncio
+import os
 import pickle
+import shutil
+import uuid
 from typing import Optional
 import logging
 import warnings
 import json
 import math
-import pickle
 from datetime import datetime, date
+from pathlib import Path
+
+# ── Training DB persistence (safe import) ──
+try:
+    from app.handicapping.db_training import (
+        save_training_run,
+        update_pkl_filename,
+        get_current_training_run,
+        get_model_pkl_path,
+    )
+    _DB_HELPERS_AVAILABLE = True
+except ImportError:
+    _DB_HELPERS_AVAILABLE = False
 
 warnings.filterwarnings("ignore")
-from pathlib import Path
 import numpy as np
 import asyncpg
 import pandas as pd
@@ -74,7 +88,6 @@ OU_FEATURES = [
     "ou_movement",                    # Closing - opening (smart money direction)
     "opening_ou",                    # Opening O/U line from consolidated table
     "closing_over_odds",            # Closing over bet odds (American)
-    "closing_under_odds",           # Closing under bet odds (American)
     "closing_spread_home_odds",     # Closing spread odds for home team (American)
     "closing_spread_away_odds",     # Closing spread odds for away team (American)
     "closing_home_implied_probability",  # Closing home win implied probability from moneyline
@@ -159,7 +172,6 @@ async def load_data(engine):
                 closing_ou as over_under,
                 opening_ou as opening_total,
                 closing_over_odds,
-                closing_under_odds,
                 closing_spread_home_odds,
                 closing_spread_away_odds,
                 closing_home_implied_probability,
@@ -662,7 +674,6 @@ def add_hitting_features(feats: pd.DataFrame) -> pd.DataFrame:
             "h_ops_l10": 0.700, "a_ops_l10": 0.700,
             "h_ops_l20": 0.700, "a_ops_l20": 0.700,
             "closing_over_odds": -110,
-            "closing_under_odds": -110,
             "closing_spread_home_odds": -110,
             "closing_spread_away_odds": -110,
             "closing_home_implied_probability": 0.500,
@@ -679,7 +690,7 @@ def add_hitting_features(feats: pd.DataFrame) -> pd.DataFrame:
     except Exception as e:
         log(f"  ⚠ Could not add hitting features: {e}")
         for col in ["h_ops_l10", "a_ops_l10", "h_ops_l20", "a_ops_l20",
-                     "closing_over_odds", "closing_under_odds",
+                     "closing_over_odds",
                      "closing_spread_home_odds", "closing_spread_away_odds",
                      "closing_home_implied_probability", "closing_away_implied_probability"]:
             if col not in feats.columns:
@@ -746,6 +757,7 @@ def evaluate_ou(
 async def run_backtest(
     df: pd.DataFrame,
     feats: pd.DataFrame,
+    training_id: str,
     test_year: int = 2025,
     train_years: list[int] = None,
     xgb_params: dict = None,
@@ -819,7 +831,8 @@ async def run_backtest(
     # Save model by test year for engine backtest to use
     model_dir = Path("/home/rich/.openclaw/workspace/earl-knows-football/data/models/mlb")
     model_dir.mkdir(parents=True, exist_ok=True)
-    save_path = model_dir / f"mlb_ou_{test_year}.pkl"
+    model_name = f"{training_id}-{test_year}.pkl"
+    save_path = model_dir / model_name
     with open(save_path, "wb") as f:
         pickle.dump(model, f)
     log(f"  Saved OU model to {save_path}")
@@ -992,13 +1005,15 @@ async def run_all_years(
     log(f"Feature table: {len(feats)} rows, {len(feats.columns)} columns")
 
     all_results = []
+    batch_training_id = str(uuid.uuid4())
+    log(f"Batch training_id: {batch_training_id}")
 
     for year in test_years:
         log(f"\n{'─'*62}")
         log(f"Testing year={year}")
         log(f"{'─'*62}")
         train = [y for y in range(train_from, year)]
-        result = await run_backtest(df, feats, test_year=year, train_years=train)
+        result = await run_backtest(df, feats, test_year=year, train_years=train, training_id=batch_training_id)
         if "error" not in result:
             all_results.append(result)
 
@@ -1027,40 +1042,115 @@ async def run_all_years(
     print(f"  {'─'*38}")
     print(f"  {'TOTAL':>4s}  {total_g:>5d}  {'':>5s}  {round(100*total_c/max(tp,1),1):>5.1f}%  {total_c:>3d}-{total_i:>3d}")
 
-    # Save results
-    out = {
-        "run_time": str(datetime.now() - t0),
-        "results": all_results,
-    }
-    out_path = "/home/rich/.openclaw/workspace/earl-knows-football/data/models/mlb_ou_backtest_results.json"
-    with open(out_path, "w") as f:
-        json.dump(out, f, indent=2, default=str)
-    log(f"\nResults saved to {out_path}")
+    # Save results to DB
+    print(f"\n=== DB_HELPERS_AVAILABLE={_DB_HELPERS_AVAILABLE}, all_results={len(all_results)} years ===", flush=True)
+    if _DB_HELPERS_AVAILABLE:
+        combined_results = {
+            "run_time": str(datetime.now() - t0),
+            "results": all_results,
+        }
+
+        print(f"Calling save_training_run... batch={batch_training_id}", flush=True)
+        try:
+            training_id = save_training_run(
+                sport="mlb",
+                model_type="ou",
+                results_json=combined_results,
+                pkl_filename=f"{batch_training_id}.pkl",
+                algorithm="xgboost",
+                description=f"MLB OU year-by-year backtest",
+                test_year=max(test_years),
+                train_years=test_years,
+            )
+            print(f"save_training_run returned: {training_id}", flush=True)
+        except Exception as e:
+            print(f"ERROR in save_training_run: {e}", flush=True)
+            import traceback
+            traceback.print_exc()
+            raise
+
+        # Copy the latest year's model as the combined prod model
+        pkl_dir = Path("/home/rich/.openclaw/workspace/earl-knows-football/data/models/mlb")
+        latest_year = max(all_results, key=lambda r: r["test_year"])["test_year"]
+        src_pkl = pkl_dir / f"{batch_training_id}-{latest_year}.pkl"
+        prod_pkl = pkl_dir / f"{batch_training_id}.pkl"
+        if src_pkl.exists():
+            shutil.copy2(str(src_pkl), str(prod_pkl))
+            print(f"Copied prod model: {src_pkl.name} -> {prod_pkl.name}", flush=True)
+        else:
+            print(f"WARNING: src_pkl {src_pkl} not found", flush=True)
+
+        from app.handicapping.db_training import update_pkl_filename
+        update_pkl_filename("mlb", training_id, f"{batch_training_id}.pkl")
+        log(f"\nResults saved to DB (training_id={training_id})")
+        log(f"  Per-year PKLs: {batch_training_id}-{{year}}.pkl")
+        log(f"  Combined prod: {batch_training_id}.pkl")
+        print(f"Done saving to DB.", flush=True)
+    else:
+        out = {
+            "run_time": str(datetime.now() - t0),
+            "results": all_results,
+        }
+        out_path = "/home/rich/.openclaw/workspace/earl-knows-football/data/models/mlb_ou_backtest_results.json"
+        with open(out_path, "w") as f:
+            json.dump(out, f, indent=2, default=str)
+        log(f"\nResults saved to {out_path}")
     log(f"Total time: {datetime.now() - t0}")
 
 
 async def run_single(test_year: int = 2025, train_years: list[int] = None):
     'Run a single OU backtest for quick iteration.'
+    import uuid
+    training_id = str(uuid.uuid4())
+    print(f"training_id: {training_id}")
+
     engine = create_async_engine(DB)
     df, pitcher_df = await load_data(engine)
     feats = build_features(df, pitcher_df)
-    result, _ = await run_backtest(df, feats, test_year=test_year, train_years=train_years)
+    result, _ = await run_backtest(df, feats, test_year=test_year, train_years=train_years, training_id=training_id)
     await engine.dispose()
-    # Write results file for the admin page
-    import json
-    out_path = Path("/home/rich/.openclaw/workspace/earl-knows-football/data/models/mlb_ou_backtest_results.json")
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    if out_path.exists():
-        with open(out_path) as f:
-            existing = json.load(f)
-        existing = [r for r in existing if r.get("test_year") != test_year]
-        existing.append(result)
-        data = existing
+
+    # Save to DB
+    if _DB_HELPERS_AVAILABLE:
+        pkl_dir = Path("/home/rich/.openclaw/workspace/earl-knows-football/data/models/mlb")
+        pkl_dir.mkdir(parents=True, exist_ok=True)
+
+        db_training_id = save_training_run(
+            sport="mlb",
+            model_type="ou",
+            results_json=result,
+            pkl_filename=f"{training_id}.pkl",
+            algorithm="xgboost",
+            description=f"MLB OU single backtest: {test_year}",
+            test_year=test_year,
+            train_years=train_years,
+        )
+
+        # Copy the year model as prod
+        src_pkl = pkl_dir / f"{training_id}-{test_year}.pkl"
+        prod_pkl = pkl_dir / f"{training_id}.pkl"
+        if src_pkl.exists():
+            shutil.copy2(str(src_pkl), str(prod_pkl))
+
+        update_pkl_filename("mlb", db_training_id, f"{training_id}.pkl")
+        print(f"\nResults saved to DB (training_id={training_id})")
+        print(f"  Per-year PKL: {training_id}-{test_year}.pkl")
+        print(f"  Prod PKL:     {training_id}.pkl")
     else:
-        data = [result]
-    with open(out_path, "w") as f:
-        json.dump(data, f, indent=2, default=str)
-    print(f"\nResults saved to {out_path}")
+        import json
+        out_path = Path("/home/rich/.openclaw/workspace/earl-knows-football/data/models/mlb_ou_backtest_results.json")
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        if out_path.exists():
+            with open(out_path) as f:
+                existing = json.load(f)
+            existing = [r for r in existing if r.get("test_year") != test_year]
+            existing.append(result)
+            data = existing
+        else:
+            data = [result]
+        with open(out_path, "w") as f:
+            json.dump(data, f, indent=2, default=str)
+        print(f"\nResults saved to {out_path}")
 
 
 # ── Helpers ────────────────────────────────────────────────────────────
@@ -1072,8 +1162,24 @@ def _ml_implied(v):
 
 # ── Model management & inference (imported by mlb_engine.py) ──────────
 
-OU_MODEL_PATH = Path("/home/rich/.openclaw/workspace/earl-knows-football/data/models/mlb/mlb_ou_model_prod.pkl")
+MODELS_DIR = Path("/home/rich/.openclaw/workspace/earl-knows-football/data/models/mlb")
+OU_MODEL_PATH = MODELS_DIR / "mlb_ou_model_prod.pkl"
 _ou_model = None
+
+
+def _resolve_ou_model_path() -> Path:
+    """Return the path to the current prod OU model.
+
+    First tries the DB (current training run's PKL), falls back to
+    the legacy mlb_ou_model_prod.pkl path for backward compat.
+    """
+    try:
+        db_path = get_model_pkl_path("mlb", "ou")
+        if db_path and os.path.exists(db_path):
+            return Path(db_path)
+    except Exception:
+        pass
+    return OU_MODEL_PATH
 
 
 def set_model_path(path: str):
@@ -1086,13 +1192,14 @@ def _load_ou_model():
     global _ou_model
     if _ou_model is not None:
         return _ou_model
-    if not OU_MODEL_PATH.exists():
-        raise FileNotFoundError(f"OU model not found at {OU_MODEL_PATH}")
-    with open(OU_MODEL_PATH, "rb") as f:
+    model_path = _resolve_ou_model_path()
+    if not model_path.exists():
+        raise FileNotFoundError(f"OU model not found at {model_path}")
+    with open(model_path, "rb") as f:
         payload = pickle.load(f)
     model = payload["model"] if isinstance(payload, dict) else payload
     _ou_model = model
-    log(f"Loaded OU model ({len(FEATURES_TRAINING)} features)")
+    log(f"Loaded OU model from {model_path.name} ({len(FEATURES_TRAINING)} features)")
     return _ou_model
 
 

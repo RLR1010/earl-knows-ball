@@ -13,13 +13,27 @@ Usage:
     docker exec earl-knows-football-api-1 python -m app.handicapping.mlb.mlb_xgb_model_ml --mode all
 """
 import asyncio
-import pickle
-from typing import Optional
-import logging
-import warnings
 import json
+import logging
 import math
+import os
+import pickle
+import shutil
+import warnings
 from datetime import datetime, date
+from typing import Optional
+
+# ── Training DB persistence (safe import) ──
+try:
+    from app.handicapping.db_training import (
+        save_training_run,
+        update_pkl_filename,
+        get_current_training_run,
+        get_model_pkl_path,
+    )
+    _DB_HELPERS_AVAILABLE = True
+except ImportError:
+    _DB_HELPERS_AVAILABLE = False
 
 warnings.filterwarnings("ignore")
 from pathlib import Path
@@ -937,15 +951,46 @@ async def run_all_years(
     print(f"  {'─'*70}")
     print(f"  {'TOTAL':>4s}  {tp:>5d}  {round(100*total_c/max(tp,1),1):>5.1f}%  ({total_c:>4d}-{total_i:>4d})")
 
-    # Save results
-    out = {
-        "run_time": str(datetime.now() - t0),
-        "results": all_results,
-    }
-    out_path = "/home/rich/.openclaw/workspace/earl-knows-football/data/models/mlb_ml_backtest_results.json"
-    with open(out_path, "w") as f:
-        json.dump(out, f, indent=2, default=str)
-    log(f"\nResults saved to {out_path}")
+    # Save results to DB (+ unique PKL)
+    if _DB_HELPERS_AVAILABLE:
+        pkl_dir = Path("/home/rich/.openclaw/workspace/earl-knows-football/data/models/mlb")
+        pkl_dir.mkdir(parents=True, exist_ok=True)
+
+        combined_results = {
+            "run_time": str(datetime.now() - t0),
+            "results": all_results,
+        }
+
+        training_id = save_training_run(
+            sport="mlb",
+            model_type="ml",
+            results_json=combined_results,
+            pkl_filename="",
+            algorithm="xgboost",
+            description="MLB ML year-by-year backtest",
+            test_year=max(all_results, key=lambda r: r["test_year"])["test_year"] if all_results else None,
+            train_years=test_years,
+        )
+
+        pkl_name = f"{training_id}.pkl"
+        pkl_path = pkl_dir / pkl_name
+
+        latest_year = max(all_results, key=lambda r: r["test_year"])["test_year"]
+        src_pkl = pkl_dir / f"mlb_ml_{latest_year}.pkl"
+        if src_pkl.exists():
+            shutil.copy2(str(src_pkl), str(pkl_path))
+
+        update_pkl_filename("mlb", training_id, pkl_name)
+        log(f"\nResults saved to DB (training_id={training_id}, pkl={pkl_name})")
+    else:
+        out = {
+            "run_time": str(datetime.now() - t0),
+            "results": all_results,
+        }
+        out_path = "/home/rich/.openclaw/workspace/earl-knows-football/data/models/mlb_ml_backtest_results.json"
+        with open(out_path, "w") as f:
+            json.dump(out, f, indent=2, default=str)
+        log(f"\nResults saved to {out_path}")
     log(f"Total time: {datetime.now() - t0}")
 
 

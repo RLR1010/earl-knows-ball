@@ -661,7 +661,6 @@ _MLB_OU_DESCRIPTIONS = {
     "opening_ou": "Opening over/under total from sportsbook (primary market anchor)",
     "ou_movement": "Closing OU - opening OU (positive = line moved up = sharp money on over)",
     "closing_over_odds": "Closing American odds on the over (e.g. -110 = 52.4% implied)",
-    "closing_under_odds": "Closing American odds on the under (e.g. -110 = 52.4% implied)",
     "closing_spread_home_odds": "Closing spread odds for home team (American)",
     "closing_spread_away_odds": "Closing spread odds for away team (American)",
     "closing_home_implied_probability": "Implied win % for home team from closing moneyline",
@@ -703,7 +702,7 @@ _MLB_OU_DESCRIPTIONS = {
 
 _MLB_OU_CATEGORIES = {
     "Market & Line Movement": ["opening_ou", "ou_movement",
-                                "closing_over_odds", "closing_under_odds",
+                                "closing_over_odds",
                                 "closing_spread_home_odds", "closing_spread_away_odds",
                                 "closing_home_implied_probability",
                                 "closing_away_implied_probability"],
@@ -1047,7 +1046,7 @@ async def delete_article(
 # ── Prediction Models ────────────────────────────────────────────────
 
 
-_MODELS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "data")
+_MODELS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "data", "models")
 
 
 @router.get("/models/{sport}", response_model=SportModelDetailOut)
@@ -1067,6 +1066,166 @@ async def get_sport_model(
         return _get_nfl_model_detail()
     else:
         return _get_nba_model_detail()
+
+
+@router.get("/training-runs/{sport}")
+async def get_training_runs(
+    sport: str,
+    admin: User = Depends(get_admin_user),
+    limit: int = 20,
+):
+    """Return the most recent training runs for a sport."""
+    from app.handicapping.db_training import get_all_training_runs
+    sport = sport.lower()
+    if sport not in ("mlb", "nfl", "nba"):
+        raise HTTPException(status_code=404, detail=f"Unknown sport: {sport}")
+    if limit < 1:
+        limit = 20
+    elif limit > 100:
+        limit = 100
+    runs = get_all_training_runs(sport, limit=limit)
+    return runs
+
+
+@router.get("/training-runs/{sport}/{model_type}")
+async def get_training_runs_for_model(
+    sport: str,
+    model_type: str,
+    admin: User = Depends(get_admin_user),
+    limit: int = 10,
+):
+    """Return the most recent training runs for a specific sport+model_type."""
+    from app.handicapping.db_training import get_all_training_runs_for_model_type
+    sport = sport.lower()
+    if sport not in ("mlb", "nfl", "nba"):
+        raise HTTPException(status_code=404, detail=f"Unknown sport: {sport}")
+    if limit < 1:
+        limit = 10
+    elif limit > 100:
+        limit = 100
+    runs = get_all_training_runs_for_model_type(sport, model_type, limit=limit)
+    return runs
+
+
+@router.get("/training-runs/{sport}/{model_type}/{run_id}")
+async def get_training_run_detail(
+    sport: str,
+    model_type: str,
+    run_id: int,
+    admin: User = Depends(get_admin_user),
+):
+    """Return the full details (including results_json) for a specific training run."""
+    from app.handicapping.db_training import get_training_run
+    sport = sport.lower()
+    if sport not in ("mlb", "nfl", "nba"):
+        raise HTTPException(status_code=404, detail=f"Unknown sport: {sport}")
+    run = get_training_run(sport, run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Training run not found")
+    return run
+
+
+@router.post("/training-runs/{sport}/{model_type}/{run_id}/set-current")
+async def set_training_run_current(
+    sport: str,
+    model_type: str,
+    run_id: int,
+    admin: User = Depends(get_admin_user),
+):
+    """Set a specific training run as the current (production) model."""
+    from app.handicapping.db_training import set_training_run_as_current
+    sport = sport.lower()
+    if sport not in ("mlb", "nfl", "nba"):
+        raise HTTPException(status_code=404, detail=f"Unknown sport: {sport}")
+    result = set_training_run_as_current(sport, run_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Training run not found")
+    return {"status": "ok", "training_run": result}
+
+
+@router.get("/models/{sport}/from-run/{run_id}")
+async def get_model_detail_from_run(
+    sport: str,
+    run_id: int,
+    admin: User = Depends(get_admin_user),
+):
+    """Build a model variant from a specific training run's data."""
+    from app.handicapping.db_training import get_training_run
+    sport = sport.lower()
+    if sport not in ("mlb", "nfl", "nba"):
+        raise HTTPException(status_code=404, detail=f"Unknown sport: {sport}")
+
+    run = get_training_run(sport, run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Training run not found")
+
+    results = run.get("results_json")
+    if not results:
+        raise HTTPException(status_code=404, detail="Training run has no results")
+
+    # Extract the results list
+    if isinstance(results, dict) and "results" in results:
+        results = results["results"]
+    elif not isinstance(results, list):
+        results = [results]
+
+    model_type = run.get("model_type", "ats")
+    name_map = {"ou": "O/U", "ats": "ATS", "ml": "ML"}
+    variant_name = name_map.get(model_type, model_type.upper())
+
+    # Build the variant using the sport-appropriate function
+    if sport == "nfl":
+        variant = _build_nfl_model_variant(results, variant_name, model_type)
+    else:
+        variant = _build_generic_model_variant(results, variant_name, model_type)
+
+    if not variant:
+        return {"error": "Could not build model variant from this run's data"}
+
+    return {
+        "run": {
+            "id": run.get("id"),
+            "model_type": run.get("model_type"),
+            "training_id": run.get("training_id"),
+            "trained_at": run.get("trained_at"),
+            "is_current": run.get("is_current"),
+            "pkl_filename": run.get("pkl_filename"),
+            "algorithm": run.get("algorithm"),
+            "description": run.get("description"),
+        },
+        "variant": variant,
+    }
+
+
+def _build_nfl_model_variant(results, name, model_type):
+    """Build an NFL model variant from raw result data."""
+    return _build_model_variant(
+        name,
+        results_file=None,
+        feature_descriptions=_ATS_DESCRIPTIONS if model_type == "ats" else _OU_DESCRIPTIONS if model_type == "ou" else _ML_DESCRIPTIONS,
+        feature_categories_def=_ATS_CATEGORIES if model_type == "ats" else _OU_CATEGORIES if model_type == "ou" else _ML_CATEGORIES,
+        results_data=results,
+    )
+
+
+def _build_generic_model_variant(results, name, model_type):
+    """Build an MLB/NBA model variant from raw result data."""
+    _descriptions_map = {
+        "ats": _MLB_ATS_DESCRIPTIONS,
+        "ou": _MLB_OU_DESCRIPTIONS,
+        "ml": _MLB_ML_DESCRIPTIONS,
+    }
+    _categories_map = {
+        "ats": _MLB_ATS_CATEGORIES,
+        "ou": _MLB_OU_CATEGORIES,
+        "ml": _MLB_ML_CATEGORIES,
+    }
+    return _build_mlb_model_variant(
+        name,
+        results,
+        _descriptions_map.get(model_type, {}),
+        _categories_map.get(model_type, {}),
+    )
 
 
 @router.get("/prediction-stats/{sport}")
@@ -1691,7 +1850,7 @@ async def _get_mlb_model_detail() -> SportModelDetailOut:
     mlb_backtest_results.json. O/U and ML variants will be populated
     when those dedicated models are trained.
     """
-    results = _load_mlb_backtest_results()
+    results = _load_mlb_backtest_results(model_type="ats")
 
     # Filter out pre-2021 seasons — model accuracy is not relevant for older data
     results = [r for r in (results or []) if r.get("test_year", 0) >= 2021]
@@ -1710,9 +1869,9 @@ async def _get_mlb_model_detail() -> SportModelDetailOut:
     ats_variant = _build_mlb_model_variant("ATS", results, _MLB_ATS_DESCRIPTIONS, _MLB_ATS_CATEGORIES)
 
     # O/U and ML variants: try loading from dedicated files, otherwise None
-    ou_results = _load_mlb_backtest_results("mlb_ou_backtest_results.json")
+    ou_results = _load_mlb_backtest_results("mlb_ou_backtest_results.json", model_type="ou")
     ou_variant = _build_mlb_model_variant("O/U", ou_results, _MLB_OU_DESCRIPTIONS, _MLB_OU_CATEGORIES) if ou_results else None
-    ml_results = _load_mlb_backtest_results("mlb_ml_backtest_results.json")
+    ml_results = _load_mlb_backtest_results("mlb_ml_backtest_results.json", model_type="ml")
     if ml_results:
         # ML results store metrics at top level (not under "ml" key).
         # Transform to match the expected format for _build_mlb_model_variant.
@@ -1853,12 +2012,61 @@ def _load_json(filename):
         return None
 
 
-def _load_mlb_backtest_results(filename="mlb_backtest_results.json"):
-    """Load MLB backtest results from JSON, extracting the results list from the run_time wrapper dict."""
+def _load_training_from_db(sport: str, model_type: str) -> list | dict | None:
+    """Load the current training run's results_json from the database.
+
+    Tries the DB first. Returns None if nothing found.
+    """
+    try:
+        from app.handicapping.db_training import get_current_training_run
+        run = get_current_training_run(sport, model_type)
+        if run and run.get("results_json"):
+            return run["results_json"]
+    except Exception:
+        pass
+    return None
+
+
+def _load_mlb_backtest_results(filename="mlb_backtest_results.json", model_type: str = None):
+    """Load MLB backtest results, trying DB first, then JSON file.
+
+    When ``model_type`` is provided (e.g. "ats", "ou", "ml"), the database
+    is checked first. Falls back to the legacy JSON file.
+    """
+    if model_type:
+        db_data = _load_training_from_db("mlb", model_type)
+        if db_data:
+            # The DB stores the combined result dict with "results" key
+            if isinstance(db_data, dict) and "results" in db_data:
+                return db_data["results"]
+            # Or a single year's result (as a dict) – wrap in list for compat
+            if isinstance(db_data, dict):
+                return [db_data]
+            return db_data
     data = _load_json(filename)
     if isinstance(data, dict) and "results" in data:
         return data["results"]
     return data
+
+
+def _try_db_results(sport: str | None, model_type: str | None) -> list | None:
+    """Try to load results from the training_runs DB table.
+
+    Returns the results list (or None if not found/not configured).
+    """
+    if not sport or not model_type:
+        return None
+    db_data = _load_training_from_db(sport, model_type)
+    if not db_data:
+        return None
+    # DB may store with a "results" wrapper or as a list/single dict
+    if isinstance(db_data, dict) and "results" in db_data:
+        return db_data["results"]
+    if isinstance(db_data, dict):
+        return [db_data]
+    if isinstance(db_data, list):
+        return db_data
+    return None
 
 
 def _build_mlb_model_variant(name, results_data, feature_descriptions, feature_categories_def,
@@ -2046,18 +2254,30 @@ def _calc_high_confidence_multi(ats_results, ou_results, ml_results, threshold_p
 
 
 def _build_model_variant(name, results_file, feature_descriptions, feature_categories_def,
-                          metric_keys=None) -> ModelVariantOut | None:
-    """Build a ModelVariantOut from a results file.
+                          metric_keys=None,
+                          sport: str = None, model_type: str = None,
+                          results_data: list = None) -> ModelVariantOut | None:
+    """Build a ModelVariantOut from a results file (or DB or in-memory data).
 
     Args:
         name: "ATS", "O/U", or "ML"
-        results_file: JSON filename in _MODELS_DIR
+        results_file: JSON filename in _MODELS_DIR (fallback)
         feature_descriptions: dict of feature_name -> description
         feature_categories_def: dict of category_name -> list[feature_names]
         metric_keys: which overall metrics this model is optimized for (e.g. ["ats"])
+        sport: sport schema ("nfl", "nba", "mlb") — if set, DB is tried first
+        model_type: model type in DB ("ats", "ou", "ml") — if set, DB is tried first
+        results_data: pass results list directly (skips DB/file loading)
     """
     import json
-    results = _load_json(results_file)
+    # Use in-memory data if provided
+    if results_data is not None:
+        results = results_data
+    else:
+        # Try DB first if sport+model_type provided
+        results = _try_db_results(sport, model_type)
+        if not results:
+            results = _load_json(results_file)
     if not results:
         return None
 
@@ -2221,7 +2441,8 @@ def _get_nfl_model_detail() -> SportModelDetailOut:
         "Situational": ["travel_miles", "is_dome"],
     }
 
-    ats_variant = _build_model_variant("ATS", "ats_backtest_results.json", _ATS_DESCRIPTIONS, _ATS_CATEGORIES)
+    ats_variant = _build_model_variant("ATS", "ats_backtest_results.json", _ATS_DESCRIPTIONS, _ATS_CATEGORIES,
+                                        sport="nfl", model_type="ats")
 
     # ── OU Model ──
     _OU_DESCRIPTIONS = {
@@ -2255,7 +2476,8 @@ def _get_nfl_model_detail() -> SportModelDetailOut:
         "Situational": ["is_short", "is_dome", "temp", "wind"],
     }
 
-    ou_variant = _build_model_variant("O/U", "ou_results_baseline.json", _OU_DESCRIPTIONS, _OU_CATEGORIES)
+    ou_variant = _build_model_variant("O/U", "ou_results_baseline.json", _OU_DESCRIPTIONS, _OU_CATEGORIES,
+                                        sport="nfl", model_type="ou")
 
     # ── ML Model ──
     _ML_DESCRIPTIONS = {
@@ -2305,7 +2527,8 @@ def _get_nfl_model_detail() -> SportModelDetailOut:
         "Situational": ["is_div", "is_short", "is_dome"],
     }
 
-    ml_variant = _build_model_variant("ML", "ml_backtest_results.json", _ML_DESCRIPTIONS, _ML_CATEGORIES)
+    ml_variant = _build_model_variant("ML", "ml_backtest_results.json", _ML_DESCRIPTIONS, _ML_CATEGORIES,
+                                        sport="nfl", model_type="ml")
 
     # ── Legacy model (v2, for backward compat) ──
     legacy_results = _load_json("nfl_backtest_results.json")
@@ -2457,12 +2680,15 @@ def _get_nba_model_detail() -> SportModelDetailOut:
                            "h_wins_5", "h_wins_10", "a_wins_5", "a_wins_10"],
     }
 
-    results = _load_json("nba_backtest_results.json")
+    # Try DB first, fall back to JSON
+    results = _try_db_results("nba", "ats")
+    if not results:
+        results = _load_json("nba_backtest_results.json")
     if not results:
         return SportModelDetailOut(
             sport="nba",
             model_type="XGBoost Point Differential Regressor",
-            description="Backtest results pending. Run: docker exec earl-knows-football-api-1 python -m app.handicapping.nba.nba_xgb_model_ats --mode all",
+            description="Backtest results pending.",
             algorithm="XGBoost Regressor (n_estimators=350, max_depth=5, learning_rate=0.06)",
             training_years=[], test_years=[],
             total_features=32, features=[], feature_categories=[], backtest_results=[],

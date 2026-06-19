@@ -22,6 +22,7 @@ from sqlalchemy import select, text as _sa_text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.mlb import MLBGames, MLBTeam, MLBSeason
+from app.handicapping.db_training import get_current_training_run
 
 logger = logging.getLogger("earl.mlb_handicapping")
 
@@ -871,8 +872,10 @@ async def backtest_season(db: AsyncSession, year: int,
     # ── Load pre-trained models (trained by standalone backtest) ──
     # These are saved to /app/data/mlb_{ats,ou}_{year}.pkl by train_model()
     # in the model files, and should match the standalone backtest exactly.
-    ats_path = f"/home/rich/.openclaw/workspace/earl-knows-football/data/models/mlb_ats_{year}.pkl"
-    ou_path = f"/home/rich/.openclaw/workspace/earl-knows-football/data/models/mlb_ou_{year}.pkl"
+    tid_ats = get_current_training_run("mlb", "ats")
+    tid_ou = get_current_training_run("mlb", "ou")
+    ats_path = f"/home/rich/.openclaw/workspace/earl-knows-football/data/models/mlb/{tid_ats['training_id']}-{year}.pkl"
+    ou_path = f"/home/rich/.openclaw/workspace/earl-knows-football/data/models/mlb/{tid_ou['training_id']}-{year}.pkl"
     if not os.path.exists(ats_path):
         logger.warning(f"ATS model not found at {ats_path} -- falling back to training")
         train_years = list(range(2021, year))
