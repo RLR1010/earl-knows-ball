@@ -9,7 +9,7 @@ Can be imported (predict_margin, set_model_path) or run standalone for training.
     python nfl_xgb_model_ats.py --all                    # test 2021-2025
     python nfl_xgb_model_ats.py --weekly-retrain         # weekly retrain mode
 """
-import asyncio, logging, pickle, warnings, math, gc, os
+import asyncio, logging, pickle, warnings, math, gc, os, shutil
 warnings.filterwarnings('ignore')
 from pathlib import Path
 from typing import Optional
@@ -23,6 +23,18 @@ from sklearn.metrics import mean_absolute_error
 import xgboost as xgb
 
 from app.handicapping.nfl.situational import TEAM_COORDS
+
+# ── Training DB persistence (safe import) ──
+try:
+    from app.handicapping.db_training import (
+        save_training_run,
+        update_pkl_filename,
+        get_current_training_run,
+        get_model_pkl_path,
+    )
+    _DB_HELPERS_AVAILABLE = True
+except ImportError:
+    _DB_HELPERS_AVAILABLE = False
 
 logging.basicConfig(level=logging.INFO, format='%(message)s')
 logger = logging.getLogger("earl.xgb_ats")
@@ -666,17 +678,42 @@ async def run():
                 for _, r in imp.iterrows()],
             "features": FEATURES,
         }
-        results_path = "/app/data/ats_backtest_results.json"
-        try:
-            with open(results_path) as f:
-                existing = _json.load(f)
-        except Exception:
-            existing = []
-        existing = [r for r in existing if r.get("test_year") != test_season]
-        existing.append(result_entry)
-        with open(results_path, 'w') as f:
-            _json.dump(existing, f, indent=2)
-        log(f"Results saved to {results_path}")
+        # Save results to DB (or fall back to JSON)
+        if _DB_HELPERS_AVAILABLE:
+            pkl_dir = Path("/home/rich/.openclaw/workspace/earl-knows-football/data/models/nfl")
+            pkl_dir.mkdir(parents=True, exist_ok=True)
+
+            training_id = save_training_run(
+                sport="nfl",
+                model_type="ats",
+                results_json=result_entry,
+                pkl_filename="",
+                algorithm="xgboost",
+                description=f"NFL ATS backtest: {test_season}",
+                test_year=test_season,
+                train_years=None,
+            )
+
+            pkl_name = f"{training_id}.pkl"
+            src_pkl = pkl_dir / f"nfl_ats_{test_season}.pkl"
+            pkl_path = pkl_dir / pkl_name
+            if src_pkl.exists():
+                shutil.copy2(str(src_pkl), str(pkl_path))
+
+            update_pkl_filename("nfl", training_id, pkl_name)
+            log(f"Results saved to DB (training_id={training_id}, pkl={pkl_name})")
+        else:
+            results_path = "/app/data/ats_backtest_results.json"
+            try:
+                with open(results_path) as f:
+                    existing = _json.load(f)
+            except Exception:
+                existing = []
+            existing = [r for r in existing if r.get("test_year") != test_season]
+            existing.append(result_entry)
+            with open(results_path, 'w') as f:
+                _json.dump(existing, f, indent=2)
+            log(f"Results saved to {results_path}")
         log(f"Done ATS {test_season} in {__import__('time').time()-t0:.0f}s")
 
     await engine.dispose()

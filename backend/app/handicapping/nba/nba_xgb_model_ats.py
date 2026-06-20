@@ -17,6 +17,19 @@ import asyncio, logging, warnings, json, math, os, pickle
 from datetime import datetime, date
 from typing import Optional
 from pathlib import Path
+import shutil
+
+# ── Training DB persistence (safe import) ──
+try:
+    from app.handicapping.db_training import (
+        save_training_run,
+        update_pkl_filename,
+        get_current_training_run,
+        get_model_pkl_path,
+    )
+    _DB_HELPERS_AVAILABLE = True
+except ImportError:
+    _DB_HELPERS_AVAILABLE = False
 
 warnings.filterwarnings("ignore")
 import numpy as np
@@ -345,9 +358,38 @@ async def run_all():
     for yr in [2024,2025]:
         r,_,_ = await run_backtest(feats,test_year=yr)
         if "error" not in r: results.append(r)
-    RESULTS_DIR.mkdir(parents=True,exist_ok=True)
-    with open(RESULTS_DIR/"nba_backtest_results.json","w") as f: json.dump(results,f,indent=2,default=str)
-    log(f"\n✅ Saved to {RESULTS_DIR/'nba_backtest_results.json'}\nTime: {datetime.now()-t0}")
+
+    # Save to DB (or fall back to JSON)
+    if _DB_HELPERS_AVAILABLE:
+        pkl_dir = Path("/home/rich/.openclaw/workspace/earl-knows-football/data/models/nba")
+        pkl_dir.mkdir(parents=True, exist_ok=True)
+
+        training_id = save_training_run(
+            sport="nba",
+            model_type="ats",
+            results_json=results,
+            pkl_filename="",
+            algorithm="xgboost",
+            description="NBA ATS backtest: 2024-2025",
+            test_year=2025,
+            train_years=[2024, 2025],
+        )
+
+        pkl_name = f"{training_id}.pkl"
+        pkl_path = pkl_dir / pkl_name
+
+        latest_year = max(results, key=lambda r: r["test_year"])["test_year"]
+        src_pkl = pkl_dir / f"nba_ats_{latest_year}.pkl"
+        if src_pkl.exists():
+            shutil.copy2(str(src_pkl), str(pkl_path))
+
+        update_pkl_filename("nba", training_id, pkl_name)
+        log(f"\n✅ Saved to DB (training_id={training_id}, pkl={pkl_name})")
+    else:
+        RESULTS_DIR.mkdir(parents=True,exist_ok=True)
+        with open(RESULTS_DIR/"nba_backtest_results.json","w") as f: json.dump(results,f,indent=2,default=str)
+        log(f"\n✅ Saved to {RESULTS_DIR/'nba_backtest_results.json'}")
+    log(f"Time: {datetime.now()-t0}")
 
 async def run_single(yr=2024):
     engine = create_async_engine(DB); df = await load_data(engine); feats = build_features(df); await engine.dispose()

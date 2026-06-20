@@ -363,7 +363,6 @@ DISPLAY_NAMES: Dict[str, str] = {
 FEATURE_SETS: Dict[str, List[str]] = {
     # Features used by the ATS (against-the-spread) model
     "ats": [
-        "ha", "aa", "hdiv", "adiv",
         "rest_h", "rest_a", "rest_diff", "is_div",
         "is_summer", "is_dome", "month",
         "travel_miles", "tz_diff",
@@ -375,7 +374,6 @@ FEATURE_SETS: Dict[str, List[str]] = {
     ],
     # Features used by the OU (over/under) model
     "ou": [
-        "ha", "aa", "hdiv", "adiv",
         "rest_h", "rest_a", "rest_diff", "is_div",
         "is_summer", "is_dome", "month",
         "travel_miles", "tz_diff",
@@ -394,7 +392,6 @@ FEATURE_SETS: Dict[str, List[str]] = {
     ],
     # Features used by the ML (moneyline) model
     "ml": [
-        "ha", "aa", "hdiv", "adiv",
         "rest_h", "rest_a", "rest_diff", "is_div",
         "is_summer", "is_dome", "month",
         "travel_miles", "tz_diff",
@@ -409,7 +406,6 @@ FEATURE_SETS: Dict[str, List[str]] = {
     ],
     # All features used in any model (superset)
     "full": [
-        "ha", "aa", "hdiv", "adiv",
         "rest_h", "rest_a", "rest_diff", "is_div",
         "month", "is_summer", "is_dome",
         "travel_miles", "tz_diff",
