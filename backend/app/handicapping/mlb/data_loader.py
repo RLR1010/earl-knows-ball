@@ -735,6 +735,71 @@ def build_features(df: pd.DataFrame, log_fn=None) -> pd.DataFrame:
         feats["home_implied_probability"] - feats["opening_home_implied"]
     )
 
+    # ── 8.5 OU-specific features: total10, over_freq, over_freq5 ──
+    # These are used by the OU model for total-runs prediction.
+    # h_total10 / a_total10: 10-game sum of runs scored/allowed (= rf10/ra10 * 10)
+    if "rf10" in feats.columns:
+        feats["h_total10"] = (feats["rf10"] * 10).fillna(45).clip(lower=0)
+    else:
+        feats["h_total10"] = 45.0
+    if "ra10" in feats.columns:
+        feats["a_total10"] = (feats["ra10"] * 10).fillna(45).clip(lower=0)
+    else:
+        feats["a_total10"] = 45.0
+
+    # over_freq / over_freq5: rolling % of team games going over the OU line
+    # These are computed per-team using an expanding window across the pre-sorted data.
+    # We compute an "over_flag" (actual_total > ou_line) for each team game,
+    # then apply an expanding mean shifted by 1 (look-back only, same as rf/ra).
+    # Clone the actual_total/ou_line for the away side via merge.
+    over_cols_to_add = {}
+    if "actual_total" in feats.columns and "over_under" in feats.columns:
+        # Home team over history
+        home_over = feats[["game_id", "home_team", "actual_total", "over_under"]].copy()
+        home_over["over_flag"] = (
+            (home_over["actual_total"] > home_over["over_under"]).astype(float)
+        )
+        home_over.rename(columns={"home_team": "team", "actual_total": "tot", "over_under": "ou"}, inplace=True)
+        # Away team over history — same column structure
+        away_over = feats[["game_id", "away_team", "actual_total", "over_under"]].copy()
+        away_over["over_flag"] = (
+            (away_over["actual_total"] > away_over["over_under"]).astype(float)
+        )
+        away_over.rename(columns={"away_team": "team", "actual_total": "tot", "over_under": "ou"}, inplace=True)
+
+        # Combine and compute rolling over frequency — expanding, shifted by 1
+        team_over = (
+            pd.concat([home_over, away_over], ignore_index=True)
+            .sort_values(["team", "game_id"])
+            .groupby("team")["over_flag"]
+            .apply(lambda s: s.expanding(min_periods=1).mean().shift(1))
+            .reset_index(level=0, drop=True)
+        )
+        n_games = len(feats)
+        # First n are for home-side games, second n for away-side — match up
+        home_over_freq = team_over.iloc[:n_games].values if len(team_over) >= n_games else pd.Series(0.55, index=feats.index)
+        away_over_freq = team_over.iloc[n_games:2 * n_games].values if len(team_over) >= 2 * n_games else pd.Series(0.55, index=feats.index)
+        feats["h_over_freq"] = pd.Series(home_over_freq, index=feats.index).fillna(0.5)
+        feats["a_over_freq"] = pd.Series(away_over_freq, index=feats.index).fillna(0.5)
+
+        # over_freq5 — same approach but rolling(5) instead of expanding
+        team_over5 = (
+            pd.concat([home_over, away_over], ignore_index=True)
+            .sort_values(["team", "game_id"])
+            .groupby("team")["over_flag"]
+            .apply(lambda s: s.rolling(5, min_periods=1).mean().shift(1))
+            .reset_index(level=0, drop=True)
+        )
+        home_over_freq5 = team_over5.iloc[:n_games].values if len(team_over5) >= n_games else pd.Series(0.55, index=feats.index)
+        away_over_freq5 = team_over5.iloc[n_games:2 * n_games].values if len(team_over5) >= 2 * n_games else pd.Series(0.55, index=feats.index)
+        feats["h_over_freq5"] = pd.Series(home_over_freq5, index=feats.index).fillna(0.5)
+        feats["a_over_freq5"] = pd.Series(away_over_freq5, index=feats.index).fillna(0.5)
+    else:
+        feats["h_over_freq"] = 0.5
+        feats["a_over_freq"] = 0.5
+        feats["h_over_freq5"] = 0.5
+        feats["a_over_freq5"] = 0.5
+
     # ── 9. Pitcher features (rolling windows) ──
 
     # Pitcher features are tricky because we need pitcher-change context.
@@ -748,7 +813,9 @@ def build_features(df: pd.DataFrame, log_fn=None) -> pd.DataFrame:
     pitcher_windows = [5, 20]
     for pw in pitcher_windows:
         # Team combined ERA proxy
-        r_col = f"ra{pw}" if pw != 20 else "ra"
+        # NOTE: ra20 is NOT computed on tg (only ra5, ra10, ra_avg).
+        # For pw=20, use ra_avg (expanding mean shifted by 1) instead of raw ra.
+        r_col = f"ra{pw}" if pw != 20 else "ra_avg"
         for side, team_col in [("h", "ha"), ("a", "aa")]:
             era_col = f"{side}_pitcher_era_l{pw}"
             k9_col = f"{side}_pitcher_k9_l{pw}"
