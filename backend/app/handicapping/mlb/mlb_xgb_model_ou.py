@@ -84,43 +84,21 @@ COORDS = {
 # Tier 5: Rest/travel/situational (fatigue, familiarity, context)
 
 OU_FEATURES = [
-    # ── Market inefficiency (1) ──
-    "ou_movement",                    # Closing - opening (smart money direction)
-    "opening_ou",                    # Opening O/U line from consolidated table
-    "closing_over_odds",            # Closing over bet odds (American)
-    "closing_spread_home_odds",     # Closing spread odds for home team (American)
-    "closing_spread_away_odds",     # Closing spread odds for away team (American)
-    "closing_home_implied_probability",  # Closing home win implied probability from moneyline
-    "closing_away_implied_probability",  # Closing away win implied probability from moneyline
-    # ── Starting pitcher talent baseline (2) ──
-    "h_pitcher_era_l20",              # Home starter's ERA last 20 starts
-    "a_pitcher_era_l20",              # Away starter's ERA last 20 starts
-    # ── Team scoring (4) + Team defense (2) + Opening total + Over rate (2) ──
-    "h_rf5",                         # Home team runs scored per game, last 5
-    "a_rf5",                         # Away team runs scored per game, last 5
-    "h_rf10",                        # Home team runs scored per game, last 10
-    "a_rf10",                        # Away team runs scored per game, last 10
-    "h_ra10",                        # Home team runs allowed per game, last 10
-    "a_ra10",                        # Away team runs allowed per game, last 10
-    "over_pct_h_r5",                 # Home team over rate last 5 games
-    "over_pct_a_r5",
-    # ── Team hitting quality (2) ──
-    "h_ops_l10",                      # Home team OPS last 10 games
-    "a_ops_l10",
-    "h_ops_l20",                      # Home team OPS last 20 games
-    "a_ops_l20",
-    # ── Travel / Opponent-adjusted / Situational (9) ──
-    "travel_miles",                   # Haversine distance between team cities
-    "h_home_rf",                      # Home team scoring at home (expanding avg)
-    "a_away_rf",                      # Away team scoring on road (expanding avg)
-    "h_winpct",                       # Home team season win %
-    "a_winpct",
-    "is_div",
-    "tz_diff",                        # Home UTC offset - away UTC offset
-    "is_dome",                        # Binary: 1 if domed / retractable-roof closed
-    # ── Bullpen (removed: h_bullpen_ip_l5, a_bullpen_ip_l5) ──
-    # ── Park factor (1) ──
-    "park_factor",                    # Venue run factor vs league average
+    # Tier 1: Core scoring
+    "h_rf10", "h_ra10", "a_rf10", "a_ra10",
+    "h_rf_avg", "h_ra_avg", "a_rf_avg", "a_ra_avg",
+    "h_over_freq", "a_over_freq",
+    # Tier 2: Park/weather
+    "park_factor", "is_dome", "temp", "wind_speed",
+    # Tier 3: Momentum
+    "h_total10", "a_total10", "h_over_freq5", "a_over_freq5",
+    # Tier 4: Market anchor
+    "ou_line",
+    # Tier 5: Rest/travel/situational
+    "rest_h", "rest_a", "rest_diff", "rest_diff_abs",
+    "travel_miles", "tz_diff",
+    # Situational
+    "month", "is_summer", "is_div",
 ]
 
 FEATURES_TRAINING = OU_FEATURES.copy()

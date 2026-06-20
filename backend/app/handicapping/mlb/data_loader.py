@@ -360,81 +360,7 @@ DISPLAY_NAMES: Dict[str, str] = {
 # Each entry groups features by use case so training, backtesting, and inference
 # all select from the same stable of columns.
 
-FEATURE_SETS: Dict[str, List[str]] = {
-    # Features used by the ATS (against-the-spread) model
-    "ats": [
-        "rest_h", "rest_a", "rest_diff", "is_div",
-        "is_summer", "is_dome", "month",
-        "travel_miles", "tz_diff",
-        "h_winpct", "a_winpct", "winpct_diff", "winpct_l10_diff",
-        "h_home_rf", "a_away_rf",
-        "h_pitcher_era_l20", "a_pitcher_era_l20",
-        "home_implied_probability", "away_implied_probability",
-        "spread", "over_under",
-    ],
-    # Features used by the OU (over/under) model
-    "ou": [
-        "rest_h", "rest_a", "rest_diff", "is_div",
-        "is_summer", "is_dome", "month",
-        "travel_miles", "tz_diff",
-        "h_winpct", "a_winpct",
-        "h_pitcher_era_l20", "a_pitcher_era_l20",
-        "h_pitcher_k9_l20", "a_pitcher_k9_l20",
-        "h_pitcher_whip_l20", "a_pitcher_whip_l20",
-        "h_pitcher_kbb_rate_l20", "a_pitcher_kbb_rate_l20",
-        "h_bullpen_era_l5", "a_bullpen_era_l5",
-        "h_bullpen_ip_l5", "a_bullpen_ip_l5",
-        "home_implied_probability", "away_implied_probability",
-        "implied_total",
-        "over_under", "ou_movement",
-        "park_factor",
-        "total_avg_team_r10", "combo_era_r10", "combo_era_r10_diff",
-    ],
-    # Features used by the ML (moneyline) model
-    "ml": [
-        "rest_h", "rest_a", "rest_diff", "is_div",
-        "is_summer", "is_dome", "month",
-        "travel_miles", "tz_diff",
-        "h_winpct", "a_winpct", "winpct_diff",
-        "h_pitcher_era_l5", "a_pitcher_era_l5",
-        "h_pitcher_era_l20", "a_pitcher_era_l20",
-        "h_bullpen_era_l5", "a_bullpen_era_l5",
-        "h_form_l10", "a_form_l10",
-        "home_moneyline", "away_moneyline",
-        "home_implied_probability", "away_implied_probability",
-        "ml_implied_movement",
-    ],
-    # All features used in any model (superset)
-    "full": [
-        "rest_h", "rest_a", "rest_diff", "is_div",
-        "month", "is_summer", "is_dome",
-        "travel_miles", "tz_diff",
-        "h_winpct", "a_winpct", "winpct_diff", "winpct_l10_diff",
-        "h_home_rf", "a_away_rf",
-        "h_pitcher_era_l5", "a_pitcher_era_l5",
-        "h_pitcher_era_l20", "a_pitcher_era_l20",
-        "h_pitcher_k9_l20", "a_pitcher_k9_l20",
-        "h_pitcher_whip_l20", "a_pitcher_whip_l20",
-        "h_pitcher_kbb_rate_l20", "a_pitcher_kbb_rate_l20",
-        "h_bullpen_era_l5", "a_bullpen_era_l5",
-        "h_bullpen_ip_l5", "a_bullpen_ip_l5",
-        "h_form_l10", "a_form_l10",
-        "home_implied_probability", "away_implied_probability",
-        "implied_total",
-        "ou_movement", "ml_implied_movement",
-        "spread", "over_under", "home_moneyline", "away_moneyline",
-        "park_factor",
-        "total_avg_team_r10", "combo_era_r10", "combo_era_r10_diff",
-    ],
-    # Only raw/game-level columns used during backfitting (no model features)
-    "raw": [
-        "game_id", "ha", "aa",
-        "home_score", "away_score", "margin",
-        "spread", "over_under", "home_moneyline", "away_moneyline",
-        "home_implied_probability", "away_implied_probability",
-        "season_year", "game_date",
-    ],
-}
+
 
 # ── Feature engineering (consolidated build_features) ────────────────────────
 
@@ -761,6 +687,33 @@ def build_features(df: pd.DataFrame, log_fn=None) -> pd.DataFrame:
 
     feats["home_implied"] = feats["home_implied_probability"]
     feats["away_implied"] = feats["away_implied_probability"]
+    feats["h_implied"] = feats["home_implied_probability"]
+    feats["a_implied"] = feats["away_implied_probability"]
+
+    # ── 4.5. Alias columns to match ATS_FEATURES naming ──
+    # These aliases ensure the ATS feature set (", \"ATS_FEATURES\", ") from the model file
+    # can find the columns it expects
+
+    # h_home_ra: home team's runs-allowed when at home (home-split RA expanding mean)
+    if "ha" in feats.columns and "h_ra_avg" in feats.columns:
+        # We already have home team RA average (h_ra_avg), which includes all games.
+        # For h_home_ra we want a proper home-split. We'll approximate it as h_ra_avg
+        # since we don't have home-split RA in feats yet.
+        feats["h_home_ra"] = feats["h_ra_avg"]
+
+    # a_home_rf: alias for a_away_rf (away team's RF on the road)
+    if "a_away_rf" in feats.columns:
+        feats["a_home_rf"] = feats["a_away_rf"]
+
+    # a_home_ra: alias for a_ra_avg (away team RA average)
+    if "a_ra_avg" in feats.columns:
+        feats["a_home_ra"] = feats["a_ra_avg"]
+
+    # _20 window aliases (using _10 since we don't have 20-game windows)
+    for a, b in [("h_ra20", "h_ra10"), ("a_ra20", "a_ra10"),
+                  ("h_rf20", "h_rf10"), ("a_rf20", "a_rf10")]:
+        if b in feats.columns:
+            feats[a] = feats[b]
 
     # Implied total (blended rolling runs-for + runs-allowed for both teams)
     # This matches the OU model definition: avg of home rf, home ra, away rf, away ra

@@ -76,41 +76,6 @@ COORDS = {
 # Tier 6: Recent form (2) — momentum (last 10 games)
 # Tier 7: Situational (3) — home field, rest, travel, division
 
-ML_FEATURES = [
-    # ── Market anchor (1) ──
-    "home_implied",                   # Market's win probability from closing ML
-    # ── Market movement (1) ──
-    "ml_implied_movement",            # Closing implied - opening implied (sharp money)
-    # ── Starting pitcher quality (4) ──
-    "h_pitcher_era_l5",               # Home starter ERA last 5 starts
-    "a_pitcher_era_l5",               # Away starter ERA last 5 starts
-    "h_pitcher_era_l20",              # Home starter ERA last 20 (talent baseline)
-    "a_pitcher_era_l20",              # Away starter ERA last 20
-    # ── Bullpen quality + fatigue (4) ──
-    "h_bullpen_era_l5",               # Home bullpen ERA last 5 games
-    "a_bullpen_era_l5",               # Away bullpen ERA last 5 games
-    "h_bullpen_ip_l5",                # Home bullpen IP last 5 (fatigue proxy)
-    "a_bullpen_ip_l5",                # Away bullpen IP last 5
-    # ── Team quality (4) ──
-    "h_rf10",                         # Home runs scored, rolling 10
-    "a_rf10",                         # Away runs scored, rolling 10
-    "h_ra10",                         # Home runs allowed, rolling 10
-    "a_ra10",                         # Away runs allowed, rolling 10
-    "h_winpct",                       # Home season win %
-    "a_winpct",                       # Away season win %
-    # ── Home/road splits (2) ──
-    "h_home_rf",                      # Home scoring at home
-    "a_away_rf",                      # Away scoring on road
-    # ── Recent form (2) ──
-    "h_form_l10",                     # Home wins last 10
-    "a_form_l10",                     # Away wins last 10
-    # ── Situational (3) ──
-    "rest_diff",                      # Rest advantage (home - away days off)
-    "travel_miles",                   # Away team travel distance
-    "is_div",                         # Division game (familiarity)
-    "is_dome",                        # Dome advantage (no weather)
-]
-
 # Features passed to XGBoost (exclude home_implied since it's the market baseline)
 FEATURES_TRAINING = [f for f in ML_FEATURES if f not in ("home_implied",)]
 

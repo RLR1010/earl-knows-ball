@@ -2111,20 +2111,6 @@ def _build_mlb_model_variant(name, results_data, feature_descriptions, feature_c
             category=cat_lookup.get(feat_name, "Other"),
         ))
 
-    # Fill in any defined features not in results at zero importance
-    defined_feats = set()
-    for feats_list in feature_categories_def.values():
-        defined_feats.update(feats_list)
-    existing = set(f.name for f in features)
-    for fn in sorted(defined_feats):
-        if fn not in existing:
-            features.append(ModelFeatureOut(
-                name=fn,
-                description=feature_descriptions.get(fn, fn),
-                importance=0,
-                category=cat_lookup.get(fn, "Other"),
-            ))
-
     # Backtest results per year
     yearly_backtest = []
     for r in backtest_results:
