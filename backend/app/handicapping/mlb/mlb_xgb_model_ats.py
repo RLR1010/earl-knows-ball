@@ -16,19 +16,65 @@ import json
 import os
 import pickle
 import shutil
+import uuid
 from datetime import datetime, timezone, date
 from typing import Optional, Any
 from pathlib import Path
+
+import math
 
 import numpy as np
 import pandas as pd
 from sklearn.metrics import mean_absolute_error
 import xgboost as xgb
 
+# Optional DB helpers for saving training runs
+try:
+    from app.handicapping.db_training import save_training_run, update_pkl_filename
+    _DB_HELPERS_AVAILABLE = True
+except ImportError:
+    save_training_run = None
+    update_pkl_filename = None
+    _DB_HELPERS_AVAILABLE = False
+
+# Feature list for the ATS model, sourced from the most recent
+# (is_current) training run's feature_importance.  Must stay in sync
+# with the model that was actually trained.
+ATS_FEATURES: list[str] = [
+        "is_home_fav",
+        "a_implied",
+        "h_implied",
+        "is_div",
+        "winpct_diff",
+        "h_winpct",
+        "h_home_ra",
+        "travel_miles",
+        "a_home_rf",
+        "a_ra10",
+        "a_winpct",
+        "tz_diff",
+        "a_home_ra",
+        "h_ra20",
+        "h_home_rf",
+        "rest_h",
+        "ou_line",
+        "a_rf20",
+        "h_rf20",
+        "a_ra20",
+        "rest_diff",
+        "a_rf10",
+        "month",
+        "rest_a",
+        "h_ra10",
+        "h_rf10",
+        "is_summer",
+        "is_dome",
+]
+
+
 from app.handicapping.mlb.data_loader import (
     get_data_loader,
     build_features as mlb_build_features,
-    FEATURE_SETS,
     MLBDataLoader,
 )
 
@@ -56,6 +102,11 @@ DSN = os.environ.get(
 
 # ── Model globals ──
 ATS_MODEL_PATH = os.path.join(os.path.dirname(__file__), "ats_model.pkl")
+
+# PKL directory for MLB models
+MLB_PKL_DIR = Path("/home/rich/.openclaw/workspace/earl-knows-football/data/models/mlb")
+MLB_PKL_DIR.mkdir(parents=True, exist_ok=True)
+
 _ats_model = None
 _ats_feature_cache: Optional[pd.DataFrame] = None
 CURRENT_YEAR = datetime.now().year
@@ -65,8 +116,9 @@ async def run_backtest(
     df: pd.DataFrame,
     feats: pd.DataFrame,
     test_year: int = 2023,
-    feature_set: str = "full",
+    feature_set: list[str] | None = None,
     train_years: list[int] | None = None,
+    training_id: str | None = None,
 ) -> dict:
     """Run a single backtest year."""
     import time
@@ -77,9 +129,13 @@ async def run_backtest(
         train_years = [y for y in [2020, 2021, 2022] if y != test_year]
 
     log(f"=== Backtest {test_year} ===")
-    log(f"  Train: {train_years}  Test: {test_year}  Features: {feature_set}")
+    log(f"  Train: {train_years}  Test: {test_year}")
 
-    fcols = FEATURE_SETS.get(feature_set, FEATURE_SETS["full"])
+    # Resolve "full" string shorthand to ATS_FEATURES list
+    if isinstance(feature_set, str):
+        feature_set = ATS_FEATURES
+
+    fcols = feature_set if feature_set is not None else ATS_FEATURES
 
     # Fix column name aliasing — map old feature names
     col_map = {
@@ -135,7 +191,9 @@ async def run_backtest(
 
     # ATS: use spread to check if predicted margin > spread
     spread = test_feats["spread"].values
-    ats_correct = np.sign(y_pred - spread) == np.sign(y_test - spread)
+    # ATS: home team covers if margin + spread > 0 (i.e., actual result beats the spread).
+    # The spread is from the home team's perspective: negative = home favored, positive = home underdog.
+    ats_correct = np.sign(y_pred + spread) == np.sign(y_test + spread)
     ats_acc = np.mean(ats_correct) if len(ats_correct) > 0 else 0.5
 
     # OU
@@ -154,20 +212,38 @@ async def run_backtest(
     ml_actual_home = test_feats["home_score"].values > test_feats["away_score"].values
     ml_acc = np.mean(ml_pred_home == ml_actual_home) if len(ml_actual_home) > 0 else 0.5
 
+    n_test = len(test_feats)
+    n_correct_ats = int(np.sum(ats_correct))
+    n_correct_ou = int(np.sum(ou_correct))
+    n_correct_ml = int(np.sum(ml_pred_home == ml_actual_home))
+
     results = {
         "test_year": test_year,
         "train_years": train_years,
         "feature_set": feature_set,
         "rows": {
             "train": len(train_feats),
-            "test": len(test_feats),
+            "test": n_test,
         },
-        "metrics": {
-            "mae": round(float(mae), 3),
-            "direction_accuracy": round(float(acc), 4),
-            "ats_accuracy": round(float(ats_acc), 4),
-            "ou_accuracy": round(float(ou_acc), 4),
-            "ml_accuracy": round(float(ml_acc), 4),
+        "total_games": n_test,
+        "mae": round(float(mae), 3),
+        "ats": {
+            "total": n_test,
+            "correct": n_correct_ats,
+            "incorrect": n_test - n_correct_ats,
+            "pct": round(float(ats_acc * 100), 2),
+        },
+        "ou": {
+            "total": n_test,
+            "correct": n_correct_ou,
+            "incorrect": n_test - n_correct_ou,
+            "pct": round(float(ou_acc * 100), 2),
+        },
+        "ml": {
+            "total": n_test,
+            "correct": n_correct_ml,
+            "incorrect": n_test - n_correct_ml,
+            "pct": round(float(ml_acc * 100), 2),
         },
         "feature_importance": [
             {"feature": f, "importance": round(float(imp), 6)}
@@ -177,12 +253,22 @@ async def run_backtest(
         "duration_seconds": round(time.time() - t0, 1),
     }
 
-    log(f"  MAE: {results['metrics']['mae']}  ATS: {results['metrics']['ats_accuracy']:.3f}  OU: {results['metrics']['ou_accuracy']:.3f}  ML: {results['metrics']['ml_accuracy']:.3f}  Dir: {results['metrics']['direction_accuracy']:.3f}")
+    log(f"  MAE: {results['mae']}  ATS: {results['ats']['pct']:.3f}  OU: {results['ou']['pct']:.3f}  ML: {results['ml']['pct']:.3f}")
     log(f"  Duration: {results['duration_seconds']}s")
     print(f"\n  Top 10 features by importance:")
     imp_sorted = sorted(results["feature_importance"], key=lambda x: -x["importance"])
     for feat in imp_sorted[:10]:
         print(f"    {feat['feature']:35s} {feat['importance']:.4f}")
+
+    # Save model to pkl
+    # Use training_id if provided, otherwise use a temp UUID
+    pkl_stem = training_id if training_id else str(uuid.uuid4())
+    pkl_path = MLB_PKL_DIR / f"{pkl_stem}-{test_year}.pkl"
+    try:
+        pickle.dump(model, open(pkl_path, "wb"))
+        log(f"  Saved model to {pkl_path}")
+    except Exception as e:
+        log(f"  WARNING: failed to save pkl: {e}")
 
     return results
 
@@ -190,8 +276,9 @@ async def run_backtest(
 async def run_all_years(
     hide_progress: bool = True,
     feature_sets: list[str] | None = None,
-    train_from: int = 2020,
+    train_from: int = 2021,
     test_until: int | None = None,
+    skip_db: bool = False,
 ) -> list[dict]:
     """Run backtests for all available years."""
     from sqlalchemy.ext.asyncio import create_async_engine
@@ -208,12 +295,78 @@ async def run_all_years(
     feats = mlb_build_features(raw)
     log(f"Loaded {len(raw)} games, {len(feats.columns)} features")
 
+    # Test years are the final 2 seasons; train_years is everything before each test year
+    test_years = [2025, 2026]
+
     for feature_set in feature_sets:
-        for year in range(train_from + 1, test_until + 1):
+        for year in test_years:
             train_years = list(range(train_from, year))
             result = await run_backtest(raw, feats, year, feature_set, train_years)
             if result:
                 total_results.append(result)
+
+    # Save ONE training run with all years as a list in results_json
+    # (matches the admin frontend which expects a single row with a list of year results)
+    if _DB_HELPERS_AVAILABLE and save_training_run and not skip_db and total_results:
+        try:
+            def _sanitize(obj):
+                if isinstance(obj, dict):
+                    return {k: _sanitize(v) for k, v in obj.items()}
+                elif isinstance(obj, list):
+                    return [_sanitize(v) for v in obj]
+                elif isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
+                    return None
+                return obj
+
+            # Build the list-of-years format the admin page expects
+            # First save to DB to get the training_id, then rename pkls
+            results_list = [_sanitize(r) for r in total_results]
+            for r, flat_entry in zip(total_results, results_list):
+                year = r["test_year"]
+                flat_entry["name"] = f"{year} MLB ATS"
+                flat_entry["ats_pct"] = r["ats"]["pct"]
+                flat_entry["ats_correct"] = r["ats"]["correct"]
+                flat_entry["ats_total"] = r["ats"]["total"]
+
+            # Store the most recent (last) test year and its training years in the DB row
+            last_test_year = test_years[-1]
+            last_train_years = list(range(train_from, last_test_year))
+            db_run_id = save_training_run(
+                sport="mlb",
+                model_type="ats",
+                test_year=last_test_year,
+                train_years=last_train_years,
+                results_json=results_list,
+                pkl_filename="",  # placeholder, updated below
+                algorithm="xgboost",
+                description=f"ATS backtest {test_years[0]}-{test_years[-1]}",
+            )
+
+            # Save PKL files for each test year — only 2025 and 2026.
+            # Each training session generates temp UUID-named PKLs in run_backtest,
+            # then we permanently rename them here. Do NOT delete other runs' PKLs.
+            pkl_names = []
+            for r in total_results:
+                year = r["test_year"]
+                stable_name = f"{db_run_id}-{year}.pkl"
+                # Find the temp PKL for this session/year (most recent file matching this session)
+                temp_pkls = sorted(MLB_PKL_DIR.glob(f"*-{year}.pkl"),
+                                   key=lambda p: p.stat().st_mtime, reverse=True)
+                if temp_pkls:
+                    try:
+                        temp_pkls[0].rename(MLB_PKL_DIR / stable_name)
+                        pkl_names.append(stable_name)
+                        log(f"  Pkl saved: {stable_name}")
+                    except FileNotFoundError:
+                        log(f"  WARNING: temp pkl for {year} not found")
+
+            if pkl_names:
+                update_pkl_filename("mlb", db_run_id, ",".join(pkl_names))
+
+            log(f"  Saved training run {db_run_id}: {len(total_results)} years")
+        except Exception as e:
+            log(f"  WARNING: failed to save training run: {e}")
+
     return total_results
 
 
@@ -299,7 +452,7 @@ async def predict_ats(
             return None
         game_feats = game_feats.iloc[:1]
 
-    fcols = FEATURE_SETS.get("full", FEATURE_SETS["full"])
+    fcols = ATS_FEATURES
     present = [c for c in fcols if c in game_feats.columns]
     if not present:
         log(f"ATS: no features available in cache")
@@ -331,13 +484,13 @@ async def predict_ats(
 async def train_model(
     year: int,
     train_years: list[int],
-    feature_set: str = "full",
+    feature_set: list[str] | None = None,
 ) -> dict:
     """Train and persist the ATS model for season ``year`` using ``train_years`` data."""
     df = get_data_loader().load_games(seasons=train_years, status="FINAL")
     feats = mlb_build_features(df)
 
-    fcols = FEATURE_SETS.get(feature_set, FEATURE_SETS["full"])
+    fcols = feature_set if feature_set is not None else ATS_FEATURES
     present = [c for c in fcols if c in feats.columns]
 
     target = df["actual_margin"].values
@@ -389,12 +542,13 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser("MLB ATS Backtest")
-    parser.add_argument("--test-year", type=int, default=2025)
-    parser.add_argument("--features", type=str, default="full",
-                        choices=list(FEATURE_SETS.keys()))
+    parser.add_argument("--test-year", type=int, default=None, help="Test year (default: CURRENT_YEAR)")
+    parser.add_argument("--features", type=str, default="ats")
     parser.add_argument("--mode", type=str, default="one",
                         choices=["one", "all"])
-    parser.add_argument("--train-from", type=int, default=2020)
+    parser.add_argument("--train-from", type=int, default=2021, help="First training year")
+    parser.add_argument("--test-until", type=int, default=None, help="Last test year (default: CURRENT_YEAR)")
+    parser.add_argument("--skip-db", action="store_true", help="Skip saving to database")
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -402,19 +556,22 @@ if __name__ == "__main__":
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
 
+    test_until = args.test_until or CURRENT_YEAR
+    test_year = args.test_year or test_until
+
     if args.mode == "all":
         results = asyncio.run(run_all_years(
             feature_sets=[args.features],
             train_from=args.train_from,
-            test_until=args.test_year,
+            test_until=test_until,
+            skip_db=args.skip_db,
         ))
         print(f"\n{'='*60}")
         print(f"Summary: {len(results)} backtests")
         for r in results:
-            m = r["metrics"]
-            print(f"  {r['test_year']}: MAE={m['mae']}  ATS={m['ats_accuracy']:.3f}  OU={m['ou_accuracy']:.3f}  ML={m['ml_accuracy']:.3f}  Dir={m['direction_accuracy']:.3f}")
+            print(f"  {r['test_year']}: MAE={r['mae']:.3f}  ATS={r['ats']['pct']:.3f}  OU={r['ou']['pct']:.3f}  ML={r['ml']['pct']:.3f}")
     else:
-        result = asyncio.run(run_single(args.test_year, args.features))
+        result = asyncio.run(run_single(args.test_year or test_year, args.features))
         if result:
             print(json.dumps(result, indent=2))
         else:
