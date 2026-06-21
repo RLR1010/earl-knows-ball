@@ -47,7 +47,20 @@ from app.handicapping.mlb.data_loader import (
 # Feature list for the ATS model, sourced from the most recent
 # (is_current) training run's feature_importance.  Must stay in sync
 # with the model that was actually trained.
-ATS_FEATURES: list[str] = get_model_features("ats")
+# Lazy-loaded to avoid DB query at import time (prevents Granian startup crash).
+ATS_FEATURES: list[str] = []
+_ats_features_loaded = False
+
+
+def _ensure_ats_features() -> list[str]:
+    global ATS_FEATURES, _ats_features_loaded
+    if not _ats_features_loaded:
+        try:
+            ATS_FEATURES = get_model_features("ats")
+        except RuntimeError:
+            ATS_FEATURES = []
+        _ats_features_loaded = True
+    return ATS_FEATURES
 
 warnings.filterwarnings("ignore")
 
@@ -104,9 +117,9 @@ async def run_backtest(
 
     # Resolve "full" string shorthand to ATS_FEATURES list
     if isinstance(feature_set, str):
-        feature_set = ATS_FEATURES
+        feature_set = _ensure_ats_features()
 
-    fcols = feature_set if feature_set is not None else ATS_FEATURES
+    fcols = feature_set if feature_set is not None else _ensure_ats_features()
 
     # Fix column name aliasing — map old feature names
     col_map = {
@@ -423,7 +436,7 @@ async def predict_ats(
             return None
         game_feats = game_feats.iloc[:1]
 
-    fcols = ATS_FEATURES
+    fcols = _ensure_ats_features()
     present = [c for c in fcols if c in game_feats.columns]
     if not present:
         log(f"ATS: no features available in cache")
@@ -461,7 +474,7 @@ async def train_model(
     df = get_data_loader().load_games(seasons=train_years, status="FINAL")
     feats = mlb_build_features(df)
 
-    fcols = feature_set if feature_set is not None else ATS_FEATURES
+    fcols = feature_set if feature_set is not None else _ensure_ats_features()
     present = [c for c in fcols if c in feats.columns]
 
     target = df["actual_margin"].values

@@ -26,10 +26,21 @@ from app.handicapping.mlb.data_loader import get_data_loader, build_features as 
 
 # ── Config ──
 CURRENT_YEAR = 2026
-# ── OU Feature Set ──
-# Pulled from mlb.features via get_model_features("ou").
-# Fallback hardcoded list is commented out below.
-OU_FEATURES: list[str] = get_model_features("ou")
+
+# ── OU Feature Set (lazy, loaded on first use) ──
+OU_FEATURES: list[str] = []
+_ou_features_loaded = False
+
+
+def _ensure_ou_features() -> list[str]:
+    global OU_FEATURES, _ou_features_loaded
+    if not _ou_features_loaded:
+        try:
+            OU_FEATURES = get_model_features("ou")
+        except RuntimeError:
+            OU_FEATURES = []
+        _ou_features_loaded = True
+    return OU_FEATURES
 
 
 # ── DB helpers (lazy) ──
@@ -167,7 +178,7 @@ async def run_all_years(
     test_years = [2025, 2026].
     """
     if feature_sets is None:
-        feature_sets = [OU_FEATURES]
+        feature_sets = [_ensure_ou_features()]
 
     test_until = CURRENT_YEAR
     test_years = [2025, 2026]
@@ -257,7 +268,7 @@ async def run_single(
 ) -> dict | None:
     """Run a single year of OU backtest."""
     if feature_set is None:
-        feature_set = OU_FEATURES
+        feature_set = _ensure_ou_features()
 
     train_years = list(range(train_from, test_year))
     log(f"\n--- Testing {test_year} | Train {train_years[0]}-{train_years[-1]} ---")
@@ -394,8 +405,9 @@ async def predict_ou(game_id, home_abbr, away_abbr, **kwargs):
         if len(home_row) == 0:
             return None, None
 
-        missing = [c for c in OU_FEATURES if c not in feats.columns]
-        available = [c for c in OU_FEATURES if c in feats.columns]
+        _ou = _ensure_ou_features()
+        missing = [c for c in _ou if c not in feats.columns]
+        available = [c for c in _ou if c in feats.columns]
         features = home_row[available].fillna(0).values
 
         pred = _MODEL.predict(features)[0]
@@ -420,7 +432,7 @@ async def train_model(year: int, train_years: list[int]) -> xgb.XGBRegressor:
     train_feats = feats[feats["season_year"].isin(train_years)].copy()
     test_feats = feats[feats["season_year"] == year].copy()
 
-    available = [c for c in OU_FEATURES if c in feats.columns]
+    available = [c for c in _ensure_ou_features() if c in feats.columns]
 
     X_train = train_feats[available].fillna(0).values
     y_train = train_feats["actual_total"].values
