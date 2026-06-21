@@ -253,8 +253,8 @@ COMPUTED_FEATURES_CATALOG: Dict[str, str] = {
     "a_pitcher_k9_l20": "Away pitcher K/9 over last 20 appearances",
     "h_pitcher_whip_l20": "Home pitcher WHIP over last 20 appearances",
     "a_pitcher_whip_l20": "Away pitcher WHIP over last 20 appearances",
-    "h_pitcher_kbb_rate_l20": "Home pitcher K/BB rate over last 20 appearances",
-    "a_pitcher_kbb_rate_l20": "Away pitcher K/BB rate over last 20 appearances",
+    "h_pitcher_k_bb_l20": "Home pitcher K/BB rate over last 20 appearances",
+    "a_pitcher_k_bb_l20": "Away pitcher K/BB rate over last 20 appearances",
     "h_pitcher_home_team_l20": "Home pitcher ERA with this team (last 20)",
     "a_pitcher_home_team_l20": "Away pitcher ERA with this team (last 20)",
     # ── Bullpen ──
