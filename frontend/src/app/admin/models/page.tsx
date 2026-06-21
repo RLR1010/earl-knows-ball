@@ -164,7 +164,7 @@ interface TrainingRunInfo {
 
 function ModelVariantSection({ variant: _variant, loadedRunInfo, trainingRuns, onSelectRun, onSetCurrent, onTrainNew, sport }: { variant: ModelVariant; loadedRunInfo?: ModelVariant | null; trainingRuns?: TrainingRunInfo[]; onSelectRun?: (runId: number) => void; onSetCurrent?: (runId: number) => void; onTrainNew?: (modelType: string) => void; sport?: string }) {
   const variantSource = loadedRunInfo && typeof loadedRunInfo === "object" && !("error" in loadedRunInfo) ? loadedRunInfo : _variant;
-  const variant = _variant;
+  const variant = variantSource;
   const colors = VARIANT_COLORS[variant?.name || "A"] || VARIANT_COLORS["ATS"];
   const [expandedFeat, setExpandedFeat] = useState<string | null>(null);
   const [selectedRunId, setSelectedRunId] = useState<string>("");
