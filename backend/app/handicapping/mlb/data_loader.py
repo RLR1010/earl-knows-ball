@@ -576,6 +576,23 @@ def build_features(df: pd.DataFrame, log_fn=None) -> pd.DataFrame:
         lambda s: s.ewm(span=10, min_periods=1).mean().shift(1)
     )
 
+    # ── 3e. Over/under frequency for OU model ──
+    # Merge closing OU from feats onto tg so we can compute the over_flag
+    ou_map = feats[["game_id", "over_under"]].copy()
+    tg = tg.merge(ou_map, on="game_id", how="left")
+    tg["over_flag"] = ((tg["rf"] + tg["ra"]) > tg["over_under"]).astype(float)
+    tg["over_freq"] = (
+        tg.groupby("team")["over_flag"]
+        .apply(lambda s: s.expanding(min_periods=1).mean().shift(1))
+        .reset_index(level=0, drop=True)
+    )
+    tg["over_freq5"] = (
+        tg.groupby("team")["over_flag"]
+        .apply(lambda s: s.rolling(5, min_periods=1).mean().shift(1))
+        .reset_index(level=0, drop=True)
+    )
+    tg.drop(columns=["over_under", "over_flag"], inplace=True)
+
     log("  Rolling stats done — %d team-game rows", len(tg))
 
     # ── 4. Merge team-game features back onto game-level feats ──
@@ -592,9 +609,11 @@ def build_features(df: pd.DataFrame, log_fn=None) -> pd.DataFrame:
         "rf5": "h_rf5",
         "ra5": "h_ra5",
         "form_l10": "h_form_l10",
+        "over_freq": "h_over_freq",
+        "over_freq5": "h_over_freq5",
     })[["game_id", "ha", "h_winpct", "h_winpct_l10",
         "h_rf_avg", "h_ra_avg", "h_rf10", "h_ra10",
-        "h_rf5", "h_ra5", "h_form_l10",
+        "h_rf5", "h_ra5", "h_form_l10", "h_over_freq", "h_over_freq5",
         "h_home_rf", "a_away_rf"]]
 
     # Away-team features
@@ -609,9 +628,11 @@ def build_features(df: pd.DataFrame, log_fn=None) -> pd.DataFrame:
         "rf5": "a_rf5",
         "ra5": "a_ra5",
         "form_l10": "a_form_l10",
+        "over_freq": "a_over_freq",
+        "over_freq5": "a_over_freq5",
     })[["game_id", "aa", "a_winpct", "a_winpct_l10",
         "a_rf_avg", "a_ra_avg", "a_rf10", "a_ra10",
-        "a_rf5", "a_ra5", "a_form_l10"]]
+        "a_rf5", "a_ra5", "a_form_l10", "a_over_freq", "a_over_freq5"]]
 
     # Drop old h_home_rf, a_away_rf from tg — they'll come through merge
     home_feats = home_feats.drop(columns=["h_home_rf", "a_away_rf"], errors="ignore")
@@ -736,69 +757,21 @@ def build_features(df: pd.DataFrame, log_fn=None) -> pd.DataFrame:
     )
 
     # ── 8.5 OU-specific features: total10, over_freq, over_freq5 ──
-    # These are used by the OU model for total-runs prediction.
-    # h_total10 / a_total10: 10-game sum of runs scored/allowed (= rf10/ra10 * 10)
-    if "rf10" in feats.columns:
-        feats["h_total10"] = (feats["rf10"] * 10).fillna(45).clip(lower=0)
+    # h_total10 / a_total10: 10-game sum of runs scored/allowed (= h_rf10/a_ra10 * 10)
+    if "h_rf10" in feats.columns and feats["h_rf10"].notna().any():
+        feats["h_total10"] = (feats["h_rf10"] * 10).fillna(45).clip(lower=0)
     else:
-        feats["h_total10"] = 45.0
-    if "ra10" in feats.columns:
-        feats["a_total10"] = (feats["ra10"] * 10).fillna(45).clip(lower=0)
+        feats["h_total10"] = (feats.get("h_rf_avg", pd.Series(4.5, index=feats.index)) * 10).fillna(45).clip(lower=0)
+    if "a_ra10" in feats.columns and feats["a_ra10"].notna().any():
+        feats["a_total10"] = (feats["a_ra10"] * 10).fillna(45).clip(lower=0)
     else:
-        feats["a_total10"] = 45.0
+        feats["a_total10"] = (feats.get("a_ra_avg", pd.Series(4.5, index=feats.index)) * 10).fillna(45).clip(lower=0)
 
-    # over_freq / over_freq5: rolling % of team games going over the OU line
-    # These are computed per-team using an expanding window across the pre-sorted data.
-    # We compute an "over_flag" (actual_total > ou_line) for each team game,
-    # then apply an expanding mean shifted by 1 (look-back only, same as rf/ra).
-    # Clone the actual_total/ou_line for the away side via merge.
-    over_cols_to_add = {}
-    if "actual_total" in feats.columns and "over_under" in feats.columns:
-        # Home team over history
-        home_over = feats[["game_id", "home_team", "actual_total", "over_under"]].copy()
-        home_over["over_flag"] = (
-            (home_over["actual_total"] > home_over["over_under"]).astype(float)
-        )
-        home_over.rename(columns={"home_team": "team", "actual_total": "tot", "over_under": "ou"}, inplace=True)
-        # Away team over history — same column structure
-        away_over = feats[["game_id", "away_team", "actual_total", "over_under"]].copy()
-        away_over["over_flag"] = (
-            (away_over["actual_total"] > away_over["over_under"]).astype(float)
-        )
-        away_over.rename(columns={"away_team": "team", "actual_total": "tot", "over_under": "ou"}, inplace=True)
-
-        # Combine and compute rolling over frequency — expanding, shifted by 1
-        team_over = (
-            pd.concat([home_over, away_over], ignore_index=True)
-            .sort_values(["team", "game_id"])
-            .groupby("team")["over_flag"]
-            .apply(lambda s: s.expanding(min_periods=1).mean().shift(1))
-            .reset_index(level=0, drop=True)
-        )
-        n_games = len(feats)
-        # First n are for home-side games, second n for away-side — match up
-        home_over_freq = team_over.iloc[:n_games].values if len(team_over) >= n_games else pd.Series(0.55, index=feats.index)
-        away_over_freq = team_over.iloc[n_games:2 * n_games].values if len(team_over) >= 2 * n_games else pd.Series(0.55, index=feats.index)
-        feats["h_over_freq"] = pd.Series(home_over_freq, index=feats.index).fillna(0.5)
-        feats["a_over_freq"] = pd.Series(away_over_freq, index=feats.index).fillna(0.5)
-
-        # over_freq5 — same approach but rolling(5) instead of expanding
-        team_over5 = (
-            pd.concat([home_over, away_over], ignore_index=True)
-            .sort_values(["team", "game_id"])
-            .groupby("team")["over_flag"]
-            .apply(lambda s: s.rolling(5, min_periods=1).mean().shift(1))
-            .reset_index(level=0, drop=True)
-        )
-        home_over_freq5 = team_over5.iloc[:n_games].values if len(team_over5) >= n_games else pd.Series(0.55, index=feats.index)
-        away_over_freq5 = team_over5.iloc[n_games:2 * n_games].values if len(team_over5) >= 2 * n_games else pd.Series(0.55, index=feats.index)
-        feats["h_over_freq5"] = pd.Series(home_over_freq5, index=feats.index).fillna(0.5)
-        feats["a_over_freq5"] = pd.Series(away_over_freq5, index=feats.index).fillna(0.5)
-    else:
-        feats["h_over_freq"] = 0.5
-        feats["a_over_freq"] = 0.5
-        feats["h_over_freq5"] = 0.5
-        feats["a_over_freq5"] = 0.5
+    # h_home_rf / a_away_rf — already merged from tg in section 4
+    if "h_home_rf" not in feats.columns:
+        feats["h_home_rf"] = feats.get("h_rf_avg", 4.5)
+    if "a_away_rf" not in feats.columns:
+        feats["a_away_rf"] = feats.get("a_rf_avg", 4.5)
 
     # ── 9. Pitcher features (rolling windows) ──
 
@@ -917,7 +890,15 @@ def build_features(df: pd.DataFrame, log_fn=None) -> pd.DataFrame:
     feats["actual_margin"] = feats["margin"]
     feats["actual_total"] = feats["home_score"] + feats["away_score"]
 
-    # ── 13. Fill NaNs ──
+    # ── 13. Drop rows without betting data ──
+    # Games missing closing OU have no betting context for ATS/OU modeling.
+    before = len(feats)
+    feats = feats[feats["over_under"].notna() & (feats["over_under"] > 0)].copy()
+    after = len(feats)
+    if before != after:
+        log("  Dropped %d rows without valid closing OU (%d remaining)", before - after, after)
+
+    # ── 14. Fill NaNs ──
     float_cols = feats.select_dtypes(include=["float64", "float32"]).columns
     feats[float_cols] = feats[float_cols].fillna(0.0)
 
