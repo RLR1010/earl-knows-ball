@@ -121,7 +121,7 @@ function PlayerTable({ players }: { players: NBAPlayerStat[] }) {
   );
 }
 
-function NBABoxScorePage({ gameId }: { gameId: string | undefined }) {
+export function NBABoxScorePage({ gameId }: { gameId: string | undefined }) {
   const [data, setData] = useState<NBABoxScoreData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
