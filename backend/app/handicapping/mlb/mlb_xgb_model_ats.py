@@ -37,46 +37,17 @@ except ImportError:
     update_pkl_filename = None
     _DB_HELPERS_AVAILABLE = False
 
-# Feature list for the ATS model, sourced from the most recent
-# (is_current) training run's feature_importance.  Must stay in sync
-# with the model that was actually trained.
-ATS_FEATURES: list[str] = [
-        "is_home_fav",
-        "a_implied",
-        "h_implied",
-        "is_div",
-        "winpct_diff",
-        "h_winpct",
-        "h_home_ra",
-        "travel_miles",
-        "a_home_rf",
-        "a_ra10",
-        "a_winpct",
-        "tz_diff",
-        "a_home_ra",
-        "h_ra20",
-        "h_home_rf",
-        "rest_h",
-        "ou_line",
-        "a_rf20",
-        "h_rf20",
-        "a_ra20",
-        "rest_diff",
-        "a_rf10",
-        "month",
-        "rest_a",
-        "h_ra10",
-        "h_rf10",
-        "is_summer",
-        "is_dome",
-]
-
-
 from app.handicapping.mlb.data_loader import (
     get_data_loader,
     build_features as mlb_build_features,
+    get_model_features,
     MLBDataLoader,
 )
+
+# Feature list for the ATS model, sourced from the most recent
+# (is_current) training run's feature_importance.  Must stay in sync
+# with the model that was actually trained.
+ATS_FEATURES: list[str] = get_model_features("ats")
 
 warnings.filterwarnings("ignore")
 

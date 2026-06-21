@@ -146,14 +146,16 @@ def get_model_pkl_path(sport: str, model_type: str) -> Optional[str]:
 def set_training_run_as_current(sport: str, run_id: int) -> Optional[dict]:
     """Set a specific training run as the current one for its model_type.
 
-    Clears is_current for all other runs of the same model_type first.
+    Clears is_current for all other runs of the same model_type first,
+    then updates the sport's features table to mark which features are
+    current for this model type.
     """
     conn = _get_conn()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            # Get the model_type of this run
+            # Get the model_type and results_json of this run
             cur.execute(
-                f'SELECT model_type FROM {sport}.training_runs WHERE id = %s',
+                f'SELECT model_type, results_json FROM {sport}.training_runs WHERE id = %s',
                 (run_id,)
             )
             row = cur.fetchone()
@@ -161,21 +163,63 @@ def set_training_run_as_current(sport: str, run_id: int) -> Optional[dict]:
                 return None
             model_type = row["model_type"]
 
-            # Clear is_current for all runs of this model_type
+            # ── Extract feature names from results_json ──
+            # ATS stores feature_set (list of strings) per year-result
+            # OU stores feature_importance (list of {feature, importance}) per year-result
+            features: list[str] = []
+            results = row.get("results_json")
+            if results and isinstance(results, list):
+                seen: set[str] = set()
+                for yr in results:
+                    if not isinstance(yr, dict):
+                        continue
+                    if model_type == "ats":
+                        fs = yr.get("feature_set", [])
+                        if isinstance(fs, list):
+                            for fname in fs:
+                                if isinstance(fname, str) and fname not in seen:
+                                    seen.add(fname)
+                                    features.append(fname)
+                    else:
+                        # OU / any other model type that stores feature_importance
+                        fi = yr.get("feature_importance", [])
+                        if isinstance(fi, list):
+                            for entry in fi:
+                                fname = entry.get("feature") if isinstance(entry, dict) else None
+                                if fname and isinstance(fname, str) and fname not in seen:
+                                    seen.add(fname)
+                                    features.append(fname)
+
+            # ── Update training_runs is_current ──
             cur.execute(
                 f'UPDATE {sport}.training_runs '
                 f'SET is_current = FALSE '
                 f'WHERE model_type = %s AND is_current = TRUE',
                 (model_type,)
             )
-
-            # Set this run as current
             cur.execute(
                 f'UPDATE {sport}.training_runs '
                 f'SET is_current = TRUE '
                 f'WHERE id = %s',
                 (run_id,)
             )
+
+            # ── Update sport.features table ──
+            col = {"ou": "current_ou", "ats": "current_ats"}.get(model_type)
+            if col:
+                # Clear the column for all features first
+                cur.execute(
+                    f'UPDATE {sport}.features SET {col} = FALSE'
+                )
+                # Set it for features used in this training run
+                if features:
+                    placeholders = ",".join("%s" for _ in features)
+                    cur.execute(
+                        f'UPDATE {sport}.features SET {col} = TRUE '
+                        f'WHERE name IN ({placeholders})',
+                        features
+                    )
+
         conn.commit()
 
         # Return the updated run

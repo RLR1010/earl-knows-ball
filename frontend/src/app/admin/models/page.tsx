@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
+import { api } from "@/lib/api";
 
 const SPORTS = [
   { key: "mlb", label: "MLB", color: "bg-red-600", emoji: "⚾" },
@@ -161,9 +162,9 @@ interface TrainingRunInfo {
   is_current: boolean;
 }
 
-function ModelVariantSection({ variant: _variant, loadedRunInfo, trainingRuns, onSelectRun, onSetCurrent, sport }: { variant: ModelVariant; loadedRunInfo?: ModelVariant | null; trainingRuns?: TrainingRunInfo[]; onSelectRun?: (runId: number) => void; onSetCurrent?: (runId: number) => void; sport?: string }) {
+function ModelVariantSection({ variant: _variant, loadedRunInfo, trainingRuns, onSelectRun, onSetCurrent, onTrainNew, sport }: { variant: ModelVariant; loadedRunInfo?: ModelVariant | null; trainingRuns?: TrainingRunInfo[]; onSelectRun?: (runId: number) => void; onSetCurrent?: (runId: number) => void; onTrainNew?: (modelType: string) => void; sport?: string }) {
   const variantSource = loadedRunInfo && typeof loadedRunInfo === "object" && !("error" in loadedRunInfo) ? loadedRunInfo : _variant;
-  const variant = variantSource;
+  const variant = _variant;
   const colors = VARIANT_COLORS[variant?.name || "A"] || VARIANT_COLORS["ATS"];
   const [expandedFeat, setExpandedFeat] = useState<string | null>(null);
   const [selectedRunId, setSelectedRunId] = useState<string>("");
@@ -197,6 +198,14 @@ function ModelVariantSection({ variant: _variant, loadedRunInfo, trainingRuns, o
               className="bg-earl-600 hover:bg-earl-500 text-white text-xs px-3 py-1.5 rounded-lg transition-colors"
             >
               Set as Current
+            </button>
+          )}
+          {onTrainNew && (
+            <button
+              onClick={() => onTrainNew(variant.name.toLowerCase())}
+              className="bg-purple-600 hover:bg-purple-500 text-white text-xs px-3 py-1.5 rounded-lg transition-colors"
+            >
+              Train New
             </button>
           )}
         </div>
@@ -393,6 +402,18 @@ export default function AdminModels() {
   const [loadingRunDetail, setLoadingRunDetail] = useState(false);
   const [loadedRunInfo, setLoadedRunInfo] = useState<any | null>(null);
 
+  // Train New modal state
+  const [trainModalOpen, setTrainModalOpen] = useState(false);
+  const [trainModalType, setTrainModalType] = useState<string>("ou");
+
+  const openTrainModal = (modelType: string) => {
+    // Normalise model type: strip slashes, lowercase, map to known types
+    const clean = modelType.toLowerCase().replace(/[^a-z0-9]/g, "");
+    const mapped: Record<string, string> = { "ou": "ou", "overunder": "ou", "ats": "ats", "ml": "ml", "moneyline": "ml" };
+    setTrainModalType(mapped[clean] || clean);
+    setTrainModalOpen(true);
+  };
+
   const fetchModel = useCallback(async (s: string) => {
     setLoading(true);
     setError(null);
@@ -500,6 +521,7 @@ export default function AdminModels() {
   }
 
   return (
+    <>
     <div className="space-y-8">
       {/* Header */}
       <div className="flex items-center gap-4 flex-wrap">
@@ -611,7 +633,7 @@ export default function AdminModels() {
                 }
               } catch { /* ignore */ }
             };
-            return <ModelVariantSection variant={activeVariant} loadedRunInfo={loadedRunInfo} trainingRuns={filteredRuns} onSelectRun={handleRunSelect} onSetCurrent={handleSetCurrent} sport={sport} />;
+            return <ModelVariantSection variant={activeVariant} loadedRunInfo={loadedRunInfo} trainingRuns={filteredRuns} onSelectRun={handleRunSelect} onSetCurrent={handleSetCurrent} onTrainNew={openTrainModal} sport={sport} />;
           })()}
         </div>
       )}
@@ -859,6 +881,150 @@ export default function AdminModels() {
           </div>
         </>
       )}
+    </div>
+
+      {/* ── Train New Modal ── */}
+      {trainModalOpen && (
+        <TrainFeatureModal
+          sport={sport}
+          modelType={trainModalType}
+          onClose={() => setTrainModalOpen(false)}
+          onRefresh={() => { if (sport) fetchModel(sport); }}
+        />
+      )}
+    </>
+  );
+}
+
+
+function TrainFeatureModal({ sport, modelType, onClose, onRefresh }: {
+  sport: string;
+  modelType: string;
+  onClose: () => void;
+  onRefresh: () => void;
+}) {
+  const [features, setFeatures] = useState<Array<{name: string; description: string; display_name: string | null; current_ou: boolean; current_ats: boolean}>>([]);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [loading, setLoading] = useState(true);
+  const [submitting, setSubmitting] = useState(false);
+  const [status, setStatus] = useState<string | null>(null);
+
+  const loadFeatures = async () => {
+    setLoading(true);
+    try {
+      const res = await api.admin.features.get(sport);
+      const feats = res.features;
+      setFeatures(feats);
+      const col = modelType === "ou" ? "current_ou" : "current_ats" as "current_ou" | "current_ats";
+      setSelected(new Set(feats.filter(f => f[col]).map(f => f.name)));
+    } catch (e: any) {
+      setStatus("Failed to load features: " + (e.message || "Unknown error"));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { loadFeatures(); }, [sport, modelType]);
+
+  const toggle = (name: string) => {
+    setSelected(prev => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name); else next.add(name);
+      return next;
+    });
+  };
+
+  const submit = async () => {
+    const arr = Array.from(selected);
+    if (arr.length === 0) { setStatus("Please select at least one feature."); return; }
+    setSubmitting(true);
+    setStatus(null);
+    try {
+      const res = await api.admin.training.trigger(sport, modelType, arr);
+      setStatus(`✅ Training started (PID ${res.training_pid}) - ${res.message}`);
+      setTimeout(() => onRefresh(), 5000);
+    } catch (e: any) {
+      setStatus("Failed to start training: " + (e.message || "Unknown error"));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => { if (!submitting) onClose(); }}>
+      <div className="bg-gray-900 border border-white/15 rounded-xl shadow-2xl w-full max-w-3xl max-h-[85vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-4 border-b border-white/10">
+          <h2 className="text-lg font-semibold text-white">Train {sport.toUpperCase()} {modelType.toUpperCase()} Model</h2>
+          <button
+            onClick={() => { if (!submitting) onClose(); }}
+            className="text-gray-400 hover:text-white text-xl leading-none transition-colors"
+          >
+            &times;
+          </button>
+        </div>
+
+        {/* Feature list */}
+        <div className="flex-1 overflow-y-auto px-6 py-4">
+          {loading ? (
+            <div className="text-gray-400 text-sm py-8 text-center">Loading features...</div>
+          ) : features.length === 0 ? (
+            <div className="text-gray-500 text-sm py-8 text-center">No features found.</div>
+          ) : (
+            <>
+              <div className="flex items-center gap-3 mb-3 text-xs text-gray-500">
+                <button onClick={() => setSelected(new Set(features.map(f => f.name)))} className="text-earl-400 hover:text-earl-300 underline">Select All</button>
+                <span>/</span>
+                <button onClick={() => setSelected(new Set())} className="text-earl-400 hover:text-earl-300 underline">Clear All</button>
+                <span className="ml-auto">{selected.size} / {features.length} selected</span>
+              </div>
+              <div className="grid grid-cols-2 gap-1.5">
+                {features.map((feat) => {
+                  const isSelected = selected.has(feat.name);
+                  return (
+                    <label key={feat.name} className={`flex items-start gap-2 px-3 py-2 rounded-lg cursor-pointer text-sm transition-colors ${
+                      isSelected ? "bg-earl-600/20 border border-earl-600/30" : "bg-white/5 border border-white/5 hover:bg-white/10"
+                    }`}>
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={() => toggle(feat.name)}
+                        className="mt-0.5 accent-earl-500"
+                      />
+                      <div className="flex-1 min-w-0">
+                        <div className="text-gray-200 font-mono text-xs truncate">{feat.name}</div>
+                        {feat.display_name && <div className="text-gray-500 text-[10px] truncate">{feat.display_name}</div>}
+                      </div>
+                    </label>
+                  );
+                })}
+              </div>
+            </>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="flex items-center gap-3 px-6 py-4 border-t border-white/10">
+          <div className="flex-1 text-xs">
+            {status && (
+              <span className={status.startsWith("✅") ? "text-green-400" : "text-red-400"}>{status}</span>
+            )}
+          </div>
+          <button
+            onClick={() => { if (!submitting) onClose(); }}
+            className="px-4 py-2 text-sm text-gray-300 hover:text-white transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={submit}
+            disabled={submitting || selected.size === 0}
+            className="px-5 py-2 text-sm font-medium bg-earl-600 hover:bg-earl-500 disabled:bg-gray-700 disabled:text-gray-500 text-white rounded-lg transition-colors"
+          >
+            {submitting ? "Starting Training..." : "Start Training"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

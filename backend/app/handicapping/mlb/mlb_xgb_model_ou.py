@@ -22,37 +22,15 @@ import numpy as np
 import pandas as pd
 import xgboost as xgb
 
-from app.handicapping.mlb.data_loader import get_data_loader, build_features as mlb_build_features
+from app.handicapping.mlb.data_loader import get_data_loader, build_features as mlb_build_features, get_model_features
 
 # ── Config ──
 CURRENT_YEAR = 2026
-MLB_PKL_DIR = Path(os.path.expanduser("~/.openclaw/workspace/earl-knows-football/data/models/mlb"))
-MLB_PKL_DIR.mkdir(parents=True, exist_ok=True)
-
 # ── OU Feature Set ──
-OU_FEATURES = [
-    # Team rolling stats
-    "h_rf10", "h_ra10", "a_rf10", "a_ra10",
-    "h_rf_avg", "h_ra_avg", "a_rf_avg", "a_ra_avg",
-    # Team totals (10-game sum)
-    "h_total10", "a_total10",
-    # Over frequency
-    "h_over_freq", "a_over_freq",
-    "h_over_freq5", "a_over_freq5",
-    # Situational
-    "rest_h", "rest_a", "rest_diff",
-    "is_summer", "is_div",
-    # Park / weather
-    "park_factor", "is_dome", "temperature", "wind_speed",
-    "travel_miles", "tz_diff",
-    # Line values
-    "ou_line", "ou_movement",
-    "home_implied_probability", "away_implied_probability",
-    "opening_home_implied",
-    # Pitcher era proxies
-    "h_pitcher_era_l5", "a_pitcher_era_l5",
-    "h_pitcher_era_l20", "a_pitcher_era_l20",
-]
+# Pulled from mlb.features via get_model_features("ou").
+# Fallback hardcoded list is commented out below.
+OU_FEATURES: list[str] = get_model_features("ou")
+
 
 # ── DB helpers (lazy) ──
 _DB_HELPERS_AVAILABLE = False
@@ -61,6 +39,11 @@ try:
     _DB_HELPERS_AVAILABLE = True
 except ImportError:
     pass
+
+
+# ── Model paths ──
+MLB_PKL_DIR = Path("/home/rich/.openclaw/workspace/earl-knows-football/data/models/mlb")
+MLB_PKL_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def log(msg: str):
@@ -128,10 +111,18 @@ async def run_backtest(
     mae = float(np.mean(np.abs(y_pred - y_test)))
     rmse = float(np.sqrt(np.mean((y_pred - y_test) ** 2)))
 
-    # Over/Under accuracy (pushing)
-    ou_correct = (y_pred > ous) == (y_test > ous)
-    ou_acc = float(np.mean(ou_correct))
-    ou_count = int(np.sum(ou_correct))
+    # Over/Under accuracy (excluding pushes)
+    pushes = y_test == ous
+    non_push_mask = ~pushes
+    n_non_push = int(np.sum(non_push_mask))
+    n_pushes = int(np.sum(pushes))
+    if n_non_push > 0:
+        ou_correct = (y_pred[non_push_mask] > ous[non_push_mask]) == (y_test[non_push_mask] > ous[non_push_mask])
+        ou_acc = float(np.mean(ou_correct))
+        ou_count = int(np.sum(ou_correct))
+    else:
+        ou_acc = 0.0
+        ou_count = 0
 
     # Feature importance (list of dicts, matching admin page format)
     feature_importance = [
@@ -158,7 +149,7 @@ async def run_backtest(
         "total_games": n_test,
         "mae": mae,
         "rmse": rmse,
-        "ou": {"total": int(n_test), "correct": ou_count, "incorrect": int(n_test - ou_count), "pct": round(ou_acc * 100, 1)},
+        "ou": {"total": int(n_test), "non_push": n_non_push, "correct": ou_count, "incorrect": int(n_non_push - ou_count), "push": n_pushes, "pct": round(ou_acc * 100, 1)},
         "model_file": pkl_path.name,
         "feature_importance": feature_importance,
     }
@@ -198,7 +189,7 @@ async def run_all_years(
                 total_results.append(result)
                 ou = result["ou"]
                 log(f"  Year {year}: MAE={result['mae']:.3f}, RMSE={result['rmse']:.3f}, "
-                    f"OU={ou['pct']}% ({ou['correct']}/{ou['total']})")
+                    f"OU={ou['pct']}% ({ou['correct']}/{ou['non_push']}{' +' + str(ou['push']) + ' push' if ou['push'] else ''})")
 
     # Save ONE training run with all years as a list in results_json
     if _DB_HELPERS_AVAILABLE and do_save_training_run and not skip_db and total_results:
@@ -349,7 +340,7 @@ if __name__ == "__main__":
             log("\n=== FINAL RESULTS ===")
             for r in results:
                 ou = r["ou"]
-                log(f"  {r['test_year']}: MAE={r['mae']:.3f}, OU={ou['pct']}% ({ou['correct']}/{ou['total']})")
+                log(f"  {r['test_year']}: MAE={r['mae']:.3f}, OU={ou['pct']}% ({ou['correct']}/{ou['non_push']}{' +' + str(ou['push']) + ' push' if ou['push'] else ''})")
         else:
             log("No results generated.")
     else:
@@ -362,7 +353,7 @@ if __name__ == "__main__":
             ou = result["ou"]
             log(f"\n=== {result['test_year']} Result ===")
             log(f"  MAE={result['mae']:.3f}, RMSE={result['rmse']:.3f}")
-            log(f"  OU={ou['pct']}% ({ou['correct']}/{ou['total']})")
+            log(f"  OU={ou['pct']}% ({ou['correct']}/{ou['non_push']}{' +' + str(ou['push']) + ' push' if ou['push'] else ''})")
         else:
             log("No result generated.")
 

@@ -322,6 +322,25 @@ export const api = {
       },
       get: (id: string) => fetchAPI<Payment>(`/api/admin/payments/${id}`, { headers: authHeaders() }),
     },
+    // MLB model features + training
+    features: {
+      get: (sport: string) =>
+        fetchAPI<{ features: Array<{name: string; description: string; display_name: string | null; current_ou: boolean; current_ats: boolean}> }>(
+          `/admin/features/${sport}`,
+          { headers: authHeaders() }
+        ),
+    },
+    training: {
+      trigger: (sport: string, modelType: string, features: string[]) =>
+        fetchAPI<{ status: string; features_updated: number; training_pid: number; message: string }>(
+          `/admin/train-new/${sport}/${modelType}`,
+          {
+            method: "POST",
+            headers: { ...authHeaders(), "Content-Type": "application/json" },
+            body: JSON.stringify({ features }),
+          }
+        ),
+    },
   },
 
   // Subscriptions (public)

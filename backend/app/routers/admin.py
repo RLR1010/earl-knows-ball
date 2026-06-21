@@ -14,6 +14,18 @@ from app.models.admin import SubscriptionPlan, UserSubscription, Payment
 from app.core.config import settings
 import json
 import os
+from psycopg2.extras import RealDictCursor
+
+
+DATABASE_URL = os.environ.get(
+    "DATABASE_URL",
+    "dbname=earl_knows_football user=earl host=localhost port=5432"
+)
+
+
+def _pg_conn():
+    import psycopg2
+    return psycopg2.connect(DATABASE_URL)
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
@@ -1141,6 +1153,81 @@ async def set_training_run_current(
     if not result:
         raise HTTPException(status_code=404, detail="Training run not found")
     return {"status": "ok", "training_run": result}
+
+
+@router.get("/features/{sport}")
+async def get_mlb_features(
+    sport: str,
+    admin: User = Depends(get_admin_user),
+):
+    """Return all features for a sport from the features table."""
+    sport = sport.lower()
+    if sport not in ("mlb", "nfl", "nba"):
+        raise HTTPException(status_code=404, detail=f"Unknown sport: {sport}")
+    conn = _pg_conn()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(f"SELECT name, description, display_name, current_ou, current_ats, "
+                        f"created_at FROM {sport}.features ORDER BY display_name, name")
+            rows = cur.fetchall()
+            return {"features": [dict(r) for r in rows]}
+    finally:
+        conn.close()
+
+
+@router.post("/train-new/{sport}/{model_type}")
+async def trigger_training(
+    sport: str,
+    model_type: str,
+    body: dict,
+    admin: User = Depends(get_admin_user),
+):
+    """Update features for a model type and kick off training."""
+    import subprocess
+    import json
+
+    sport = sport.lower()
+    if sport not in ("mlb", "nfl", "nba"):
+        raise HTTPException(status_code=404, detail=f"Unknown sport: {sport}")
+    if model_type not in ("ou", "ats"):
+        raise HTTPException(status_code=400, detail="model_type must be 'ou' or 'ats'")
+
+    feature_names: list[str] = body.get("features", [])
+    if not feature_names:
+        raise HTTPException(status_code=400, detail="features list cannot be empty")
+
+    col = "current_ou" if model_type == "ou" else "current_ats"
+    conn = _pg_conn()
+    try:
+        with conn.cursor() as cur:
+            # Clear the column for all features
+            cur.execute(f"UPDATE {sport}.features SET {col} = FALSE")
+            # Set it for the selected features
+            placeholders = ",".join("%s" for _ in feature_names)
+            cur.execute(
+                f"UPDATE {sport}.features SET {col} = TRUE WHERE name IN ({placeholders})",
+                feature_names,
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+    # Launch the training script in the background
+    script = {
+        "ou": "python3 -m app.handicapping.mlb.mlb_xgb_model_ou --mode all",
+        "ats": "python3 -m app.handicapping.mlb.mlb_xgb_model_ats --mode all",
+    }[model_type]
+
+    # Run as a subprocess — fire and forget
+    proc = await asyncio.create_subprocess_shell(
+        script,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        cwd="/home/rich/.openclaw/workspace/earl-knows-football/backend",
+        env={"PYTHONPATH": "/home/rich/.openclaw/workspace/earl-knows-football/backend", "PATH": os.environ.get("PATH", "")},
+    )
+
+    return {"status": "ok", "features_updated": len(feature_names), "training_pid": proc.pid, "message": f"Training started for {sport} {model_type} model"}
 
 
 @router.get("/models/{sport}/from-run/{run_id}")

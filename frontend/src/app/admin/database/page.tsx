@@ -319,14 +319,24 @@ export default function DatabaseExplorer() {
                               <td
                                 key={col.column_name}
                                 className={
-                                  "py-1.5 px-3 font-mono whitespace-nowrap max-w-[300px] truncate" +
+                                  "py-1.5 px-3 font-mono max-w-[300px] truncate group relative" +
                                   (val === null || val === undefined
                                     ? " text-gray-700 italic"
                                     : "")
                                 }
-                                title={val === null || val === undefined ? "NULL" : String(val)}
+                                title={formatted}
                               >
-                                {formatted}
+                                <span className="cursor-default">{formatted}</span>
+                                {/* Copy button on hover */}
+                                {formatted && formatted !== "NULL" && (
+                                  <button
+                                    onClick={() => navigator.clipboard.writeText(formatted)}
+                                    className="absolute right-1 top-1/2 -translate-y-1/2 hidden group-hover:flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-sans bg-earl-600/80 text-white rounded border border-earl-500/50 hover:bg-earl-500 transition"
+                                    title="Copy cell value"
+                                  >
+                                    📋
+                                  </button>
+                                )}
                               </td>
                             );
                           })}
