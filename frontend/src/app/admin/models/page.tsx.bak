@@ -903,7 +903,7 @@ function TrainFeatureModal({ sport, modelType, onClose, onRefresh }: {
   onClose: () => void;
   onRefresh: () => void;
 }) {
-  const [features, setFeatures] = useState<Array<{name: string; description: string; display_name: string | null; is_trainable: boolean; current_ou: boolean; current_ats: boolean}>>([]);
+  const [features, setFeatures] = useState<Array<{name: string; description: string; display_name: string | null; current_ou: boolean; current_ats: boolean}>>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
@@ -916,7 +916,7 @@ function TrainFeatureModal({ sport, modelType, onClose, onRefresh }: {
       const feats = res.features;
       setFeatures(feats);
       const col = modelType === "ou" ? "current_ou" : "current_ats" as "current_ou" | "current_ats";
-      setSelected(new Set(feats.filter(f => f.is_trainable && f[col]).map(f => f.name)));
+      setSelected(new Set(feats.filter(f => f[col]).map(f => f.name)));
     } catch (e: any) {
       setStatus("Failed to load features: " + (e.message || "Unknown error"));
     } finally {

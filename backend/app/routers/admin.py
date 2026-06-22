@@ -1168,8 +1168,8 @@ async def get_mlb_features(
     conn = _pg_conn()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(f"SELECT name, description, display_name, current_ou, current_ats, "
-                        f"created_at FROM {sport}.features ORDER BY display_name, name")
+            cur.execute(f"SELECT name, description, display_name, is_trainable, current_ou, current_ats, "
+                        f"created_at FROM {sport}.features WHERE is_trainable = true ORDER BY display_name, name")
             rows = cur.fetchall()
             return {"features": [dict(r) for r in rows]}
     finally:
