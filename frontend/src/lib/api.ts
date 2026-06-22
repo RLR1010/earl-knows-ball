@@ -325,7 +325,7 @@ export const api = {
     // MLB model features + training
     features: {
       get: (sport: string) =>
-        fetchAPI<{ features: Array<{name: string; description: string; display_name: string | null; current_ou: boolean; current_ats: boolean}> }>(
+        fetchAPI<{ features: Array<{name: string; description: string; display_name: string | null; is_trainable: boolean; current_ou: boolean; current_ats: boolean}> }>(
           `/admin/features/${sport}`,
           { headers: authHeaders() }
         ),
@@ -339,6 +339,11 @@ export const api = {
             headers: { ...authHeaders(), "Content-Type": "application/json" },
             body: JSON.stringify({ features }),
           }
+        ),
+      getRuns: (sport: string, modelType: string) =>
+        fetchAPI<any[]>(
+          `/admin/training-runs/${sport}/${modelType}`,
+          { headers: authHeaders() }
         ),
     },
   },

@@ -938,14 +938,36 @@ function TrainFeatureModal({ sport, modelType, onClose, onRefresh }: {
     const arr = Array.from(selected);
     if (arr.length === 0) { setStatus("Please select at least one feature."); return; }
     setSubmitting(true);
-    setStatus(null);
+    setStatus("⏳ Starting training...");
+    const startedAt = new Date().toISOString();
     try {
       const res = await api.admin.training.trigger(sport, modelType, arr);
-      setStatus(`✅ Training started (PID ${res.training_pid}) - ${res.message}`);
-      setTimeout(() => onRefresh(), 5000);
+      setStatus(`⏳ Training in progress (PID ${res.training_pid})...`);
+
+      // Poll for completion every 3 seconds
+      let attempts = 0;
+      const maxAttempts = 120; // 6 minutes max
+      const poll = async (): Promise<void> => {
+        attempts++;
+        const runs: any[] = await api.admin.training.getRuns(sport, modelType);
+        const completed = runs.find(
+          (r: any) => r.is_current && r.results_json && r.trained_at > startedAt
+        );
+        if (completed) {
+          setStatus(`✅ Training complete — ${completed.pkl_filename}`);
+          setTimeout(() => { onClose(); onRefresh(); }, 500);
+          return;
+        }
+        if (attempts >= maxAttempts) {
+          setStatus("⚠️ Training timed out — check server logs");
+          setSubmitting(false);
+          return;
+        }
+        setTimeout(poll, 3000);
+      };
+      poll();
     } catch (e: any) {
       setStatus("Failed to start training: " + (e.message || "Unknown error"));
-    } finally {
       setSubmitting(false);
     }
   };
