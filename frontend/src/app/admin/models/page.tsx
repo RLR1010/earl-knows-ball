@@ -232,8 +232,10 @@ function ModelVariantSection({ variant: _variant, loadedRunInfo, trainingRuns, o
             {trainingRuns.map((run) => {
               const mlPct = getRunOverallMlPct(run);
               const atsPct = getRunOverallAtsPct(run);
+              const ouPct = getRunOverallOuPct(run);
               const stats = [
                 atsPct !== null ? `ATS ${atsPct}%` : null,
+                ouPct !== null ? `OU ${ouPct}%` : null,
                 mlPct !== null ? `ML ${mlPct}%` : null,
               ].filter(Boolean).join(" | ");
               return (
