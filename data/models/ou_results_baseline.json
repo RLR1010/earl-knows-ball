@@ -1,0 +1,562 @@
+[
+  {
+    "test_year": 2021,
+    "train_years": [
+      2020,
+      2019,
+      2018,
+      2017
+    ],
+    "total_games": 272,
+    "mae": 11.66,
+    "err_mean": -1.01,
+    "err_std": 14.16,
+    "within_3": 0.129,
+    "within_5": 0.243,
+    "pred_std": 5.7,
+    "ou": {
+      "correct": 125,
+      "incorrect": 141,
+      "pushes": 6,
+      "total": 272,
+      "pct": 47.0
+    },
+    "heuristic_ou_pct": 59.4,
+    "natural_over_rate": 0.467,
+    "correlation": 0.13,
+    "feature_importance": [
+      {
+        "feature": "himp",
+        "importance": 0.0695
+      },
+      {
+        "feature": "wind",
+        "importance": 0.0677
+      },
+      {
+        "feature": "aimp",
+        "importance": 0.0613
+      },
+      {
+        "feature": "opening_ou",
+        "importance": 0.0526
+      },
+      {
+        "feature": "away_margin_r3",
+        "importance": 0.0496
+      },
+      {
+        "feature": "rest_diff",
+        "importance": 0.0496
+      },
+      {
+        "feature": "away_margin_r10",
+        "importance": 0.0482
+      },
+      {
+        "feature": "temp",
+        "importance": 0.0472
+      },
+      {
+        "feature": "away_win_pct_r5",
+        "importance": 0.0471
+      },
+      {
+        "feature": "dimp",
+        "importance": 0.0468
+      },
+      {
+        "feature": "dpa",
+        "importance": 0.0466
+      },
+      {
+        "feature": "travel_miles",
+        "importance": 0.0463
+      },
+      {
+        "feature": "home_win_pct_r5",
+        "importance": 0.0453
+      },
+      {
+        "feature": "home_margin_r10",
+        "importance": 0.0453
+      },
+      {
+        "feature": "home_margin_r3",
+        "importance": 0.045
+      },
+      {
+        "feature": "is_short",
+        "importance": 0.0436
+      },
+      {
+        "feature": "tz_diff",
+        "importance": 0.0428
+      },
+      {
+        "feature": "dpf",
+        "importance": 0.0424
+      },
+      {
+        "feature": "spread",
+        "importance": 0.0383
+      },
+      {
+        "feature": "ou_movement",
+        "importance": 0.0336
+      },
+      {
+        "feature": "is_dome",
+        "importance": 0.0314
+      }
+    ]
+  },
+  {
+    "test_year": 2022,
+    "train_years": [
+      2021,
+      2020,
+      2019,
+      2018
+    ],
+    "total_games": 271,
+    "mae": 10.86,
+    "err_mean": -1.86,
+    "err_std": 13.67,
+    "within_3": 0.188,
+    "within_5": 0.299,
+    "pred_std": 6.4,
+    "ou": {
+      "correct": 135,
+      "incorrect": 130,
+      "pushes": 6,
+      "total": 271,
+      "pct": 50.9
+    },
+    "heuristic_ou_pct": 51.3,
+    "natural_over_rate": 0.439,
+    "correlation": 0.254,
+    "feature_importance": [
+      {
+        "feature": "himp",
+        "importance": 0.0579
+      },
+      {
+        "feature": "wind",
+        "importance": 0.0568
+      },
+      {
+        "feature": "is_dome",
+        "importance": 0.056
+      },
+      {
+        "feature": "tz_diff",
+        "importance": 0.0544
+      },
+      {
+        "feature": "temp",
+        "importance": 0.0534
+      },
+      {
+        "feature": "away_margin_r3",
+        "importance": 0.0511
+      },
+      {
+        "feature": "aimp",
+        "importance": 0.0508
+      },
+      {
+        "feature": "dimp",
+        "importance": 0.0501
+      },
+      {
+        "feature": "is_short",
+        "importance": 0.0498
+      },
+      {
+        "feature": "home_margin_r10",
+        "importance": 0.0478
+      },
+      {
+        "feature": "opening_ou",
+        "importance": 0.0465
+      },
+      {
+        "feature": "dpa",
+        "importance": 0.0457
+      },
+      {
+        "feature": "travel_miles",
+        "importance": 0.0448
+      },
+      {
+        "feature": "rest_diff",
+        "importance": 0.0442
+      },
+      {
+        "feature": "home_win_pct_r5",
+        "importance": 0.0441
+      },
+      {
+        "feature": "dpf",
+        "importance": 0.044
+      },
+      {
+        "feature": "away_margin_r10",
+        "importance": 0.0437
+      },
+      {
+        "feature": "spread",
+        "importance": 0.0435
+      },
+      {
+        "feature": "home_margin_r3",
+        "importance": 0.042
+      },
+      {
+        "feature": "away_win_pct_r5",
+        "importance": 0.0383
+      },
+      {
+        "feature": "ou_movement",
+        "importance": 0.0352
+      }
+    ]
+  },
+  {
+    "test_year": 2023,
+    "train_years": [
+      2022,
+      2021,
+      2020,
+      2019
+    ],
+    "total_games": 272,
+    "mae": 10.94,
+    "err_mean": 0.16,
+    "err_std": 13.76,
+    "within_3": 0.173,
+    "within_5": 0.265,
+    "pred_std": 6.2,
+    "ou": {
+      "correct": 146,
+      "incorrect": 122,
+      "pushes": 4,
+      "total": 272,
+      "pct": 54.5
+    },
+    "heuristic_ou_pct": 49.6,
+    "natural_over_rate": 0.467,
+    "correlation": 0.211,
+    "feature_importance": [
+      {
+        "feature": "is_dome",
+        "importance": 0.0753
+      },
+      {
+        "feature": "himp",
+        "importance": 0.0654
+      },
+      {
+        "feature": "aimp",
+        "importance": 0.0575
+      },
+      {
+        "feature": "home_margin_r10",
+        "importance": 0.0555
+      },
+      {
+        "feature": "dimp",
+        "importance": 0.0529
+      },
+      {
+        "feature": "away_margin_r3",
+        "importance": 0.052
+      },
+      {
+        "feature": "opening_ou",
+        "importance": 0.0469
+      },
+      {
+        "feature": "away_margin_r10",
+        "importance": 0.0462
+      },
+      {
+        "feature": "home_margin_r3",
+        "importance": 0.0456
+      },
+      {
+        "feature": "dpf",
+        "importance": 0.0451
+      },
+      {
+        "feature": "travel_miles",
+        "importance": 0.0449
+      },
+      {
+        "feature": "tz_diff",
+        "importance": 0.0444
+      },
+      {
+        "feature": "wind",
+        "importance": 0.0444
+      },
+      {
+        "feature": "dpa",
+        "importance": 0.043
+      },
+      {
+        "feature": "rest_diff",
+        "importance": 0.0428
+      },
+      {
+        "feature": "is_short",
+        "importance": 0.0425
+      },
+      {
+        "feature": "temp",
+        "importance": 0.0422
+      },
+      {
+        "feature": "away_win_pct_r5",
+        "importance": 0.0409
+      },
+      {
+        "feature": "home_win_pct_r5",
+        "importance": 0.0392
+      },
+      {
+        "feature": "spread",
+        "importance": 0.0384
+      },
+      {
+        "feature": "ou_movement",
+        "importance": 0.0349
+      }
+    ]
+  },
+  {
+    "test_year": 2024,
+    "train_years": [
+      2023,
+      2022,
+      2021,
+      2020
+    ],
+    "total_games": 272,
+    "mae": 10.4,
+    "err_mean": 0.89,
+    "err_std": 13.59,
+    "within_3": 0.191,
+    "within_5": 0.324,
+    "pred_std": 5.9,
+    "ou": {
+      "correct": 131,
+      "incorrect": 135,
+      "pushes": 6,
+      "total": 272,
+      "pct": 49.2
+    },
+    "heuristic_ou_pct": 50.4,
+    "natural_over_rate": 0.54,
+    "correlation": 0.14,
+    "feature_importance": [
+      {
+        "feature": "himp",
+        "importance": 0.0656
+      },
+      {
+        "feature": "aimp",
+        "importance": 0.0602
+      },
+      {
+        "feature": "wind",
+        "importance": 0.0574
+      },
+      {
+        "feature": "opening_ou",
+        "importance": 0.0544
+      },
+      {
+        "feature": "away_margin_r3",
+        "importance": 0.0524
+      },
+      {
+        "feature": "dimp",
+        "importance": 0.0521
+      },
+      {
+        "feature": "is_short",
+        "importance": 0.0501
+      },
+      {
+        "feature": "travel_miles",
+        "importance": 0.0485
+      },
+      {
+        "feature": "home_margin_r10",
+        "importance": 0.0481
+      },
+      {
+        "feature": "is_dome",
+        "importance": 0.0467
+      },
+      {
+        "feature": "tz_diff",
+        "importance": 0.0454
+      },
+      {
+        "feature": "away_margin_r10",
+        "importance": 0.0454
+      },
+      {
+        "feature": "home_margin_r3",
+        "importance": 0.0443
+      },
+      {
+        "feature": "ou_movement",
+        "importance": 0.044
+      },
+      {
+        "feature": "dpa",
+        "importance": 0.0432
+      },
+      {
+        "feature": "temp",
+        "importance": 0.0426
+      },
+      {
+        "feature": "home_win_pct_r5",
+        "importance": 0.0424
+      },
+      {
+        "feature": "spread",
+        "importance": 0.0416
+      },
+      {
+        "feature": "dpf",
+        "importance": 0.0405
+      },
+      {
+        "feature": "rest_diff",
+        "importance": 0.0386
+      },
+      {
+        "feature": "away_win_pct_r5",
+        "importance": 0.0365
+      }
+    ]
+  },
+  {
+    "test_year": 2025,
+    "train_years": [
+      2024,
+      2023,
+      2022,
+      2021
+    ],
+    "total_games": 272,
+    "mae": 10.9,
+    "err_mean": 0.54,
+    "err_std": 13.69,
+    "within_3": 0.188,
+    "within_5": 0.301,
+    "pred_std": 5.9,
+    "ou": {
+      "correct": 142,
+      "incorrect": 127,
+      "pushes": 3,
+      "total": 272,
+      "pct": 52.8
+    },
+    "heuristic_ou_pct": 48.0,
+    "natural_over_rate": 0.522,
+    "correlation": 0.234,
+    "feature_importance": [
+      {
+        "feature": "wind",
+        "importance": 0.059
+      },
+      {
+        "feature": "home_margin_r10",
+        "importance": 0.0586
+      },
+      {
+        "feature": "is_dome",
+        "importance": 0.0562
+      },
+      {
+        "feature": "aimp",
+        "importance": 0.0554
+      },
+      {
+        "feature": "himp",
+        "importance": 0.0545
+      },
+      {
+        "feature": "away_margin_r10",
+        "importance": 0.053
+      },
+      {
+        "feature": "opening_ou",
+        "importance": 0.0507
+      },
+      {
+        "feature": "dpa",
+        "importance": 0.0497
+      },
+      {
+        "feature": "home_margin_r3",
+        "importance": 0.0493
+      },
+      {
+        "feature": "tz_diff",
+        "importance": 0.0488
+      },
+      {
+        "feature": "dimp",
+        "importance": 0.0483
+      },
+      {
+        "feature": "away_margin_r3",
+        "importance": 0.0477
+      },
+      {
+        "feature": "travel_miles",
+        "importance": 0.047
+      },
+      {
+        "feature": "temp",
+        "importance": 0.0456
+      },
+      {
+        "feature": "ou_movement",
+        "importance": 0.0424
+      },
+      {
+        "feature": "rest_diff",
+        "importance": 0.042
+      },
+      {
+        "feature": "spread",
+        "importance": 0.0417
+      },
+      {
+        "feature": "is_short",
+        "importance": 0.0397
+      },
+      {
+        "feature": "home_win_pct_r5",
+        "importance": 0.0383
+      },
+      {
+        "feature": "dpf",
+        "importance": 0.0375
+      },
+      {
+        "feature": "away_win_pct_r5",
+        "importance": 0.0345
+      }
+    ]
+  }
+]

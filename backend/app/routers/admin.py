@@ -1290,8 +1290,8 @@ def _build_nfl_model_variant(results, name, model_type):
     return _build_model_variant(
         name,
         results_file=None,
-        feature_descriptions=_ATS_DESCRIPTIONS if model_type == "ats" else _OU_DESCRIPTIONS if model_type == "ou" else _ML_DESCRIPTIONS,
-        feature_categories_def=_ATS_CATEGORIES if model_type == "ats" else _OU_CATEGORIES if model_type == "ou" else _ML_CATEGORIES,
+        feature_descriptions=_ATS_DESCRIPTIONS if model_type == "ats" else _OU_DESCRIPTIONS,
+        feature_categories_def=_ATS_CATEGORIES if model_type == "ats" else _OU_CATEGORIES,
         results_data=results,
     )
 
@@ -1932,11 +1932,11 @@ async def get_prediction_ev_distribution(
 
 
 async def _get_mlb_model_detail() -> SportModelDetailOut:
-    """Build the MLB model detail response with three model variants.
+    """Build the MLB model detail response with two model variants.
 
     Currently only the ATS (Run Line) variant has trained data from
-    mlb_backtest_results.json. O/U and ML variants will be populated
-    when those dedicated models are trained.
+    mlb_backtest_results.json. The O/U variant will be populated
+    when the dedicated model is trained.
     """
     results = _load_mlb_backtest_results(model_type="ats")
 
@@ -1956,48 +1956,16 @@ async def _get_mlb_model_detail() -> SportModelDetailOut:
         r.pop("ml_on_ats_subset", None); r.pop("ml_on_ou_subset", None)
     ats_variant = _build_mlb_model_variant("ATS", results, _MLB_ATS_DESCRIPTIONS, _MLB_ATS_CATEGORIES)
 
-    # O/U and ML variants: try loading from dedicated files, otherwise None
+    # O/U variant: try loading from dedicated file, otherwise None
     ou_results = _load_mlb_backtest_results("mlb_ou_backtest_results.json", model_type="ou")
     ou_variant = _build_mlb_model_variant("O/U", ou_results, _MLB_OU_DESCRIPTIONS, _MLB_OU_CATEGORIES) if ou_results else None
-    ml_results = _load_mlb_backtest_results("mlb_ml_backtest_results.json", model_type="ml")
-    if ml_results:
-        # ML results store metrics at top level (not under "ml" key).
-        # Transform to match the expected format for _build_mlb_model_variant.
-        for r in ml_results:
-            total = r.get("total_games", 0) or r.get("n", 0)
-            c = r.get("correct", 0)
-            i = r.get("incorrect", 0)
-            r["ml"] = {
-                "correct": c,
-                "incorrect": i,
-                "total": total,
-                "pct": round(100 * c / max(total, 1), 1),
-            }
-            # Also add opening_baseline and closing_baseline metrics
-            ob = r.get("opening_baseline", {})
-            cb = r.get("closing_baseline", {})
-            if ob:
-                r["opening_baseline"] = {
-                    "correct": ob.get("correct", 0),
-                    "incorrect": ob.get("incorrect", 0),
-                    "total": total,
-                    "pct": round(100 * ob.get("correct", 0) / max(total, 1), 1),
-                }
-            if cb:
-                r["closing_baseline"] = {
-                    "correct": cb.get("correct", 0),
-                    "incorrect": cb.get("incorrect", 0),
-                    "total": total,
-                    "pct": round(100 * cb.get("correct", 0) / max(total, 1), 1),
-                }
-    ml_variant = _build_mlb_model_variant("ML", ml_results, _MLB_ML_DESCRIPTIONS, _MLB_ML_CATEGORIES) if ml_results else None
 
-    model_variants = [v for v in [ats_variant, ou_variant, ml_variant] if v is not None]
+    model_variants = [v for v in [ats_variant, ou_variant] if v is not None]
 
-    # ── Overall stats (ATS from ATS variant, OU/ML only from dedicated variants) ──
+    # ── Overall stats (ATS from ATS variant, OU from dedicated variant) ──
     overall_ats_val = ats_variant.overall_ats if ats_variant and ats_variant.overall_ats else ModelBettingOut(correct=0, incorrect=0, total=0, pct=0)
     overall_ou_val = ou_variant.overall_ou if ou_variant and ou_variant.overall_ou else None
-    overall_ml_val = ml_variant.overall_ml if ml_variant and ml_variant.overall_ml else None
+    overall_ml_val = None
 
     # Overall MAE: from ATS variant
     overall_mae = ats_variant.overall_mae if ats_variant else 0
@@ -2043,12 +2011,11 @@ async def _get_mlb_model_detail() -> SportModelDetailOut:
 
     # High confidence: each metric from its dedicated model
     ats_hc_data = ats_variant.backtest_results if ats_variant else []
-    ml_hc_data = ml_variant.backtest_results if ml_variant else ats_hc_data
     ou_hc_data = ou_variant.backtest_results if ou_variant else ats_hc_data
     high_conf = _calc_high_confidence_multi(
         ats_results=ats_hc_data,
         ou_results=ou_hc_data,
-        ml_results=ml_hc_data,
+        ml_results=ats_hc_data,
         threshold_pcts=[25, 20, 15, 10, 5]
     )
 
@@ -2067,10 +2034,9 @@ async def _get_mlb_model_detail() -> SportModelDetailOut:
             "🔵 **ATS Model** — Predicts run differential (run line at -1.5/+1.5). "
             "ATS-optimized with full feature set. Currently the only trained variant.\n\n"
             "🟡 **O/U Model** — Predicts total runs. Not yet trained.\n\n"
-            "🔴 **ML Model** — Predicts win probability. Not yet trained.\n\n"
             "Select a model variant above to see its specific features and backtest results."
         ),
-        algorithm="XGBoost — Three Specialized Variants",
+        algorithm="XGBoost — Two Specialized Variants",
         training_years=sorted(all_train) if all_train else [2011, 2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019, 2020],
         test_years=sorted(all_test),
         total_features=len(combined_features),
@@ -2468,12 +2434,11 @@ def _build_model_variant(name, results_file, feature_descriptions, feature_categ
 
 
 def _get_nfl_model_detail() -> SportModelDetailOut:
-    """Build NFL model detail, now with three specialized model variants.
+    """Build NFL model detail with two specialized model variants.
 
-    Loads from three separate result files:
+    Loads from separate result files:
     - ats_backtest_results.json (ATS-optimized model)
     - ou_results_baseline.json (OU-optimized model)
-    - ml_backtest_results.json (ML-optimized model)
 
     Falls back to the legacy nfl_backtest_results.json for the v2 model stats.
     """
@@ -2554,66 +2519,19 @@ def _get_nfl_model_detail() -> SportModelDetailOut:
                                         sport="nfl", model_type="ou")
 
     # ── ML Model ──
-    _ML_DESCRIPTIONS = {
-        "__desc__": "Moneyline-optimized model. XGBoost classifier with Platt calibration predicts P(home_win). Full feature set: opponent-adjusted scoring, market implied (spread + moneyline), short-term form (win%, margin, cover streak, bounce-back), long-term identity (10G margin, season ATS%), and all situational factors.",
-        "hpf": "Home team opponent-adjusted PPG",
-        "hpa": "Home team opponent-adjusted PPG allowed",
-        "apf": "Away team opponent-adjusted PPG",
-        "apa": "Away team opponent-adjusted PPG allowed",
-        "dpf": "Points scored differential",
-        "dpa": "Points allowed differential",
-        "himp": "Home implied scoring from OU line",
-        "aimp": "Away implied scoring from OU line",
-        "dimp": "Implied scoring difference",
-        "spread": "Closing point spread",
-        "spread_movement": "Spread movement open to close",
-        "home_ml_implied": "Home moneyline-implied win probability",
-        "away_ml_implied": "Away moneyline-implied win probability",
-        "home_win_pct_r5": "Home team win rate last 5 games",
-        "away_win_pct_r5": "Away team win rate last 5 games",
-        "home_opp_win_pct_r5": "Strength of schedule: rolling win% of home team's last 5 opponents",
-        "away_opp_win_pct_r5": "Strength of schedule: rolling win% of away team's last 5 opponents",
-        "home_margin_r3": "Home team avg margin last 3 games",
-        "away_margin_r3": "Away team avg margin last 3 games",
-        "home_momentum_delta": "Home team margin trajectory (last game margin - 2nd last game margin)",
-        "away_momentum_delta": "Away team margin trajectory",
-        "home_cover_pct_r5": "Home team ATS cover rate last 5 games",
-        "away_cover_pct_r5": "Away team ATS cover rate last 5 games",
-        "home_embarrassed": "Binary: home lost by 14+ last game (bounce-back spot)",
-        "away_embarrassed": "Binary: away lost by 14+ last game",
-        "home_margin_r10": "Home team avg margin last 10 games (half-season identity)",
-        "away_margin_r10": "Away team avg margin last 10 games",
-        "home_season_ats_pct": "Home team cumulative season ATS% (season identity)",
-        "away_season_ats_pct": "Away team cumulative season ATS%",
-        "rest_diff": "Rest days advantage",
-        "travel_miles": "Away travel distance",
-        "tz_diff": "Time zone difference",
-        "is_div": "Division game flag",
-        "is_short": "Short week flag",
-        "is_dome": "Dome stadium flag",
-    }
-    _ML_CATEGORIES = {
-        "Opponent-Adjusted Scoring": ["hpf", "hpa", "apf", "apa", "dpf", "dpa"],
-        "Market & Lines": ["himp", "aimp", "dimp", "spread", "spread_movement"],
-        "Short-Term Form": ["home_win_pct_r5", "away_win_pct_r5", "home_opp_win_pct_r5", "away_opp_win_pct_r5", "home_margin_r3", "away_margin_r3", "home_momentum_delta", "away_momentum_delta", "home_cover_pct_r5", "away_cover_pct_r5", "home_embarrassed", "away_embarrassed"],
-        "Long-Term Identity": ["home_margin_r10", "away_margin_r10", "home_season_ats_pct", "away_season_ats_pct"],
-        "Rest & Travel": ["rest_diff", "travel_miles", "tz_diff"],
-        "Situational": ["is_div", "is_short", "is_dome"],
-    }
 
-    ml_variant = _build_model_variant("ML", "ml_backtest_results.json", _ML_DESCRIPTIONS, _ML_CATEGORIES,
-                                        sport="nfl", model_type="ml")
+
 
     # ── Legacy model (v2, for backward compat) ──
     legacy_results = _load_json("nfl_backtest_results.json")
 
     # Merge model_variants (only non-None ones)
-    model_variants = [v for v in [ats_variant, ou_variant, ml_variant] if v is not None]
+    model_variants = [v for v in [ats_variant, ou_variant] if v is not None]
 
     # Overall stats: use ATS model for ATS, OU model for OU, ML model for ML
     overall_ats_val = ats_variant.overall_ats if ats_variant and ats_variant.overall_ats else ModelBettingOut(correct=0, incorrect=0, total=0, pct=0)
     overall_ou_val = ou_variant.overall_ou if ou_variant and ou_variant.overall_ou else ModelBettingOut(correct=0, incorrect=0, total=0, pct=0, pushes=0)
-    overall_ml_val = ml_variant.overall_ml if ml_variant and ml_variant.overall_ml else ModelBettingOut(correct=0, incorrect=0, total=0, pct=0)
+    overall_ml_val = None
 
     # Overall MAE: average of available model MAEs
     mae_vals = []
@@ -2662,35 +2580,30 @@ def _get_nfl_model_detail() -> SportModelDetailOut:
 
     # High confidence: each metric from its dedicated model
     ats_hc_data = ats_variant.backtest_results if ats_variant else []
-    ml_hc_data = ml_variant.backtest_results if ml_variant else []
     ou_hc_data = ou_variant.backtest_results if ou_variant else []
     high_conf = _calc_high_confidence_multi(
         ats_results=ats_hc_data,
         ou_results=ou_hc_data,
-        ml_results=ml_hc_data,
+        ml_results=None,
         threshold_pcts=[25, 20, 15, 10, 5]
     )
 
     return SportModelDetailOut(
         sport="nfl",
-        model_type="Three Specialized Models (ATS / O/U / ML)",
+        model_type="Two Specialized Models (ATS / O/U)",
         description=(
-            "The NFL prediction system now uses three separate specialized XGBoost models, "
+            "The NFL prediction system uses two separate specialized XGBoost models, "
             "each optimized for a different betting market:\n\n"
             "🔵 **ATS Model** — Predicts margin of victory. Features: opponent-adjusted PPG, "
             "implied scoring from OU line, spread movement, dome. No raw spread. "
             "Purely spread-beating specialist.\n\n"
-            "🟡 **O/U Model** — Predicts total points (home+away). Features: opposite-adjusted "
+            "🟡 **O/U Model** — Predicts total points (home+away). Features: opponent-adjusted "
             "PPG, pace stats (snap counts), yards/game, scoring variance, OU movement, "
             "and all situational factors.\n\n"
-            "🔴 **ML Model** — Predicts home win probability (binary classifier + calibration). "
-            "Features: full set including opponent-adjusted PPG, market odds (spread + moneyline "
-            "implied probs), rolling win pct, and situational. Outputs calibrated confidence "
-            "for edge detection against market.\n\n"
             "Select a model variant above to see its specific features, backtest results, "
             "and performance metrics."
         ),
-        algorithm="XGBoost — Three Specialized Variants",
+        algorithm="XGBoost — Two Specialized Variants",
         training_years=sorted(all_train) if all_train else [2017, 2018, 2019, 2020],
         test_years=sorted(all_test),
         total_features=len(combined_features),

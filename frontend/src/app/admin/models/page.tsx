@@ -176,17 +176,32 @@ function getRunOverallOuPct(run: TrainingRunInfo): number | null {
   return Math.round(10000 * correct / (correct + incorrect)) / 100;
 }
 
-function getRunOverallAtsPct(run: TrainingRunInfo): number | null {
+function getRunOverallMlPct(run: TrainingRunInfo): number | null {
   if (!run.results_json || !Array.isArray(run.results_json)) return null;
   let correct = 0, incorrect = 0;
   for (const yr of run.results_json) {
-    if (yr?.ats?.correct !== undefined && yr?.ats?.incorrect !== undefined) {
-      correct += yr.ats.correct;
-      incorrect += yr.ats.incorrect;
+    if (yr?.ml?.correct !== undefined && yr?.ml?.incorrect !== undefined) {
+      correct += yr.ml.correct;
+      incorrect += yr.ml.incorrect;
     }
   }
   if (correct + incorrect === 0) return null;
   return Math.round(10000 * correct / (correct + incorrect)) / 100;
+}
+
+function getRunOverallAtsPct(run: TrainingRunInfo): number | null {
+  if (!run.results_json || !Array.isArray(run.results_json)) return null;
+  try {
+    let correct = 0, incorrect = 0;
+    for (const yr of run.results_json) {
+      if (yr && typeof yr === 'object' && 'ats' in yr && yr.ats && typeof yr.ats.correct === 'number' && typeof yr.ats.incorrect === 'number') {
+        correct += yr.ats.correct;
+        incorrect += yr.ats.incorrect;
+      }
+    }
+    if (correct + incorrect === 0) return null;
+    return Math.round(10000 * correct / (correct + incorrect)) / 100;
+  } catch { return null; }
 }
 
 function ModelVariantSection({ variant: _variant, loadedRunInfo, trainingRuns, onSelectRun, onSetCurrent, onTrainNew, sport }: { variant: ModelVariant; loadedRunInfo?: ModelVariant | null; trainingRuns?: TrainingRunInfo[]; onSelectRun?: (runId: number) => void; onSetCurrent?: (runId: number) => void; onTrainNew?: (modelType: string) => void; sport?: string }) {
@@ -199,11 +214,12 @@ function ModelVariantSection({ variant: _variant, loadedRunInfo, trainingRuns, o
   return (
     <div className={`rounded-2xl border ${colors.border} ${colors.bg} p-6`}>
       {/* Training Run Selector */}
-      {trainingRuns && trainingRuns.length > 0 && onSelectRun && (
-        <div className="flex items-center gap-3 mb-4 pb-4 border-b border-white/10">
-          <label className="text-xs text-gray-400 font-medium whitespace-nowrap">Training Run:</label>
-          <select
-            className="bg-black/40 border border-white/10 rounded-lg px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-earl-500"
+      <div className="flex items-center gap-3 mb-4 pb-4 border-b border-white/10">
+        {trainingRuns && trainingRuns.length > 0 && onSelectRun && (
+          <>
+            <label className="text-xs text-gray-400 font-medium whitespace-nowrap">Training Run:</label>
+            <select
+              className="bg-black/40 border border-white/10 rounded-lg px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-earl-500"
             value={selectedRunId}
             onChange={(e) => {
               setSelectedRunId(e.target.value);
@@ -214,11 +230,11 @@ function ModelVariantSection({ variant: _variant, loadedRunInfo, trainingRuns, o
           >
             <option value="">Current Model</option>
             {trainingRuns.map((run) => {
-              const ouPct = getRunOverallOuPct(run);
+              const mlPct = getRunOverallMlPct(run);
               const atsPct = getRunOverallAtsPct(run);
               const stats = [
-                ouPct !== null ? `OU ${ouPct}%` : null,
                 atsPct !== null ? `ATS ${atsPct}%` : null,
+                mlPct !== null ? `ML ${mlPct}%` : null,
               ].filter(Boolean).join(" | ");
               return (
                 <option key={run.id} value={run.id}>
@@ -235,6 +251,8 @@ function ModelVariantSection({ variant: _variant, loadedRunInfo, trainingRuns, o
               Set as Current
             </button>
           )}
+            </>
+          )}
           {onTrainNew && (
             <button
               onClick={() => onTrainNew(variant.name.toLowerCase())}
@@ -244,7 +262,6 @@ function ModelVariantSection({ variant: _variant, loadedRunInfo, trainingRuns, o
             </button>
           )}
         </div>
-      )}
 
       {/* Header */}
       <div className="flex items-center gap-3 mb-6">
@@ -263,7 +280,7 @@ function ModelVariantSection({ variant: _variant, loadedRunInfo, trainingRuns, o
           <div className="text-xs text-gray-500 uppercase font-semibold">MAE</div>
           <div className={`text-2xl font-bold ${colors.text}`}>{variant.overall_mae != null ? variant.overall_mae.toFixed(2) : "-"}</div>
         </div>
-        {variant.overall_ats && (
+        {variant.name !== "O/U" && variant.overall_ats && (
           <div className="bg-white/[0.03] border border-white/10 rounded-xl p-4 text-center">
             <div className="text-xs text-gray-500 uppercase font-semibold">ATS</div>
             <div className={`text-2xl font-bold ${variant.overall_ats.pct >= 53 ? "text-green-400" : "text-red-400"}`}>
@@ -272,7 +289,7 @@ function ModelVariantSection({ variant: _variant, loadedRunInfo, trainingRuns, o
             <div className="text-xs text-gray-600">{variant.overall_ats.correct}-{variant.overall_ats.incorrect}{variant.overall_ats.pushes ? `-${variant.overall_ats.pushes}` : ""}</div>
           </div>
         )}
-        {variant.overall_ou && (
+        {variant.name === "O/U" && variant.overall_ou && (
           <div className="bg-white/[0.03] border border-white/10 rounded-xl p-4 text-center">
             <div className="text-xs text-gray-500 uppercase font-semibold">O/U</div>
             <div className={`text-2xl font-bold ${variant.overall_ou.pct >= 53 ? "text-green-400" : "text-red-400"}`}>
@@ -300,7 +317,7 @@ function ModelVariantSection({ variant: _variant, loadedRunInfo, trainingRuns, o
             </>
           );
         })()}
-        {variant.overall_ml && (
+        {variant.name !== "O/U" && variant.overall_ml && (
           <div className="bg-white/[0.03] border border-white/10 rounded-xl p-4 text-center">
             <div className="text-xs text-gray-500 uppercase font-semibold">ML</div>
             <div className={`text-2xl font-bold ${variant.overall_ml.pct >= 53 ? "text-green-400" : "text-red-400"}`}>
@@ -322,9 +339,9 @@ function ModelVariantSection({ variant: _variant, loadedRunInfo, trainingRuns, o
                   <th className="text-left py-2 px-3 text-gray-500 font-medium">Year</th>
                   <th className="text-right py-2 px-3 text-gray-500 font-medium">Games</th>
                   <th className="text-right py-2 px-3 text-gray-500 font-medium">MAE</th>
-                  {variant.overall_ats && <th className="text-right py-2 px-3 text-blue-400 font-medium">ATS%</th>}
-                  {variant.overall_ou && <th className="text-right py-2 px-3 text-yellow-400 font-medium">OU%</th>}
-                  {variant.overall_ml && <th className="text-right py-2 px-3 text-red-400 font-medium">ML%</th>}
+                  {variant.name !== "O/U" && variant.overall_ats && <th className="text-right py-2 px-3 text-blue-400 font-medium">ATS%</th>}
+                  {variant.name === "O/U" && variant.overall_ou && <th className="text-right py-2 px-3 text-yellow-400 font-medium">OU%</th>}
+                  {variant.name !== "O/U" && variant.overall_ml && <th className="text-right py-2 px-3 text-red-400 font-medium">ML%</th>}
                   {variant.name === "ML" && <th className="text-right py-2 px-3 text-purple-400 font-medium">AUC</th>}
                   {variant.name === "ML" && <th className="text-right py-2 px-3 text-cyan-400 font-medium">Brier</th>}
                 </tr>
@@ -335,9 +352,9 @@ function ModelVariantSection({ variant: _variant, loadedRunInfo, trainingRuns, o
                     <td className="py-2 px-3 text-white">{r.test_year}</td>
                     <td className="py-2 px-3 text-right text-gray-400">{r.total_games}</td>
                     <td className="py-2 px-3 text-right text-gray-400">{r.mae != null ? r.mae.toFixed(2) : "—"}</td>
-                    {variant.overall_ats && <td className="py-2 px-3 text-right">{r.ats ? <ValuePct v={r.ats.pct} good={53} /> : "—"}</td>}
-                    {variant.overall_ou && <td className="py-2 px-3 text-right">{r.ou ? <ValuePct v={r.ou.pct} good={53} /> : "—"}</td>}
-                    {variant.overall_ml && <td className="py-2 px-3 text-right">{r.ml ? <ValuePct v={r.ml.pct} good={53} /> : "—"}</td>}
+                    {variant.name !== "O/U" && variant.overall_ats && <td className="py-2 px-3 text-right">{r.ats ? <ValuePct v={r.ats.pct} good={53} /> : "—"}</td>}
+                    {variant.name === "O/U" && variant.overall_ou && <td className="py-2 px-3 text-right">{r.ou ? <ValuePct v={r.ou.pct} good={53} /> : "—"}</td>}
+                    {variant.name !== "O/U" && variant.overall_ml && <td className="py-2 px-3 text-right">{r.ml ? <ValuePct v={r.ml.pct} good={53} /> : "—"}</td>}
                     {variant.name === "ML" && <td className="py-2 px-3 text-right font-mono text-purple-400">{(r.auc != null ? r.auc : 0).toFixed(3)}</td>}
                     {variant.name === "ML" && <td className="py-2 px-3 text-right font-mono text-cyan-400">{(r.brier != null ? r.brier : 0).toFixed(4)}</td>}
                   </tr>
@@ -474,7 +491,7 @@ export default function AdminModels() {
     // Fetch training history
     setHistoryLoading(true);
     try {
-      const hRes = await fetch(`/api/admin/training-runs/${s}?limit=20`, {
+      const hRes = await fetch(`/api/admin/training-runs/${s}?limit=100`, {
         headers: { Authorization: `Bearer ${token()}` },
       });
       if (hRes.ok) {
@@ -595,9 +612,9 @@ export default function AdminModels() {
         <h3 className="text-lg font-semibold text-white mb-4">Overall Performance</h3>
         <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
           <StatCard label="MAE" value={data.overall_mae} subtitle="Avg prediction error" color="text-blue-400" />
-          <StatCard label="ATS" value={`${data.overall_ats.pct}%`} subtitle={`${data.overall_ats.correct}-${data.overall_ats.incorrect}`} color="text-green-400" />
-          {data.overall_ou && <StatCard label="O/U" value={`${data.overall_ou.pct}%`} subtitle={`${data.overall_ou.correct}-${data.overall_ou.incorrect}${data.overall_ou.pushes ? `-${data.overall_ou.pushes}` : ""}`} color="text-yellow-400" />}
-          {data.overall_ml && <StatCard label="Moneyline" value={`${data.overall_ml.pct}%`} subtitle={`${data.overall_ml.correct}-${data.overall_ml.incorrect}`} color="text-earl-400" />}
+          {variant !== "O/U" && <StatCard label="ATS" value={`${data.overall_ats.pct}%`} subtitle={`${data.overall_ats.correct}-${data.overall_ats.incorrect}`} color="text-green-400" />}
+          {variant === "O/U" && data.overall_ou && <StatCard label="O/U" value={`${data.overall_ou.pct}%`} subtitle={`${data.overall_ou.correct}-${data.overall_ou.incorrect}${data.overall_ou.pushes ? `-${data.overall_ou.pushes}` : ""}`} color="text-yellow-400" />}
+          {variant !== "O/U" && data.overall_ml && <StatCard label="Moneyline" value={`${data.overall_ml.pct}%`} subtitle={`${data.overall_ml.correct}-${data.overall_ml.incorrect}`} color="text-earl-400" />}
           <StatCard label="Total Games" value={data.backtest_results.reduce((s, r) => s + r.total_games, 0)} subtitle="Across all test years" color="text-purple-400" />
           <StatCard label="Test Years" value={data.test_years.length} subtitle={data.test_years.join(", ")} color="text-gray-300" />
         </div>
@@ -613,7 +630,7 @@ export default function AdminModels() {
               return (
                 <button
                   key={v.name}
-                  onClick={() => setVariant(v.name)}
+                  onClick={() => { setVariant(v.name); setLoadedRunInfo(null); }}
                   className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-medium transition-all ${
                     variant === v.name
                       ? `${c.bg} ${c.border} border ${c.text}`
@@ -639,14 +656,14 @@ export default function AdminModels() {
               "Total": "ou",
             };
             const mtFilter = variantModelType[activeVariant.name] || activeVariant.name.toLowerCase();
-            const sortedRuns = [...trainingHistory].sort((a: any, b: any) => {
+            const sortedRuns = (trainingHistory || []).sort((a: any, b: any) => {
               const da = new Date(a.trained_at || a.created_at || 0).getTime();
               const db = new Date(b.trained_at || b.created_at || 0).getTime();
               return db - da;
             });
-            const filteredRuns = (sport !== "nfl" && sortedRuns.length > 0)
+            const filteredRuns = sport !== "nfl"
               ? sortedRuns.filter((r: any) => (r.model_type || "").toLowerCase() === mtFilter)
-              : undefined;
+              : [];
             const handleRunSelect = async (runId: number) => {
               if (runId === 0) {
                 setSelectedRunId(null);
@@ -668,7 +685,7 @@ export default function AdminModels() {
                 }
               } catch { /* ignore */ }
             };
-            return <ModelVariantSection variant={activeVariant} loadedRunInfo={loadedRunInfo} trainingRuns={filteredRuns} onSelectRun={handleRunSelect} onSetCurrent={handleSetCurrent} onTrainNew={openTrainModal} sport={sport} />;
+            return <ModelVariantSection key={activeVariant.name} variant={activeVariant} loadedRunInfo={loadedRunInfo} trainingRuns={filteredRuns} onSelectRun={handleRunSelect} onSetCurrent={handleSetCurrent} onTrainNew={openTrainModal} sport={sport} />;
           })()}
         </div>
       )}
