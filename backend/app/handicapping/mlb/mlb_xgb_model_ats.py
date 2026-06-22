@@ -180,10 +180,8 @@ async def run_backtest(
     ats_correct = np.sign(y_pred + spread) == np.sign(y_test + spread)
     ats_acc = np.mean(ats_correct) if len(ats_correct) > 0 else 0.5
 
-    # ML
-    home_ml = test_feats["home_moneyline"].values
-    implied_ml = test_feats.get("home_implied_probability", pd.Series(0.5)).values
-    ml_pred_home = implied_ml > 0.5
+    # ML: model predicts margin — positive margin = model picks home team to win
+    ml_pred_home = y_pred > 0
     ml_actual_home = test_feats["home_score"].values > test_feats["away_score"].values
     ml_acc = np.mean(ml_pred_home == ml_actual_home) if len(ml_actual_home) > 0 else 0.5
 
