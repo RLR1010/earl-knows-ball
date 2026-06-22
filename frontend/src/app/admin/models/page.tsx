@@ -160,6 +160,33 @@ interface TrainingRunInfo {
   created_at?: string;
   training_id: string | null;
   is_current: boolean;
+  results_json?: any;
+}
+
+function getRunOverallOuPct(run: TrainingRunInfo): number | null {
+  if (!run.results_json || !Array.isArray(run.results_json)) return null;
+  let correct = 0, incorrect = 0;
+  for (const yr of run.results_json) {
+    if (yr?.ou?.correct !== undefined && yr?.ou?.incorrect !== undefined) {
+      correct += yr.ou.correct;
+      incorrect += yr.ou.incorrect;
+    }
+  }
+  if (correct + incorrect === 0) return null;
+  return Math.round(10000 * correct / (correct + incorrect)) / 100;
+}
+
+function getRunOverallAtsPct(run: TrainingRunInfo): number | null {
+  if (!run.results_json || !Array.isArray(run.results_json)) return null;
+  let correct = 0, incorrect = 0;
+  for (const yr of run.results_json) {
+    if (yr?.ats?.correct !== undefined && yr?.ats?.incorrect !== undefined) {
+      correct += yr.ats.correct;
+      incorrect += yr.ats.incorrect;
+    }
+  }
+  if (correct + incorrect === 0) return null;
+  return Math.round(10000 * correct / (correct + incorrect)) / 100;
 }
 
 function ModelVariantSection({ variant: _variant, loadedRunInfo, trainingRuns, onSelectRun, onSetCurrent, onTrainNew, sport }: { variant: ModelVariant; loadedRunInfo?: ModelVariant | null; trainingRuns?: TrainingRunInfo[]; onSelectRun?: (runId: number) => void; onSetCurrent?: (runId: number) => void; onTrainNew?: (modelType: string) => void; sport?: string }) {
@@ -186,11 +213,19 @@ function ModelVariantSection({ variant: _variant, loadedRunInfo, trainingRuns, o
             }}
           >
             <option value="">Current Model</option>
-            {trainingRuns.map((run) => (
-              <option key={run.id} value={run.id}>
-                Run #{run.id} — {new Date(run.trained_at || run.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
-              </option>
-            ))}
+            {trainingRuns.map((run) => {
+              const ouPct = getRunOverallOuPct(run);
+              const atsPct = getRunOverallAtsPct(run);
+              const stats = [
+                ouPct !== null ? `OU ${ouPct}%` : null,
+                atsPct !== null ? `ATS ${atsPct}%` : null,
+              ].filter(Boolean).join(" | ");
+              return (
+                <option key={run.id} value={run.id}>
+                  Run #{run.id} — {new Date(run.trained_at || run.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })} — {stats}
+                </option>
+              );
+            })}
           </select>
           {selectedRunId && onSetCurrent && (
             <button

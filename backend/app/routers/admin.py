@@ -2241,9 +2241,9 @@ def _build_mlb_model_variant(name, results_data, feature_descriptions, feature_c
 
     total_ats = _sum_metric("ats", "total") or _sum_metric("total_games")
     total_ats_correct = _sum_metric("ats", "correct")
-    total_ou = _sum_metric("ou", "total")
+    total_ou = _sum_metric("ou", "correct") + _sum_metric("ou", "incorrect")
     total_ou_correct = _sum_metric("ou", "correct")
-    total_ml = _sum_metric("ml", "total")
+    total_ml = _sum_metric("ml", "correct") + _sum_metric("ml", "incorrect")
     total_ml_correct = _sum_metric("ml", "correct")
 
     ats_incorrect = _sum_metric("ats", "incorrect")
@@ -2425,7 +2425,7 @@ def _build_model_variant(name, results_file, feature_descriptions, feature_categ
         return sum(vals)
 
     ats_total = _count_metric("ats", "correct") + _count_metric("ats", "incorrect")
-    ou_total = _count_metric("ou", "correct") + _count_metric("ou", "incorrect") + _count_metric("ou", "pushes")
+    ou_total = _count_metric("ou", "correct") + _count_metric("ou", "incorrect")
     ml_total = _count_metric("ml", "correct") + _count_metric("ml", "incorrect")
 
     algorithm = "XGBoost Regressor (n_estimators=200, max_depth=4, learning_rate=0.05)"
@@ -2830,7 +2830,7 @@ def _get_nba_model_detail() -> SportModelDetailOut:
     ats_correct = _sum_metric("ats", "correct")
     ats_incorrect = _sum_metric("ats", "incorrect")
     ats_pushes = _sum_metric("ats", "pushes")
-    ats_total = ats_correct + ats_incorrect + ats_pushes
+    ats_total = ats_correct + ats_incorrect
 
     overall_ats = ModelBettingOut(
         correct=ats_correct, incorrect=ats_incorrect, total=ats_total,
