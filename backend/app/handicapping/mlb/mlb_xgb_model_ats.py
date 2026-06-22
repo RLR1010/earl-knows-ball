@@ -180,15 +180,6 @@ async def run_backtest(
     ats_correct = np.sign(y_pred + spread) == np.sign(y_test + spread)
     ats_acc = np.mean(ats_correct) if len(ats_correct) > 0 else 0.5
 
-    # OU
-    actual_total = test_feats["home_score"].values + test_feats["away_score"].values
-    ou_line = test_feats["over_under"].fillna(8.5).values
-    implied_total = np.clip(
-        test_feats.get("implied_total", pd.Series(8.5)).values, 3, 16
-    )
-    ou_correct = np.sign(implied_total - ou_line) == np.sign(actual_total - ou_line)
-    ou_acc = np.mean(ou_correct) if len(ou_correct) > 0 else 0.5
-
     # ML
     home_ml = test_feats["home_moneyline"].values
     implied_ml = test_feats.get("home_implied_probability", pd.Series(0.5)).values
@@ -198,7 +189,6 @@ async def run_backtest(
 
     n_test = len(test_feats)
     n_correct_ats = int(np.sum(ats_correct))
-    n_correct_ou = int(np.sum(ou_correct))
     n_correct_ml = int(np.sum(ml_pred_home == ml_actual_home))
 
     results = {
@@ -217,12 +207,6 @@ async def run_backtest(
             "incorrect": n_test - n_correct_ats,
             "pct": round(float(ats_acc * 100), 2),
         },
-        "ou": {
-            "total": n_test,
-            "correct": n_correct_ou,
-            "incorrect": n_test - n_correct_ou,
-            "pct": round(float(ou_acc * 100), 2),
-        },
         "ml": {
             "total": n_test,
             "correct": n_correct_ml,
@@ -237,7 +221,7 @@ async def run_backtest(
         "duration_seconds": round(time.time() - t0, 1),
     }
 
-    log(f"  MAE: {results['mae']}  ATS: {results['ats']['pct']:.3f}  OU: {results['ou']['pct']:.3f}  ML: {results['ml']['pct']:.3f}")
+    log(f"  MAE: {results['mae']}  ATS: {results['ats']['pct']:.3f}  ML: {results['ml']['pct']:.3f}")
     log(f"  Duration: {results['duration_seconds']}s")
     print(f"\n  Top 10 features by importance:")
     imp_sorted = sorted(results["feature_importance"], key=lambda x: -x["importance"])
@@ -553,7 +537,7 @@ if __name__ == "__main__":
         print(f"\n{'='*60}")
         print(f"Summary: {len(results)} backtests")
         for r in results:
-            print(f"  {r['test_year']}: MAE={r['mae']:.3f}  ATS={r['ats']['pct']:.3f}  OU={r['ou']['pct']:.3f}  ML={r['ml']['pct']:.3f}")
+            print(f"  {r['test_year']}: MAE={r['mae']:.3f}  ATS={r['ats']['pct']:.3f}  ML={r['ml']['pct']:.3f}")
     else:
         result = asyncio.run(run_single(args.test_year or test_year, args.features))
         if result:
