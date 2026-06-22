@@ -140,6 +140,8 @@ SELECT
     -- Team OPS from batting_game_stats
     toh.avg_team_ops                                         AS h_ops,
     toa.avg_team_ops                                         AS a_ops,
+    toh.avg_team_slg                                        AS h_slg,
+    toa.avg_team_slg                                        AS a_slg,
 
     -- Starter ERA from pitcher_game_stats
     gse.home_starter_era                                    AS h_starter_era,
@@ -244,6 +246,15 @@ COMPUTED_FEATURES_CATALOG: Dict[str, str] = {
     "away_implied_probability": "Same as a_implied",
     "implied_total": "Estimated total from home + away implied probabilities",
     "ou_line": "Alias for over_under, used inside modeling code",
+    # ── Team hitting stats ──
+    "h_ops_l10": "Home OPS over last 10 games",
+    "a_ops_l10": "Away OPS over last 10 games",
+    "h_ops_l20": "Home OPS over last 20 games",
+    "a_ops_l20": "Away OPS over last 20 games",
+    "h_slg_l10": "Home slugging pct over last 10 games",
+    "a_slg_l10": "Away slugging pct over last 10 games",
+    "h_slg_l20": "Home slugging pct over last 20 games",
+    "a_slg_l20": "Away slugging pct over last 20 games",
     # ── Pitcher-derived ──
     "h_pitcher_era_l20": "Home pitcher ERA over last 20 appearances",
     "a_pitcher_era_l20": "Away pitcher ERA over last 20 appearances",
@@ -499,13 +510,14 @@ def build_features(df: pd.DataFrame, log_fn=None) -> pd.DataFrame:
         "game_id", "ha", "aa", "game_date", "season_year", "game_type",
         "home_score", "away_score",
         "h_ops", "a_ops",
+        "h_slg", "a_slg",
         "h_starter_era", "a_starter_era",
     ]].copy()
 
     # Team-level roll-up: one row per team-game
-    home = pivot_df.rename(columns={"ha": "team", "aa": "opp", "home_score": "rf", "away_score": "ra", "h_ops": "team_ops", "h_starter_era": "starter_era"})
+    home = pivot_df.rename(columns={"ha": "team", "aa": "opp", "home_score": "rf", "away_score": "ra", "h_ops": "team_ops", "h_slg": "team_slg", "h_starter_era": "starter_era"})
     home["home_ind"] = 1
-    away = pivot_df.rename(columns={"aa": "team", "ha": "opp", "away_score": "rf", "home_score": "ra", "a_ops": "team_ops", "a_starter_era": "starter_era"})
+    away = pivot_df.rename(columns={"aa": "team", "ha": "opp", "away_score": "rf", "home_score": "ra", "a_ops": "team_ops", "a_slg": "team_slg", "a_starter_era": "starter_era"})
     away["home_ind"] = 0
 
     tg = pd.concat([home, away], ignore_index=True)
@@ -576,6 +588,13 @@ def build_features(df: pd.DataFrame, log_fn=None) -> pd.DataFrame:
     tg["ops_l20"] = tg.groupby("team")["team_ops"].transform(
         lambda s: s.rolling(20, min_periods=1).mean().shift(1)
     )
+    # Rolling SLG stats (L10 and L20)  — same windows as OPS
+    tg["slg_l10"] = tg.groupby("team")["team_slg"].transform(
+        lambda s: s.rolling(10, min_periods=1).mean().shift(1)
+    )
+    tg["slg_l20"] = tg.groupby("team")["team_slg"].transform(
+        lambda s: s.rolling(20, min_periods=1).mean().shift(1)
+    )
 
     log("  Rolling team stats computed")
 
@@ -595,6 +614,10 @@ def build_features(df: pd.DataFrame, log_fn=None) -> pd.DataFrame:
     team_avg_ops = tg.groupby(["team", "year"])["team_ops"].mean().reset_index()
     team_avg_ops.rename(columns={"team_ops": "prior_ops"}, inplace=True)
     team_season_stats = team_season_stats.merge(team_avg_ops, on=["team", "year"], how="left")
+
+    team_avg_slg = tg.groupby(["team", "year"])["team_slg"].mean().reset_index()
+    team_avg_slg.rename(columns={"team_slg": "prior_slg"}, inplace=True)
+    team_season_stats = team_season_stats.merge(team_avg_slg, on=["team", "year"], how="left")
 
     tg["win"] = (tg["rf"] > tg["ra"]).astype(int)
     team_season_wp = tg.groupby(["team", "year"])["win"].mean().reset_index()
@@ -640,6 +663,10 @@ def build_features(df: pd.DataFrame, log_fn=None) -> pd.DataFrame:
                 prior_ops_stats.rename(columns={"team_ops": "prior_ops"}, inplace=True)
                 prior_stats = prior_stats.merge(prior_ops_stats, on=["team", "year"], how="left")
 
+                prior_slg_stats = prior_tg.groupby(["team", "year"])["team_slg"].mean().reset_index()
+                prior_slg_stats.rename(columns={"team_slg": "prior_slg"}, inplace=True)
+                prior_stats = prior_stats.merge(prior_slg_stats, on=["team", "year"], how="left")
+
                 prior_tg["win_p"] = (prior_tg["rf"] > prior_tg["ra"]).astype(int)
                 prior_wp = prior_tg.groupby(["team", "year"])["win_p"].mean().reset_index()
                 prior_wp.rename(columns={"win_p": "prior_winpct"}, inplace=True)
@@ -666,6 +693,7 @@ def build_features(df: pd.DataFrame, log_fn=None) -> pd.DataFrame:
             "prior_pf_away": row["prior_pf_away"],
             "prior_pa_away": row["prior_pa_away"],
             "prior_ops": row["prior_ops"],
+            "prior_slg": row["prior_slg"],
             "prior_winpct": row["prior_winpct"],
             "prior_era": row["prior_era"],
         }
@@ -773,6 +801,20 @@ def build_features(df: pd.DataFrame, log_fn=None) -> pd.DataFrame:
         tg["team"], "prior_ops"
     )
 
+    # Rolling SLG stats (seeded)
+    tg["slg_l10"] = seed_prior(
+        tg.groupby("team")["team_slg"].transform(
+            lambda s: s.rolling(10, min_periods=1).mean().shift(1)
+        ),
+        tg["team"], "prior_slg"
+    )
+    tg["slg_l20"] = seed_prior(
+        tg.groupby("team")["team_slg"].transform(
+            lambda s: s.rolling(20, min_periods=1).mean().shift(1)
+        ),
+        tg["team"], "prior_slg"
+    )
+
     # Win percentage
     tg["winpct"] = seed_prior(
         tg.groupby("team")["win"].transform(
@@ -842,6 +884,7 @@ def build_features(df: pd.DataFrame, log_fn=None) -> pd.DataFrame:
         "h_rf5", "h_ra5", "h_rf20", "h_ra20",
         "h_form_l10", "h_over_freq", "h_over_freq5",
         "h_ops_l10", "h_ops_l20",
+        "h_slg_l10", "h_slg_l20",
         "h_pitcher_era_l20", "h_pitcher_era_l5",
         "h_home_rf", "a_away_rf"]]
 
@@ -863,6 +906,8 @@ def build_features(df: pd.DataFrame, log_fn=None) -> pd.DataFrame:
         "over_freq5": "a_over_freq5",
         "ops_l10": "a_ops_l10",
         "ops_l20": "a_ops_l20",
+        "slg_l10": "a_slg_l10",
+        "slg_l20": "a_slg_l20",
         "pitcher_era_l20": "a_pitcher_era_l20",
         "pitcher_era_l5": "a_pitcher_era_l5",
     })[["game_id", "aa", "a_winpct", "a_winpct_l10",
@@ -870,6 +915,7 @@ def build_features(df: pd.DataFrame, log_fn=None) -> pd.DataFrame:
         "a_rf5", "a_ra5", "a_rf20", "a_ra20",
         "a_form_l10", "a_over_freq", "a_over_freq5",
         "a_ops_l10", "a_ops_l20",
+        "a_slg_l10", "a_slg_l20",
         "a_pitcher_era_l20", "a_pitcher_era_l5"]]
 
     # Drop old h_home_rf, a_away_rf from tg — they'll come through merge
