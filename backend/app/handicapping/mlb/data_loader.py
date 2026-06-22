@@ -877,6 +877,8 @@ def build_features(df: pd.DataFrame, log_fn=None) -> pd.DataFrame:
         "over_freq5": "h_over_freq5",
         "ops_l10": "h_ops_l10",
         "ops_l20": "h_ops_l20",
+        "slg_l10": "h_slg_l10",
+        "slg_l20": "h_slg_l20",
         "pitcher_era_l20": "h_pitcher_era_l20",
         "pitcher_era_l5": "h_pitcher_era_l5",
     })[["game_id", "ha", "h_winpct", "h_winpct_l10",
