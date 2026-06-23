@@ -459,7 +459,7 @@ async def train_model(
     fcols = feature_set if feature_set is not None else _ensure_ats_features()
     present = [c for c in fcols if c in feats.columns]
 
-    target = df["actual_margin"].values
+    target = feats["actual_margin"].values
     X = feats[present].values
 
     model = xgb.XGBRegressor(

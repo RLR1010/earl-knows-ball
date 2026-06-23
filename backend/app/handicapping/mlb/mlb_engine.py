@@ -14,7 +14,9 @@ Architecture
     backtesting are structurally identical.
 """
 
+import json
 import logging
+import math
 import os
 import pickle
 from datetime import date, datetime, timedelta
@@ -330,6 +332,14 @@ def _build_pick_card(
         conf = calibrate(max(over_prob, 1 - over_prob), "mlb", "ou")
         card["confidence"] = max(card["confidence"], conf)
 
+    row_dict = dict(game_row)
+    card["handicap_info"] = {
+        "home_stats": _build_mlb_home_stats(row_dict),
+        "away_stats": _build_mlb_away_stats(row_dict),
+        "situational": _build_mlb_situational(row_dict),
+        "splits": _build_mlb_splits(row_dict),
+    }
+
     return card
 
 
@@ -518,6 +528,97 @@ async def backtest_season(
     return result
 
 
+def _int_safe(v, default: int = 0) -> int:
+    try:
+        return int(v) if v is not None and not (isinstance(v, float) and math.isnan(v)) else default
+    except (ValueError, TypeError):
+        return default
+
+
+def _float_safe(v, default: Optional[float] = None):
+    if v is None or (isinstance(v, float) and math.isnan(v)):
+        return default
+    try:
+        return float(v)
+    except (ValueError, TypeError):
+        return default
+
+
+def _str_safe(v, default: str = "") -> str:
+    if v is None or (isinstance(v, float) and math.isnan(v)):
+        return default
+    return str(v)
+
+
+def _build_mlb_home_stats(row: dict) -> dict:
+    """Build home team stats dict from a feature row."""
+    return {
+        "team_name": _str_safe(row.get("ha", "")),
+        "abbreviation": _str_safe(row.get("ha", "")),
+        "wins": _int_safe(row.get("h_home_wins", 0)),
+        "losses": _int_safe(row.get("h_home_losses", 0)),
+        "pitcher": _str_safe(row.get("home_pitcher_name", "TBD")),
+        "runs_scored_avg": _float_safe(row.get("h_runs_scored_avg", 0.0)),
+        "runs_allowed_avg": _float_safe(row.get("h_runs_allowed_avg", 0.0)),
+        "park_factor": _float_safe(row.get("h_park_factor", 1.0)),
+    }
+
+
+def _build_mlb_away_stats(row: dict) -> dict:
+    """Build away team stats dict from a feature row."""
+    return {
+        "team_name": _str_safe(row.get("aa", "")),
+        "abbreviation": _str_safe(row.get("aa", "")),
+        "wins": _int_safe(row.get("a_away_wins", 0)),
+        "losses": _int_safe(row.get("a_away_losses", 0)),
+        "pitcher": _str_safe(row.get("away_pitcher_name", "TBD")),
+        "runs_scored_avg": _float_safe(row.get("a_runs_scored_avg", 0.0)),
+        "runs_allowed_avg": _float_safe(row.get("a_runs_allowed_avg", 0.0)),
+        "park_factor": _float_safe(row.get("a_park_factor", 1.0)),
+    }
+
+
+def _build_mlb_situational(row: dict) -> dict:
+    """Build situational data dict from a feature row."""
+    roof = _str_safe(row.get("roof_type", "Outdoor")).lower()
+    return {
+        "venue": _str_safe(row.get("venue", "")),
+        "roof_type": roof,
+        "surface": _str_safe(row.get("surface", "")),
+        "day_night": _str_safe(row.get("day_night", "")),
+        "temperature": _float_safe(row.get("temperature")),
+        "wind_speed": _float_safe(row.get("wind_speed")),
+        "wind_direction": _str_safe(row.get("wind_direction", "")),
+        "weather_condition": _str_safe(row.get("weather_condition", "")),
+        "attendance": _int_safe(row.get("attendance", 0)),
+        "is_dome": "dome" in roof or "retractable" in roof,
+    }
+
+
+def _build_mlb_splits(row: dict) -> dict:
+    """Build splits/line-movement dict from a feature row."""
+    open_spread = _float_safe(row.get("opening_spread"))
+    close_spread = _float_safe(row.get("closing_spread"))
+    open_ou = _float_safe(row.get("opening_total"))
+    close_ou = _float_safe(row.get("closing_total"))
+
+    spread_move = round(open_spread - close_spread, 1) if (open_spread is not None and close_spread is not None) else None
+    total_move = round(close_ou - open_ou, 1) if (open_ou is not None and close_ou is not None) else None
+
+    return {
+        "opening_line": {"spread": open_spread, "total": open_ou},
+        "closing_line": {"spread": close_spread, "total": close_ou},
+        "line_movement": {
+            "spread": spread_move,
+            "total": total_move,
+        },
+        "moneyline": {
+            "home": _float_safe(row.get("home_moneyline")),
+            "away": _float_safe(row.get("away_moneyline")),
+        },
+    }
+
+
 async def _save_backtest_prediction(
     db: AsyncSession,
     row: pd.Series,
@@ -641,6 +742,10 @@ async def _save_backtest_prediction(
         ats_ev=ats_ev,
         ou_ev=ou_ev,
         ml_ev=ml_ev,
+        home_stats_json=json.dumps(_build_mlb_home_stats(dict(row))),
+        away_stats_json=json.dumps(_build_mlb_away_stats(dict(row))),
+        situational_json=json.dumps(_build_mlb_situational(dict(row))),
+        splits_json=json.dumps(_build_mlb_splits(dict(row))),
         source="api",
         created_at=now,
     )

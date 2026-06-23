@@ -1131,11 +1131,16 @@ async def mlb_game_boxscore(
             SELECT
                 'consolidated' as source,
                 'consolidated' as sportsbook,
-                spread, over_under,
-                home_moneyline, away_moneyline,
-                home_implied_probability, away_implied_probability,
-                opening_spread, opening_total,
-                opening_home_moneyline, opening_away_moneyline
+                closing_spread AS spread,
+                closing_ou AS over_under,
+                closing_home_ml AS home_moneyline,
+                closing_away_ml AS away_moneyline,
+                closing_home_implied_probability AS home_implied_probability,
+                closing_away_implied_probability AS away_implied_probability,
+                opening_spread,
+                opening_ou AS opening_total,
+                opening_home_ml AS opening_home_moneyline,
+                opening_away_ml AS opening_away_moneyline
             FROM mlb.betting_lines_consolidated
             WHERE game_id = :game_id
             LIMIT 1

@@ -625,11 +625,11 @@ def build_features(df: pd.DataFrame, log_fn=None) -> pd.DataFrame:
     team_season_stats = team_season_stats.merge(team_season_wp, on=["team", "year"], how="left")
 
     # Pre-compute over frequency from raw game data (feats has over_under, tg doesn't yet)
-    over_flag_df = feats[["home_team", "away_team", "home_score", "away_score", "over_under", "season_year"]].copy()
+    over_flag_df = feats[["ha", "aa", "home_score", "away_score", "over_under", "season_year"]].copy()
     over_flag_df = over_flag_df[over_flag_df["over_under"].notna() & (over_flag_df["over_under"] > 0)]
     over_flag_df["over_flag"] = ((over_flag_df["home_score"] + over_flag_df["away_score"]) > over_flag_df["over_under"]).astype(float)
-    home_ou = over_flag_df[["home_team", "season_year", "over_flag"]].rename(columns={"home_team": "team"})
-    away_ou = over_flag_df[["away_team", "season_year", "over_flag"]].rename(columns={"away_team": "team"})
+    home_ou = over_flag_df[["ha", "season_year", "over_flag"]].rename(columns={"ha": "team"})
+    away_ou = over_flag_df[["aa", "season_year", "over_flag"]].rename(columns={"aa": "team"})
     ou_by_team = pd.concat([home_ou, away_ou], ignore_index=True)
     prior_ou = ou_by_team.groupby(["team", "season_year"])["over_flag"].mean().reset_index()
     prior_ou.rename(columns={"season_year": "year", "over_flag": "prior_over_freq"}, inplace=True)
