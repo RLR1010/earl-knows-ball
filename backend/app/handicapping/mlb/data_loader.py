@@ -624,6 +624,17 @@ def build_features(df: pd.DataFrame, log_fn=None) -> pd.DataFrame:
     team_season_wp.rename(columns={"win": "prior_winpct"}, inplace=True)
     team_season_stats = team_season_stats.merge(team_season_wp, on=["team", "year"], how="left")
 
+    # Pre-compute over frequency from raw game data (feats has over_under, tg doesn't yet)
+    over_flag_df = feats[["home_team", "away_team", "home_score", "away_score", "over_under", "season_year"]].copy()
+    over_flag_df = over_flag_df[over_flag_df["over_under"].notna() & (over_flag_df["over_under"] > 0)]
+    over_flag_df["over_flag"] = ((over_flag_df["home_score"] + over_flag_df["away_score"]) > over_flag_df["over_under"]).astype(float)
+    home_ou = over_flag_df[["home_team", "season_year", "over_flag"]].rename(columns={"home_team": "team"})
+    away_ou = over_flag_df[["away_team", "season_year", "over_flag"]].rename(columns={"away_team": "team"})
+    ou_by_team = pd.concat([home_ou, away_ou], ignore_index=True)
+    prior_ou = ou_by_team.groupby(["team", "season_year"])["over_flag"].mean().reset_index()
+    prior_ou.rename(columns={"season_year": "year", "over_flag": "prior_over_freq"}, inplace=True)
+    team_season_stats = team_season_stats.merge(prior_ou, on=["team", "year"], how="left")
+
     # If we don't have the prior year's data, load it separately for seeding
     min_year = tg["year"].min()
     years_in_data = sorted(tg["year"].unique())
@@ -640,12 +651,15 @@ def build_features(df: pd.DataFrame, log_fn=None) -> pd.DataFrame:
                 log(f"  Got {len(prior_raw)} rows from {prior_season}")
                 # Re-pivot just for stat computation: compute per-team season totals
                 prior_pivot = prior_raw[["game_id", "ha", "aa", "game_date", "season_year", "game_type",
-                                        "home_score", "away_score", "h_ops", "a_ops"]].copy()
+                                        "home_score", "away_score", "h_ops", "a_ops", "over_under"]].copy()
                 prior_home = prior_pivot.rename(columns={"ha": "team", "aa": "opp", "home_score": "rf", "away_score": "ra", "h_ops": "team_ops"})
                 prior_home["home_ind"] = 1
                 prior_away = prior_pivot.rename(columns={"aa": "team", "ha": "opp", "away_score": "rf", "home_score": "ra", "a_ops": "team_ops"})
                 prior_away["home_ind"] = 0
                 prior_tg = pd.concat([prior_home, prior_away], ignore_index=True)
+                # Compute over_flag for prior season (same total for both teams)
+                prior_tg["over_flag"] = ((prior_tg["rf"] + prior_tg["ra"]) > prior_tg["over_under"]).astype(float)
+                prior_tg["over_flag"] = prior_tg["over_flag"].where(prior_tg["over_under"].notna() & (prior_tg["over_under"] > 0), None)
                 prior_tg["year"] = prior_tg["season_year"]
 
                 # Compute same stats as above
@@ -657,6 +671,7 @@ def build_features(df: pd.DataFrame, log_fn=None) -> pd.DataFrame:
                     prior_pf_away=("rf", lambda s: s.where(prior_tg.loc[s.index, "home_ind"] == 0).mean()),
                     prior_pa_away=("ra", lambda s: s.where(prior_tg.loc[s.index, "home_ind"] == 0).mean()),
                     prior_era=("starter_era", "mean"),
+                    prior_over_freq=("over_flag", "mean"),
                 ).reset_index()
 
                 prior_ops_stats = prior_tg.groupby(["team", "year"])["team_ops"].mean().reset_index()
@@ -696,6 +711,7 @@ def build_features(df: pd.DataFrame, log_fn=None) -> pd.DataFrame:
             "prior_slg": row["prior_slg"],
             "prior_winpct": row["prior_winpct"],
             "prior_era": row["prior_era"],
+            "prior_over_freq": row.get("prior_over_freq", None),
         }
 
     def prior_for(team, year, col):
@@ -948,13 +964,13 @@ def build_features(df: pd.DataFrame, log_fn=None) -> pd.DataFrame:
         tg.groupby(["team", "year"])["over_flag"]
         .apply(lambda s: s.expanding(min_periods=1).mean().shift(1))
         .reset_index(level=[0, 1], drop=True),
-        tg["team"], "prior_winpct", 10
+        tg["team"], "prior_over_freq", 10
     )
     tg["over_freq5"] = blend_rolling_prior(
         tg.groupby(["team", "year"])["over_flag"]
         .apply(lambda s: s.rolling(5, min_periods=1).mean().shift(1))
         .reset_index(level=[0, 1], drop=True),
-        tg["team"], "prior_winpct", 5
+        tg["team"], "prior_over_freq", 5
     )
     tg.drop(columns=["over_under", "over_flag"], inplace=True)
 
