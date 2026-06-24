@@ -702,7 +702,12 @@ async def _save_backtest_prediction(
     else:
         rl_result = "Loss"
 
-    ou_result = "Win" if pred_over == actual_over else ("Loss" if pred_over != actual_over else "Push")
+    if (home_score + away_score) == total:
+        ou_result = "Push"
+    elif pred_over == actual_over:
+        ou_result = "Win"
+    else:
+        ou_result = "Loss"
     ml_result = "Win" if pred_home_wins == home_wins else "Loss"
 
     # Profit at $100 per pick
