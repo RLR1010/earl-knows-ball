@@ -365,6 +365,7 @@ COMPUTED_FEATURES_CATALOG: Dict[str, str] = {
     "a_form_l10": "Away winning percentage last 10 games (exponential MA, shift(1))",
     # ── Park & environment ──
     "park_factor": "Estimated venue run multiplier based on rolling historical totals",
+    "wind_calculated": "Wind effect: wd * wind_speed where wd=1 for out, -1 for in, 0 otherwise",
     "total_avg_team_r10": "Avg total runs involving this team last 10 games",
     "combo_era_r10": "Combined (home + away) total-team ERA last 10 games",
     "combo_era_r10_diff": "Home minus away component of combo_era_r10",
@@ -1473,7 +1474,27 @@ def build_features(df: pd.DataFrame, log_fn=None) -> pd.DataFrame:
             feats[f"{side}_bullpen_era_l5"] = 4.50
             feats[f"{side}_bullpen_ip_l5"] = 0.0
 
-    # ── 11. Team average total, combo ERA, combo ERA diff ──
+    # ── 11. Wind calculated ──
+
+    def _wind_direction_factor(direction: str) -> int:
+        """Return 1 for out-blowing, -1 for in-blowing, 0 otherwise."""
+        if direction is None:
+            return 0
+        d = str(direction).strip().lower()
+        if d == "out":
+            return 1
+        if d == "in":
+            return -1
+        return 0
+
+    feats["wind_calculated"] = feats.apply(
+        lambda r: _wind_direction_factor(r.get("wind_direction")) * (
+            float(r.get("wind_speed")) if r.get("wind_speed") is not None and not pd.isna(r.get("wind_speed")) else 0.0
+        ),
+        axis=1,
+    )
+
+    # ── 12. Team average total, combo ERA, combo ERA diff ──
 
     # Total runs per game involving this team
     tg["total_runs"] = tg["rf"] + tg["ra"]

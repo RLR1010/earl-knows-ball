@@ -581,6 +581,31 @@ def _build_mlb_away_stats(row: dict) -> dict:
 def _build_mlb_situational(row: dict) -> dict:
     """Build situational data dict from a feature row."""
     roof = _str_safe(row.get("roof_type", "Outdoor")).lower()
+    is_dome = "dome" in roof or "retractable" in roof
+    is_div = bool(row.get("is_div", False))
+
+    # Rest days
+    rest_h = _int_safe(row.get("rest_h"))
+    rest_a = _int_safe(row.get("rest_a"))
+    rest_diff = _float_safe(row.get("rest_diff"))
+    is_short_week = (rest_h is not None and rest_h <= 1) or (rest_a is not None and rest_a <= 1)
+
+    # Travel & timezone
+    travel_miles = _int_safe(row.get("travel_miles"))
+    tz_diff = _int_safe(row.get("tz_diff"))
+
+    # Travel advantage: whichever team traveled fewer miles (away team usually travels)
+    travel_advantage = "Home" if (travel_miles is not None and travel_miles < 300) else None
+
+    # Composite situation score (simple heuristic: rest diff + home + division + travel)
+    situation_score = 0
+    if rest_diff is not None:
+        situation_score += rest_diff  # positive = home more rested
+    if is_dome or is_div:
+        situation_score += 1
+    if travel_miles is not None and travel_miles > 500:
+        situation_score += 1  # away team traveled far = home advantage
+
     return {
         "venue": _str_safe(row.get("venue", "")),
         "roof_type": roof,
@@ -591,7 +616,20 @@ def _build_mlb_situational(row: dict) -> dict:
         "wind_direction": _str_safe(row.get("wind_direction", "")),
         "weather_condition": _str_safe(row.get("weather_condition", "")),
         "attendance": _int_safe(row.get("attendance", 0)),
-        "is_dome": "dome" in roof or "retractable" in roof,
+        "is_dome": is_dome,
+        "rest_home": rest_h,
+        "rest_away": rest_a,
+        "rest_diff": rest_diff,
+        "travel_miles": travel_miles,
+        "tz_diff": tz_diff,
+        "is_division": is_div,
+        "is_short_week": is_short_week,
+        "travel_advantage": travel_advantage,
+        "situation_score": situation_score,
+        "rest_home_hours": _float_safe(row.get("rest_h_hours")),
+        "rest_away_hours": _float_safe(row.get("rest_a_hours")),
+        "rest_diff_hours": _float_safe(row.get("rest_diff_hours")),
+        "wind_calculated": _float_safe(row.get("wind_calculated")),
     }
 
 
