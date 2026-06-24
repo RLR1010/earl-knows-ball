@@ -28,8 +28,9 @@ import logging
 import os
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, NamedTuple, Optional
 
+import numpy as np
 import pandas as pd
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -43,6 +44,18 @@ DEFAULT_DB_URL = os.getenv(
     "DATABASE_URL",
     "postgresql://earl:earl_dev_pass@localhost:5432/earl_knows_football",
 )
+DEFAULT_DB_URL_ASYNC = os.getenv(
+    "DATABASE_URL_ASYNC",
+    "postgresql+asyncpg://earl:earl_dev_pass@localhost:5432/earl_knows_football",
+)
+
+
+# ── Named return types ──
+
+class GamesData(NamedTuple):
+    """Return type for load_games / load_games_async."""
+    games: pd.DataFrame
+    pitcher_stats: Optional[pd.DataFrame] = None
 
 
 # ── Master game-level SQL query ──────────────────────────────────────────────
@@ -116,6 +129,30 @@ LEFT JOIN mlb.teams a         ON a.id = g.away_team_id
 LEFT JOIN mlb.seasons s       ON s.id = g.season_id
 LEFT JOIN mlb.betting_lines_consolidated c ON c.game_id = g.id
 ORDER BY g.date DESC
+"""
+
+
+# ── Pitcher stats query ──────────────────────────────────────────────────────
+
+PITCHER_QUERY = """
+SELECT
+    pgs.game_id,
+    pgs.pitcher_name,
+    pgs.pitcher_mlb_id,
+    pgs.team_abbr,
+    pgs.is_starter,
+    pgs.ip,
+    pgs.er,
+    pgs.runs_allowed,
+    pgs.h,
+    pgs.k,
+    pgs.bb,
+    pgs.hr,
+    g.date AS game_date
+FROM mlb.pitcher_game_stats pgs
+JOIN mlb.games g ON g.id = pgs.game_id
+WHERE g.id IN ({placeholders})
+ORDER BY g.date, pgs.game_id, pgs.is_starter DESC
 """
 
 
@@ -443,7 +480,7 @@ FEATURE_SETS: Dict[str, List[str]] = {
 # ── Feature engineering (consolidated build_features) ────────────────────────
 
 
-def build_features(df: pd.DataFrame, log_fn=None) -> pd.DataFrame:
+def build_features(df: pd.DataFrame, log_fn=None, pitcher_stats: Optional[pd.DataFrame] = None) -> pd.DataFrame:
     """Apply all MLB feature engineering to a raw game DataFrame.
 
     This is the single consolidated version of the ``build_features`` functions
@@ -732,51 +769,143 @@ def build_features(df: pd.DataFrame, log_fn=None) -> pd.DataFrame:
 
     # ── 9. Pitcher features (rolling windows) ──
 
-    # Pitcher features are tricky because we need pitcher-change context.
-    # For now we use team-level pitcher appearance data as a proxy.
-    # In a future iteration, this will use the dedicated pitcher_appearances table.
-    # Best approximation: the last 20/5 team games reflect the current pitcher's context.
-    # We'll create stub columns that can be filled by the actual pitcher pipeline.
+    # Loaded from pitcher_game_stats table. Each starter's prior N games
+    # are used to compute ERA, K/9, WHIP, K/BB.  Bullpen is the sum of
+    # non-starter stats per team per game, then rolling.
+    # Fallback: team-level rolling RA proxies from tg when pitcher_stats
+    # is not available.
 
-    # These columns will be populated by the actual pitcher feature builder
-    # when run in production.  For now, compute from team rolling averages.
-    pitcher_windows = [5, 20]
-    for pw in pitcher_windows:
-        # Team combined ERA proxy
-        r_col = f"ra{pw}" if pw != 20 else "ra"
-        for side, team_col in [("h", "ha"), ("a", "aa")]:
-            era_col = f"{side}_pitcher_era_l{pw}"
-            k9_col = f"{side}_pitcher_k9_l{pw}"
-            whip_col = f"{side}_pitcher_whip_l{pw}"
-            kbb_col = f"{side}_pitcher_kbb_rate_l{pw}"
+    if pitcher_stats is not None and len(pitcher_stats) > 0:
+        log("  Computing pitcher features from pitcher_game_stats...")
 
-            # ERA ~ (RA*9) per game (runs per 9 = RA/team's avg IP/9 proxy ≈ 9)
-            if r_col in tg.columns:
-                temp = tg.rename(columns={"team": team_col, r_col: "ra_tmp"})[["game_id", team_col, "ra_tmp"]]
-                temp = temp[temp["ra_tmp"].notna()]
+        # Build a per-pitcher-per-game earnings table ordered by date
+        ps = pitcher_stats.copy()
+        ps["game_date"] = pd.to_datetime(ps["game_date"])
+        ps = ps.sort_values(["pitcher_name", "game_date"])
+
+        # Starter stats per pitcher
+        starters = ps[ps["is_starter"] == True].copy()
+        if len(starters) > 0:
+            # Cast decimal columns to float
+            for c in ["ip", "er", "h", "k", "bb", "hr", "runs_allowed"]:
+                starters[c] = pd.to_numeric(starters[c], errors="coerce").fillna(0.0)
+            starters["era_9"] = starters["er"] * 9.0 / starters["ip"].replace(0, np.nan)
+            starters["k9"] = starters["k"] * 9.0 / starters["ip"].replace(0, np.nan)
+            starters["whip"] = (starters["h"] + starters["bb"]) / starters["ip"].replace(0, np.nan)
+            starters["k_bb_rate"] = starters["k"] / starters["bb"].replace(0, 1).fillna(1)
+
+            # Rolling windows for each pitcher
+            for window in [5, 20]:
+                for stat, col_name in [("era_9", "pitcher_era_l{}"), ("k9", "pitcher_k9_l{}"),
+                                       ("whip", "pitcher_whip_l{}"), ("k_bb_rate", "pitcher_kbb_rate_l{}")]:
+                    col = col_name.format(window)
+                    starters[col] = starters.groupby("pitcher_name")[stat].transform(
+                        lambda s: s.rolling(window, min_periods=1).mean().shift(1)
+                    )
+
+            # Map each team's starter stats to the game
+            starters_map = starters[
+                ["game_id", "team_abbr", "pitcher_era_l5", "pitcher_k9_l5", "pitcher_whip_l5", "pitcher_kbb_rate_l5",
+                 "pitcher_era_l20", "pitcher_k9_l20", "pitcher_whip_l20", "pitcher_kbb_rate_l20"]
+            ].dropna(subset=["pitcher_era_l5"], how="all").drop_duplicates(subset=["game_id", "team_abbr"])
+
+            for side, team_col in [("h", "ha"), ("a", "aa")]:
+                temp = starters_map.rename(columns={"team_abbr": team_col})
+                for w in [5, 20]:
+                    feats = feats.merge(
+                        temp[["game_id", team_col, f"pitcher_era_l{w}", f"pitcher_k9_l{w}",
+                              f"pitcher_whip_l{w}", f"pitcher_kbb_rate_l{w}"]].rename(
+                            columns={
+                                f"pitcher_era_l{w}": f"{side}_pitcher_era_l{w}",
+                                f"pitcher_k9_l{w}": f"{side}_pitcher_k9_l{w}",
+                                f"pitcher_whip_l{w}": f"{side}_pitcher_whip_l{w}",
+                                f"pitcher_kbb_rate_l{w}": f"{side}_pitcher_kbb_rate_l{w}",
+                            }),
+                        on=["game_id", team_col],
+                        how="left",
+                    )
+
+        # Bullpen stats: sum of non-starters per team per game, then rolling
+        relievers = ps[ps["is_starter"] == False].copy()
+        if len(relievers) > 0:
+            # Cast decimal columns to float
+            for c in ["ip", "er"]:
+                relievers[c] = pd.to_numeric(relievers[c], errors="coerce").fillna(0.0)
+            # Aggregate to team-game level
+            bp = relievers.groupby(["game_id", "team_abbr", "game_date"]).agg(
+                bullpen_ip=("ip", "sum"),
+                bullpen_er=("er", "sum"),
+            ).reset_index()
+            bp = bp.sort_values(["team_abbr", "game_date"])
+            bp["bullpen_era_9"] = bp["bullpen_er"] * 9.0 / bp["bullpen_ip"].replace(0, np.nan)
+
+            # Rolling bullpen stats
+            bp["bullpen_era_l5"] = bp.groupby("team_abbr")["bullpen_era_9"].transform(
+                lambda s: s.rolling(5, min_periods=1).mean().shift(1)
+            )
+            bp["bullpen_ip_l5"] = bp.groupby("team_abbr")["bullpen_ip"].transform(
+                lambda s: s.rolling(5, min_periods=1).mean().shift(1)
+            )
+
+            bp_map = bp.dropna(subset=["bullpen_era_l5"]).drop_duplicates(subset=["game_id", "team_abbr"])
+
+            for side, team_col in [("h", "ha"), ("a", "aa")]:
+                temp = bp_map.rename(columns={"team_abbr": team_col})
                 feats = feats.merge(
-                    temp.rename(columns={"ra_tmp": era_col}),
+                    temp[["game_id", team_col, "bullpen_era_l5", "bullpen_ip_l5"]].rename(
+                        columns={
+                            "bullpen_era_l5": f"{side}_bullpen_era_l5",
+                            "bullpen_ip_l5": f"{side}_bullpen_ip_l5",
+                        }),
                     on=["game_id", team_col],
                     how="left",
                 )
-            else:
-                feats[era_col] = 4.0
 
-            # K/9, WHIP, K/BB — default league-average stubs
-            feats[k9_col] = 8.5
-            feats[whip_col] = 1.30
-            feats[kbb_col] = 2.5
+        log("  Pitcher features computed from pitcher_game_stats")
 
-            # Team-specific pitcher from name (basic split)
-            pit_col = f"{side}_pitcher_name" if pw == 5 else f"{side}_pitcher_name"
+    # Fill remaining NaN pitcher columns with team RA proxies
+    for w in [5, 20]:
+        for side, team_col in [("h", "ha"), ("a", "aa")]:
+            era_col = f"{side}_pitcher_era_l{w}"
+            k9_col = f"{side}_pitcher_k9_l{w}"
+            whip_col = f"{side}_pitcher_whip_l{w}"
+            kbb_col = f"{side}_pitcher_kbb_rate_l{w}"
 
-    # Bullpen features (baseline values)
-    feats["h_bullpen_era_l5"] = 4.0
-    feats["a_bullpen_era_l5"] = 4.0
-    feats["h_bullpen_ip_l5"] = 5.0
-    feats["a_bullpen_ip_l5"] = 5.0
+            if era_col not in feats.columns:
+                feats[era_col] = np.nan
+            if k9_col not in feats.columns:
+                feats[k9_col] = np.nan
+            if whip_col not in feats.columns:
+                feats[whip_col] = np.nan
+            if kbb_col not in feats.columns:
+                feats[kbb_col] = np.nan
 
-    log("  Pitcher stubs added — full pitcher pipeline TBD")
+            # Fill NaN from team rolling stats
+            ra_col = f"ra{w}"
+            if ra_col in tg.columns:
+                temp = tg.rename(columns={"team": team_col, ra_col: era_col + "_fill"})[["game_id", team_col, era_col + "_fill"]]
+                feats = feats.merge(temp, on=["game_id", team_col], how="left")
+                feats[era_col] = feats[era_col].fillna(feats[era_col + "_fill"])
+                feats.drop(columns=[era_col + "_fill"], inplace=True)
+
+            # Default league-average stubs for anything still NaN
+            feats[era_col] = feats[era_col].fillna(4.0)
+            feats[k9_col] = feats[k9_col].fillna(8.5)
+            feats[whip_col] = feats[whip_col].fillna(1.30)
+            feats[kbb_col] = feats[kbb_col].fillna(2.5)
+
+    # Bullpen fill
+    for side in ["h", "a"]:
+        bp_era = f"{side}_bullpen_era_l5"
+        bp_ip = f"{side}_bullpen_ip_l5"
+        if bp_era not in feats.columns:
+            feats[bp_era] = 4.0
+        if bp_ip not in feats.columns:
+            feats[bp_ip] = 5.0
+        feats[bp_era] = feats[bp_era].fillna(4.0)
+        feats[bp_ip] = feats[bp_ip].fillna(5.0)
+
+    log("  Pitcher features filled")
 
     # ── 10. Park factor ──
 
@@ -909,7 +1038,8 @@ class MLBDataLoader:
         status: str = "FINAL",
         limit: Optional[int] = None,
         include_upcoming: bool = False,
-    ) -> pd.DataFrame:
+        include_pitcher_stats: bool = True,
+    ) -> GamesData:
         """Load game data as a pandas DataFrame (sync).
 
         Parameters
@@ -924,16 +1054,25 @@ class MLBDataLoader:
             If set, only load this many rows.
         include_upcoming :
             If True, include PREGAME / LIVE games too (for pick-card display).
+        include_pitcher_stats :
+            If True, also loads pitcher_game_stats for the same games.
 
         Returns
         -------
-        pd.DataFrame
-            One row per game, with all columns from GAME_QUERY.
+        GamesData
+            Named tuple with:
+            - `.games`: one row per game
+            - `.pitcher_stats`: per-pitcher row per game (or None if not loaded)
         """
         engine = create_engine(self._db_url)
         try:
-            return self._query(engine, seasons=seasons, status=status,
-                               limit=limit, include_upcoming=include_upcoming)
+            games = self._query(engine, seasons=seasons, status=status,
+                                limit=limit, include_upcoming=include_upcoming)
+            pitcher_stats = None
+            if include_pitcher_stats and len(games) > 0:
+                game_ids = games["game_id"].tolist()
+                pitcher_stats = self._load_pitcher_stats(engine, game_ids)
+            return GamesData(games=games, pitcher_stats=pitcher_stats)
         finally:
             engine.dispose()
 
@@ -944,10 +1083,18 @@ class MLBDataLoader:
         status: str = "FINAL",
         limit: Optional[int] = None,
         include_upcoming: bool = False,
-    ) -> pd.DataFrame:
-        """Load game data as a pandas DataFrame (async, using an existing engine)."""
-        return await self._query_async(engine, seasons=seasons, status=status,
-                                       limit=limit, include_upcoming=include_upcoming)
+        include_pitcher_stats: bool = True,
+    ) -> GamesData:
+        """Load game data as a pandas DataFrame (async, using an existing engine).
+
+        Returns GamesData(games=..., pitcher_stats=...) """
+        games = await self._query_async(engine, seasons=seasons, status=status,
+                                        limit=limit, include_upcoming=include_upcoming)
+        pitcher_stats = None
+        if include_pitcher_stats and len(games) > 0:
+            game_ids = games["game_id"].tolist()
+            pitcher_stats = await self._load_pitcher_stats_async(engine, game_ids)
+        return GamesData(games=games, pitcher_stats=pitcher_stats)
 
     def load_all_games(
         self,
@@ -1026,6 +1173,41 @@ class MLBDataLoader:
         logger.info("Loaded %d game rows (async)", len(df))
         return df
 
+    def _load_pitcher_stats(
+        self,
+        engine: Any,
+        game_ids: List[int],
+    ) -> pd.DataFrame:
+        """Load pitcher_game_stats for the given game_ids."""
+        if not game_ids:
+            return pd.DataFrame()
+        placeholders = ",".join(str(g) for g in game_ids)
+        sql = PITCHER_QUERY.format(placeholders=placeholders)
+        logger.debug("Executing pitcher query for %d game_ids", len(game_ids))
+        with engine.connect() as conn:
+            df = pd.read_sql(text(sql), conn)
+        logger.info("Loaded %d pitcher rows", len(df))
+        return df
+
+    async def _load_pitcher_stats_async(
+        self,
+        engine: AsyncEngine,
+        game_ids: List[int],
+    ) -> pd.DataFrame:
+        """Async load pitcher_game_stats for the given game_ids."""
+        if not game_ids:
+            return pd.DataFrame()
+        placeholders = ",".join(str(g) for g in game_ids)
+        sql = PITCHER_QUERY.format(placeholders=placeholders)
+        logger.debug("Executing async pitcher query for %d game_ids", len(game_ids))
+        async with engine.connect() as conn:
+            result = await conn.execute(text(sql))
+            rows = result.fetchall()
+            cols = result.keys()
+        df = pd.DataFrame(rows, columns=cols)
+        logger.info("Loaded %d pitcher rows (async)", len(df))
+        return df
+
     # ── Training-run-aware inference data ───────────────────────────────
 
     def load_inference_data(
@@ -1073,16 +1255,21 @@ class MLBDataLoader:
         ``ha``, ``aa``, ``game_date``.  The ``build_features_fn`` adds
         everything else (rolling stats, pitcher metrics, park factors, etc.).
         """
-        # 1. Load raw game data
-        df = self.load_games(
+        # 1. Load raw game data (includes pitcher stats)
+        data = self.load_games(
             seasons=seasons,
             status=None if seasons is None else "FINAL",
             limit=limit,
             include_upcoming=seasons is None or limit is not None,
+            include_pitcher_stats=True,
         )
+        df = data.games
 
         # 2. Run feature engineering (defaults to the module-level build_features)
         fn = build_features_fn if build_features_fn is not None else build_features
+        # Pass pitcher_stats through build_kwargs unless build_features_fn already handles it
+        if "pitcher_stats" not in build_kwargs:
+            build_kwargs["pitcher_stats"] = data.pitcher_stats
         df = fn(df, **build_kwargs)
 
         # 3. Select only the columns the model was trained on
