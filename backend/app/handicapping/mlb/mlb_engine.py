@@ -553,28 +553,28 @@ def _str_safe(v, default: str = "") -> str:
 def _build_mlb_home_stats(row: dict) -> dict:
     """Build home team stats dict from a feature row."""
     return {
-        "team_name": _str_safe(row.get("ha", "")),
+        "team_name": _str_safe(row.get("home_team_name", row.get("ha", ""))),
         "abbreviation": _str_safe(row.get("ha", "")),
-        "wins": _int_safe(row.get("h_home_wins", 0)),
-        "losses": _int_safe(row.get("h_home_losses", 0)),
-        "pitcher": _str_safe(row.get("home_pitcher_name", "TBD")),
-        "runs_scored_avg": _float_safe(row.get("h_runs_scored_avg", 0.0)),
-        "runs_allowed_avg": _float_safe(row.get("h_runs_allowed_avg", 0.0)),
-        "park_factor": _float_safe(row.get("h_park_factor", 1.0)),
+        "wins": _int_safe(row.get("home_wins", 0)),
+        "losses": _int_safe(row.get("home_losses", 0)),
+        "pitcher": _str_safe(row.get("h_starter_name", "")),
+        "runs_scored_avg": _float_safe(row.get("h_rf_avg", 0.0)),
+        "runs_allowed_avg": _float_safe(row.get("h_ra_avg", 0.0)),
+        "park_factor": _float_safe(row.get("park_factor", 1.0)),
     }
 
 
 def _build_mlb_away_stats(row: dict) -> dict:
     """Build away team stats dict from a feature row."""
     return {
-        "team_name": _str_safe(row.get("aa", "")),
+        "team_name": _str_safe(row.get("away_team_name", row.get("aa", ""))),
         "abbreviation": _str_safe(row.get("aa", "")),
-        "wins": _int_safe(row.get("a_away_wins", 0)),
-        "losses": _int_safe(row.get("a_away_losses", 0)),
-        "pitcher": _str_safe(row.get("away_pitcher_name", "TBD")),
-        "runs_scored_avg": _float_safe(row.get("a_runs_scored_avg", 0.0)),
-        "runs_allowed_avg": _float_safe(row.get("a_runs_allowed_avg", 0.0)),
-        "park_factor": _float_safe(row.get("a_park_factor", 1.0)),
+        "wins": _int_safe(row.get("away_wins", 0)),
+        "losses": _int_safe(row.get("away_losses", 0)),
+        "pitcher": _str_safe(row.get("a_starter_name", "")),
+        "runs_scored_avg": _float_safe(row.get("a_rf_avg", 0.0)),
+        "runs_allowed_avg": _float_safe(row.get("a_ra_avg", 0.0)),
+        "park_factor": _float_safe(row.get("park_factor", 1.0)),
     }
 
 
