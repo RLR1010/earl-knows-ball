@@ -48,29 +48,6 @@ DEFAULT_DB_URL = os.getenv(
 # ── Master game-level SQL query ──────────────────────────────────────────────
 
 GAME_QUERY = """
-WITH team_ops AS (
-    SELECT
-        bgs.game_id,
-        bgs.team_side,
-        AVG(bgs.ops) AS avg_team_ops,
-        AVG(bgs.obp) AS avg_team_obp,
-        AVG(bgs.slg) AS avg_team_slg
-    FROM mlb.batting_game_stats bgs
-    WHERE bgs.ops IS NOT NULL AND bgs.team_side IS NOT NULL
-    GROUP BY bgs.game_id, bgs.team_side
-),
-game_starter_era AS (
-    SELECT
-        pgs.game_id,
-        MAX(CASE WHEN pgs.team_abbr = h_t.abbreviation THEN (pgs.er::numeric / pgs.ip) * 9 ELSE NULL END) AS home_starter_era,
-        MAX(CASE WHEN pgs.team_abbr = a_t.abbreviation THEN (pgs.er::numeric / pgs.ip) * 9 ELSE NULL END) AS away_starter_era
-    FROM mlb.pitcher_game_stats pgs
-    JOIN mlb.games g ON g.id = pgs.game_id
-    JOIN mlb.teams h_t ON h_t.id = g.home_team_id
-    JOIN mlb.teams a_t ON a_t.id = g.away_team_id
-    WHERE pgs.is_starter = true AND pgs.er IS NOT NULL AND pgs.ip IS NOT NULL AND pgs.ip > 0
-    GROUP BY pgs.game_id
-)
 SELECT
     g.id                                                    AS game_id,
     g.mlb_game_id,
@@ -124,35 +101,18 @@ SELECT
     c.closing_ou_sportsbook                                 AS sportsbook,
     c.has_verified_ou,
     c.opening_spread                                        AS opening_spread,
-    c.opening_ou                                            AS opening_ou,
+    c.opening_ou                                            AS opening_total,
     c.opening_home_ml                                       AS opening_home_ml,
     c.opening_away_ml                                       AS opening_away_ml,
     c.opening_spread_sportsbook,
     c.closing_home_implied_probability,
     c.closing_away_implied_probability,
     c.opening_home_implied_probability,
-    c.opening_away_implied_probability,
-    c.closing_spread_home_odds,
-    c.closing_spread_away_odds,
-    c.closing_over_odds,
-    c.closing_under_odds,
-
-    -- Team OPS from batting_game_stats
-    toh.avg_team_ops                                         AS h_ops,
-    toa.avg_team_ops                                         AS a_ops,
-    toh.avg_team_slg                                        AS h_slg,
-    toa.avg_team_slg                                        AS a_slg,
-
-    -- Starter ERA from pitcher_game_stats
-    gse.home_starter_era                                    AS h_starter_era,
-    gse.away_starter_era                                    AS a_starter_era
+    c.opening_away_implied_probability
 
 FROM mlb.games g
 LEFT JOIN mlb.teams h         ON h.id = g.home_team_id
 LEFT JOIN mlb.teams a         ON a.id = g.away_team_id
-LEFT JOIN team_ops toh        ON toh.game_id = g.id AND toh.team_side = 'home'
-LEFT JOIN team_ops toa        ON toa.game_id = g.id AND toa.team_side = 'away'
-LEFT JOIN game_starter_era gse ON gse.game_id = g.id
 LEFT JOIN mlb.seasons s       ON s.id = g.season_id
 LEFT JOIN mlb.betting_lines_consolidated c ON c.game_id = g.id
 ORDER BY g.date DESC
@@ -246,15 +206,6 @@ COMPUTED_FEATURES_CATALOG: Dict[str, str] = {
     "away_implied_probability": "Same as a_implied",
     "implied_total": "Estimated total from home + away implied probabilities",
     "ou_line": "Alias for over_under, used inside modeling code",
-    # ── Team hitting stats ──
-    "h_ops_l10": "Home OPS over last 10 games",
-    "a_ops_l10": "Away OPS over last 10 games",
-    "h_ops_l20": "Home OPS over last 20 games",
-    "a_ops_l20": "Away OPS over last 20 games",
-    "h_slg_l10": "Home slugging pct over last 10 games",
-    "a_slg_l10": "Away slugging pct over last 10 games",
-    "h_slg_l20": "Home slugging pct over last 20 games",
-    "a_slg_l20": "Away slugging pct over last 20 games",
     # ── Pitcher-derived ──
     "h_pitcher_era_l20": "Home pitcher ERA over last 20 appearances",
     "a_pitcher_era_l20": "Away pitcher ERA over last 20 appearances",
@@ -264,8 +215,8 @@ COMPUTED_FEATURES_CATALOG: Dict[str, str] = {
     "a_pitcher_k9_l20": "Away pitcher K/9 over last 20 appearances",
     "h_pitcher_whip_l20": "Home pitcher WHIP over last 20 appearances",
     "a_pitcher_whip_l20": "Away pitcher WHIP over last 20 appearances",
-    "h_pitcher_k_bb_l20": "Home pitcher K/BB rate over last 20 appearances",
-    "a_pitcher_k_bb_l20": "Away pitcher K/BB rate over last 20 appearances",
+    "h_pitcher_kbb_rate_l20": "Home pitcher K/BB rate over last 20 appearances",
+    "a_pitcher_kbb_rate_l20": "Away pitcher K/BB rate over last 20 appearances",
     "h_pitcher_home_team_l20": "Home pitcher ERA with this team (last 20)",
     "a_pitcher_home_team_l20": "Away pitcher ERA with this team (last 20)",
     # ── Bullpen ──
@@ -409,43 +360,85 @@ DISPLAY_NAMES: Dict[str, str] = {
 # Each entry groups features by use case so training, backtesting, and inference
 # all select from the same stable of columns.
 
-
-# ── Module-level feature helpers ─────────────────────────────────────────────
-
-
-def get_model_features(model_type: str) -> list[str]:
-    """Fetch feature names for a model type from mlb.features."""
-    import subprocess
-    col = {"ou": "current_ou", "ats": "current_ats"}.get(model_type.lower())
-    if not col:
-        raise ValueError(f"Unknown model type: {model_type}. Use 'ou' or 'ats'.")
-    try:
-        result = subprocess.run(
-            ["docker", "exec", "-i", "earl-knows-football-db-1",
-             "psql", "-U", "earl", "-d", "earl_knows_football",
-             "-t", "-A", "-c",
-             f"SELECT name FROM mlb.features WHERE {col} = true ORDER BY name"],
-            capture_output=True, text=True, timeout=10
-        )
-        features = [n.strip() for n in result.stdout.strip().split("\n") if n.strip()]
-        if not features:
-            raise RuntimeError(f"No features found for {model_type} (column {col})")
-        return features
-    except Exception as e:
-        raise RuntimeError(f"Failed to fetch {model_type} features from DB: {e}")
-
-
-def rolling_mean_safe(series: pd.Series, window: int) -> pd.Series:
-    """Expanding mean for early season (first ``window`` games),
-    then rolling mean after that, all shift(1) on a per-team basis.
-
-    NOTE: This function is currently unused.  The ``build_features`` function
-    uses groupby/transform with lambdas instead.
-    """
-    expanded = series.expanding(min_periods=1).mean().shift(1)
-    rolled = series.rolling(window=window, min_periods=1).mean().shift(1)
-    return series  # placeholder — the original was broken (references tg from outer scope)
-
+FEATURE_SETS: Dict[str, List[str]] = {
+    # Features used by the ATS (against-the-spread) model
+    "ats": [
+        "ha", "aa", "hdiv", "adiv",
+        "rest_h", "rest_a", "rest_diff", "is_div",
+        "is_summer", "is_dome", "month",
+        "travel_miles", "tz_diff",
+        "h_winpct", "a_winpct", "winpct_diff", "winpct_l10_diff",
+        "h_home_rf", "a_away_rf",
+        "h_pitcher_era_l20", "a_pitcher_era_l20",
+        "home_implied_probability", "away_implied_probability",
+        "spread", "over_under",
+    ],
+    # Features used by the OU (over/under) model
+    "ou": [
+        "ha", "aa", "hdiv", "adiv",
+        "rest_h", "rest_a", "rest_diff", "is_div",
+        "is_summer", "is_dome", "month",
+        "travel_miles", "tz_diff",
+        "h_winpct", "a_winpct",
+        "h_pitcher_era_l20", "a_pitcher_era_l20",
+        "h_pitcher_k9_l20", "a_pitcher_k9_l20",
+        "h_pitcher_whip_l20", "a_pitcher_whip_l20",
+        "h_pitcher_kbb_rate_l20", "a_pitcher_kbb_rate_l20",
+        "h_bullpen_era_l5", "a_bullpen_era_l5",
+        "h_bullpen_ip_l5", "a_bullpen_ip_l5",
+        "home_implied_probability", "away_implied_probability",
+        "implied_total",
+        "over_under", "ou_movement",
+        "park_factor",
+        "total_avg_team_r10", "combo_era_r10", "combo_era_r10_diff",
+    ],
+    # Features used by the ML (moneyline) model
+    "ml": [
+        "ha", "aa", "hdiv", "adiv",
+        "rest_h", "rest_a", "rest_diff", "is_div",
+        "is_summer", "is_dome", "month",
+        "travel_miles", "tz_diff",
+        "h_winpct", "a_winpct", "winpct_diff",
+        "h_pitcher_era_l5", "a_pitcher_era_l5",
+        "h_pitcher_era_l20", "a_pitcher_era_l20",
+        "h_bullpen_era_l5", "a_bullpen_era_l5",
+        "h_form_l10", "a_form_l10",
+        "home_moneyline", "away_moneyline",
+        "home_implied_probability", "away_implied_probability",
+        "ml_implied_movement",
+    ],
+    # All features used in any model (superset)
+    "full": [
+        "ha", "aa", "hdiv", "adiv",
+        "rest_h", "rest_a", "rest_diff", "is_div",
+        "month", "is_summer", "is_dome",
+        "travel_miles", "tz_diff",
+        "h_winpct", "a_winpct", "winpct_diff", "winpct_l10_diff",
+        "h_home_rf", "a_away_rf",
+        "h_pitcher_era_l5", "a_pitcher_era_l5",
+        "h_pitcher_era_l20", "a_pitcher_era_l20",
+        "h_pitcher_k9_l20", "a_pitcher_k9_l20",
+        "h_pitcher_whip_l20", "a_pitcher_whip_l20",
+        "h_pitcher_kbb_rate_l20", "a_pitcher_kbb_rate_l20",
+        "h_bullpen_era_l5", "a_bullpen_era_l5",
+        "h_bullpen_ip_l5", "a_bullpen_ip_l5",
+        "h_form_l10", "a_form_l10",
+        "home_implied_probability", "away_implied_probability",
+        "implied_total",
+        "ou_movement", "ml_implied_movement",
+        "spread", "over_under", "home_moneyline", "away_moneyline",
+        "park_factor",
+        "total_avg_team_r10", "combo_era_r10", "combo_era_r10_diff",
+    ],
+    # Only raw/game-level columns used during backfitting (no model features)
+    "raw": [
+        "game_id", "ha", "aa",
+        "home_score", "away_score", "margin",
+        "spread", "over_under", "home_moneyline", "away_moneyline",
+        "home_implied_probability", "away_implied_probability",
+        "season_year", "game_date",
+    ],
+}
 
 # ── Feature engineering (consolidated build_features) ────────────────────────
 
@@ -509,15 +502,12 @@ def build_features(df: pd.DataFrame, log_fn=None) -> pd.DataFrame:
     pivot_df = feats[[
         "game_id", "ha", "aa", "game_date", "season_year", "game_type",
         "home_score", "away_score",
-        "h_ops", "a_ops",
-        "h_slg", "a_slg",
-        "h_starter_era", "a_starter_era",
     ]].copy()
 
     # Team-level roll-up: one row per team-game
-    home = pivot_df.rename(columns={"ha": "team", "aa": "opp", "home_score": "rf", "away_score": "ra", "h_ops": "team_ops", "h_slg": "team_slg", "h_starter_era": "starter_era"})
+    home = pivot_df.rename(columns={"ha": "team", "aa": "opp", "home_score": "rf", "away_score": "ra"})
     home["home_ind"] = 1
-    away = pivot_df.rename(columns={"aa": "team", "ha": "opp", "away_score": "rf", "home_score": "ra", "a_ops": "team_ops", "a_slg": "team_slg", "a_starter_era": "starter_era"})
+    away = pivot_df.rename(columns={"aa": "team", "ha": "opp", "away_score": "rf", "home_score": "ra"})
     away["home_ind"] = 0
 
     tg = pd.concat([home, away], ignore_index=True)
@@ -528,7 +518,21 @@ def build_features(df: pd.DataFrame, log_fn=None) -> pd.DataFrame:
 
     # ── 3. Rolling stats per team ──
 
-    
+    def rolling_mean_safe(series: pd.Series, window: int) -> pd.Series:
+        """Expanding mean for early season (first ``window`` games),
+        then rolling mean after that, all shift(1) on a per-team basis."""
+        expanded = series.expanding(min_periods=1).mean().shift(1)
+        rolled = series.rolling(window=window, min_periods=1).mean().shift(1)
+        # Use expanding until we have enough games, then rolling
+        n = series.groupby(tg["team"] if series.name == tg["rf"].name else ...).cumcount() + 1
+        result = pd.Series(index=series.index, dtype=float)
+        for i in range(len(series)):
+            if n.iloc[i] <= window:
+                result.iloc[i] = expanded.iloc[i]
+            else:
+                result.iloc[i] = rolled.iloc[i]
+        return result
+
     # We'll compute these manually with groupby + expanding/rolling
     log("  Computing rolling team stats (rf, ra)...")
 
@@ -536,7 +540,7 @@ def build_features(df: pd.DataFrame, log_fn=None) -> pd.DataFrame:
     tg["season_game_no"] = tg.groupby(["team", "year"]).cumcount() + 1
 
     # Per-team expanding/rolling averages
-    tg["rf_avg"] = tg.groupby("team")["rf"].transform(
+    tg["rf_avg"] = tg.groupby(["team", "year"])["rf"].transform(
         lambda s: s.expanding(min_periods=1).mean().shift(1)
     )
     tg["ra_avg"] = tg.groupby(["team", "year"])["ra"].transform(
@@ -555,17 +559,7 @@ def build_features(df: pd.DataFrame, log_fn=None) -> pd.DataFrame:
         lambda s: s.rolling(5, min_periods=1).mean().shift(1)
     )
 
-    # Home-only and away-only splits
-    tg["rf_home"] = tg.groupby(["team", "year"])["rf"].transform(
-        lambda s: s.expanding(min_periods=1).mean().shift(1)
-    )
-    tg["rf_away"] = tg.groupby(["team", "year"])["rf"].transform(
-        lambda s: s.expanding(min_periods=1).mean().shift(1)
-    )
-    # Home/away splits using the home_ind
-    home_games = tg[tg["home_ind"] == 1].groupby(["team", "year"])["rf"]
-    away_games = tg[tg["home_ind"] == 0].groupby(["team", "year"])["rf"]
-    # Map back
+    # Home/away splits
     tg["h_home_rf"] = tg.groupby(["team", "year"])["rf"].transform(
         lambda s: (
             tg.loc[s.index, "rf"]
@@ -581,400 +575,30 @@ def build_features(df: pd.DataFrame, log_fn=None) -> pd.DataFrame:
         )
     )
 
-    # Rolling OPS stats (L10 and L20)
-    tg["ops_l10"] = tg.groupby(["team", "year"])["team_ops"].transform(
-        lambda s: s.rolling(10, min_periods=1).mean().shift(1)
-    )
-    tg["ops_l20"] = tg.groupby(["team", "year"])["team_ops"].transform(
-        lambda s: s.rolling(20, min_periods=1).mean().shift(1)
-    )
-    # Rolling SLG stats (L10 and L20)  — same windows as OPS
-    tg["slg_l10"] = tg.groupby(["team", "year"])["team_slg"].transform(
-        lambda s: s.rolling(10, min_periods=1).mean().shift(1)
-    )
-    tg["slg_l20"] = tg.groupby(["team", "year"])["team_slg"].transform(
-        lambda s: s.rolling(20, min_periods=1).mean().shift(1)
-    )
-
     log("  Rolling team stats computed")
 
-    # ── 3b. Prior-season averages (seed for all rolling stats) ──
+    # ── 3b. Win percentage ──
 
-    log("  Computing prior-season averages for rolling stat seeding...")
-    team_season_stats = tg.groupby(["team", "year"]).agg(
-        prior_pf=("rf", "mean"),
-        prior_pa=("ra", "mean"),
-        prior_pf_home=("rf", lambda s: s.where(tg.loc[s.index, "home_ind"] == 1).mean()),
-        prior_pa_home=("ra", lambda s: s.where(tg.loc[s.index, "home_ind"] == 1).mean()),
-        prior_pf_away=("rf", lambda s: s.where(tg.loc[s.index, "home_ind"] == 0).mean()),
-        prior_pa_away=("ra", lambda s: s.where(tg.loc[s.index, "home_ind"] == 0).mean()),
-        prior_era=("starter_era", "mean"),
-    ).reset_index()
-
-    team_avg_ops = tg.groupby(["team", "year"])["team_ops"].mean().reset_index()
-    team_avg_ops.rename(columns={"team_ops": "prior_ops"}, inplace=True)
-    team_season_stats = team_season_stats.merge(team_avg_ops, on=["team", "year"], how="left")
-
-    team_avg_slg = tg.groupby(["team", "year"])["team_slg"].mean().reset_index()
-    team_avg_slg.rename(columns={"team_slg": "prior_slg"}, inplace=True)
-    team_season_stats = team_season_stats.merge(team_avg_slg, on=["team", "year"], how="left")
-
+    log("  Computing win percentages...")
+    # Remap result: 1 for win, 0 for loss
     tg["win"] = (tg["rf"] > tg["ra"]).astype(int)
-    team_season_wp = tg.groupby(["team", "year"])["win"].mean().reset_index()
-    team_season_wp.rename(columns={"win": "prior_winpct"}, inplace=True)
-    team_season_stats = team_season_stats.merge(team_season_wp, on=["team", "year"], how="left")
-
-    # Pre-compute over frequency from raw game data (feats has over_under, tg doesn't yet)
-    over_flag_df = feats[["ha", "aa", "home_score", "away_score", "over_under", "season_year"]].copy()
-    over_flag_df = over_flag_df[over_flag_df["over_under"].notna() & (over_flag_df["over_under"] > 0)]
-    over_flag_df["over_flag"] = ((over_flag_df["home_score"] + over_flag_df["away_score"]) > over_flag_df["over_under"]).astype(float)
-    home_ou = over_flag_df[["ha", "season_year", "over_flag"]].rename(columns={"ha": "team"})
-    away_ou = over_flag_df[["aa", "season_year", "over_flag"]].rename(columns={"aa": "team"})
-    ou_by_team = pd.concat([home_ou, away_ou], ignore_index=True)
-    prior_ou = ou_by_team.groupby(["team", "season_year"])["over_flag"].mean().reset_index()
-    prior_ou.rename(columns={"season_year": "year", "over_flag": "prior_over_freq"}, inplace=True)
-    team_season_stats = team_season_stats.merge(prior_ou, on=["team", "year"], how="left")
-
-    # If we don't have the prior year's data, load it separately for seeding
-    min_year = tg["year"].min()
-    years_in_data = sorted(tg["year"].unique())
-    has_prior_season = (min_year - 1) in years_in_data
-
-    if not has_prior_season and min_year > 2007:
-        try:
-            from app.handicapping.mlb.data_loader import get_data_loader
-            prior_season = min_year - 1
-            log(f"  Loading {prior_season} data for prior-season seeding...")
-            prior_dl = get_data_loader()
-            prior_raw = prior_dl.load_games(seasons=[prior_season], status="FINAL")
-            if prior_raw is not None and len(prior_raw) > 0:
-                log(f"  Got {len(prior_raw)} rows from {prior_season}")
-                # Re-pivot just for stat computation: compute per-team season totals
-                prior_pivot = prior_raw[["game_id", "ha", "aa", "game_date", "season_year", "game_type",
-                                        "home_score", "away_score", "h_ops", "a_ops", "over_under"]].copy()
-                prior_home = prior_pivot.rename(columns={"ha": "team", "aa": "opp", "home_score": "rf", "away_score": "ra", "h_ops": "team_ops"})
-                prior_home["home_ind"] = 1
-                prior_away = prior_pivot.rename(columns={"aa": "team", "ha": "opp", "away_score": "rf", "home_score": "ra", "a_ops": "team_ops"})
-                prior_away["home_ind"] = 0
-                prior_tg = pd.concat([prior_home, prior_away], ignore_index=True)
-                # Compute over_flag for prior season (same total for both teams)
-                prior_tg["over_flag"] = ((prior_tg["rf"] + prior_tg["ra"]) > prior_tg["over_under"]).astype(float)
-                prior_tg["over_flag"] = prior_tg["over_flag"].where(prior_tg["over_under"].notna() & (prior_tg["over_under"] > 0), None)
-                prior_tg["year"] = prior_tg["season_year"]
-
-                # Compute same stats as above
-                prior_stats = prior_tg.groupby(["team", "year"]).agg(
-                    prior_pf=("rf", "mean"),
-                    prior_pa=("ra", "mean"),
-                    prior_pf_home=("rf", lambda s: s.where(prior_tg.loc[s.index, "home_ind"] == 1).mean()),
-                    prior_pa_home=("ra", lambda s: s.where(prior_tg.loc[s.index, "home_ind"] == 1).mean()),
-                    prior_pf_away=("rf", lambda s: s.where(prior_tg.loc[s.index, "home_ind"] == 0).mean()),
-                    prior_pa_away=("ra", lambda s: s.where(prior_tg.loc[s.index, "home_ind"] == 0).mean()),
-                    prior_era=("starter_era", "mean"),
-                    prior_over_freq=("over_flag", "mean"),
-                ).reset_index()
-
-                prior_ops_stats = prior_tg.groupby(["team", "year"])["team_ops"].mean().reset_index()
-                prior_ops_stats.rename(columns={"team_ops": "prior_ops"}, inplace=True)
-                prior_stats = prior_stats.merge(prior_ops_stats, on=["team", "year"], how="left")
-
-                prior_slg_stats = prior_tg.groupby(["team", "year"])["team_slg"].mean().reset_index()
-                prior_slg_stats.rename(columns={"team_slg": "prior_slg"}, inplace=True)
-                prior_stats = prior_stats.merge(prior_slg_stats, on=["team", "year"], how="left")
-
-                prior_tg["win_p"] = (prior_tg["rf"] > prior_tg["ra"]).astype(int)
-                prior_wp = prior_tg.groupby(["team", "year"])["win_p"].mean().reset_index()
-                prior_wp.rename(columns={"win_p": "prior_winpct"}, inplace=True)
-                prior_stats = prior_stats.merge(prior_wp, on=["team", "year"], how="left")
-
-                # Merge into team_season_stats
-                team_season_stats = pd.concat([team_season_stats, prior_stats], ignore_index=True)
-                log(f"  Added {len(prior_stats)} prior-season team rows from {prior_season}")
-        except Exception as e:
-            log(f"  Warning: could not load prior season data ({e})")
-
-    # ── 3c. Rolling stats with prior-season seeding ──
-
-    log("  Computing rolling stats with prior-season seeding...")
-
-    # Build a lookup dict: (team, year) -> {col: val}
-    prior_lookup = {}
-    for _, row in team_season_stats.iterrows():
-        prior_lookup[(row["team"], row["year"])] = {
-            "prior_pf": row["prior_pf"],
-            "prior_pa": row["prior_pa"],
-            "prior_pf_home": row["prior_pf_home"],
-            "prior_pa_home": row["prior_pa_home"],
-            "prior_pf_away": row["prior_pf_away"],
-            "prior_pa_away": row["prior_pa_away"],
-            "prior_ops": row["prior_ops"],
-            "prior_slg": row["prior_slg"],
-            "prior_winpct": row["prior_winpct"],
-            "prior_era": row["prior_era"],
-            "prior_over_freq": row.get("prior_over_freq", None),
-        }
-
-    def prior_for(team, year, col):
-        """Get prior-season stat for a team, or None."""
-        stats = prior_lookup.get((team, year - 1))
-        if stats is not None:
-            return stats.get(col)
-        return None
-
-    def seed_prior(series, team_series, prior_col):
-        """Fill NaN values in a stat with the team's prior-season average.
-
-        Legacy — only used for first-game NaN fill. For proper smoothing
-        across the early season, use blend_expanding_prior instead.
-        """
-        result = series.copy()
-        nulls = result.isna()
-        if nulls.any():
-            for idx in result[nulls].index:
-                team = team_series.loc[idx]
-                year_loc = tg.loc[idx, "year"]
-                pv = prior_for(team, year_loc, prior_col)
-                if pv is not None:
-                    result.loc[idx] = pv
-        return result
-
-    def blend_expanding_prior(series, team_series, prior_col, ramp_games: int = 40):
-        """Blend an expanding (YTD) stat with prior-season average, ramping
-        from full prior-avg weight down to 0 over `ramp_games` games.
-
-        weight_prior = max(0, 1 - K/ramp_games)
-        result = current_avg * (1 - weight_prior) + prior_avg * weight_prior
-
-        This means:
-        - Game 1: ~100% prior (shift(1) → NaN → filled with prior)
-        - Game 20: ~50% actual avg, ~50% prior avg
-        - Game 40+: 100% actual expanding avg, prior dropped entirely
-        """
-        result = series.copy()
-        # Step 1: Fill NaN (game 1) with pure prior
-        nulls = result.isna()
-        if nulls.any():
-            for idx in result[nulls].index:
-                team = team_series.loc[idx]
-                year_loc = tg.loc[idx, "year"]
-                pv = prior_for(team, year_loc, prior_col)
-                if pv is not None:
-                    result.loc[idx] = pv
-        # Step 2: Blend partial-season rows
-        if ramp_games and ramp_games > 1:
-            # Count games within the current season only (reset per year)
-            count_series = (
-                tg.groupby(["team", "year"])["game_date"]
-                .transform(lambda s: s.expanding(min_periods=1).count().shift(1))
-            )
-            blend_needed = count_series < ramp_games
-            if blend_needed.any():
-                for idx in result[blend_needed].index:
-                    team = team_series.loc[idx]
-                    year_loc = tg.loc[idx, "year"]
-                    pv = prior_for(team, year_loc, prior_col)
-                    if pv is not None:
-                        k = count_series.loc[idx]
-                        if pd.isna(k):
-                            k = 0
-                        if k >= ramp_games:
-                            continue
-                        if k == 0:
-                            pass  # step 1 handled it
-                        else:
-                            weight_prior = 1.0 - (k / ramp_games)
-                            if not pd.isna(result.loc[idx]):
-                                result.loc[idx] = result.loc[idx] * (1.0 - weight_prior) + pv * weight_prior
-        return result
-
-    def blend_rolling_prior(series, team_series, prior_col, window_size):
-        """Blend a rolling window stat with prior-season average until the window fills.
-
-        For each row where the window has K < window_size actual games,
-        the result is:
-            (current_avg * K/window_size) + (prior_season_avg * (window_size-K)/window_size)
-
-        Once K >= window_size, no blend is needed.
-        Uses expanding().count().shift(1) per team+year to determine how many
-        games each rolling value is based on (since all rolling stats use shift(1)).
-        """
-        result = series.copy()
-        # Step 1: Fill NaN rows (game 1 of season — shift(1) produces NaN)
-        # with the pure prior-season average
-        nulls = result.isna()
-        if nulls.any():
-            for idx in result[nulls].index:
-                team = team_series.loc[idx]
-                year_loc = tg.loc[idx, "year"]
-                pv = prior_for(team, year_loc, prior_col)
-                if pv is not None:
-                    result.loc[idx] = pv
-        # Step 2: Blend rows where the available game count < window_size
-        if window_size and window_size > 1:
-            # Count games within the current season only (reset per year)
-            count_series = (
-                tg.groupby(["team", "year"])["game_date"]
-                .transform(lambda s: s.expanding(min_periods=1).count().shift(1))
-            )
-            blend_needed = count_series < window_size
-            if blend_needed.any():
-                for idx in result[blend_needed].index:
-                    team = team_series.loc[idx]
-                    year_loc = tg.loc[idx, "year"]
-                    pv = prior_for(team, year_loc, prior_col)
-                    if pv is not None:
-                        k = count_series.loc[idx]
-                        if pd.isna(k):
-                            k = 0
-                        if k >= window_size:
-                            continue  # shouldn't happen but be safe
-                        if k == 0:
-                            # No actual games, just use prior (step 1 handled this)
-                            pass
-                        else:
-                            weight = k / window_size
-                            if not pd.isna(result.loc[idx]):
-                                result.loc[idx] = result.loc[idx] * weight + pv * (1.0 - weight)
-        return result
-
-    # ---- Run rolling stat computations ----
-
-    # Runs scored rolling (rf_avg ~ 20-game season average, rf10, rf5)
-    tg["rf_avg"] = blend_expanding_prior(
-        tg.groupby(["team", "year"])["rf"].transform(lambda s: s.expanding(min_periods=1).mean().shift(1)),
-        tg["team"], "prior_pf", 10
-    )
-    tg["ra_avg"] = blend_expanding_prior(
-        tg.groupby(["team", "year"])["ra"].transform(lambda s: s.expanding(min_periods=1).mean().shift(1)),
-        tg["team"], "prior_pa", 10
-    )
-    tg["rf10"] = blend_rolling_prior(
-        tg.groupby(["team", "year"])["rf"].transform(lambda s: s.rolling(10, min_periods=1).mean().shift(1)),
-        tg["team"], "prior_pf", 10
-    )
-    tg["ra10"] = blend_rolling_prior(
-        tg.groupby(["team", "year"])["ra"].transform(lambda s: s.rolling(10, min_periods=1).mean().shift(1)),
-        tg["team"], "prior_pa", 10
-    )
-    tg["rf5"] = blend_rolling_prior(
-        tg.groupby(["team", "year"])["rf"].transform(lambda s: s.rolling(5, min_periods=1).mean().shift(1)),
-        tg["team"], "prior_pf", 5
-    )
-    tg["ra5"] = blend_rolling_prior(
-        tg.groupby(["team", "year"])["ra"].transform(lambda s: s.rolling(5, min_periods=1).mean().shift(1)),
-        tg["team"], "prior_pa", 5
+    tg["winpct"] = tg.groupby(["team", "year"])["win"].transform(
+        lambda s: s.expanding(min_periods=1).mean().shift(1)
     )
 
-    # 20-game rolling run stats
-    tg["rf20"] = blend_rolling_prior(
-        tg.groupby(["team", "year"])["rf"].transform(lambda s: s.rolling(20, min_periods=1).mean().shift(1)),
-        tg["team"], "prior_pf", 20
-    )
-    tg["ra20"] = blend_rolling_prior(
-        tg.groupby(["team", "year"])["ra"].transform(lambda s: s.rolling(20, min_periods=1).mean().shift(1)),
-        tg["team"], "prior_pa", 20
+    # L10 win percentage (raw rolling, no blend)
+    tg["winpct_l10"] = tg.groupby(["team", "year"])["win"].transform(
+        lambda s: s.rolling(10, min_periods=1).mean().shift(1)
     )
 
-    # Starter ERA rolling stats (L20 and L5)
-    tg["pitcher_era_l20"] = blend_rolling_prior(
-        tg.groupby(["team", "year"])["starter_era"].transform(
-            lambda s: s.rolling(20, min_periods=1).mean().shift(1)
-        ),
-        tg["team"], "prior_era", 20
-    )
-    tg["pitcher_era_l5"] = blend_rolling_prior(
-        tg.groupby(["team", "year"])["starter_era"].transform(
-            lambda s: s.rolling(5, min_periods=1).mean().shift(1)
-        ),
-        tg["team"], "prior_era", 5
+    # ── 3d. Form (exponential moving average win %) ──
+
+    log("  Computing form (exponential MA of wins)...")
+    tg["form_l10"] = tg.groupby(["team", "year"])["win"].transform(
+        lambda s: s.ewm(span=10, min_periods=1).mean().shift(1)
     )
 
-    # Home / away run production splits
-    # h_home_rf = avg rf when this team is home, a_away_rf = avg rf when this team is away
-    tg["h_home_rf"] = blend_expanding_prior(
-        tg.groupby(["team", "year"])["rf"].apply(
-            lambda g: g.where(tg.loc[g.index, "home_ind"] == 1)
-                      .expanding(min_periods=1).mean().shift(1)
-        ).reset_index(level=[0, 1], drop=True),
-        tg["team"], "prior_pf_home", 10
-    )
-    tg["a_away_rf"] = blend_expanding_prior(
-        tg.groupby(["team", "year"])["rf"].apply(
-            lambda g: g.where(tg.loc[g.index, "home_ind"] == 0)
-                      .expanding(min_periods=1).mean().shift(1)
-        ).reset_index(level=[0, 1], drop=True),
-        tg["team"], "prior_pf_away", 10
-    )
-
-    # Rolling OPS stats (L10 and L20)
-    tg["ops_l10"] = blend_rolling_prior(
-        tg.groupby(["team", "year"])["team_ops"].transform(
-            lambda s: s.rolling(10, min_periods=1).mean().shift(1)
-        ),
-        tg["team"], "prior_ops", 10
-    )
-    tg["ops_l20"] = blend_rolling_prior(
-        tg.groupby(["team", "year"])["team_ops"].transform(
-            lambda s: s.rolling(20, min_periods=1).mean().shift(1)
-        ),
-        tg["team"], "prior_ops", 20
-    )
-
-    # Rolling SLG stats (seeded)
-    tg["slg_l10"] = blend_rolling_prior(
-        tg.groupby(["team", "year"])["team_slg"].transform(
-            lambda s: s.rolling(10, min_periods=1).mean().shift(1)
-        ),
-        tg["team"], "prior_slg", 10
-    )
-    tg["slg_l20"] = blend_rolling_prior(
-        tg.groupby(["team", "year"])["team_slg"].transform(
-            lambda s: s.rolling(20, min_periods=1).mean().shift(1)
-        ),
-        tg["team"], "prior_slg", 20
-    )
-
-    # Win percentage
-    tg["winpct"] = blend_expanding_prior(
-        tg.groupby(["team", "year"])["win"].transform(
-            lambda s: s.expanding(min_periods=1).mean().shift(1)
-        ),
-        tg["team"], "prior_winpct", 10
-    )
-    tg["winpct_l10"] = blend_rolling_prior(
-        tg.groupby(["team", "year"])["win"].transform(
-            lambda s: s.rolling(10, min_periods=1).mean().shift(1)
-        ),
-        tg["team"], "prior_winpct", 10
-    )
-
-    # Form (exponential moving average win %)
-    tg["form_l10"] = blend_rolling_prior(
-        tg.groupby(["team", "year"])["win"].transform(
-            lambda s: s.ewm(span=10, min_periods=1).mean().shift(1)
-        ),
-        tg["team"], "prior_winpct", 10
-    )
-
-    # Over/under frequency
-    ou_map = feats[["game_id", "over_under"]].copy()
-    tg = tg.merge(ou_map, on="game_id", how="left")
-    tg["over_flag"] = ((tg["rf"] + tg["ra"]) > tg["over_under"]).astype(float)
-    tg["over_freq"] = blend_expanding_prior(
-        tg.groupby(["team", "year"])["over_flag"]
-        .apply(lambda s: s.expanding(min_periods=1).mean().shift(1))
-        .reset_index(level=[0, 1], drop=True),
-        tg["team"], "prior_over_freq", 10
-    )
-    tg["over_freq5"] = blend_rolling_prior(
-        tg.groupby(["team", "year"])["over_flag"]
-        .apply(lambda s: s.rolling(5, min_periods=1).mean().shift(1))
-        .reset_index(level=[0, 1], drop=True),
-        tg["team"], "prior_over_freq", 5
-    )
-    tg.drop(columns=["over_under", "over_flag"], inplace=True)
-
-    log("  Rolling stats done — %d team-game rows, all seeded with prior-season averages", len(tg))
+    log("  Rolling stats done — %d team-game rows", len(tg))
 
     # ── 4. Merge team-game features back onto game-level feats ──
 
@@ -989,24 +613,10 @@ def build_features(df: pd.DataFrame, log_fn=None) -> pd.DataFrame:
         "ra10": "h_ra10",
         "rf5": "h_rf5",
         "ra5": "h_ra5",
-        "rf20": "h_rf20",
-        "ra20": "h_ra20",
         "form_l10": "h_form_l10",
-        "over_freq": "h_over_freq",
-        "over_freq5": "h_over_freq5",
-        "ops_l10": "h_ops_l10",
-        "ops_l20": "h_ops_l20",
-        "slg_l10": "h_slg_l10",
-        "slg_l20": "h_slg_l20",
-        "pitcher_era_l20": "h_pitcher_era_l20",
-        "pitcher_era_l5": "h_pitcher_era_l5",
     })[["game_id", "ha", "h_winpct", "h_winpct_l10",
         "h_rf_avg", "h_ra_avg", "h_rf10", "h_ra10",
-        "h_rf5", "h_ra5", "h_rf20", "h_ra20",
-        "h_form_l10", "h_over_freq", "h_over_freq5",
-        "h_ops_l10", "h_ops_l20",
-        "h_slg_l10", "h_slg_l20",
-        "h_pitcher_era_l20", "h_pitcher_era_l5",
+        "h_rf5", "h_ra5", "h_form_l10",
         "h_home_rf", "a_away_rf"]]
 
     # Away-team features
@@ -1020,24 +630,10 @@ def build_features(df: pd.DataFrame, log_fn=None) -> pd.DataFrame:
         "ra10": "a_ra10",
         "rf5": "a_rf5",
         "ra5": "a_ra5",
-        "rf20": "a_rf20",
-        "ra20": "a_ra20",
         "form_l10": "a_form_l10",
-        "over_freq": "a_over_freq",
-        "over_freq5": "a_over_freq5",
-        "ops_l10": "a_ops_l10",
-        "ops_l20": "a_ops_l20",
-        "slg_l10": "a_slg_l10",
-        "slg_l20": "a_slg_l20",
-        "pitcher_era_l20": "a_pitcher_era_l20",
-        "pitcher_era_l5": "a_pitcher_era_l5",
     })[["game_id", "aa", "a_winpct", "a_winpct_l10",
         "a_rf_avg", "a_ra_avg", "a_rf10", "a_ra10",
-        "a_rf5", "a_ra5", "a_rf20", "a_ra20",
-        "a_form_l10", "a_over_freq", "a_over_freq5",
-        "a_ops_l10", "a_ops_l20",
-        "a_slg_l10", "a_slg_l20",
-        "a_pitcher_era_l20", "a_pitcher_era_l5"]]
+        "a_rf5", "a_ra5", "a_form_l10"]]
 
     # Drop old h_home_rf, a_away_rf from tg — they'll come through merge
     home_feats = home_feats.drop(columns=["h_home_rf", "a_away_rf"], errors="ignore")
@@ -1110,17 +706,9 @@ def build_features(df: pd.DataFrame, log_fn=None) -> pd.DataFrame:
             )
         else:
             feats[target] = 0.5
-    feats["h_implied"] = feats["home_implied_probability"]
-    feats["a_implied"] = feats["away_implied_probability"]
 
-    # ── 4.5. Alias columns to match ATS_FEATURES naming ──
-    # These aliases ensure the ATS feature set (", \"ATS_FEATURES\", ") from the model file
-    # can find the columns it expects
-
-    # h_home_ra: home team's runs-allowed when at home (approximated as h_ra_avg)
-    # a_home_rf: away team's runs scored on the road (approximated as a_away_rf)
-    # a_home_ra: away team's runs-allowed on the road (approximated as a_ra_avg)
-    # h_ra20, a_ra20, h_rf20, a_rf20 — real 20-game rolling windows, already in feats from rename map
+    feats["home_implied"] = feats["home_implied_probability"]
+    feats["away_implied"] = feats["away_implied_probability"]
 
     # Implied total (blended rolling runs-for + runs-allowed for both teams)
     # This matches the OU model definition: avg of home rf, home ra, away rf, away ra
@@ -1133,8 +721,8 @@ def build_features(df: pd.DataFrame, log_fn=None) -> pd.DataFrame:
 
     # ── 8. Line movement features ──
 
-    if "over_under" in feats.columns and "opening_ou" in feats.columns:
-        feats["ou_movement"] = feats["over_under"] - feats["opening_ou"]
+    if "over_under" in feats.columns and "opening_total" in feats.columns:
+        feats["ou_movement"] = feats["over_under"] - feats["opening_total"]
     else:
         feats["ou_movement"] = 0.0
 
@@ -1142,35 +730,54 @@ def build_features(df: pd.DataFrame, log_fn=None) -> pd.DataFrame:
         feats["home_implied_probability"] - feats["opening_home_implied"]
     )
 
-    # ── 8.5 OU-specific features: total10, over_freq, over_freq5 ──
-    # h_total10 / a_total10: 10-game sum of runs scored/allowed (= h_rf10/a_ra10 * 10)
-    if "h_rf10" in feats.columns and feats["h_rf10"].notna().any():
-        feats["h_total10"] = (feats["h_rf10"] * 10).fillna(45).clip(lower=0)
-    else:
-        feats["h_total10"] = (feats.get("h_rf_avg", pd.Series(4.5, index=feats.index)) * 10).fillna(45).clip(lower=0)
-    if "a_ra10" in feats.columns and feats["a_ra10"].notna().any():
-        feats["a_total10"] = (feats["a_ra10"] * 10).fillna(45).clip(lower=0)
-    else:
-        feats["a_total10"] = (feats.get("a_ra_avg", pd.Series(4.5, index=feats.index)) * 10).fillna(45).clip(lower=0)
-
-    # h_home_rf / a_away_rf — already merged from tg in section 4
-    if "h_home_rf" not in feats.columns:
-        feats["h_home_rf"] = feats.get("h_rf_avg", 4.5)
-    if "a_away_rf" not in feats.columns:
-        feats["a_away_rf"] = feats.get("a_rf_avg", 4.5)
-
-    # ── Over percentage aliases (run #13 naming) ──
     # ── 9. Pitcher features (rolling windows) ──
-    # Real starter ERA stats from mlb.pitcher_game_stats, rolled in tg and mapped
-    # via rename map (h_pitcher_era_l20, a_pitcher_era_l20, h_pitcher_era_l5, a_pitcher_era_l5).
 
-    # Stub K/9, WHIP, K/BB as 0 — not yet available from pitcher_game_stats
-    for side in ["h", "a"]:
-        for stub in ["pitcher_k9_l20", "pitcher_whip_l20", "pitcher_k_bb_l20"]:
-            feats[f"{side}_{stub}"] = 0.0
+    # Pitcher features are tricky because we need pitcher-change context.
+    # For now we use team-level pitcher appearance data as a proxy.
+    # In a future iteration, this will use the dedicated pitcher_appearances table.
+    # Best approximation: the last 20/5 team games reflect the current pitcher's context.
+    # We'll create stub columns that can be filled by the actual pitcher pipeline.
 
-    # --- Bullpen / combo ERA features ---
-    log("  Computing combo ERA features...")
+    # These columns will be populated by the actual pitcher feature builder
+    # when run in production.  For now, compute from team rolling averages.
+    pitcher_windows = [5, 20]
+    for pw in pitcher_windows:
+        # Team combined ERA proxy
+        r_col = f"ra{pw}" if pw != 20 else "ra"
+        for side, team_col in [("h", "ha"), ("a", "aa")]:
+            era_col = f"{side}_pitcher_era_l{pw}"
+            k9_col = f"{side}_pitcher_k9_l{pw}"
+            whip_col = f"{side}_pitcher_whip_l{pw}"
+            kbb_col = f"{side}_pitcher_kbb_rate_l{pw}"
+
+            # ERA ~ (RA*9) per game (runs per 9 = RA/team's avg IP/9 proxy ≈ 9)
+            if r_col in tg.columns:
+                temp = tg.rename(columns={"team": team_col, r_col: "ra_tmp"})[["game_id", team_col, "ra_tmp"]]
+                temp = temp[temp["ra_tmp"].notna()]
+                feats = feats.merge(
+                    temp.rename(columns={"ra_tmp": era_col}),
+                    on=["game_id", team_col],
+                    how="left",
+                )
+            else:
+                feats[era_col] = 4.0
+
+            # K/9, WHIP, K/BB — default league-average stubs
+            feats[k9_col] = 8.5
+            feats[whip_col] = 1.30
+            feats[kbb_col] = 2.5
+
+            # Team-specific pitcher from name (basic split)
+            pit_col = f"{side}_pitcher_name" if pw == 5 else f"{side}_pitcher_name"
+
+    # Bullpen features (baseline values)
+    feats["h_bullpen_era_l5"] = 4.0
+    feats["a_bullpen_era_l5"] = 4.0
+    feats["h_bullpen_ip_l5"] = 5.0
+    feats["a_bullpen_ip_l5"] = 5.0
+
+    log("  Pitcher stubs added — full pitcher pipeline TBD")
+
     # ── 10. Park factor ──
 
     if "venue" in feats.columns:
@@ -1195,7 +802,7 @@ def build_features(df: pd.DataFrame, log_fn=None) -> pd.DataFrame:
     tg["total_runs"] = tg["rf"] + tg["ra"]
 
     # Average total per team over rolling 10
-    total_team_avg = tg.groupby(["team", "year"])["total_runs"].transform(
+    total_team_avg = tg.groupby("team")["total_runs"].transform(
         lambda s: s.rolling(10, min_periods=1).mean().shift(1)
     )
 
@@ -1238,15 +845,7 @@ def build_features(df: pd.DataFrame, log_fn=None) -> pd.DataFrame:
     feats["actual_margin"] = feats["margin"]
     feats["actual_total"] = feats["home_score"] + feats["away_score"]
 
-    # ── 13. Drop rows without betting data ──
-    # Games missing closing OU have no betting context for ATS/OU modeling.
-    before = len(feats)
-    feats = feats[feats["over_under"].notna() & (feats["over_under"] > 0)].copy()
-    after = len(feats)
-    if before != after:
-        log("  Dropped %d rows without valid closing OU (%d remaining)", before - after, after)
-
-    # ── 14. Fill NaNs ──
+    # ── 13. Fill NaNs ──
     float_cols = feats.select_dtypes(include=["float64", "float32"]).columns
     feats[float_cols] = feats[float_cols].fillna(0.0)
 
