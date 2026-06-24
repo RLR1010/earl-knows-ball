@@ -30,6 +30,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import math
+
 import pandas as pd
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -43,6 +45,53 @@ DEFAULT_DB_URL = os.getenv(
     "DATABASE_URL",
     "postgresql://earl:earl_dev_pass@localhost:5432/earl_knows_football",
 )
+
+
+# ── MLB team → stadium location mapping (lat, lon, timezone offset) ──────────
+# Timezone offset is UTC hour offset (e.g. -5 for Eastern, -8 for Pacific)
+# Stadium coordinates from official ballpark locations
+
+TEAM_LOCATIONS = {
+    "ARI": {"lat": 33.4457, "lon": -112.0667, "tz": -7},   # Chase Field
+    "ATL": {"lat": 33.8908, "lon": -84.4676, "tz": -5},   # Truist Park
+    "BAL": {"lat": 39.2838, "lon": -76.6217, "tz": -5},   # Oriole Park at Camden Yards
+    "BOS": {"lat": 42.3467, "lon": -71.0972, "tz": -5},   # Fenway Park
+    "CHC": {"lat": 41.9484, "lon": -87.6553, "tz": -6},   # Wrigley Field
+    "CIN": {"lat": 39.0972, "lon": -84.5066, "tz": -5},   # Great American Ball Park
+    "CLE": {"lat": 41.4962, "lon": -81.6852, "tz": -5},   # Progressive Field
+    "COL": {"lat": 39.7559, "lon": -104.9942, "tz": -7},  # Coors Field
+    "CWS": {"lat": 41.8300, "lon": -87.6339, "tz": -6},   # Rate Field (formerly Guaranteed Rate)
+    "DET": {"lat": 42.3390, "lon": -83.0485, "tz": -5},   # Comerica Park
+    "HOU": {"lat": 29.7570, "lon": -95.3554, "tz": -6},   # Daikin Park (former Minute Maid)
+    "KC":  {"lat": 39.0517, "lon": -94.4804, "tz": -6},   # Kauffman Stadium
+    "LAA": {"lat": 33.8003, "lon": -117.8827, "tz": -8},  # Angel Stadium
+    "LAD": {"lat": 34.0740, "lon": -118.2400, "tz": -8},  # Dodger Stadium
+    "MIA": {"lat": 25.7781, "lon": -80.2198, "tz": -5},   # LoanDepot Park
+    "MIL": {"lat": 43.0279, "lon": -87.9715, "tz": -6},   # American Family Field
+    "MIN": {"lat": 44.9817, "lon": -93.2777, "tz": -6},   # Target Field
+    "NYM": {"lat": 40.7571, "lon": -73.8458, "tz": -5},   # Citi Field
+    "NYY": {"lat": 40.8296, "lon": -73.9262, "tz": -5},   # Yankee Stadium
+    "OAK": {"lat": 37.7516, "lon": -122.2006, "tz": -8},  # Oakland Coliseum
+    "PHI": {"lat": 39.9057, "lon": -75.1666, "tz": -5},   # Citizens Bank Park
+    "PIT": {"lat": 40.4469, "lon": -79.9891, "tz": -5},   # PNC Park
+    "SD":  {"lat": 32.7076, "lon": -117.1570, "tz": -8},   # Petco Park
+    "SEA": {"lat": 47.5914, "lon": -122.3326, "tz": -8},  # T-Mobile Park
+    "SF":  {"lat": 37.7786, "lon": -122.3893, "tz": -8},   # Oracle Park
+    "STL": {"lat": 38.6226, "lon": -90.1928, "tz": -6},   # Busch Stadium
+    "TB":  {"lat": 27.7682, "lon": -82.6534, "tz": -5},   # Tropicana Field (dome, St. Pete)
+    "TEX": {"lat": 32.7479, "lon": -97.0834, "tz": -6},   # Globe Life Field
+    "TOR": {"lat": 43.6414, "lon": -79.3894, "tz": -5},   # Rogers Centre
+    "WSH": {"lat": 38.8730, "lon": -77.0074, "tz": -5},   # Nationals Park
+}
+
+
+def haversine_miles(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Great-circle distance in miles between two lat/lon points."""
+    R = 3958.8  # Earth radius in miles
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = math.sin(dlat / 2) ** 2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2) ** 2
+    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 
 # ── Master game-level SQL query ──────────────────────────────────────────────
@@ -259,6 +308,9 @@ COMPUTED_FEATURES_CATALOG: Dict[str, str] = {
     "rest_h": "Home team days of rest since last game",
     "rest_a": "Away team days of rest since last game",
     "rest_diff": "Rest differential (rest_h - rest_a); positive = home more rested",
+    "rest_h_hours": "Home team hours of rest since last game (time between first pitches)",
+    "rest_a_hours": "Away team hours of rest since last game (time between first pitches)",
+    "rest_diff_hours": "Rest differential in hours (rest_h_hours - rest_a_hours)",
     "is_div": "1 if both teams are in the same division",
     "month": "Numeric month (1-12) of game_date",
     "is_summer": "1 if month is June, July, or August",
@@ -483,6 +535,41 @@ def rolling_mean_safe(series: pd.Series, window: int) -> pd.Series:
 
 
 # ── Feature engineering (consolidated build_features) ────────────────────────
+
+
+_PARK_HISTORY_CACHE: Optional[pd.DataFrame] = None
+
+
+def _load_park_history() -> pd.DataFrame:
+    """Load all available historical completed MLB games for park factor computation.
+    Cached so it only queries once per process.
+    """
+    global _PARK_HISTORY_CACHE
+    if _PARK_HISTORY_CACHE is not None:
+        return _PARK_HISTORY_CACHE
+
+    db_url = os.getenv(
+        "DATABASE_URL",
+        "postgresql://earl:earl_dev_pass@localhost:5432/earl_knows_football",
+    )
+    engine = create_engine(db_url)
+    q = """
+        SELECT
+            g.id AS game_id,
+            g.date AS game_date,
+            g.game_type,
+            g.venue,
+            g.home_score,
+            g.away_score
+        FROM mlb.games g
+        WHERE g.home_score IS NOT NULL
+          AND g.away_score IS NOT NULL
+          AND g.game_type = 'R'
+          AND g.season_id >= 15
+        ORDER BY g.date
+    """
+    _PARK_HISTORY_CACHE = pd.read_sql(q, engine, parse_dates=["game_date"])
+    return _PARK_HISTORY_CACHE
 
 
 def build_features(df: pd.DataFrame, log_fn=None) -> pd.DataFrame:
@@ -1023,15 +1110,40 @@ def build_features(df: pd.DataFrame, log_fn=None) -> pd.DataFrame:
 
     # ── 6. Situational features ──
 
+    # Convert game_date from UTC to Chicago local time before computing rest days
+    # so overnight games are credited to the correct calendar day
+    CHI_TZ = "America/Chicago"
+    if feats["game_date"].dt.tz is not None:
+        feats["game_date_ct"] = feats["game_date"].dt.tz_convert(CHI_TZ)
+    else:
+        feats["game_date_ct"] = feats["game_date"].dt.tz_localize("UTC", ambiguous="NaT").dt.tz_convert(CHI_TZ)
+
     # Rest days
     for team_col, rest_col in [("ha", "rest_h"), ("aa", "rest_a")]:
-        te = feats[["game_id", team_col, "game_date"]].copy()
+        te = feats[["game_id", team_col, "game_date_ct"]].copy()
+        te["game_date"] = te["game_date_ct"].dt.floor("D")  # strip time, compare by date only
         te = te.sort_values([team_col, "game_date"])
         te["next_date"] = te.groupby(team_col)["game_date"].shift(1)
         te["rest"] = (te["game_date"] - te["next_date"]).dt.days
-        feats[rest_col] = te["rest"].values
+        # Merge back by game_id so rest values go to the right rows
+        feats = feats.drop(columns=[rest_col], errors="ignore")
+        feats = feats.merge(te[["game_id", "rest"]], on="game_id", how="left")
+        feats = feats.rename(columns={"rest": rest_col})
 
     feats["rest_diff"] = feats["rest_h"] - feats["rest_a"]
+
+    # Rest hours — same approach but using full datetime (time of day preserved)
+    for team_col, rest_col in [("ha", "rest_h_hours"), ("aa", "rest_a_hours")]:
+        te = feats[["game_id", team_col, "game_date_ct"]].copy()
+        te["game_date"] = te["game_date_ct"]
+        te = te.sort_values([team_col, "game_date"])
+        te["next_date"] = te.groupby(team_col)["game_date"].shift(1)
+        te["rest_hours"] = (te["game_date"] - te["next_date"]).dt.total_seconds() / 3600
+        feats = feats.drop(columns=[rest_col], errors="ignore")
+        feats = feats.merge(te[["game_id", "rest_hours"]], on="game_id", how="left")
+        feats = feats.rename(columns={"rest_hours": rest_col})
+
+    feats["rest_diff_hours"] = feats["rest_h_hours"] - feats["rest_a_hours"]
 
     # Division
     feats["is_div"] = (feats["hdiv"] == feats["adiv"]).astype(int)
@@ -1044,14 +1156,24 @@ def build_features(df: pd.DataFrame, log_fn=None) -> pd.DataFrame:
     else:
         feats["is_dome"] = 0
 
-    # Travel miles & TZ diff — simplified proxy using division
-    # True travel distance needs a venue → lat/lon mapping; for now use division as proxy
+    # Travel miles & TZ diff — real distance + timezone offset between home cities
     feats["travel_miles"] = feats.apply(
-        lambda r: 0 if r.get("hdiv") == r.get("adiv") else 500 if r.get("hdiv") and r.get("adiv") else 0,
+        lambda r: (
+            haversine_miles(
+                TEAM_LOCATIONS[r["ha"]]["lat"], TEAM_LOCATIONS[r["ha"]]["lon"],
+                TEAM_LOCATIONS[r["aa"]]["lat"], TEAM_LOCATIONS[r["aa"]]["lon"],
+            )
+            if r.get("ha") in TEAM_LOCATIONS and r.get("aa") in TEAM_LOCATIONS
+            else 0
+        ),
         axis=1,
     )
     feats["tz_diff"] = feats.apply(
-        lambda r: 0 if r.get("hdiv") == r.get("adiv") else 1 if r.get("hdiv") and r.get("adiv") else 0,
+        lambda r: (
+            abs(TEAM_LOCATIONS[r["ha"]]["tz"] - TEAM_LOCATIONS[r["aa"]]["tz"])
+            if r.get("ha") in TEAM_LOCATIONS and r.get("aa") in TEAM_LOCATIONS
+            else 0
+        ),
         axis=1,
     )
 
@@ -1238,16 +1360,37 @@ def build_features(df: pd.DataFrame, log_fn=None) -> pd.DataFrame:
     # --- Bullpen / combo ERA features ---
     log("  Computing combo ERA features...")
     # ── 10. Park factor ──
+    # Historical: avg total runs scored in this venue / avg total runs scored across all MLB
+    # Uses ALL available historical completed games for a robust per-venue factor,
+    # not just the seasons being trained/predicted on.
 
-    if "venue" in feats.columns:
-        venue_games = feats[feats["game_type"] == "Regular Season"].copy()
-        venue_games["venue"] = venue_games["venue"].fillna("Unknown")
-        venue_total = venue_games.groupby("venue")["over_under"].agg(["mean", "count"])
-        venue_total = venue_total[venue_total["count"] >= 20]  # minimum sample
-        league_avg_ou = venue_games["over_under"].mean() if "over_under" in venue_games.columns else 8.5
-        if league_avg_ou > 0 and not venue_total.empty:
-            venue_total["factor"] = venue_total["mean"] / league_avg_ou
-            feats["park_factor"] = feats["venue"].map(venue_total["factor"]).fillna(1.0)
+    if "venue" in feats.columns and "home_score" in feats.columns:
+        # Load all historical game data for park factor computation
+        try:
+            park_hist = _load_park_history()
+            completed = park_hist[
+                (park_hist["game_type"] == "R")
+                & (park_hist["home_score"].notna())
+                & (park_hist["away_score"].notna())
+            ].copy()
+        except Exception:
+            # Fall back to the current feats
+            completed = feats[
+                (feats["game_type"] == "R")
+                & (feats["home_score"].notna())
+                & (feats["away_score"].notna())
+            ].copy()
+
+        completed["total_runs"] = completed["home_score"] + completed["away_score"]
+        completed["venue"] = completed["venue"].fillna("Unknown")
+
+        venue_stats = completed.groupby("venue")["total_runs"].agg(["mean", "count"])
+        venue_stats = venue_stats[venue_stats["count"] >= 20]  # minimum sample
+        league_avg_runs = completed["total_runs"].mean()
+
+        if league_avg_runs > 0 and not venue_stats.empty:
+            venue_stats["factor"] = venue_stats["mean"] / league_avg_runs
+            feats["park_factor"] = feats["venue"].map(venue_stats["factor"]).fillna(1.0)
         else:
             feats["park_factor"] = 1.0
     else:
