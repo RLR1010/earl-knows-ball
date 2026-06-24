@@ -1255,6 +1255,81 @@ def build_features(df: pd.DataFrame, log_fn=None) -> pd.DataFrame:
 
     log("  Park factors computed")
 
+    # ── 10b. Bullpen features (per-team rolling ERA & IP over L5) ──
+    try:
+        _bp_engine = create_engine(DEFAULT_DB_URL)
+        with _bp_engine.connect() as _bpconn:
+            _bp_df = pd.read_sql(text("""
+                SELECT
+                    pgs.game_id,
+                    pgs.team_abbr,
+                    pgs.pitcher_name,
+                    g.date,
+                    (pgs.er::numeric / NULLIF(pgs.ip::numeric, 0)) * 9 AS era,
+                    pgs.ip::numeric AS ip
+                FROM mlb.pitcher_game_stats pgs
+                JOIN mlb.games g ON g.id = pgs.game_id
+                WHERE (pgs.is_starter = false OR pgs.is_starter IS NULL)
+                  AND pgs.ip IS NOT NULL AND pgs.ip > 0
+                ORDER BY pgs.team_abbr, g.date
+            """), _bpconn)
+    except Exception:
+        _bp_df = pd.DataFrame()
+
+    if not _bp_df.empty:
+        _bp_df = _bp_df.sort_values(["team_abbr", "date"]).reset_index(drop=True)
+        # Per-team: aggregate all bullpen appearances in each game
+        _bp_game = _bp_df.groupby(["team_abbr", "game_id", "date"], as_index=False).agg(
+            bullpen_era=("era", "mean"),
+            bullpen_ip=("ip", "sum")
+        )
+        _bp_game = _bp_game.sort_values(["team_abbr", "date"]).reset_index(drop=True)
+
+        # Rolling L5 per team
+        team_bullpen = []
+        for team, grp in _bp_game.groupby("team_abbr"):
+            grp = grp.reset_index(drop=True)
+            grp["bp_era_l5"] = grp["bullpen_era"].rolling(5, min_periods=1).mean().shift(1)
+            grp["bp_ip_l5"] = grp["bullpen_ip"].rolling(5, min_periods=1).sum().shift(1)
+            team_bullpen.append(grp)
+        if team_bullpen:
+            _bp_rolled = pd.concat(team_bullpen, ignore_index=True)
+            _bp_rolled["game_id"] = _bp_rolled["game_id"].astype(int)
+
+            # Build lookup: team_abbr -> {game_id: {era_l5, ip_l5}}
+            _bp_lookup = {}
+            for _, r in _bp_rolled.iterrows():
+                _bp_lookup[(int(r["game_id"]), r["team_abbr"])] = {
+                    "era_l5": r["bp_era_l5"],
+                    "ip_l5": r["bp_ip_l5"]
+                }
+
+            # Map to home/away using team_abbr from game query
+            gids = feats["game_id"].astype(int).tolist()
+            try:
+                h_teams = feats["ha"].tolist()
+                a_teams = feats["aa"].tolist()
+            except KeyError:
+                h_teams = feats["home_team_abbreviation"].tolist() if "home_team_abbreviation" in feats else [""] * len(feats)
+                a_teams = feats["away_team_abbreviation"].tolist() if "away_team_abbreviation" in feats else [""] * len(feats)
+
+            for side, teams in [("h", h_teams), ("a", a_teams)]:
+                eras_l5, ips_l5 = [], []
+                for gid, team_abbr in zip(gids, teams):
+                    key = (gid, team_abbr)
+                    if key in _bp_lookup:
+                        eras_l5.append(_bp_lookup[key]["era_l5"])
+                        ips_l5.append(_bp_lookup[key]["ip_l5"])
+                    else:
+                        eras_l5.append(None)
+                        ips_l5.append(None)
+                feats[f"{side}_bullpen_era_l5"] = pd.Series(eras_l5, index=feats.index).fillna(4.50)
+                feats[f"{side}_bullpen_ip_l5"] = pd.Series(ips_l5, index=feats.index).fillna(0.0)
+    else:
+        for side in ["h", "a"]:
+            feats[f"{side}_bullpen_era_l5"] = 4.50
+            feats[f"{side}_bullpen_ip_l5"] = 0.0
+
     # ── 11. Team average total, combo ERA, combo ERA diff ──
 
     # Total runs per game involving this team
