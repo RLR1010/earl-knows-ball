@@ -157,7 +157,7 @@ def _infer_margin(row: pd.Series, model_type: str, prob: float) -> float:
     if model_type == "ats":
         spread = float(row.get("h_line_runline", row.get("a_line_runline", 1.5)) or 1.5)
         return (prob - 0.5) * spread * 2.0
-    total = float(row.get("h_line_total", row.get("a_line_total", 8.0)) or 8.0)
+    total = float(row.get("over_under", row.get("ou_line", 8.5)) or 8.5)
     return total + (prob - 0.5) * 2.0
 
 
@@ -269,7 +269,7 @@ class MLBHandicapper:
             if feats is None:
                 return None
             pred_total = float(self._ou_model.predict(feats[np.newaxis, :])[0])
-            line_total = float(row.get("h_line_total", row.get("a_line_total", 8.0)) or 8.0)
+            line_total = float(row.get("over_under", row.get("ou_line", 8.5)) or 8.5)
             return {
                 "over_prob": round(float(min(max(pred_total / line_total, 0.0), 1.0)), 4),
                 "predicted_total": round(pred_total, 2),
