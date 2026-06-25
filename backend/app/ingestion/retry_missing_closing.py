@@ -68,33 +68,48 @@ def match_team(home_abbr, away_abbr):
 
 def extract_lines(match, home_abbr):
     home_team = match.get("home_team", "")
-    spread = total = ml_home = ml_away = None
-    spread_home = spread_away = None
     for bm in match.get("bookmakers", []):
+        spread = total = ml_home = ml_away = None
+        spread_home = spread_away = None
+        over_odds = under_odds = None
         for mkt in bm.get("markets", []):
             key = mkt.get("key", ""); outcomes = mkt.get("outcomes", [])
             if key == "spreads":
                 for o in outcomes:
                     if o.get("name") == home_team:
-                        spread = o.get("point") if spread is None else spread
-                        spread_home = o.get("price") if spread_home is None else spread_home
+                        if spread is None: spread = o.get("point")
+                        if spread_home is None: spread_home = o.get("price")
                     else:
-                        spread_away = o.get("price") if spread_away is None else spread_away
+                        if spread_away is None: spread_away = o.get("price")
             elif key == "totals":
-                over = next((o for o in outcomes if o.get("name") == "Over"), None)
-                if over and total is None: total = over.get("point")
+                for o in outcomes:
+                    name = o.get("name", "")
+                    if name == "Over":
+                        if total is None: total = o.get("point")
+                        if over_odds is None: over_odds = o.get("price")
+                    elif name == "Under":
+                        if under_odds is None: under_odds = o.get("price")
             elif key == "h2h":
                 for o in outcomes:
                     if o.get("name") == home_team:
-                        ml_home = o.get("price") if ml_home is None else ml_home
+                        if ml_home is None: ml_home = o.get("price")
                     else:
-                        ml_away = o.get("price") if ml_away is None else ml_away
-        if spread is not None and total is not None and ml_home is not None: break
-    return spread, total, ml_home, ml_away, spread_home, spread_away
+                        if ml_away is None: ml_away = o.get("price")
+        if spread is not None and total is not None and ml_home is not None:
+            return spread, total, ml_home, ml_away, spread_home, spread_away, over_odds, under_odds, bm.get("title")
+    return None
 
 async def main():
     import asyncpg
     conn = await asyncpg.connect(SYNC_DB_URL)
+    
+    # Delete existing null-sportsbook closing lines so they can be re-inserted properly
+    delete_result = await conn.execute("""
+        DELETE FROM mlb.betting_lines
+        WHERE source = 'the_odds_api_closing'
+        AND (sportsbook IS NULL OR sportsbook = '')
+    """)
+    log.info(f"Deleted {delete_result} null-sportsbook closing lines for re-insert")
     
     rows = await conn.fetch("""
         SELECT g.id, g.date, ht.abbreviation as home_abbr, at.abbreviation as away_abbr
@@ -168,10 +183,14 @@ async def main():
                 if solved: break
             
             if match:
-                spread, total, ml_home, ml_away, spread_home, spread_away = extract_lines(match, home)
-                if spread is not None or total is not None or ml_home is not None:
+                result = extract_lines(match, home)
+                if result:
+                    spread, total, ml_home, ml_away, spread_home, spread_away, over_odds, under_odds, sportsbook = result
                     rec_at = gdt - timedelta(hours=1)
-                    insert_values.append((gid, spread, spread_home, spread_away, total, ml_home, ml_away, rec_at))
+                    api_last_update = match.get("last_update")
+                    insert_values.append((gid, spread, spread_home, spread_away,
+                                          total, ml_home, ml_away,
+                                          over_odds, under_odds, sportsbook, rec_at, api_last_update))
                     found += 1
                 else:
                     missing += 1
@@ -185,8 +204,9 @@ async def main():
         await conn.executemany("""
             INSERT INTO mlb.betting_lines 
                 (game_id, source, spread, spread_home_odds, spread_away_odds,
-                 over_under, home_moneyline, away_moneyline, recorded_at)
-            VALUES ($1, 'the_odds_api_closing', $2, $3, $4, $5, $6, $7, $8)
+                 over_under, home_moneyline, away_moneyline,
+                 over_odds, under_odds, sportsbook, recorded_at, api_last_update)
+            VALUES ($1, 'the_odds_api_closing', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
         """, insert_values)
         log.info(f"\nInserted {len(insert_values)} closing lines. Missing: {missing}. Total: {len(games)}")
     else:

@@ -3,6 +3,7 @@ Data ingestion endpoints for EarlKnowsBall.
 Trigger these to populate the database from various sources.
 """
 import os
+import sys
 from datetime import datetime, timezone, timedelta
 from fastapi import APIRouter, Depends, Query, HTTPException, BackgroundTasks
 from pydantic import BaseModel
@@ -1130,24 +1131,30 @@ async def ingest_mlb_daily_prep(
     else:
         results["opening_lines"] = {"detail": "No API key, skipped"}
 
-    # Step 1b: Refresh consolidated table for updated games
+    # Step 1b: Run consolidation (uses best sportsbook per game with consensus checking)
     if updated_game_ids:
         try:
-            import subprocess
+            import subprocess as _sp
             import os
-            game_ids_str = ",".join(str(gid) for gid in updated_game_ids)
             script_path = os.path.join(
                 os.path.dirname(os.path.abspath(__file__)),
-                "../ingestion/mlb_odds_consolidated.py"
+                "../ingestion/mlb_betting_lines_consolidate.py"
             )
-            proc = subprocess.run(
-                ["python3", script_path, "--games", game_ids_str],
+            proc = _sp.run(
+                [sys.executable, script_path, "--games"] + [str(gid) for gid in updated_game_ids],
                 capture_output=True, text=True, timeout=120,
+                cwd=os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."),
+                env={**os.environ, "PYTHONPATH": os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")},
             )
             for line in proc.stdout.split("\n"):
                 if line.strip():
                     logger.info(f"[consolidated] {line}")
-            results["consolidated"] = {"games": len(updated_game_ids), "stdout": proc.stdout[-200:]}
+            if proc.returncode != 0:
+                results["errors"].append(f"Consolidation failed: {proc.stderr[:300]}")
+            results["consolidated"] = {
+                "games": len(updated_game_ids),
+                "stdout": proc.stdout[-300:],
+            }
         except Exception as e:
             results["errors"].append(f"Consolidated refresh failed: {e}")
             logger.error(f"Consolidated refresh failed: {e}")
@@ -1197,7 +1204,8 @@ async def ingest_mlb_lines_and_picks(
     from app.handicapping.mlb.mlb_engine import MLBHandicapper
 
     if not api_key:
-        api_key = os.environ.get("ODDS_API_KEY", "")
+        from app.core.config import settings as _mlb_settings
+        api_key = os.environ.get("ODDS_API_KEY", "") or _mlb_settings.odds_api_key
 
     results = {"lines": None, "consolidated": None, "predictions": None, "errors": []}
 
@@ -1217,18 +1225,27 @@ async def ingest_mlb_lines_and_picks(
         updated_game_ids = lines_result.get("updated_game_ids", [])
 
         # Step 2: Run incremental consolidation on updated games
+        # Uses the new unified script: same-sportsbook-per-game, consensus-checked, ML/spread-aligned
         if updated_game_ids:
-            import subprocess
-            game_ids_str = ",".join(str(gid) for gid in updated_game_ids)
+            import subprocess as _sp
+            game_ids_str = " ".join(str(gid) for gid in updated_game_ids)
             script_path = os.path.join(
                 os.path.dirname(os.path.abspath(__file__)),
-                "../ingestion/mlb_odds_consolidated.py"
+                "../ingestion/mlb_betting_lines_consolidate.py"
             )
-            proc = subprocess.run(
-                ["python3", script_path, "--games", game_ids_str],
+            proc = _sp.run(
+                [sys.executable, script_path, "--games"] + [str(gid) for gid in updated_game_ids],
                 capture_output=True, text=True, timeout=120,
+                cwd=os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."),
+                env={**os.environ, "PYTHONPATH": os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")},
             )
-            results["consolidated"] = {"games": len(updated_game_ids)}
+            if proc.returncode != 0:
+                results["errors"].append(f"Consolidation failed: {proc.stderr[:500]}")
+            results["consolidated"] = {
+                "games": len(updated_game_ids),
+                "stdout": proc.stdout[:200],
+                "stderr": proc.stderr[:200],
+            }
 
         # Step 3: Collect all games that need picks
         #   a) Games whose lines just changed (from updated_game_ids)
@@ -1283,13 +1300,13 @@ async def ingest_mlb_lines_and_picks(
             pick_results = []
             for gid in need_picks:
                 try:
-                    card = await handicapper.handicap_game(gid, num_games=10)
+                    card = await handicapper.handicap_game(gid)
                     if card:
                         pick_results.append({
                             "game_id": gid,
-                            "teams": f"{card.away_team} @ {card.home_team}",
-                            "predicted_margin": card.predicted_margin,
-                            "predicted_total": card.predicted_total,
+                            "teams": f"{card['away_team']} @ {card['home_team']}",
+                            "predicted_margin": card.get('ats_pick', {}).get('model_margin'),
+                            "predicted_total": card.get('ou_pick', {}).get('predicted_total'),
                         })
                     else:
                         pick_results.append({"game_id": gid, "status": "skipped (no stats / started / no lines)"})
