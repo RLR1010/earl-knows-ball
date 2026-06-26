@@ -1012,15 +1012,19 @@ async def _run_mlb_stats_refresh():
         except Exception as e:
             logger.error(f"  Lineups fetch failed: {e}")
 
-        # Step 8: If pitchers changed, regenerate pick cards
+        # Step 8: If pitchers changed, regenerate pick cards for those games
         if pitchers_changed > 0:
-            logger.info(f"[Step 7] {pitchers_changed} pitchers changed — regenerating picks...")
+            changed_ids = pitcher_result.get('updated_game_ids', [])
+            logger.info(f"[Step 7] {pitchers_changed} pitchers changed ({len(changed_ids)} games) — regenerating picks...")
             try:
                 from app.handicapping.mlb.mlb_engine import MLBHandicapper
                 handicapper = MLBHandicapper(db)
-                today_str = datetime.now().strftime("%Y-%m-%d")
-                picks = await handicapper.handicap_date(today_str, num_games=10)
-                logger.info(f"  Regenerated {len(picks)} picks")
+                regenerated = 0
+                for gid in changed_ids:
+                    card = await handicapper.handicap_game(gid)
+                    if card:
+                        regenerated += 1
+                logger.info(f"  Regenerated {regenerated}/{len(changed_ids)} picks")
             except Exception as e:
                 logger.error(f"  Pick regeneration failed: {e}")
         else:

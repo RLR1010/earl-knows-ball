@@ -1000,7 +1000,7 @@ async def update_probable_pitchers(db: AsyncSession) -> dict:
     """
     Fetch probable pitchers for upcoming (SCHEDULED) games from MLB Stats API.
     Uses the schedule endpoint with hydrate=probablePitcher.
-    Returns {games_updated: int}.
+    Returns {"games_updated": int, "updated_game_ids": list[int]}.
     """
     from datetime import date, timedelta
     from sqlalchemy import select
@@ -1008,6 +1008,7 @@ async def update_probable_pitchers(db: AsyncSession) -> dict:
 
     today = date.today()
     updated = 0
+    updated_game_ids = []
 
     for offset in range(4):
         check_date = today + timedelta(days=offset)
@@ -1059,10 +1060,11 @@ async def update_probable_pitchers(db: AsyncSession) -> dict:
 
                 if changed:
                     updated += 1
+                    updated_game_ids.append(db_game.id)
 
     await db.commit()
     logger.info(f"Updated probable pitchers for {updated} upcoming games")
-    return {"games_updated": updated}
+    return {"games_updated": updated, "updated_game_ids": updated_game_ids}
 
 
 async def update_game_statuses(db: AsyncSession, days_back: int = 7, days_forward: int = 3) -> dict:

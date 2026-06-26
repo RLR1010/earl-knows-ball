@@ -56,10 +56,10 @@ def _resolve_year_pkl_paths(model_type: str) -> Dict[int, Path]:
 
     Returns an empty dict when no current run exists or no pkl files found.
     """
-    from app.handicapping.db_training import get_current_training_run
-    run = get_current_training_run("mlb", model_type)
+    from app.handicapping.db_training import get_live_training_run
+    run = get_live_training_run("mlb", model_type)
     if run is None:
-        logger.warning("  No current training_run for mlb/%s", model_type)
+        logger.warning("  No live training_run for mlb/%s", model_type)
         return {}
 
     raw = run.get("pkl_filename", "")
@@ -124,8 +124,8 @@ def _get_features() -> Dict[str, List[str]]:
     if _FEATURE_COLS is not None:
         return _FEATURE_COLS
 
-    ats = get_model_features("ats")
-    ou = get_model_features("ou")
+    ats = get_model_features("ats", live=True)
+    ou = get_model_features("ou", live=True)
     _FEATURE_COLS = {"ats": ats, "ou": ou}
     logger.info("_get_features: loaded %d ats + %d ou features from mlb.features", len(ats), len(ou))
     return _FEATURE_COLS
@@ -134,7 +134,7 @@ def _get_features() -> Dict[str, List[str]]:
 def _extract_feature_vector(row: pd.Series, model_type: str) -> Optional[np.ndarray]:
     """Extract the feature vector of ``model_type`` features from one row.
 
-    Feature columns come from ``mlb.features`` (current_ats/current_ou).
+    Feature columns come from ``mlb.features`` (live_ats/live_ou).
     Returns ``None`` if any required feature is missing or NaN.
     """
     cols = _get_features()[model_type]
@@ -183,27 +183,55 @@ class MLBHandicapper:
     # ── public methods ───────────────────────────────────────────
 
     async def handicap_game(self, game_id: int | str) -> Optional[Dict[str, Any]]:
-        """Return a pick-card dict for *game_id*."""
+        """Return a pick-card dict for *game_id*.
+
+        Works for any game in the schedule — completed, pregame, or live.
+        Loads the single game via a targeted SQL query so upcoming games
+        are found without scanning self._game_df (which only holds FINAL
+        games).  The new row is merged into the historic feature DataFrame
+        so rolling feature windows compute correctly.
+        """
         logger.info("MLBHandicapper.handicap_game(%s)", game_id)
 
-        if self._game_df is None:
-            self._game_df = await self._load_feature_df()
-            if self._game_df is None:
-                return None
         if self._ats_model is None:
             self._ats_model = _load_model_for_year("ats", CURRENT_YEAR)
         if self._ou_model is None:
             self._ou_model = _load_model_for_year("ou", CURRENT_YEAR)
 
-        row = self._game_df[self._game_df["game_id"].astype(str) == str(game_id)]
-        if row.empty:
-            logger.warning("  game_id %s not found in feature DataFrame", game_id)
-            return None
-        row = row.iloc[0]
+        from app.handicapping.mlb.data_loader import get_data_loader, build_features
+        dl = get_data_loader()
 
-        ats_pred = self._predict_ats(row)
-        ou_pred = self._predict_ou(row)
-        return _build_pick_card(row, ats_pred, ou_pred)
+        # Ensure historic feature df is loaded once
+        if self._game_df is None:
+            self._game_df = await self._load_feature_df()
+
+        # Load just this one target game (any status) by ID
+        target = dl.load_games(status=None, include_upcoming=True,
+                               game_ids=[int(game_id)])
+        if target.empty:
+            logger.warning("  game_id %s not found in games table", game_id)
+            return None
+
+        # Keep the raw game DataFrame so we can add new games and rebuild
+        if not hasattr(self, '_raw_game_df') or self._raw_game_df is None:
+            self._raw_game_df = dl.load_games(status='FINAL', include_upcoming=False)
+
+        # Append the target game and rebuild features
+        combined = pd.concat([self._raw_game_df, target], ignore_index=True)
+        df = build_features(combined)
+        row_feat = df[df["game_id"].astype(str) == str(game_id)]
+        if row_feat.empty:
+            logger.warning("  game_id %s not found after feature engineering", game_id)
+            return None
+        row_feat = row_feat.iloc[0]
+
+        # Update cached feature df and raw df for subsequent calls
+        self._game_df = df
+        self._raw_game_df = combined
+
+        ats_pred = self._predict_ats(row_feat)
+        ou_pred = self._predict_ou(row_feat)
+        return _build_pick_card(row_feat, ats_pred, ou_pred)
 
     async def handicap_date(self, target_date: date) -> List[Dict[str, Any]]:
         """Generate pick cards for all games on *target_date*."""

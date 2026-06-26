@@ -160,6 +160,7 @@ interface TrainingRunInfo {
   created_at?: string;
   training_id: string | null;
   is_current: boolean;
+  is_live?: boolean;
   results_json?: any;
 }
 
@@ -204,7 +205,7 @@ function getRunOverallAtsPct(run: TrainingRunInfo): number | null {
   } catch { return null; }
 }
 
-function ModelVariantSection({ variant: _variant, loadedRunInfo, trainingRuns, onSelectRun, onSetCurrent, onTrainNew, sport }: { variant: ModelVariant; loadedRunInfo?: ModelVariant | null; trainingRuns?: TrainingRunInfo[]; onSelectRun?: (runId: number) => void; onSetCurrent?: (runId: number) => void; onTrainNew?: (modelType: string) => void; sport?: string }) {
+function ModelVariantSection({ variant: _variant, loadedRunInfo, trainingRuns, onSelectRun, onSetCurrent, onSetLive, onTrainNew, sport }: { variant: ModelVariant; loadedRunInfo?: ModelVariant | null; trainingRuns?: TrainingRunInfo[]; onSelectRun?: (runId: number) => void; onSetCurrent?: (runId: number) => void; onSetLive?: (runId: number) => void; onTrainNew?: (modelType: string) => void; sport?: string }) {
   const variantSource = loadedRunInfo && typeof loadedRunInfo === "object" && !("error" in loadedRunInfo) ? loadedRunInfo : _variant;
   const variant = variantSource;
   const colors = VARIANT_COLORS[variant?.name || "A"] || VARIANT_COLORS["ATS"];
@@ -253,6 +254,26 @@ function ModelVariantSection({ variant: _variant, loadedRunInfo, trainingRuns, o
               Set as Current
             </button>
           )}
+          {selectedRunId && onSetLive && (
+            <button
+              onClick={() => onSetLive(Number(selectedRunId))}
+              className="bg-green-600 hover:bg-green-500 text-white text-xs px-3 py-1.5 rounded-lg transition-colors"
+            >
+              Set as Live
+            </button>
+          )}
+          <div className="ml-auto flex items-center gap-4 text-xs">
+            {trainingRuns?.find(r => r.is_current) && (
+              <span className="text-gray-400">
+                Current: <span className="text-earl-400 font-mono">#{trainingRuns.find(r => r.is_current)!.id}</span>
+              </span>
+            )}
+            {trainingRuns?.find(r => r.is_live) && (
+              <span className="text-gray-400">
+                Live: <span className="text-green-400 font-mono">#{trainingRuns.find(r => r.is_live)!.id}</span>
+              </span>
+            )}
+          </div>
             </>
           )}
           {onTrainNew && (
@@ -687,7 +708,19 @@ export default function AdminModels() {
                 }
               } catch { /* ignore */ }
             };
-            return <ModelVariantSection key={activeVariant.name} variant={activeVariant} loadedRunInfo={loadedRunInfo} trainingRuns={filteredRuns} onSelectRun={handleRunSelect} onSetCurrent={handleSetCurrent} onTrainNew={openTrainModal} sport={sport} />;
+            const handleSetLive = async (runId: number) => {
+              try {
+                const mtFilter = variantModelType[activeVariant.name] || activeVariant.name.toLowerCase();
+                const res = await fetch(`/api/admin/training-runs/${sport}/${mtFilter}/${runId}/set-live`, {
+                  method: "POST",
+                  headers: { Authorization: `Bearer ${token()}` },
+                });
+                if (res.ok) {
+                  await fetchModel(sport);
+                }
+              } catch { /* ignore */ }
+            };
+            return <ModelVariantSection key={activeVariant.name} variant={activeVariant} loadedRunInfo={loadedRunInfo} trainingRuns={filteredRuns} onSelectRun={handleRunSelect} onSetCurrent={handleSetCurrent} onSetLive={handleSetLive} onTrainNew={openTrainModal} sport={sport} />;
           })()}
         </div>
       )}

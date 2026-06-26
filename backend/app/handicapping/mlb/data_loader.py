@@ -501,10 +501,16 @@ DISPLAY_NAMES: Dict[str, str] = {
 # ── Module-level feature helpers ─────────────────────────────────────────────
 
 
-def get_model_features(model_type: str) -> list[str]:
-    """Fetch feature names for a model type from mlb.features."""
+def get_model_features(model_type: str, live: bool = False) -> list[str]:
+    """Fetch feature names for a model type from mlb.features.
+
+    Args:
+        model_type: "ats" or "ou"
+        live: If True, queries live_<type> column instead of current_<type>.
+    """
     import subprocess
-    col = {"ou": "current_ou", "ats": "current_ats"}.get(model_type.lower())
+    suffix = "live" if live else "current"
+    col = {"ou": f"{suffix}_ou", "ats": f"{suffix}_ats"}.get(model_type.lower())
     if not col:
         raise ValueError(f"Unknown model type: {model_type}. Use 'ou' or 'ats'.")
     try:
@@ -1615,6 +1621,7 @@ class MLBDataLoader:
         status: str = "FINAL",
         limit: Optional[int] = None,
         include_upcoming: bool = False,
+        game_ids: Optional[List[int]] = None,
     ) -> pd.DataFrame:
         """Load game data as a pandas DataFrame (sync).
 
@@ -1630,6 +1637,8 @@ class MLBDataLoader:
             If set, only load this many rows.
         include_upcoming :
             If True, include PREGAME / LIVE games too (for pick-card display).
+        game_ids :
+            If set, only load games with these DB ids.
 
         Returns
         -------
@@ -1639,7 +1648,8 @@ class MLBDataLoader:
         engine = create_engine(self._db_url)
         try:
             return self._query(engine, seasons=seasons, status=status,
-                               limit=limit, include_upcoming=include_upcoming)
+                               limit=limit, include_upcoming=include_upcoming,
+                               game_ids=game_ids)
         finally:
             engine.dispose()
 
@@ -1650,10 +1660,12 @@ class MLBDataLoader:
         status: str = "FINAL",
         limit: Optional[int] = None,
         include_upcoming: bool = False,
+        game_ids: Optional[List[int]] = None,
     ) -> pd.DataFrame:
         """Load game data as a pandas DataFrame (async, using an existing engine)."""
         return await self._query_async(engine, seasons=seasons, status=status,
-                                       limit=limit, include_upcoming=include_upcoming)
+                                       limit=limit, include_upcoming=include_upcoming,
+                                       game_ids=game_ids)
 
     def load_all_games(
         self,
@@ -1676,6 +1688,7 @@ class MLBDataLoader:
         status: Optional[str],
         limit: Optional[int],
         include_upcoming: bool,
+        game_ids: Optional[List[int]] = None,
     ) -> str:
         """Build the SQL query with filters."""
         conditions: List[str] = []
@@ -1686,8 +1699,12 @@ class MLBDataLoader:
 
         if status is not None and not include_upcoming:
             conditions.append(f"g.status = '{status}'")
-        elif include_upcoming:
+        elif include_upcoming and not game_ids:
             conditions.append("g.status IS NOT NULL")
+
+        if game_ids:
+            ids_str = ", ".join(str(i) for i in game_ids)
+            conditions.append(f"g.id IN ({ids_str})")
 
         sql = GAME_QUERY.strip().rstrip(";")
 
@@ -1706,8 +1723,9 @@ class MLBDataLoader:
         status: Optional[str],
         limit: Optional[int],
         include_upcoming: bool,
+        game_ids: Optional[List[int]] = None,
     ) -> pd.DataFrame:
-        sql = self._build_query(seasons, status, limit, include_upcoming)
+        sql = self._build_query(seasons, status, limit, include_upcoming, game_ids=game_ids)
         logger.debug("Executing query:\n%s", sql)
         with engine.connect() as conn:
             df = pd.read_sql(text(sql), conn)
@@ -1721,8 +1739,9 @@ class MLBDataLoader:
         status: Optional[str],
         limit: Optional[int],
         include_upcoming: bool,
+        game_ids: Optional[List[int]] = None,
     ) -> pd.DataFrame:
-        sql = self._build_query(seasons, status, limit, include_upcoming)
+        sql = self._build_query(seasons, status, limit, include_upcoming, game_ids=game_ids)
         logger.debug("Executing async query:\n%s", sql)
         async with engine.connect() as conn:
             result = await conn.execute(text(sql))

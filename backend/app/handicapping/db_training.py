@@ -129,12 +129,12 @@ def update_pkl_filename(
         conn.close()
 
 
-def get_model_pkl_path(sport: str, model_type: str) -> Optional[str]:
-    """Get the full path to the current model's PKL file.
+def get_model_pkl_path(sport: str, model_type: str, live: Optional[bool] = False) -> Optional[str]:
+    """Get the full path to the current/live model's PKL file.
 
-    Returns None if no current model exists.
+    Returns None if no model exists.
     """
-    run = get_current_training_run(sport, model_type)
+    run = get_live_training_run(sport, model_type) if live else get_current_training_run(sport, model_type)
     if not run or not run.get("pkl_filename"):
         return None
     base = os.path.expanduser(
@@ -228,6 +228,90 @@ def set_training_run_as_current(sport: str, run_id: int) -> Optional[dict]:
         conn.close()
 
 
+def set_training_run_as_live(sport: str, run_id: int) -> Optional[dict]:
+    """Set a specific training run as the live (active prediction) one for its model_type.
+
+    Clears is_live for all other runs of the same model_type first,
+    then updates the sport's features table to mark which features are
+    live for this model type.
+    """
+    conn = _get_conn()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            # Get the model_type and results_json of this run
+            cur.execute(
+                f'SELECT model_type, results_json FROM {sport}.training_runs WHERE id = %s',
+                (run_id,)
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+            model_type = row["model_type"]
+
+            # ── Extract feature names from results_json ──
+            # ATS stores feature_set (list of strings) per year-result
+            # OU stores feature_importance (list of {feature, importance}) per year-result
+            features: list[str] = []
+            results = row.get("results_json")
+            if results and isinstance(results, list):
+                seen: set[str] = set()
+                for yr in results:
+                    if not isinstance(yr, dict):
+                        continue
+                    if model_type == "ats":
+                        fs = yr.get("feature_set", [])
+                        if isinstance(fs, list):
+                            for fname in fs:
+                                if isinstance(fname, str) and fname not in seen:
+                                    seen.add(fname)
+                                    features.append(fname)
+                    else:
+                        # OU / any other model type that stores feature_importance
+                        fi = yr.get("feature_importance", [])
+                        if isinstance(fi, list):
+                            for entry in fi:
+                                fname = entry.get("feature") if isinstance(entry, dict) else None
+                                if fname and isinstance(fname, str) and fname not in seen:
+                                    seen.add(fname)
+                                    features.append(fname)
+
+            # ── Update training_runs is_live ──
+            cur.execute(
+                f'UPDATE {sport}.training_runs '
+                f'SET is_live = FALSE '
+                f'WHERE model_type = %s AND is_live = TRUE',
+                (model_type,)
+            )
+            cur.execute(
+                f'UPDATE {sport}.training_runs '
+                f'SET is_live = TRUE '
+                f'WHERE id = %s',
+                (run_id,)
+            )
+
+            # ── Update sport.features table ──
+            col = {"ou": "live_ou", "ats": "live_ats"}.get(model_type)
+            if col:
+                # Clear the column for all features first
+                cur.execute(
+                    f'UPDATE {sport}.features SET {col} = FALSE'
+                )
+                # Set it for features used in this training run
+                if features:
+                    placeholders = ",".join("%s" for _ in features)
+                    cur.execute(
+                        f'UPDATE {sport}.features SET {col} = TRUE '
+                        f'WHERE name IN ({placeholders})',
+                        features
+                    )
+
+        conn.commit()
+
+        return get_current_training_run(sport, model_type)
+    finally:
+        conn.close()
+
+
 def get_training_run(sport: str, run_id: int) -> Optional[dict]:
     """Get a single training run by ID, with full results_json."""
     conn = _get_conn()
@@ -263,6 +347,35 @@ def get_current_training_run(
             cur.execute(
                 f'SELECT * FROM {sport}.training_runs '
                 f'WHERE model_type = %s AND is_current = TRUE '
+                f'ORDER BY trained_at DESC LIMIT 1',
+                (model_type,)
+            )
+            row = cur.fetchone()
+            if row:
+                row["training_id"] = str(row["training_id"])
+                row["id"] = str(row["id"])
+                if hasattr(row["trained_at"], 'isoformat'):
+                    row["trained_at"] = row["trained_at"].isoformat()
+                return dict(row)
+            return None
+    finally:
+        conn.close()
+
+
+def get_live_training_run(
+    sport: str,
+    model_type: str,
+) -> Optional[dict]:
+    """Get the live (active prediction) training run for a sport+model_type.
+
+    Returns None if no live run exists.
+    """
+    conn = _get_conn()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                f'SELECT * FROM {sport}.training_runs '
+                f'WHERE model_type = %s AND is_live = TRUE '
                 f'ORDER BY trained_at DESC LIMIT 1',
                 (model_type,)
             )

@@ -1156,6 +1156,24 @@ async def set_training_run_current(
     return {"status": "ok", "training_run": result}
 
 
+@router.post("/training-runs/{sport}/{model_type}/{run_id}/set-live")
+async def set_training_run_live(
+    sport: str,
+    model_type: str,
+    run_id: int,
+    admin: User = Depends(get_admin_user),
+):
+    """Set a specific training run as the live (active prediction) model."""
+    from app.handicapping.db_training import set_training_run_as_live
+    sport = sport.lower()
+    if sport not in ("mlb", "nfl", "nba"):
+        raise HTTPException(status_code=404, detail=f"Unknown sport: {sport}")
+    result = set_training_run_as_live(sport, run_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Training run not found")
+    return {"status": "ok", "training_run": result}
+
+
 @router.get("/features/{sport}")
 async def get_mlb_features(
     sport: str,
