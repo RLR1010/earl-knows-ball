@@ -1050,7 +1050,7 @@ def run(rebuild_full=False, game_ids_filter=None, cursor=None, conn=None):
               AND (
                   blc.home_score IS DISTINCT FROM g.home_score
                   OR blc.away_score IS DISTINCT FROM g.away_score
-                  OR blc.status IS DISTINCT FROM g.status
+                  OR blc.status IS DISTINCT FROM g.status::text
               )
         """)
         score_synced = cursor.rowcount
