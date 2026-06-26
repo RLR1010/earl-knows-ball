@@ -19,7 +19,7 @@ import logging
 import math
 import os
 import pickle
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -328,6 +328,116 @@ class MLBHandicapper:
 # ═══════════════════════════════════════════════════════════════════
 # Pick Card Builder
 # ═══════════════════════════════════════════════════════════════════
+
+async def _save_api_prediction(
+    db: AsyncSession,
+    row: pd.Series,
+    year: int,
+    spread: float | None,
+    total: float | None,
+    pred_margin: float,
+    pred_total: float,
+    pred_home_covers: bool,
+    pred_over: bool,
+    pred_home_wins: bool,
+) -> int:
+    """Save a live (pre-game) prediction to ``mlb.game_predictions``.
+
+    Unlike ``_save_backtest_prediction``, actual results are left as
+    NULL because the game hasn't been played yet.  Confidence / EV
+    are still computed from the model outputs and the real odds.
+    """
+    gid = str(row.get("game_id", ""))
+    home_team = str(row.get("ha", ""))
+    away_team = str(row.get("aa", ""))
+    now = datetime.now(timezone.utc)
+
+    # Real odds from consolidated line
+    home_rl_odds = _safe_int(row.get("closing_spread_home_odds"), -110)
+    away_rl_odds = _safe_int(row.get("closing_spread_away_odds"), -110)
+    over_odds = _safe_int(row.get("closing_over_odds"), -110)
+    under_odds = _safe_int(row.get("closing_under_odds"), -110)
+    home_ml_odds = _safe_int(row.get("home_moneyline"), 0)
+    away_ml_odds = _safe_int(row.get("away_moneyline"), 0)
+
+    rl_picked_home = pred_home_covers
+    ou_picked_over = pred_over
+    ml_picked_home = pred_home_wins
+
+    rl_odds = home_rl_odds if rl_picked_home else away_rl_odds
+    ou_odds = over_odds if ou_picked_over else under_odds
+    ml_odds = home_ml_odds if ml_picked_home else away_ml_odds
+
+    # Confidence heuristic (matches old MLBPickCard)
+    rl_conf = min(0.5 + abs(pred_margin + spread) * 0.4, 0.90) if spread else 0.5
+    ml_conf = min(0.5 + abs(pred_margin) * 0.25, 0.92)
+    ou_conf = min(0.5 + abs(pred_total - total) * 0.25, 0.92) if total else 0.5
+    margin_conf = rl_conf
+
+    # EV at $100 stake
+    def _ev(conf_: float, odds_: float) -> float:
+        profit_if_win = 100.0 * _profit_per_100(odds_)
+        return round((conf_ * profit_if_win) - ((1.0 - conf_) * 100.0), 2)
+
+    ats_ev = _ev(rl_conf, rl_odds) if rl_odds else 0.0
+    ou_ev = _ev(ou_conf, ou_odds) if ou_odds else 0.0
+    ml_ev = _ev(ml_conf, ml_odds) if ml_odds else 0.0
+
+    # Predicted score (inferred from margin + total)
+    predicted_home_score = int(max(0, round(
+        (pred_margin + pred_total) / 2.0 + 0.5 * (pred_margin if pred_margin > 0 else 0)
+    )))
+    predicted_away_score = int(max(0, round(
+        (pred_total - pred_margin) / 2.0 + 0.5 * (-pred_margin if pred_margin < 0 else 0)
+    )))
+
+    # Pick text
+    if rl_picked_home:
+        sign = "+" if spread > 0 else ""
+        rl_pick_str = f"{home_team} {sign}{-spread:+g}" if spread else ""
+    else:
+        sign = "+" if spread < 0 else ""
+        rl_pick_str = f"{away_team} {sign}{spread:+g}" if spread else ""
+    rl_pick_str = rl_pick_str.replace("+", "").replace("-", "-")
+
+    # Remove old prediction for this game+source pair, then insert fresh
+    from sqlalchemy import delete as sa_delete
+    await db.execute(sa_delete(MLBGamePrediction).where(
+        MLBGamePrediction.game_id == int(gid),
+        MLBGamePrediction.source == "api",
+    ))
+    await db.flush()
+
+    gp = MLBGamePrediction(
+        game_id=int(gid),
+        predicted_home_runs=predicted_home_score,
+        predicted_away_runs=predicted_away_score,
+        predicted_total=round(pred_total, 2),
+        predicted_margin=round(pred_margin, 2),
+        ou_pick="Over" if ou_picked_over else "Under",
+        run_line_pick=rl_pick_str,
+        ml_pick="home" if ml_picked_home else "away",
+        rl_conf=round(rl_conf, 4),
+        ou_conf=round(ou_conf, 4),
+        ml_conf=round(ml_conf, 4),
+        margin_conf=round(margin_conf, 4),
+        ats_ev=ats_ev,
+        ou_ev=ou_ev,
+        ml_ev=ml_ev,
+        ats_odds=int(round(rl_odds)),
+        ou_odds=int(round(ou_odds)),
+        ml_odds=int(round(ml_odds)),
+        home_stats_json=json.dumps(_build_mlb_home_stats(dict(row))),
+        away_stats_json=json.dumps(_build_mlb_away_stats(dict(row))),
+        situational_json=json.dumps(_build_mlb_situational(dict(row))),
+        splits_json=json.dumps(_build_mlb_splits(dict(row))),
+        source="api",
+        created_at=now,
+    )
+    db.add(gp)
+    await db.flush()
+    return 1
+
 
 def _build_pick_card(
     game_row: pd.Series,

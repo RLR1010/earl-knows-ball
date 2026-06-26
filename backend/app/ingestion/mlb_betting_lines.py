@@ -229,14 +229,27 @@ async def snapshot_mlb_opening_lines(
                 skipped.append(f"No bookmakers for {gid}")
                 continue
 
-            # ── Delete old per-sportsbook rows for this game ──
-            # Replace everything fresh each run to avoid stale consensus rows
+            # ── Delete old CLOSING rows for this game ──
+            # Replace closing lines fresh each run; preserve opening lines unchanged.
             await db.execute(
                 delete(MLBBettingLine).where(
                     MLBBettingLine.game_id == gid,
                     MLBBettingLine.source == "the_odds_api_current",
+                    MLBBettingLine.is_opening == "false",
                 )
             )
+
+            # Track which opening rows already exist for this game
+            existing_openings = set()
+            open_rows = await db.execute(
+                select(MLBBettingLine.sportsbook).where(
+                    MLBBettingLine.game_id == gid,
+                    MLBBettingLine.source == "the_odds_api_current",
+                    MLBBettingLine.is_opening == "true",
+                )
+            )
+            for (sb,) in open_rows:
+                existing_openings.add(sb)
 
             # ── Insert one row per sportsbook ──
             # Two rows per book: opening (is_opening=True) and closing (is_opening=False)
@@ -282,26 +295,31 @@ async def snapshot_mlb_opening_lines(
                     under_odds=closing.get("under_odds"),
                 )
                 db.add(closing_line)
+                loaded += 1  # count the closing row
 
-                # Save opening row (use opening if available, otherwise copy closing)
-                opening_line = MLBBettingLine(
-                    game_id=gid,
-                    source="the_odds_api_current",
-                    sportsbook=sb_name,
-                    is_opening="true",
-                    spread=opening.get("spread") or closing.get("spread"),
-                    over_under=opening.get("over_under") or closing.get("over_under"),
-                    home_moneyline=opening.get("home_moneyline") or closing.get("home_moneyline"),
-                    away_moneyline=opening.get("away_moneyline") or closing.get("away_moneyline"),
-                    spread_home_odds=opening.get("spread_home_odds") or closing.get("spread_home_odds"),
-                    spread_away_odds=opening.get("spread_away_odds") or closing.get("spread_away_odds"),
-                    over_odds=opening.get("over_odds") or closing.get("over_odds"),
-                    under_odds=opening.get("under_odds") or closing.get("under_odds"),
-                )
-                db.add(opening_line)
+                # Save opening row (only first time this sportsbook is seen for this game)
+                # Opening lines are NEVER overwritten after first insert.
+                if sb_name not in existing_openings:
+                    opening_line = MLBBettingLine(
+                        game_id=gid,
+                        source="the_odds_api_current",
+                        sportsbook=sb_name,
+                        is_opening="true",
+                        spread=opening.get("spread") or closing.get("spread"),
+                        over_under=opening.get("over_under") or closing.get("over_under"),
+                        home_moneyline=opening.get("home_moneyline") or closing.get("home_moneyline"),
+                        away_moneyline=opening.get("away_moneyline") or closing.get("away_moneyline"),
+                        spread_home_odds=opening.get("spread_home_odds") or closing.get("spread_home_odds"),
+                        spread_away_odds=opening.get("spread_away_odds") or closing.get("spread_away_odds"),
+                        over_odds=opening.get("over_odds") or closing.get("over_odds"),
+                        under_odds=opening.get("under_odds") or closing.get("under_odds"),
+                    )
+                    db.add(opening_line)
+                    existing_openings.add(sb_name)  # prevent duplicate insert
+                    loaded += 1  # count the new opening row
+                # closing row always inserted fresh (already added above)
 
                 any_saved = True
-                loaded += 2  # one opening + one closing
 
             if any_saved:
                 updated_game_ids.add(gid)

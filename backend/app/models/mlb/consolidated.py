@@ -1,5 +1,5 @@
 from sqlalchemy import Column, Integer, Float, String, DateTime, Boolean, Text
-from app.core.database import Base
+from app.database import Base
 
 
 class MLBBettingLineConsolidated(Base):

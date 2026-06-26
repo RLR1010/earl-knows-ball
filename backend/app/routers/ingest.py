@@ -1181,17 +1181,22 @@ async def ingest_mlb_lines_and_picks(
     """
     Combined lines + picks refresh. Runs every ~15 min during game days.
 
-    1. Fetches current odds from The Odds API (always inserts new rows)
-    2. Runs incremental consolidation on updated games
-    3. For each updated game that hasn't started:
-       - Calls handicap_game() — only regenerates pick cards for changed games
-       - Games that have already started are skipped (handicap_game checks status)
+    1. Fetches current odds from The Odds API
+    2. Runs incremental consolidation
+    3. Batch-loads model & features ONCE, predicts ALL upcoming games,
+       and saves predictions to mlb.game_predictions
     """
     import logging
     logger = logging.getLogger("earl.mlb_lines_and_picks")
 
     from app.ingestion.mlb_betting_lines import snapshot_mlb_opening_lines
-    from app.handicapping.mlb.mlb_engine import MLBHandicapper
+    from app.handicapping.mlb.data_loader import get_data_loader, build_features
+    from app.handicapping.mlb.mlb_engine import (
+        _save_api_prediction,
+        _extract_feature_vector,
+        _load_model_for_year,
+        CURRENT_YEAR,
+    )
 
     if not api_key:
         from app.core.config import settings as _mlb_settings
@@ -1203,9 +1208,7 @@ async def ingest_mlb_lines_and_picks(
         return {"status": "error", "message": "No API key"}
 
     try:
-        # Step 1: Fetch lines from The Odds API (one call handles both)
-        #   - Opening lines (source='the_odds_api_opening') for brand new games — first time only
-        #   - Current lines (source='the_odds_api_current') for ALL games — every run
+        # ── Step 1: Fetch lines ──────────────────────────────────────
         lines_result = await snapshot_mlb_opening_lines(
             db=db,
             api_key=api_key,
@@ -1214,113 +1217,141 @@ async def ingest_mlb_lines_and_picks(
         results["lines"] = lines_result
         updated_game_ids = lines_result.get("updated_game_ids", [])
 
-        # Step 2: Run incremental consolidation on updated games
-        # Uses the new unified script: same-sportsbook-per-game, consensus-checked, ML/spread-aligned
+        # ── Step 2: Consolidate ──────────────────────────────────────
         if updated_game_ids:
-            import subprocess as _sp
-            game_ids_str = " ".join(str(gid) for gid in updated_game_ids)
-            script_path = os.path.join(
-                os.path.dirname(os.path.abspath(__file__)),
-                "../ingestion/mlb_betting_lines_consolidate.py"
-            )
-            proc = _sp.run(
-                [sys.executable, script_path, "--games"] + [str(gid) for gid in updated_game_ids],
-                capture_output=True, text=True, timeout=120,
-                cwd=os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."),
-                env={**os.environ, "PYTHONPATH": os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")},
-            )
-            if proc.returncode != 0:
-                results["errors"].append(f"Consolidation failed: {proc.stderr[:500]}")
-            results["consolidated"] = {
-                "games": len(updated_game_ids),
-                "stdout": proc.stdout[:200],
-                "stderr": proc.stderr[:200],
-            }
+            try:
+                from app.ingestion.mlb_betting_lines_consolidate import run as consolidate_mlb
+                consolidate_mlb(game_ids_filter=set(updated_game_ids))
+                results["consolidated"] = {"status": "ok", "games": len(updated_game_ids)}
+            except Exception as exc:
+                logger.error(f"Consolidation failed: {exc}")
+                results["errors"].append(f"consolidation_failed: {exc}")
+        else:
+            results["consolidated"] = {"status": "ok", "note": "no_lines_to_consolidate"}
 
-        # Step 3: Collect all games that need picks
-        #   a) Games whose lines just changed (from updated_game_ids)
-        #   b) Upcoming games that have lines but no pick card yet
-        from sqlalchemy import select, not_
-        from app.models.mlb import (MLBGamePrediction as MLBPred, MLBGames)
-        
-        need_picks = set(updated_game_ids or [])
-        
-        # Always also check for upcoming games without picks — even if odds are stable
-        from datetime import date as _date
-        today = _date.today()
-        from_ts = datetime.combine(today, datetime.min.time(), tzinfo=timezone.utc)
-        to_ts = datetime.combine(today + timedelta(days=3), datetime.min.time(), tzinfo=timezone.utc)
-        
-        r = await db.execute(
-            select(MLBGames.id).where(
-                MLBGames.date >= from_ts,
-                MLBGames.date < to_ts,
-                MLBGames.home_score.is_(None),
-                ~MLBGames.id.in_(
-                    select(MLBPred.game_id).where(
-                        MLBPred.source == "api",
+        # ── Step 3: Batch predictions ───────────────────────────────
+        from sqlalchemy import text as sa_text
+        import pandas as pd
+        import numpy as np
+
+        # 3a – Find all future-scheduled games to generate/refresh picks
+        result = await db.execute(
+            sa_text("""
+                SELECT g.id
+                FROM mlb.games g
+                JOIN mlb.betting_lines_consolidated blc ON blc.game_id = g.id
+                WHERE g.status = 'SCHEDULED'
+                  AND g.date > NOW()
+                  AND blc.closing_spread IS NOT NULL
+                  AND blc.closing_ou IS NOT NULL
+                ORDER BY g.date
+            """)
+        )
+        game_ids_needing_picks = [row[0] for row in result.fetchall()]
+
+        if not game_ids_needing_picks:
+            results["predictions"] = {"picks_generated": 0, "note": "No future scheduled games with consolidated lines"}
+        else:
+            # 3b – Load model pkl files once
+            ats_model = _load_model_for_year("ats", CURRENT_YEAR)
+            ou_model = _load_model_for_year("ou", CURRENT_YEAR)
+            logger.info(f"Models loaded for {CURRENT_YEAR} (ats={'loaded' if ats_model else 'none'}, ou={'loaded' if ou_model else 'none'})")
+
+            # 3c – Load ALL historic finished games + upcoming games, build features ONCE
+            dl = get_data_loader()
+            all_historic = dl.load_games(status="FINAL", include_upcoming=False)
+
+            # Batch-load all target games with one query
+            target_games = dl.load_games(status=None, include_upcoming=True, game_ids=game_ids_needing_picks)
+
+            if target_games.empty:
+                results["predictions"] = {"picks_generated": 0, "note": "No games found in DB"}
+            else:
+                combined = pd.concat([all_historic, target_games], ignore_index=True)
+                df = build_features(combined)
+                logger.info(f"Feature DF built: {len(df)} rows, {len(df.columns)} cols, "
+                           f"{len(game_ids_needing_picks)} target games")
+
+                # 3d – Get consolidated lines
+                from app.models.mlb.consolidated import MLBBettingLineConsolidated
+                from sqlalchemy import select as sa_select
+                rows_result = await db.execute(
+                    sa_select(MLBBettingLineConsolidated).where(
+                        MLBBettingLineConsolidated.game_id.in_(game_ids_needing_picks)
                     )
                 )
-            )
-        )
-        for row in r.fetchall():
-            need_picks.add(row[0])
-        
-        # Backfill: check for recently completed games (last 7 days) that have scores
-        # but no prediction yet (missed by backtest or earlier cron runs)
-        backfill_from = datetime.combine(today - timedelta(days=7), datetime.min.time(), tzinfo=timezone.utc)
-        r2 = await db.execute(
-            select(MLBGames.id).where(
-                MLBGames.date >= backfill_from,
-                MLBGames.home_score.isnot(None),
-                MLBGames.away_score.isnot(None),
-                ~MLBGames.id.in_(
-                    select(MLBPred.game_id).where(
-                        MLBPred.source == "api",
-                    )
-                )
-            )
-        )
-        for row in r2.fetchall():
-            need_picks.add(row[0])
-        
-        # Step 4: Generate picks for all games that need them
-        if need_picks:
-            handicapper = MLBHandicapper(db)
-            pick_results = []
-            for gid in need_picks:
-                try:
-                    card = await handicapper.handicap_game(gid)
-                    if card:
+                line_rows = {r.game_id: r for r in rows_result.scalars().all()}
+
+                pick_results = []
+                for gid in game_ids_needing_picks:
+                    try:
+                        row = df[df["game_id"].astype(str) == str(gid)]
+                        if row.empty:
+                            logger.warning(f"Game {gid} not in feature set")
+                            pick_results.append({"game_id": gid, "error": "not_in_feature_set"})
+                            continue
+                        row_s = row.iloc[0]
+
+                        # Get spread / total from consolidated line
+                        line = line_rows.get(gid)
+                        spread = float(line.closing_spread) if line and line.closing_spread else (
+                            float(row_s.get("spread", row_s.get("h_line_runline", 1.5)))
+                            if pd.notna(row_s.get("spread")) else None
+                        )
+                        total = float(line.closing_ou) if line and line.closing_ou else (
+                            float(row_s.get("over_under", row_s.get("ou_line", 8.5)))
+                            if pd.notna(row_s.get("over_under")) else None
+                        )
+
+                        # Predict
+                        ats_feats = _extract_feature_vector(row_s, "ats")
+                        ou_feats = _extract_feature_vector(row_s, "ou")
+
+                        if ats_feats is not None and ats_model:
+                            pred_margin = float(ats_model.predict(ats_feats[np.newaxis, :])[0])
+                        else:
+                            pred_margin = 0.0
+
+                        if ou_feats is not None and ou_model:
+                            pred_total = float(ou_model.predict(ou_feats[np.newaxis, :])[0])
+                        else:
+                            pred_total = total or 8.5
+
+                        pred_home_covers = pred_margin > -(spread or 0) if spread else True
+                        pred_over = pred_total > (total or 8.5) if total else True
+                        pred_home_wins = pred_margin > 0
+
+                        # Save to DB
+                        await _save_api_prediction(
+                            db, row_s, CURRENT_YEAR,
+                            spread, total,
+                            pred_margin, pred_total,
+                            pred_home_covers, pred_over, pred_home_wins,
+                        )
                         pick_results.append({
                             "game_id": gid,
-                            "teams": f"{card['away_team']} @ {card['home_team']}",
-                            "predicted_margin": card.get('ats_pick', {}).get('model_margin'),
-                            "predicted_total": card.get('ou_pick', {}).get('predicted_total'),
+                            "home": str(row_s.get("ha", "")),
+                            "away": str(row_s.get("aa", "")),
+                            "spread": spread,
+                            "total": total,
+                            "predicted_margin": round(pred_margin, 2),
+                            "predicted_total": round(pred_total, 2),
                         })
-                    else:
-                        pick_results.append({"game_id": gid, "status": "skipped (no stats / started / no lines)"})
-                except Exception as e:
-                    pick_results.append({"game_id": gid, "error": str(e)})
-                    logger.warning(f"handicap_game({gid}) failed: {e}")
-                    # Persistent error log (handicap_game logs known failures internally;
-                    # this catches any that slipped through)
-                    try:
-                        from app.models.public.prediction_error import PredictionError
-                        err = PredictionError(game_id=gid, sport="mlb", error_type="unhandled", error_message=str(e)[:500])
-                        db.add(err)
-                        await db.flush()
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.warning(f"Prediction failed for game {gid}: {exc}")
+                        pick_results.append({"game_id": gid, "error": str(exc)[:200]})
 
-            results["predictions"] = {
-                "picks_generated": len([p for p in pick_results if "teams" in p]),
-                "games_attempted": len(need_picks),
-                "game_results": pick_results,
-            }
-            logger.info(f"Lines+picks: {lines_result.get('loaded', 0)} new lines, {len(need_picks)} games, {len([p for p in pick_results if 'teams' in p])} picks")
-        else:
-            results["predictions"] = {"picks_generated": 0, "note": "No games needing picks"}
+                await db.commit()
+                results["predictions"] = {
+                    "picks_generated": len([p for p in pick_results if "error" not in p]),
+                    "games_attempted": len(game_ids_needing_picks),
+                    "game_results": pick_results,
+                }
+                logger.info(
+                    f"Lines+picks: {lines_result.get('loaded', 0)} new lines, "
+                    f"{len(game_ids_needing_picks)} games, "
+                    f"{len([p for p in pick_results if 'error' not in p])} picks"
+                )
 
     except Exception as e:
         import traceback
@@ -1328,3 +1359,4 @@ async def ingest_mlb_lines_and_picks(
         logger.error(f"Lines+picks refresh failed: {e}\n{traceback.format_exc()}")
 
     return {"status": "ok", "results": results}
+

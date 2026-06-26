@@ -1036,6 +1036,26 @@ def run(rebuild_full=False, game_ids_filter=None, cursor=None, conn=None):
                     f"closing_ml_sb={row[3]}, opening_sb={row[3]}"
                 )
 
+        # ── Step 6: Unconditional score/status sync ──
+        # Update home_score, away_score, and status for ANY game in the consolidated
+        # table, even if it no longer appears in the API snapshot (e.g. in-progress
+        # or finished games). This runs regardless of game_ids_filter.
+        cursor.execute("""
+            UPDATE mlb.betting_lines_consolidated blc
+            SET home_score = g.home_score,
+                away_score = g.away_score,
+                status = g.status
+            FROM mlb.games g
+            WHERE g.id = blc.game_id
+              AND (
+                  blc.home_score IS DISTINCT FROM g.home_score
+                  OR blc.away_score IS DISTINCT FROM g.away_score
+                  OR blc.status IS DISTINCT FROM g.status
+              )
+        """)
+        score_synced = cursor.rowcount
+        logger.info(f"Synced scores/status for {score_synced} games from mlb.games")
+
     finally:
         if should_close:
             conn.close()
