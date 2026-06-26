@@ -142,8 +142,17 @@ def _extract_feature_vector(row: pd.Series, model_type: str) -> Optional[np.ndar
     for c in cols:
         v = row.get(c)
         if v is None or (isinstance(v, float) and np.isnan(v)):
-            logger.debug("  Missing feature '%s' for game %s", c, row.get("game_id"))
-            return None
+            # Weather / ancillary features may be missing for upcoming games.
+            # Fill with sensible defaults so the model still gets a vector.
+            if c in ("temperature", "temp"):
+                v = 80.0  # average summer game temp
+            elif c in ("humidity",):
+                v = 50.0
+            elif c in ("wind_speed", "wind"):
+                v = 5.0
+            else:
+                v = 0.0
+            logger.debug("  Missing feature '%s' for game %s — filling %.1f", c, row.get("game_id"), v)
         vals.append(float(v))
     return np.array(vals, dtype=np.float32)
 
@@ -216,8 +225,17 @@ class MLBHandicapper:
         if not hasattr(self, '_raw_game_df') or self._raw_game_df is None:
             self._raw_game_df = dl.load_games(status='FINAL', include_upcoming=False)
 
+        # Remove the target game from raw if it's already there (e.g. completed game)
+        # to avoid duplicate game_id rows causing pandas join explosions
+        gid_int = int(game_id)
+        drops = self._raw_game_df['game_id'] == gid_int
+        if drops.any():
+            _dropped_raw = self._raw_game_df[~drops].copy()
+        else:
+            _dropped_raw = self._raw_game_df
+
         # Append the target game and rebuild features
-        combined = pd.concat([self._raw_game_df, target], ignore_index=True)
+        combined = pd.concat([_dropped_raw, target], ignore_index=True)
         df = build_features(combined)
         row_feat = df[df["game_id"].astype(str) == str(game_id)]
         if row_feat.empty:
