@@ -179,10 +179,11 @@ async def run():
         INSERT INTO {args.sport}.betting_lines
         ({', '.join(insert_cols)})
         VALUES ({', '.join(f':{c}' for c in insert_cols)})
+        ON CONFLICT (game_id, source, sportsbook, is_opening) DO NOTHING
     """
 
     async with httpx.AsyncClient(timeout=30.0) as client:
-        stats = {"opening_calls": 0, "closing_calls": 0, "opening_inserted": 0, "closing_inserted": 0, "opening_notfound": 0, "closing_notfound": 0}
+        stats = {"opening_calls": 0, "closing_calls": 0, "opening_inserted": 0, "closing_inserted": 0, "opening_nodata": 0, "closing_nodata": 0}
 
         # ── Process ────────────────────────────────────────────────────
         for snapshot_type, game_list, offset_type in [
@@ -321,11 +322,10 @@ async def run():
                                 logger.debug(f"  Opening partial for game {g.id} at T-{offset_value - step}h (step {step}): "
                                             f"FanDuel h2h={fd_has_h2h} spread={fd_has_spread} total={fd_has_total}")
                         else:
-                            stats["opening_notfound"] += 1
                             logger.debug(f"  Opening partial for game {g.id} at T-{offset_value - step}h (step {step}): FanDuel not present")
 
                     if not fanduel_done:
-                        stats["opening_notfound"] += 1
+                        stats["opening_nodata"] += 1
 
                 else:
                     # ── Closing snapshot: single call ──
@@ -341,7 +341,7 @@ async def run():
                     stats["closing_calls"] += 1
 
                     if resp.status_code != 200:
-                        stats["closing_notfound"] += 1
+                        stats["closing_nodata"] += 1
                         continue
 
                     events = resp.json().get("data", [])
@@ -354,7 +354,7 @@ async def run():
                             break
 
                     if not matched_ev:
-                        stats["closing_notfound"] += 1
+                        stats["closing_nodata"] += 1
                         continue
 
                     batch = []
@@ -414,14 +414,14 @@ async def run():
                         stats["closing_inserted"] += len(batch)
 
             logger.info(f"  {snapshot_type} done: {stats[f'{snapshot_type}_inserted']} lines, "
-                        f"{stats[f'{snapshot_type}_notfound']} not found, "
+                        f"{stats[f'{snapshot_type}_nodata']} no data, "
                         f"{stats[f'{snapshot_type}_calls']} API calls")
 
     # ── Summary ──
     logger.info(f"\n{'='*50}")
     logger.info(f"{args.sport.upper()} {years} COMPLETE")
-    logger.info(f"  Opening: {stats['opening_inserted']} lines, {stats['opening_notfound']} not found, {stats['opening_calls']} calls")
-    logger.info(f"  Closing: {stats['closing_inserted']} lines, {stats['closing_notfound']} not found, {stats['closing_calls']} calls")
+    logger.info(f"  Opening: {stats['opening_inserted']} lines, {stats['opening_nodata']} no data, {stats['opening_calls']} calls")
+    logger.info(f"  Closing: {stats['closing_inserted']} lines, {stats['closing_nodata']} no data, {stats['closing_calls']} calls")
 
     await engine.dispose()
 

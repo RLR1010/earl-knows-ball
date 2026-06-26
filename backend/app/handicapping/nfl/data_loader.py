@@ -352,15 +352,31 @@ GAME_QUERY = """
         at.name AS away_name,
         g.home_score,
         g.away_score,
-        gl.spread,
-        gl.over_under,
-        gl.opening_spread,
-        gl.opening_ou
+        blc.closing_spread AS spread,
+        blc.closing_ou AS over_under,
+        blc.opening_spread,
+        blc.opening_ou,
+        blc.closing_home_ml,
+        blc.closing_away_ml,
+        blc.opening_home_ml,
+        blc.opening_away_ml,
+        blc.closing_spread_home_odds,
+        blc.closing_spread_away_odds,
+        blc.closing_over_odds,
+        blc.closing_under_odds,
+        blc.closing_home_implied_probability,
+        blc.closing_away_implied_probability,
+        blc.opening_spread_home_odds,
+        blc.opening_spread_away_odds,
+        blc.opening_over_odds,
+        blc.opening_under_odds,
+        blc.opening_home_implied_probability,
+        blc.opening_away_implied_probability
     FROM nfl.games g
     JOIN nfl.seasons s ON s.id = g.season_id
     JOIN nfl.teams ht ON ht.id = g.home_team_id
     JOIN nfl.teams at ON at.id = g.away_team_id
-    LEFT JOIN nfl.game_lines gl ON gl.game_id = g.id
+    LEFT JOIN nfl.betting_lines_consolidated blc ON blc.game_id = g.id
     WHERE 1=1
 """
 
@@ -368,11 +384,13 @@ TRAINING_WHERE = """
     AND g.game_type = 'REG'
     AND g.home_score IS NOT NULL
     AND g.away_score IS NOT NULL
+    AND blc.game_id IS NOT NULL
 """
 
 INFERENCE_WHERE = """
     AND g.game_type = 'REG'
     AND g.home_score IS NULL
+    AND blc.game_id IS NOT NULL
 """
 
 
@@ -397,19 +415,27 @@ def build_features(df: pd.DataFrame, log_fn: callable = log) -> pd.DataFrame:
     """
     df = df.copy()
 
-    # ── Spread (nfl.game_lines has no closing columns) ────────────
+    # ── Spread (from nfl.betting_lines_consolidated) ──────────────
+    # closing_spread is aliased as 'spread' in GAME_QUERY
     df["spread"] = df["spread"].fillna(df["opening_spread"])
-    df["spread_movement"] = df.get("spread", 0.0) - df["opening_spread"].fillna(0)
+    df["spread_movement"] = df["spread"] - df["opening_spread"]
     df["spread_movement"] = df["spread_movement"].fillna(0)
 
     # ── Over/under ────────────────────────────────────────────────
+    # closing_ou is aliased as 'over_under' in GAME_QUERY
     df["ou"] = df["over_under"].fillna(df["opening_ou"])
     df["opening_ou"] = df["opening_ou"].fillna(df["over_under"])
     df["ou_movement"] = df["ou"] - df["opening_ou"]
 
-    # ── Spread odds movement (placeholder — no odds data) ─────────
-    df["sp_h_odds_mvmt"] = df.get("sp_h_odds_mvmt", pd.Series(0.0, index=df.index))
-    df["sp_a_odds_mvmt"] = df.get("sp_a_odds_mvmt", pd.Series(0.0, index=df.index))
+    # ── Spread odds movement ──────────────────────────────────────
+    if "closing_spread_home_odds" in df.columns and "opening_spread_home_odds" in df.columns:
+        df["sp_h_odds_mvmt"] = df["closing_spread_home_odds"] - df["opening_spread_home_odds"]
+    else:
+        df["sp_h_odds_mvmt"] = 0.0
+    if "closing_spread_away_odds" in df.columns and "opening_spread_away_odds" in df.columns:
+        df["sp_a_odds_mvmt"] = df["closing_spread_away_odds"] - df["opening_spread_away_odds"]
+    else:
+        df["sp_a_odds_mvmt"] = 0.0
 
     # ── Rolling averages (set externally via _add_computed_features) ─
     needs_default = [
@@ -659,12 +685,12 @@ class NFLDataLoader:
             all_raw = await conn.execute(sa_text(f"""
                 SELECT g.id, s.year, g.week, g.date, g.home_score, g.away_score,
                        ht.abbreviation AS home_abbr, at.abbreviation AS away_abbr,
-                       gl.spread
+                       blc.closing_spread AS spread
                 FROM nfl.games g
                 JOIN nfl.seasons s ON s.id = g.season_id
                 JOIN nfl.teams ht ON ht.id = g.home_team_id
                 JOIN nfl.teams at ON at.id = g.away_team_id
-                LEFT JOIN nfl.game_lines gl ON gl.game_id = g.id
+                JOIN nfl.betting_lines_consolidated blc ON blc.game_id = g.id
                 WHERE g.home_score IS NOT NULL AND g.game_type = 'REG'
                 ORDER BY g.date, g.id
             """))

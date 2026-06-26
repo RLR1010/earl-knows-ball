@@ -468,5 +468,17 @@ async def demo():
 
 
 if __name__ == "__main__":
-    import asyncio
-    asyncio.run(demo())
+    import argparse, asyncio
+    parser = argparse.ArgumentParser(description="NFL ATS XGBoost model")
+    parser.add_argument("--mode", choices=["single", "all"], default="all",
+                        help="Run single test year or all years")
+    parser.add_argument("--test-year", type=int, default=None,
+                        help="Year to test (single mode)")
+    parser.add_argument("--skip-db", action="store_true", default=False,
+                        help="Skip saving training run to DB")
+    args = parser.parse_args()
+
+    if args.mode == "all":
+        asyncio.run(demo())
+    else:
+        asyncio.run(run_single(test_year=args.test_year or CURRENT_YEAR - 1))

@@ -1232,10 +1232,21 @@ async def trigger_training(
         conn.close()
 
     # Launch the training script in the background
-    script = {
-        "ou": "python3 -m app.handicapping.mlb.mlb_xgb_model_ou --mode all",
-        "ats": "python3 -m app.handicapping.mlb.mlb_xgb_model_ats --mode all",
-    }[model_type]
+    _scripts = {
+        "nfl": {
+            "ou": "python3 -m app.handicapping.nfl.nfl_xgb_model_ou --mode all",
+            "ats": "python3 -m app.handicapping.nfl.nfl_xgb_model_ats --mode all",
+        },
+        "mlb": {
+            "ou": "python3 -m app.handicapping.mlb.mlb_xgb_model_ou --mode all",
+            "ats": "python3 -m app.handicapping.mlb.mlb_xgb_model_ats --mode all",
+        },
+        "nba": {
+            "ou": "placeholder",
+            "ats": "placeholder",
+        },
+    }
+    script = _scripts[sport][model_type]
 
     # Run as a subprocess — fire and forget
     proc = await asyncio.create_subprocess_shell(

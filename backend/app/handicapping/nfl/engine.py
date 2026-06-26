@@ -19,8 +19,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import Game, Team, Season, BettingLine, GamePrediction, GameLines
 from app.handicapping.nfl.situational import SituationalAnalyzer
 from app.handicapping.nfl.splits import SplitAnalyzer
-from app.handicapping.nfl.nfl_xgb_model_ou import predict_total as xgb_predict_ou_total
-from app.handicapping.nfl.nfl_xgb_model_ats import predict_margin as xgb_predict_margin_ats
+from app.handicapping.nfl.nfl_xgb_model_ou import predict_ou as _predict_ou
+from app.handicapping.nfl.nfl_xgb_model_ats import predict_ats as _predict_ats
 # ML model removed — no longer used
 
 
@@ -719,10 +719,8 @@ class Handicapper:
             # ── Run all three specialized models ──
             # 1. ATS model → margin prediction (spread-optimized)
             try:
-                ats_margin, _ = await xgb_predict_margin_ats(
-                    self.db, gid, ha, aa, year, gwk,
-                    hs, aws, gl, league_average
-                )
+                ats_result = await _predict_ats(gid, ha, aa)
+                ats_margin = ats_result["predicted_margin"] if ats_result else None
             except Exception as e:
                 logger.warning(f"ATS model failed for game {gid}: {e}")
                 ats_margin = None
@@ -730,10 +728,9 @@ class Handicapper:
 
             # 3. OU model → total points
             try:
-                ou_total, ou_conf = await xgb_predict_ou_total(
-                    self.db, gid, ha, aa, year, gwk,
-                    hs, aws, gl, league_average
-                )
+                ou_result = await _predict_ou(gid, ha, aa)
+                ou_total = ou_result["predicted_total"] if ou_result else None
+                ou_conf = ou_result.get("confidence", 0.5) if ou_result else None
             except Exception as e:
                 logger.warning(f"OU prediction failed for game {gid}: {e}")
                 ou_total, ou_conf = None, None
@@ -924,15 +921,21 @@ async def backtest_season(db: AsyncSession, year: int,
 
     # Load year-specific models for backtesting
     import os
-    from app.handicapping.nfl.nfl_xgb_model_ou import set_model_path as set_ou_model
-    from app.handicapping.nfl.nfl_xgb_model_ats import set_model_path as set_ats_model
-    ou_path = f"/app/data/ou_model_{year}.pkl"
-    ats_path = f"/app/data/handicap_model_ats_{year}.pkl"
+    from app.handicapping.nfl.nfl_xgb_model_ou import load_model as set_ou_model
+    from app.handicapping.nfl.nfl_xgb_model_ats import load_model as set_ats_model
+    ou_path = f"/home/rich/.openclaw/workspace/earl-knows-football/data/models/nfl/nfl_ou_model.pkl"
+    ats_path = f"/home/rich/.openclaw/workspace/earl-knows-football/data/models/nfl/nfl_ats_model.pkl"
 
-    if os.path.exists(ou_path):
+    try:
         set_ou_model(ou_path)
-    if os.path.exists(ats_path):
+        logger.info(f"OU model loaded from {ou_path}")
+    except Exception as e:
+        logger.warning(f"Cannot load OU model: {e}")
+    try:
         set_ats_model(ats_path)
+        logger.info(f"ATS model loaded from {ats_path}")
+    except Exception as e:
+        logger.warning(f"Cannot load ATS model: {e}")
 
     # Find max week
     max_r = await db.execute(
