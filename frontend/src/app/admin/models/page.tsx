@@ -684,9 +684,7 @@ export default function AdminModels() {
               const db = new Date(b.trained_at || b.created_at || 0).getTime();
               return db - da;
             });
-            const filteredRuns = sport !== "nfl"
-              ? sortedRuns.filter((r: any) => (r.model_type || "").toLowerCase() === mtFilter)
-              : [];
+            const filteredRuns = sortedRuns.filter((r: any) => (r.model_type || "").toLowerCase() === mtFilter);
             const handleRunSelect = async (runId: number) => {
               if (runId === 0) {
                 setSelectedRunId(null);

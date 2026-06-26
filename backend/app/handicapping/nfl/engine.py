@@ -21,7 +21,7 @@ from app.handicapping.nfl.situational import SituationalAnalyzer
 from app.handicapping.nfl.splits import SplitAnalyzer
 from app.handicapping.nfl.nfl_xgb_model_ou import predict_total as xgb_predict_ou_total
 from app.handicapping.nfl.nfl_xgb_model_ats import predict_margin as xgb_predict_margin_ats
-from app.handicapping.nfl.nfl_xgb_model_ml import predict_home_win_prob as xgb_predict_ml_prob
+# ML model removed — no longer used
 
 
 logger = logging.getLogger("earl.handicapping")
@@ -738,15 +738,8 @@ class Handicapper:
                 logger.warning(f"OU prediction failed for game {gid}: {e}")
                 ou_total, ou_conf = None, None
 
-            # 4. ML model → home win probability
-            try:
-                ml_prob, ml_conf, ml_edge = await xgb_predict_ml_prob(
-                    self.db, gid, ha, aa, year, gwk,
-                    hs, aws, gl, league_average
-                )
-            except Exception as e:
-                logger.warning(f"ML model failed for game {gid}: {e}")
-                ml_prob, ml_conf, ml_edge = None, None, None
+            # 4. ML model → home win probability (DEPRECATED — removed)
+            ml_prob, ml_conf, ml_edge = None, None, None
 
             a = MatchupAnalysis(g, ha, aa, hs, aws, gl, league_average,
                                 situation=sit_contexts.get(gid),
@@ -933,18 +926,13 @@ async def backtest_season(db: AsyncSession, year: int,
     import os
     from app.handicapping.nfl.nfl_xgb_model_ou import set_model_path as set_ou_model
     from app.handicapping.nfl.nfl_xgb_model_ats import set_model_path as set_ats_model
-    from app.handicapping.nfl.nfl_xgb_model_ml import set_model_path as set_ml_model
-
     ou_path = f"/app/data/ou_model_{year}.pkl"
     ats_path = f"/app/data/handicap_model_ats_{year}.pkl"
-    ml_path = f"/app/data/handicap_model_ml_{year}.pkl"
 
     if os.path.exists(ou_path):
         set_ou_model(ou_path)
     if os.path.exists(ats_path):
         set_ats_model(ats_path)
-    if os.path.exists(ml_path):
-        set_ml_model(ml_path)
 
     # Find max week
     max_r = await db.execute(
