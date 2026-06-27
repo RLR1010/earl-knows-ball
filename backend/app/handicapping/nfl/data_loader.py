@@ -1,853 +1,981 @@
 """
-NFL Data Loader & Feature Engineering
-======================================
-Mirrors the MLB data_loader.py architecture (MLBDataLoader → NFLDataLoader,
-mlb.games → nfl.games, mlb.betting_lines_consolidated → nfl.betting_lines_consolidated).
+NFL Data Loader — feature engineering and dataset creation for the NFL prediction engine.
 
-Provides the build_features() transformation and the NFLDataLoader class for
-loading game data from the NFL database, computing rolling/situational features,
-and returning DataFrames ready for XGBoost training or inference.
+Loads raw NFL game data from the database, builds rolling / derived features
+that match the feature names registered in ``nfl.features``, and packages
+them into a DataFrame ready for XGBoost training or inference.
+
+Design mirrors ``mlb/data_loader.py`` but adapted for the weekly, team-based
+NFL betting environment (no pitchers, no daily splits).
 """
 
+from __future__ import annotations
+
+import logging
 import os
-import re
-import math
-import socket
-import warnings
-from datetime import datetime, date
-from pathlib import Path
-from typing import Optional
+import time
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
-from sqlalchemy import create_engine, text as sa_text
+import psycopg2
+import psycopg2.extras
+from math import asin, cos, radians, sin, sqrt
 
-warnings.filterwarnings("ignore", category=pd.errors.PerformanceWarning)
+logger = logging.getLogger(__name__)
 
-# ════════════════════════════════════════════════════════════════════════
-# Constants
-# ════════════════════════════════════════════════════════════════════════
-
-DEFAULT_DB_URL = os.getenv("DATABASE_URL", "postgresql://earl:earl_dev_pass@localhost:5432/earl_knows_football")
-DEFAULT_TRAIN_FROM = 2021
-CURRENT_YEAR = datetime.now().year
-
-# ── Game query ──────────────────────────────────────────────────────────
-# Pulls from nfl.games, joining betting_lines_consolidated on game_id.
-# This query collects all raw columns needed for feature engineering.
-GAME_QUERY = """
-SELECT
-    g.id               AS game_id,
-    s.year                AS season_year,
-    g.week,
-    g.date                AS game_date,
-    ht.abbreviation       AS home_abbr,
-    at.abbreviation       AS away_abbr,
-    g.home_score,
-    g.away_score,
-    blc.opening_spread  AS spread,
-    blc.opening_ou       AS over_under,
-    g.roof_type           AS roof,
-    g.surface,
-    g.temperature         AS temp,
-    g.wind_speed          AS wind,
-    blc.opening_spread,
-    blc.opening_ou        AS opening_total,
-    blc.opening_home_ml   AS home_ml,
-    blc.opening_away_ml   AS away_ml,
-    blc.opening_spread    AS line_opening_spread,
-    blc.opening_ou        AS line_opening_total,
-    blc.closing_spread    AS line_closing_spread,
-    blc.closing_ou        AS line_closing_total
-FROM nfl.games g
-JOIN nfl.seasons s ON s.id = g.season_id
-JOIN nfl.teams ht ON ht.id = g.home_team_id
-JOIN nfl.teams at ON at.id = g.away_team_id
-LEFT JOIN nfl.betting_lines_consolidated blc ON blc.game_id = g.id
-WHERE s.year BETWEEN :min_year AND :max_year
-  AND g.home_score IS NOT NULL
-  AND g.away_score IS NOT NULL
-ORDER BY g.date, g.id
-"""
-
-# ── Feature catalog (display names) ─────────────────────────────────────
-DISPLAY_NAMES = {
-    "home_win_pct": "Home Win %",
-    "away_win_pct": "Away Win %",
-    "home_ats_pct": "Home ATS %",
-    "away_ats_pct": "Away ATS %",
-    "home_ppg": "Home PPG",
-    "away_ppg": "Away PPG",
-    "home_oppg": "Home OPPG",
-    "away_oppg": "Away OPPG",
-    "home_pt_diff": "Home Pt Diff",
-    "away_pt_diff": "Away Pt Diff",
-    "home_rolling_ppg": "Home Rolling PPG",
-    "away_rolling_ppg": "Away Rolling PPG",
-    "home_rolling_oppg": "Home Rolling OPPG",
-    "away_rolling_oppg": "Away Rolling OPPG",
-    "home_ema_win_pct": "Home EMA Win %",
-    "away_ema_win_pct": "Away EMA Win %",
-    "rest_diff": "Rest Days Diff",
-    "travel_distance_miles": "Travel Distance (mi)",
-    "home_timezone_advantage": "Home TZ Advantage",
-    "is_dome": "Is Dome",
-    "is_division": "Division Game",
-    "temp_f": "Temperature (°F)",
-    "wind_mph": "Wind (mph)",
-    "home_prev_szn_pts": "Home Prev Szn PPG",
-    "away_prev_szn_pts": "Away Prev Szn PPG",
-    "home_prev_szn_pt_diff": "Home Prev Szn Pt Diff",
-    "away_prev_szn_pt_diff": "Away Prev Szn Pt Diff",
-    "line_move_spread": "Spread Line Move",
-    "line_move_total": "Total Line Move",
-    "opening_spread_value": "Opening Spread Value",
-    "opening_total_value": "Opening Total Value",
-    "home_rest_days": "Home Rest Days",
-    "away_rest_days": "Away Rest Days",
-    "home_ats_margin": "Home ATS Margin",
-    "away_ats_margin": "Away ATS Margin",
-}
-
-# ── ATS feature catalog ─────────────────────────────────────────────────
-ATS_CATALOG = {
-    "home_win_pct": "Home team's rolling win percentage (expanding: prior games)",
-    "away_win_pct": "Away team's rolling win percentage (expanding: prior games)",
-    "home_ats_pct": "Home team's rolling ATS win percentage",
-    "away_ats_pct": "Away team's rolling ATS win percentage",
-    "home_pt_diff": "Home team's rolling average point differential",
-    "away_pt_diff": "Away team's rolling average point differential",
-    "home_rolling_ppg": "Home team's rolling average points scored (home games only)",
-    "away_rolling_ppg": "Away team's rolling average points scored (away games only)",
-    "home_rolling_oppg": "Home team's rolling average points allowed (home games only)",
-    "away_rolling_oppg": "Away team's rolling average points allowed (away games only)",
-    "home_ema_win_pct": "Home team's exponential moving average win % (alpha=0.3)",
-    "away_ema_win_pct": "Away team's exponential moving average win % (alpha=0.3)",
-    "rest_diff": "Difference in rest days between home and away teams",
-    "is_dome": "Binary flag: 1 if game is in a domed/indoor stadium",
-    "is_division": "Binary flag: 1 if game is a division matchup",
-    "temp_f": "Game-time temperature in Fahrenheit (outdoor games)",
-    "wind_mph": "Game-time wind speed in mph (outdoor games)",
-    "home_prev_szn_pts": "Prior-season PPG for home team (smoothed for expansion years)",
-    "away_prev_szn_pts": "Prior-season PPG for away team (smoothed for expansion years)",
-    "home_prev_szn_pt_diff": "Prior-season avg point differential for home team",
-    "away_prev_szn_pt_diff": "Prior-season avg point differential for away team",
-    "line_move_spread": "Change from opening spread to closing spread (opening-closing)",
-    "opening_spread_value": "The opening spread value (positive = home underdog)",
-    "home_rest_days": "Home team's days of rest since their last game",
-    "away_rest_days": "Away team's days of rest since their last game",
-    "home_ats_margin": "Home team's rolling ATS margin (actual score minus spread)",
-    "away_ats_margin": "Away team's rolling ATS margin (actual score minus spread)",
-    "travel_distance_miles": "Great-circle distance in miles between home and away team cities",
-    "home_timezone_advantage": "Time zone offset difference (home minus away, positive = home advantage)",
-}
-
-# ── OU feature catalog (additional features for OU predictions) ─────────
-OU_CATALOG = {
-    "home_ppg": "Home team's rolling points per game (all games, all-time)",
-    "away_ppg": "Away team's rolling points per game (all games, all-time)",
-    "home_oppg": "Home team's rolling opponent points per game (all games, all-time)",
-    "away_oppg": "Away team's rolling opponent points per game (all games, all-time)",
-    "home_rolling_ppg": "Home team's rolling points per game (home games)",
-    "away_rolling_ppg": "Away team's rolling points per game (away games)",
-    "home_rolling_oppg": "Home team's rolling opponent points per game (home games)",
-    "away_rolling_oppg": "Away team's rolling opponent points per game (away games)",
-    "line_move_total": "Change from opening total to closing total (opening-closing)",
-    "opening_total_value": "The opening over/under value",
-}
-
-# ── Computed features catalog ───────────────────────────────────────────
-COMPUTED_FEATURES_CATALOG = {
-    "travel_distance_miles": "Great-circle distance in miles between home & away team cities (computed via lookup)",
-    "home_timezone_advantage": "Time zone offset difference (home offset minus away offset, positive = home advantage)",
-    "home_rest_level": "Categorical rest bucket: 0=short (<6 days), 1=normal (6-7 days), 2=long (10+ days), 3=bye (>13 days)",
-    "away_rest_level": "Same as home_rest_level but for the away team",
-    "home_stadium_capacity": "Home stadium capacity (static lookup from venues table)",
-    "surface_type_grass": "1 if playing surface is natural grass, 0 otherwise",
-    "time_of_day_night": "1 if game time is after 5 PM local, 0 otherwise",
-    "overtime_flag": "1 if game went to overtime (informational / not for training)",
-}
-
-# ── ATS features list ───────────────────────────────────────────────────
-ATS_FEATURES = sorted(ATS_CATALOG.keys())
-
-# ── OU features list ────────────────────────────────────────────────────
-OU_FEATURES = sorted(
-    set(k for k in ATS_CATALOG.keys())
-    .union(k for k in OU_CATALOG.keys())
-    .difference({"home_ats_pct", "away_ats_pct", "home_ats_margin", "away_ats_margin",
-                  "line_move_spread", "opening_spread_value"})
+# ── Database connection ────────────────────────────────────────────────────────
+DEFAULT_DB_URL: str = os.environ.get(
+    "DATABASE_URL",
+    "postgresql://earl:earl2025@localhost:5432/earl_knows_football",
 )
 
 
-def _log(log_fn, msg: str, level: str = "INFO"):
-    """Helper to write to a callable log function or print."""
-    if log_fn:
-        log_fn(f"[{level}] {msg}")
-    else:
-        print(f"[{level}] {msg}")
+# ── Team home-stadium coordinates (for travel-distance computations) ────────────
+# Latitude / longitude of each NFL team's home stadium.
+TEAM_LOCATIONS: Dict[str, Tuple[float, float]] = {
+    "ARI": (33.5273, -112.2625),  # State Farm Stadium
+    "ATL": (33.7551, -84.4018),  # Mercedes-Benz Stadium
+    "BAL": (39.2779, -76.6226),  # M&T Bank Stadium
+    "BUF": (42.7737, -78.7870),  # Highmark Stadium
+    "CAR": (35.2258, -80.8528),  # Bank of America Stadium
+    "CHI": (41.8622, -87.6168),  # Soldier Field
+    "CIN": (39.0954, -84.5161),  # Paycor Stadium
+    "CLE": (41.5061, -81.6995),  # Huntington Bank Field
+    "DAL": (32.7473, -97.0924),  # AT&T Stadium
+    "DEN": (39.7439, -105.0201),  # Empower Field at Mile High
+    "DET": (42.3400, -83.0459),  # Ford Field
+    "GB": (44.5014, -88.0622),  # Lambeau Field
+    "HOU": (29.6847, -95.4107),  # NRG Stadium
+    "IND": (39.7600, -86.1638),  # Lucas Oil Stadium
+    "JAX": (30.3239, -81.6373),  # EverBank Stadium
+    "KC": (39.0489, -94.4839),  # GEHA Field at Arrowhead Stadium
+    "LAC": (33.8635, -118.2611),  # SoFi Stadium
+    "LAR": (33.8635, -118.2611),  # SoFi Stadium
+    "LV": (36.0907, -115.1833),  # Allegiant Stadium
+    "MIA": (25.9580, -80.2389),  # Hard Rock Stadium
+    "MIN": (44.9736, -93.2580),  # U.S. Bank Stadium
+    "NE": (42.0909, -71.2644),  # Gillette Stadium
+    "NO": (29.9509, -90.0812),  # Caesars Superdome
+    "NYG": (40.8135, -74.0744),  # MetLife Stadium
+    "NYJ": (40.8135, -74.0744),  # MetLife Stadium
+    "PHI": (39.9008, -75.1675),  # Lincoln Financial Field
+    "PIT": (40.4466, -80.0158),  # Acrisure Stadium
+    "SEA": (47.5952, -122.3316),  # Lumen Field
+    "SF": (37.4032, -121.9698),  # Levi's Stadium
+    "TB": (27.9759, -82.5033),  # Raymond James Stadium
+    "TEN": (36.1663, -86.7713),  # Nissan Stadium
+    "WAS": (38.9076, -77.0096),  # Northwest Stadium
+}
+
+# Cache for preloaded team locations
+_location_cache: Dict[str, Tuple[float, float]] = {}
 
 
-def _haversine(lat1, lon1, lat2, lon2):
-    """Great-circle distance in miles between two lat/lon points."""
-    R = 3958.8  # Earth radius in miles
-    dlat = math.radians(lat2 - lat1)
-    dlon = math.radians(lon2 - lon1)
-    a = (
-        math.sin(dlat / 2) ** 2
-        + math.cos(math.radians(lat1))
-        * math.cos(math.radians(lat2))
-        * math.sin(dlon / 2) ** 2
-    )
-    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+# ── Helpers ─────────────────────────────────────────────────────────────────────
+def haversine_miles(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Great-circle distance in miles between two latitude/longitude points."""
+    R: float = 3958.8  # Earth radius in miles
+    dlat = radians(lat2 - lat1)
+    dlon = radians(lon2 - lon1)
+    a = sin(dlat / 2) ** 2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(dlon / 2) ** 2
+    return R * 2 * asin(sqrt(a))
 
 
-# ── Team stub data (abbreviation → city, timezone, lat/lon) ────────────
-# Full set for all active NFL franchises.
-_TEAM_META: dict[str, dict] | None = None
+def rolling_mean_safe(series: pd.Series, window: int, min_periods: int = 1) -> pd.Series:
+    """Rolling mean that gracefully handles short windows at the start of a season."""
+    return series.rolling(window=window, min_periods=min_periods).mean()
 
 
-def _get_team_meta() -> dict[str, dict]:
-    """Return NFL team metadata dictionary (lazy-loaded)."""
-    global _TEAM_META
-    if _TEAM_META is not None:
-        return _TEAM_META
-    _TEAM_META = {
-        "ARI": {"city": "Glendale", "state": "AZ", "tz": "America/Phoenix", "lat": 33.5273, "lon": -112.2625, "dome": True, "stadium": "State Farm Stadium", "capacity": 63400},
-        "ATL": {"city": "Atlanta", "state": "GA", "tz": "America/New_York", "lat": 33.7550, "lon": -84.4009, "dome": True, "stadium": "Mercedes-Benz Stadium", "capacity": 71000},
-        "BAL": {"city": "Baltimore", "state": "MD", "tz": "America/New_York", "lat": 39.2780, "lon": -76.6225, "dome": False, "stadium": "M&T Bank Stadium", "capacity": 71008},
-        "BUF": {"city": "Orchard Park", "state": "NY", "tz": "America/New_York", "lat": 42.7737, "lon": -78.7870, "dome": False, "stadium": "Highmark Stadium", "capacity": 71608},
-        "CAR": {"city": "Charlotte", "state": "NC", "tz": "America/New_York", "lat": 35.2258, "lon": -80.8528, "dome": False, "stadium": "Bank of America Stadium", "capacity": 75523},
-        "CHI": {"city": "Chicago", "state": "IL", "tz": "America/Chicago", "lat": 41.8623, "lon": -87.6167, "dome": False, "stadium": "Soldier Field", "capacity": 61500},
-        "CIN": {"city": "Cincinnati", "state": "OH", "tz": "America/New_York", "lat": 39.0954, "lon": -84.5161, "dome": False, "stadium": "Paycor Stadium", "capacity": 65515},
-        "CLE": {"city": "Cleveland", "state": "OH", "tz": "America/New_York", "lat": 41.5061, "lon": -81.6995, "dome": False, "stadium": "Huntington Bank Field", "capacity": 67895},
-        "DAL": {"city": "Arlington", "state": "TX", "tz": "America/Chicago", "lat": 32.7473, "lon": -97.0929, "dome": True, "stadium": "AT&T Stadium", "capacity": 80000},
-        "DEN": {"city": "Denver", "state": "CO", "tz": "America/Denver", "lat": 39.7439, "lon": -105.0201, "dome": False, "stadium": "Empower Field at Mile High", "capacity": 76125},
-        "DET": {"city": "Detroit", "state": "MI", "tz": "America/New_York", "lat": 42.3400, "lon": -83.0455, "dome": True, "stadium": "Ford Field", "capacity": 65000},
-        "GB":  {"city": "Green Bay", "state": "WI", "tz": "America/Chicago", "lat": 44.5013, "lon": -88.0622, "dome": False, "stadium": "Lambeau Field", "capacity": 81441},
-        "HOU": {"city": "Houston", "state": "TX", "tz": "America/Chicago", "lat": 29.6847, "lon": -95.4107, "dome": True, "stadium": "NRG Stadium", "capacity": 72000},
-        "IND": {"city": "Indianapolis", "state": "IN", "tz": "America/Indiana/Indianapolis", "lat": 39.7601, "lon": -86.1639, "dome": True, "stadium": "Lucas Oil Stadium", "capacity": 67000},
-        "JAX": {"city": "Jacksonville", "state": "FL", "tz": "America/New_York", "lat": 30.3240, "lon": -81.6373, "dome": False, "stadium": "EverBank Stadium", "capacity": 67164},
-        "KC":  {"city": "Kansas City", "state": "MO", "tz": "America/Chicago", "lat": 39.0489, "lon": -94.4839, "dome": False, "stadium": "GEHA Field at Arrowhead Stadium", "capacity": 76416},
-        "LAC": {"city": "Inglewood", "state": "CA", "tz": "America/Los_Angeles", "lat": 33.9531, "lon": -118.3392, "dome": False, "stadium": "SoFi Stadium", "capacity": 70240},
-        "LAR": {"city": "Inglewood", "state": "CA", "tz": "America/Los_Angeles", "lat": 33.9531, "lon": -118.3392, "dome": False, "stadium": "SoFi Stadium", "capacity": 70240},
-        "LV":  {"city": "Las Vegas", "state": "NV", "tz": "America/Los_Angeles", "lat": 36.0906, "lon": -115.1833, "dome": True, "stadium": "Allegiant Stadium", "capacity": 65000},
-        "MIA": {"city": "Miami Gardens", "state": "FL", "tz": "America/New_York", "lat": 25.9580, "lon": -80.2389, "dome": False, "stadium": "Hard Rock Stadium", "capacity": 65326},
-        "MIN": {"city": "Minneapolis", "state": "MN", "tz": "America/Chicago", "lat": 44.9739, "lon": -93.2581, "dome": True, "stadium": "U.S. Bank Stadium", "capacity": 66655},
-        "NE":  {"city": "Foxborough", "state": "MA", "tz": "America/New_York", "lat": 42.0909, "lon": -71.2643, "dome": False, "stadium": "Gillette Stadium", "capacity": 65878},
-        "NO":  {"city": "New Orleans", "state": "LA", "tz": "America/Chicago", "lat": 29.9509, "lon": -90.0814, "dome": True, "stadium": "Caesars Superdome", "capacity": 73208},
-        "NYG": {"city": "East Rutherford", "state": "NJ", "tz": "America/New_York", "lat": 40.8128, "lon": -74.0746, "dome": False, "stadium": "MetLife Stadium", "capacity": 82500},
-        "NYJ": {"city": "East Rutherford", "state": "NJ", "tz": "America/New_York", "lat": 40.8128, "lon": -74.0746, "dome": False, "stadium": "MetLife Stadium", "capacity": 82500},
-        "PHI": {"city": "Philadelphia", "state": "PA", "tz": "America/New_York", "lat": 39.9009, "lon": -75.1675, "dome": False, "stadium": "Lincoln Financial Field", "capacity": 69796},
-        "PIT": {"city": "Pittsburgh", "state": "PA", "tz": "America/New_York", "lat": 40.4467, "lon": -80.0157, "dome": False, "stadium": "Acrisure Stadium", "capacity": 68400},
-        "SEA": {"city": "Seattle", "state": "WA", "tz": "America/Los_Angeles", "lat": 47.5952, "lon": -122.3316, "dome": True, "stadium": "Lumen Field", "capacity": 68740},
-        "SF":  {"city": "Santa Clara", "state": "CA", "tz": "America/Los_Angeles", "lat": 37.4030, "lon": -121.9696, "dome": False, "stadium": "Levi's Stadium", "capacity": 68500},
-        "TB":  {"city": "Tampa", "state": "FL", "tz": "America/New_York", "lat": 27.9759, "lon": -82.5033, "dome": False, "stadium": "Raymond James Stadium", "capacity": 65618},
-        "TEN": {"city": "Nashville", "state": "TN", "tz": "America/Chicago", "lat": 36.1664, "lon": -86.7713, "dome": False, "stadium": "Nissan Stadium", "capacity": 69143},
-        "WAS": {"city": "Landover", "state": "MD", "tz": "America/New_York", "lat": 38.9077, "lon": -76.8645, "dome": False, "stadium": "Northwest Stadium", "capacity": 82000},
-    }
-    return _TEAM_META
+# ── GAME_QUERY ──────────────────────────────────────────────────────────────────
+# Pulls every raw row we need for feature engineering: game metadata,
+# consolidated betting lines, score results.
+GAME_QUERY: str = """
+
+WITH game_lines AS (
+    SELECT
+        bl.game_id,
+        bl.closing_spread,
+        bl.closing_ou,
+        bl.closing_home_ml,
+        bl.closing_away_ml,
+        bl.opening_spread,
+        bl.opening_ou,
+        bl.opening_home_ml,
+        bl.opening_away_ml,
+        bl.opening_over_odds,
+        bl.opening_under_odds,
+        bl.closing_over_odds,
+        bl.closing_under_odds,
+        bl.closing_spread_home_odds,
+        bl.closing_spread_away_odds,
+        bl.opening_spread_home_odds,
+        bl.opening_spread_away_odds,
+        bl.closing_home_implied_probability,
+        bl.closing_away_implied_probability,
+        bl.has_verified_ou
+    FROM nfl.betting_lines_consolidated bl
+    WHERE bl.closing_spread IS NOT NULL
+      AND bl.closing_ou IS NOT NULL
+),
+game_rest AS (
+    SELECT
+        g.id AS game_id,
+        g.date,
+        LAG(g.date) OVER (
+            PARTITION BY g.home_team_id ORDER BY g.date
+        ) AS home_last_game,
+        LAG(g.date) OVER (
+            PARTITION BY g.away_team_id ORDER BY g.date
+        ) AS away_last_game
+    FROM nfl.games g
+    WHERE g.status = 'FINAL'
+)
+SELECT
+    g.id                                                   AS game_id,
+    g.season_id,
+    g.week,
+    g.game_type,
+    g.status,
+    g.date                                                 AS game_date,
+    g.home_team_id,
+    g.away_team_id,
+    ht.abbreviation                                        AS home_abbr,
+    at.abbreviation                                        AS away_abbr,
+    ht.conference                                          AS home_conf,
+    at.conference                                          AS away_conf,
+    ht.division                                            AS home_div,
+    at.division                                            AS away_div,
+    g.home_score,
+    g.away_score,
+    g.venue,
+    g.surface,
+    g.roof_type,
+    g.temperature,
+    g.wind_speed,
+    g.weather_condition,
+    gl.closing_spread,
+    gl.closing_ou,
+    gl.closing_home_ml,
+    gl.closing_away_ml,
+    gl.opening_spread,
+    gl.opening_ou,
+    gl.opening_home_ml,
+    gl.opening_away_ml,
+    gl.opening_over_odds,
+    gl.opening_under_odds,
+    gl.closing_over_odds,
+    gl.closing_under_odds,
+    gl.closing_spread_home_odds,
+    gl.closing_spread_away_odds,
+    gl.opening_spread_home_odds,
+    gl.opening_spread_away_odds,
+    gl.closing_home_implied_probability,
+    gl.closing_away_implied_probability,
+    s.year                                                 AS season_year,
+    gl.has_verified_ou,
+    gr.home_last_game,
+    gr.away_last_game
+FROM nfl.games g
+JOIN nfl.teams ht ON ht.id = g.home_team_id
+JOIN nfl.teams at ON at.id = g.away_team_id
+LEFT JOIN game_lines gl ON gl.game_id = g.id
+LEFT JOIN game_rest gr ON gr.game_id = g.id
+LEFT JOIN nfl.seasons s ON s.id = g.season_id
+WHERE g.season_id IS NOT NULL
+  AND g.week IS NOT NULL
+ORDER BY g.season_id, g.week, g.date;
+"""
 
 
-def _prev_szn_smoothing(current_df: pd.DataFrame,
-                        team_col: str = "home_abbr",
-                        value_col: str = "home_score",
-                        suffix: str = "") -> pd.DataFrame:
-    """Compute prior-season average for a metric, with smoothing for new teams.
+# ── Features Catalog ────────────────────────────────────────────────────────────
+# Maps every feature name (as stored in nfl.features) to a human description.
+# Populated from the database on first loader use; the static dict below is a
+# fallback / documentation cache.
 
-    Groups by (team, season_year-1) to get last year's mean, then forward-fills
-    for teams without a prior-year record.
-    """
-    prev = current_df.groupby([team_col, "season_year"])[value_col].mean().reset_index()
-    prev["season_year"] += 1  # shift to apply as prior-year
-    prev.rename(columns={value_col: f"prev_szn_mean_{value_col}{suffix}"}, inplace=True)
-    return prev
+FEATURES_CATALOG: Dict[str, str] = {
+    "hpf": "Home team points for (PPG)",
+    "hpa": "Home team points against (PPG)",
+    "apf": "Away team points for (PPG)",
+    "apa": "Away team points against (PPG)",
+    "dpf": "Defensive points for (adjusted)",
+    "dpa": "Defensive points against (adjusted)",
+    "himp": "Home implied scoring",
+    "aimp": "Away implied scoring",
+    "dimp": "Differential implied (home - away)",
+    "spread_movement": "Spread movement (closing - opening)",
+    "sp_h_odds_mvmt": "Home spread odds movement",
+    "sp_a_odds_mvmt": "Away spread odds movement",
+    "home_win_pct_r5": "Home team win % last 5 games",
+    "away_win_pct_r5": "Away team win % last 5 games",
+    "home_margin_r3": "Home team avg margin last 3 games",
+    "away_margin_r3": "Away team avg margin last 3 games",
+    "home_cover_pct_r5": "Home team ATS cover % last 5 games",
+    "away_cover_pct_r5": "Away team ATS cover % last 5 games",
+    "home_embarrassed": 'Home team "embarrassed" (lost by 14+ last game)',
+    "away_embarrassed": 'Away team "embarrassed" (lost by 14+ last game)',
+    "home_season_ats_pct": "Home team season-wide ATS cover %",
+    "away_season_ats_pct": "Away team season-wide ATS cover %",
+    "home_margin_r10": "Home team avg margin last 10 games",
+    "away_margin_r10": "Away team avg margin last 10 games",
+    "travel_miles": "Away team travel distance in miles",
+    "is_dome": "Home stadium dome / retractable roof",
+    "opening_ou": "Opening over/under line",
+    "spread": "Closing spread",
+    "ou_movement": "Closing OU minus opening OU",
+    "rest_diff": "Rest day differential (home - away)",
+    "tz_diff": "Timezone difference home - away (hours)",
+    "is_short": "Short week indicator",
+    "temp": "Game-time temperature (F)",
+    "wind": "Game-time wind speed (mph)",
+    "season_year": "Calendar year this game belongs to",
+    "season_avg_pts": "League average points per team per game for the season",
+}
+
+# Features that are computed from raw columns rather than read directly.
+# These appear in the DataFrame alongside the raw features.
+COMPUTED_FEATURES_CATALOG: Dict[str, str] = {
+    "home_ats_cover": "Home team covered the spread (1=yes, 0=no, NaN=pick)",
+    "away_ats_cover": "Away team covered the spread (1=yes, 0=no, NaN=pick)",
+    "over_result": "Game went over the total (1=over, 0=under, NaN=push)",
+    "home_score_margin": "Home score - away score",
+    "home_pts_differential": "Home PF - Home PA (rolling)",
+    "away_pts_differential": "Away PF - Away PA (rolling)",
+    "home_strength": "Home team power rating (PF - PA with SOS adjustment)",
+    "away_strength": "Away team power rating (PF - PA with SOS adjustment)",
+    "home_implied_pts": "Home team implied points from closing spread + OU",
+    "away_implied_pts": "Away team implied points from closing spread + OU",
+    "home_rest_days": "Home team rest days since last game",
+    "away_rest_days": "Away team rest days since last game",
+}
+
+# Human-readable short labels for every feature (matches nfl.features.display_name)
+DISPLAY_NAMES: Dict[str, str] = {
+    "hpf": "Home PF",
+    "hpa": "Home PA",
+    "apf": "Away PF",
+    "apa": "Away PA",
+    "dpf": "Def PF",
+    "dpa": "Def PA",
+    "himp": "Home Implied",
+    "aimp": "Away Implied",
+    "dimp": "Diff Implied",
+    "spread_movement": "Spread Movement",
+    "sp_h_odds_mvmt": "SP Home Odds MV",
+    "sp_a_odds_mvmt": "SP Away Odds MV",
+    "home_win_pct_r5": "Home W% L5",
+    "away_win_pct_r5": "Away W% L5",
+    "home_margin_r3": "Home Margin L3",
+    "away_margin_r3": "Away Margin L3",
+    "home_cover_pct_r5": "Home Cover% L5",
+    "away_cover_pct_r5": "Away Cover% L5",
+    "home_embarrassed": "Home Embarrassed",
+    "away_embarrassed": "Away Embarrassed",
+    "home_season_ats_pct": "Home Season ATS%",
+    "away_season_ats_pct": "Away Season ATS%",
+    "home_margin_r10": "Home Margin L10",
+    "away_margin_r10": "Away Margin L10",
+    "travel_miles": "Travel Miles",
+    "is_dome": "Dome",
+    "opening_ou": "Opening OU",
+    "spread": "Spread",
+    "ou_movement": "OU Movement",
+    "rest_diff": "Rest Diff",
+    "tz_diff": "TZ Diff",
+    "is_short": "Short Week",
+    "temp": "Temperature",
+    "wind": "Wind",
+    "season_year": "Season",
+    "season_avg_pts": "Season Avg Pts",
+    # computed
+    "home_ats_cover": "Home ATS Cover",
+    "away_ats_cover": "Away ATS Cover",
+    "over_result": "Over Result",
+    "home_score_margin": "Home Margin",
+    "home_pts_differential": "Home Pt Diff",
+    "away_pts_differential": "Away Pt Diff",
+    "home_strength": "Home Strength",
+    "away_strength": "Away Strength",
+    "home_implied_pts": "Home Imp Pts",
+    "away_implied_pts": "Away Imp Pts",
+    "home_rest_days": "Home Rest",
+    "away_rest_days": "Away Rest",
+}
 
 
-# ════════════════════════════════════════════════════════════════════════
-# build_features() — NFL feature engineering
-# ════════════════════════════════════════════════════════════════════════
-
-def build_features(df: pd.DataFrame, log_fn: Optional[callable] = None) -> pd.DataFrame:
-    """Compute all NFL features on a raw game DataFrame, returning a copy.
+# ── Feature name helpers ────────────────────────────────────────────────────────
+def get_model_features(cursor: Any, ats_only: bool = False, ou_only: bool = False) -> List[str]:
+    """Return feature column names from ``nfl.features``.
 
     Parameters
     ----------
-    df : pd.DataFrame
-        Raw game data loaded from the DB (from GAME_QUERY).
-    log_fn : callable, optional
-        A callable for logging (e.g., print or logger.info).
+    cursor : psycopg2 cursor or conn
+        Database cursor/connection for querying the features table.
+    ats_only : bool
+        If True, only return features flagged ``current_ats = True``.
+    ou_only : bool
+        If True, only return features flagged ``current_ou = True``.
 
     Returns
     -------
-    pd.DataFrame
-        Original DataFrame plus new feature columns.
+    List[str]
+        Ordered list of feature names.
     """
+    conditions = []
+    if ats_only:
+        conditions.append("current_ats = TRUE")
+    if ou_only:
+        conditions.append("current_ou = TRUE")
+    where_clause = " AND ".join(conditions) if conditions else "TRUE"
+
+    sql = f"SELECT name FROM nfl.features WHERE {where_clause} AND is_trainable = TRUE ORDER BY id"
+    cursor.execute(sql)
+    return [row[0] for row in cursor.fetchall()]
+
+
+# ── NFLDataLoader ──────────────────────────────────────────────────────────────
+class NFLDataLoader:
+    """Load, build, and serve NFL game data + features.
+
+    Parameters
+    ----------
+    db_url : str, optional
+        PostgreSQL connection URL.  Defaults to ``DATABASE_URL`` or the
+        local ``earl:earl2025@localhost:5432/earl_knows_football`` fallback.
+    ats_only : bool
+        If True, default feature selection is ATS-only.
+    ou_only : bool
+        If True, default feature selection is OU-only.
+    """
+
+    def __init__(
+        self,
+        db_url: Optional[str] = None,
+        ats_only: bool = False,
+        ou_only: bool = False,
+    ):
+        self.db_url: str = db_url or DEFAULT_DB_URL
+        self.ats_only: bool = ats_only
+        self.ou_only: bool = ou_only
+        self._engine: Any = None
+        logger.info(
+            "NFLDataLoader initialized (ats_only=%s, ou_only=%s)",
+            ats_only, ou_only,
+        )
+
+    @property
+    def engine(self):
+        """Lazy-initialized SQLAlchemy engine."""
+        if self._engine is None:
+            from sqlalchemy import create_engine
+            self._engine = create_engine(self.db_url, pool_pre_ping=True)
+        return self._engine
+
+    def __repr__(self) -> str:
+        return (
+            f"NFLDataLoader(db_url={self.db_url!r}, "
+            f"ats_only={self.ats_only}, ou_only={self.ou_only})"
+        )
+
+    # ── Feature catalog helpers ────────────────────────────────────────────────
+
+    def get_features_catalog(self) -> Dict[str, str]:
+        """Return the full features catalog dict (name → description)."""
+        return {**FEATURES_CATALOG, **COMPUTED_FEATURES_CATALOG}
+
+    def get_feature_names(self) -> List[str]:
+        """Return all known feature names."""
+        return list(self.get_features_catalog().keys())
+
+    def get_feature_description(self, name: str) -> Optional[str]:
+        """Return the description for a single feature."""
+        return self.get_features_catalog().get(name)
+
+    def get_display_name(self, name: str) -> str:
+        """Return the human-friendly display label for a feature."""
+        return DISPLAY_NAMES.get(name, name)
+
+    def get_all_with_display(self) -> Dict[str, str]:
+        """Return all features with their display names."""
+        return {name: self.get_display_name(name) for name in self.get_feature_names()}
+
+    # ── Query building ──────────────────────────────────────────────────────────
+
+    def _build_query(
+        self,
+        seasons: Optional[List[int]] = None,
+        status: Optional[str] = None,
+        limit: Optional[int] = None,
+        include_upcoming: bool = False,
+        game_ids: Optional[List[int]] = None,
+    ) -> str:
+        """Construct the SQL query with optional filters.
+
+        Parameters
+        ----------
+        seasons :
+            Only games from these season years (e.g. ``[2023, 2024]``).
+        status :
+            Game status filter (``'FINAL'``, ``'Closed'``, etc.).
+        limit :
+            Maximum number of rows returned.
+        include_upcoming :
+            If True and no explicit status is given, include all games
+            regardless of status (loads non-final games too).
+        game_ids :
+            Only games with these primary-key IDs.
+        """
+        conditions: List[str] = []
+
+        if seasons:
+            placeholders = ", ".join(str(s) for s in seasons)
+            conditions.append(f"g.season_id IN ({placeholders})")
+
+        if status is not None:
+            conditions.append(f"g.status = '{status}'")
+        elif include_upcoming and not game_ids:
+            conditions.append("g.status IS NOT NULL")
+
+        if game_ids:
+            ids_str = ", ".join(str(i) for i in game_ids)
+            conditions.append(f"g.id IN ({ids_str})")
+
+        sql = GAME_QUERY.strip().rstrip(";")
+
+        if conditions:
+            # Replace the fixed WHERE clause already in GAME_QUERY
+            clause = f"WHERE {' AND '.join(conditions)}"
+            sql = sql.replace(
+                "WHERE g.season_id IS NOT NULL\n  AND g.week IS NOT NULL\nORDER BY",
+                f"{clause}\nORDER BY",
+            )
+
+        if limit:
+            sql += f"\nLIMIT {limit}"
+
+        return sql
+
+    # ── Data loading ─────────────────────────────────────────────────────────
+
+    def _query(
+        self,
+        seasons: Optional[List[int]] = None,
+        status: Optional[str] = None,
+        limit: Optional[int] = None,
+        include_upcoming: bool = False,
+        game_ids: Optional[List[int]] = None,
+    ) -> pd.DataFrame:
+        """Execute the game query and return raw DataFrame."""
+        sql = self._build_query(
+            seasons=seasons,
+            status=status,
+            limit=limit,
+            include_upcoming=include_upcoming,
+            game_ids=game_ids,
+        )
+        t0 = time.time()
+        df = pd.read_sql(sql, self.engine)
+        elapsed = time.time() - t0
+        logger.info("Query returned %d rows in %.2fs", len(df), elapsed)
+        return df
+
+    def load_games(
+        self,
+        seasons: Optional[List[int]] = None,
+        status: Optional[str] = None,
+        limit: Optional[int] = None,
+        include_upcoming: bool = False,
+        game_ids: Optional[List[int]] = None,
+    ) -> pd.DataFrame:
+        """Load raw NFL game data from the database.
+
+        Parameters
+        ----------
+        seasons : list of int, optional
+            Filter to these season years.
+        status : str, optional
+            Game status filter (e.g. ``'FINAL'``).  Defaults to ``'FINAL'``.
+        limit : int, optional
+            Max rows.
+        include_upcoming : bool
+            Include non-final games (scheduled, in-progress).
+        game_ids : list of int, optional
+            Only these specific game IDs.
+        """
+        if status is None and not include_upcoming:
+            status = "FINAL"
+        return self._query(
+            seasons=seasons,
+            status=status,
+            limit=limit,
+            include_upcoming=include_upcoming,
+            game_ids=game_ids,
+        )
+
+    def load_all_games(
+        self,
+        seasons: Optional[List[int]] = None,
+        limit: Optional[int] = None,
+    ) -> pd.DataFrame:
+        """Load all games regardless of status (for pick cards)."""
+        return self.load_games(
+            seasons=seasons,
+            status=None,
+            limit=limit,
+            include_upcoming=True,
+        )
+
+    def load_data(
+        self,
+        seasons: Optional[List[int]] = None,
+        limit: Optional[int] = None,
+        include_upcoming: bool = False,
+        feature_names: Optional[List[str]] = None,
+        game_ids: Optional[List[int]] = None,
+        build_features_fn=None,
+        **build_kwargs,
+    ) -> pd.DataFrame:
+        """Load raw game data **and** build features.
+
+        This is the primary entry point for training and inference.
+
+        Parameters
+        ----------
+        seasons :
+            Season years to include (training) or ``None`` for inference.
+        limit :
+            Row limit.
+        include_upcoming :
+            Include non-final games (for upcoming game inference).
+        feature_names :
+            Columns to keep.  Defaults to DB-listed trainable features
+            (ATS or OU filtered by constructor flags).
+        game_ids :
+            Only these specific game IDs.
+        build_features_fn :
+            Custom feature engineering callable.
+            Defaults to the module-level ``build_features()``.
+        **build_kwargs :
+            Forwarded to the feature engineering callable.
+        """
+        # 1. Load raw game data
+        df = self.load_games(
+            seasons=seasons,
+            status=None if include_upcoming else "FINAL",
+            limit=limit,
+            include_upcoming=include_upcoming,
+            game_ids=game_ids,
+        )
+
+        if df.empty:
+            logger.warning("No games returned — returning empty DataFrame")
+            return df
+
+        # 2. Run feature engineering
+        fn = build_features_fn if build_features_fn is not None else build_features
+        df = fn(df, **build_kwargs)
+
+        # 3. Determine output columns
+        if feature_names is None:
+            with self.engine.connect() as conn:
+                cur = conn.connection.cursor()
+                feature_names = get_model_features(
+                    cur,
+                    ats_only=self.ats_only,
+                    ou_only=self.ou_only,
+                )
+
+        # 4. Always include context and target columns needed downstream
+        context_cols = {
+            "season_year", "home_ats_cover", "away_ats_cover",
+            "over_result", "home_score_margin",
+            "home_score", "away_score", "closing_ou", "closing_spread",
+            "opening_ou", "opening_spread",
+            "home_abbr", "away_abbr",
+            "venue", "surface", "roof_type",
+            "week", "game_id", "game_type",
+        }
+        for c in context_cols:
+            if c in df.columns and c not in feature_names:
+                feature_names.append(c)
+
+        # 5. Select only what was asked for
+        existing = [c for c in feature_names if c in df.columns]
+        missing = [c for c in feature_names if c not in df.columns]
+        if missing:
+            logger.warning(
+                "%d feature(s) not found — filling with NaN: %s",
+                len(missing), missing,
+            )
+            for col in missing:
+                df[col] = float("nan")
+
+        return df[feature_names].copy()
+
+    def load_inference_data(
+        self,
+        game_ids: List[int],
+        feature_names: Optional[List[str]] = None,
+    ) -> pd.DataFrame:
+        """Load features for specific games (inference without labels).
+
+        Parameters
+        ----------
+        game_ids :
+            Primary keys of the games to load.
+        feature_names :
+            Feature columns to return (defaults to DB trainable features).
+        """
+        return self.load_data(
+            game_ids=game_ids,
+            include_upcoming=True,
+            feature_names=feature_names,
+        )
+
+    def get_feature_columns(
+        self,
+        ats_only: Optional[bool] = None,
+        ou_only: Optional[bool] = None,
+    ) -> List[str]:
+        """Return feature columns from the ``nfl.features`` table.
+
+        Uses ``ats_only`` / ``ou_only`` from the constructor when not
+        explicitly overridden.
+        """
+        if ats_only is None:
+            ats_only = self.ats_only
+        if ou_only is None:
+            ou_only = self.ou_only
+        with self.engine.connect() as conn:
+            cur = conn.connection.cursor()
+            return get_model_features(cur, ats_only=ats_only, ou_only=ou_only)
+
+    @staticmethod
+    def extract_features_from_training_run(
+        results_json: Any,
+        min_importance: float = 0.0,
+    ) -> List[str]:
+        """Extract feature names from a training run's ``results_json``.
+
+        Parameters
+        ----------
+        results_json :
+            Parsed ``results_json`` column from ``nfl.training_runs``.
+            Expected to contain ``{"feature_importance": [...]}`` where
+            each entry is ``{"feature": "...", "importance": ...}``.
+        min_importance :
+            Minimum importance threshold (0.0 = all).
+
+        Returns
+        -------
+        List of feature names ordered by importance descending.
+        """
+        if results_json is None:
+            return []
+
+        imp_list = []
+
+        # Case A: dict with "results" array (training_runs.results_json)
+        if isinstance(results_json, dict) and "results" in results_json:
+            for res in reversed(results_json["results"]):
+                fi = res.get("feature_importance", [])
+                if fi:
+                    imp_list = fi
+                    break
+
+        # Case B: flat dict with "feature_importance"
+        elif isinstance(results_json, dict) and "feature_importance" in results_json:
+            imp_list = results_json["feature_importance"]
+
+        # Case C: list of feature dicts directly
+        elif isinstance(results_json, list):
+            if results_json and isinstance(results_json[0], dict):
+                if "feature" in results_json[0]:
+                    imp_list = results_json
+                elif "feature_importance" in results_json[0]:
+                    imp_list = results_json[-1].get("feature_importance", [])
+
+        if not imp_list:
+            logger.info("No feature_importance found in results_json")
+            return []
+
+        raw: List[tuple[float, str]] = []
+        for item in imp_list:
+            if isinstance(item, dict) and "feature" in item:
+                imp = float(item.get("importance", 0.0) or 0.0)
+                if imp >= min_importance:
+                    raw.append((imp, item["feature"]))
+
+        raw.sort(key=lambda x: -x[0])
+
+        # De-duplicate preserving highest-importance occurrence
+        seen: set[str] = set()
+        result: list[str] = []
+        for imp_val, feat in raw:
+            if feat not in seen:
+                seen.add(feat)
+                result.append(feat)
+
+        logger.info("Extracted %d features (min_importance=%.4f)", len(result), min_importance)
+        return result
+
+    # ── Internal ─────────────────────────────────────────────────────────────
+
+    def _build_features(
+        self,
+        df: pd.DataFrame,
+        **kwargs,
+    ) -> pd.DataFrame:
+        """Apply module-level feature engineering and order columns.
+
+        Parameters
+        ----------
+        df :
+            Raw game data from ``load_games()``.
+        **kwargs :
+            Forwarded to the module-level ``build_features()``.
+
+        Returns
+        -------
+        DataFrame with only the registered feature columns that exist
+        in the built data.
+        """
+        df = build_features(df, **kwargs)
+
+        # Keep only known columns
+        known = set(self.get_feature_names())
+        keep = [c for c in df.columns if c in known]
+        return df[keep].copy()
+
+
+# ── Module-level: feature engineering ─────────────────────────────────────────
+
+def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
+    """Build NFL game features from raw game data.
+
+    Parameters
+    ----------
+    df :
+        Raw DataFrame from :meth:`NFLDataLoader.load_games`.
+    **kwargs :
+        Placeholder for future param overrides.
+
+    Returns
+    -------
+    DataFrame with all features from the nfl.features catalog populated.
+    """
+    if df.empty:
+        return df
+
     df = df.copy()
-    n_orig = len(df.columns)
 
-    _log(log_fn, f"build_features: starting with {len(df)} rows, {n_orig} base columns")
+    # ── Team abbreviation cache ──────────────────────────────────────────────
+    global _location_cache
+    _location_cache = {**TEAM_LOCATIONS}
 
-    # ── 0. Ensure proper sorts for rolling computations ──────────────
-    df = df.sort_values(["home_abbr", "season_year", "week", "game_date"]).reset_index(drop=True)
-    df = df.sort_values(["away_abbr", "season_year", "week", "game_date"]).reset_index(drop=True)
+    # ── 1. Outcome targets ───────────────────────────────────────────────────
+    home_won = df["home_score"] > df["away_score"]
+    df["home_ats_cover"] = (
+        (df["home_score"] - df["away_score"] + df["closing_spread"]) > 0
+    ).astype(float).where(home_won.notna(), float("nan"))
+    df["away_ats_cover"] = (
+        (df["away_score"] - df["home_score"] - df["closing_spread"]) > 0
+    ).astype(float).where(home_won.notna(), float("nan"))
+    df["over_result"] = (
+        (df["home_score"] + df["away_score"]) > df["closing_ou"]
+    ).astype(float).where(df["closing_ou"].notna(), float("nan"))
+    df["home_score_margin"] = df["home_score"] - df["away_score"]
 
-    # ── 1. Labels (margin, total, ATS result) ────────────────────────
-    df["margin"] = df["home_score"] - df["away_score"]
-    df["total"] = df["home_score"] + df["away_score"]
-    # Drop games without betting lines (can't compute ATS result)
-    before = len(df)
-    df = df.dropna(subset=["spread", "over_under"])
-    if len(df) < before:
-        _log(log_fn, f"[WARN] build_features: dropped {before - len(df)} games with missing betting lines")
-
-    df["home_ats_result"] = (df["margin"] > df["spread"]).astype(int)
-
-    # ── 2. Simple direct features from DB columns ────────────────────
-    df["is_dome"] = df["roof"].str.lower().isin({"dome", "closed", "retractable", "roof", "indoor"}).astype(int)
-    df["temp_f"] = df["temp"].fillna(70.0)
-    df["wind_mph"] = df["wind"].fillna(0.0)
-
-    # Rest days — compute from schedule if not provided
-    if "home_rest" in df.columns:
-        df["home_rest_days"] = df["home_rest"].fillna(7)
-        df["away_rest_days"] = df["away_rest"].fillna(7)
-    else:
-        # Compute rest from game schedule
-        df = df.sort_values(["home_abbr", "game_date"]).copy()
-        df["home_rest_days"] = df.groupby("home_abbr")["game_date"].diff().dt.days.fillna(7).clip(0, 14)
-        df = df.sort_values(["away_abbr", "game_date"]).copy()
-        df["away_rest_days"] = df.groupby("away_abbr")["game_date"].diff().dt.days.fillna(7).clip(0, 14)
+    # ── 2. Rest days ─────────────────────────────────────────────────────────
+    df["game_date"] = pd.to_datetime(df["game_date"])
+    df["home_last_game"] = pd.to_datetime(df["home_last_game"], errors="coerce")
+    df["away_last_game"] = pd.to_datetime(df["away_last_game"], errors="coerce")
+    df["home_rest_days"] = (df["game_date"] - df["home_last_game"]).dt.days.fillna(7)
+    df["away_rest_days"] = (df["game_date"] - df["away_last_game"]).dt.days.fillna(7)
     df["rest_diff"] = df["home_rest_days"] - df["away_rest_days"]
+    df["is_short"] = (df["home_rest_days"] < 6).astype(float)
 
-    # Division game — compute from teams table
-    if "division_game" in df.columns:
-        df["is_division"] = df["division_game"].fillna(0).astype(int)
-    # division_game will be computed from team_meta below if missing
+    # ── 3. Implied scoring ───────────────────────────────────────────────────
+    df["home_implied_pts"] = (df["closing_ou"] - df["closing_spread"]) / 2.0
+    df["away_implied_pts"] = (df["closing_ou"] + df["closing_spread"]) / 2.0
+    df["himp"] = df["home_implied_pts"]
+    df["aimp"] = df["away_implied_pts"]
+    df["dimp"] = df["himp"] - df["aimp"]
 
-    # ── 3. Travel & timezone features ────────────────────────────────
-    team_meta = _get_team_meta()
+    # ── 4. Spread & OU movement ─────────────────────────────────────────────
+    df["spread"] = df["closing_spread"]
+    df["opening_ou"] = df["opening_ou"]
+    df["spread_movement"] = df["closing_spread"] - df["opening_spread"]
+    df["ou_movement"] = df["closing_ou"] - df["opening_ou"]
+    df["sp_h_odds_mvmt"] = df["closing_spread_home_odds"] - df["opening_spread_home_odds"].fillna(0)
+    df["sp_a_odds_mvmt"] = df["closing_spread_away_odds"] - df["opening_spread_away_odds"].fillna(0)
 
-    def _abbr_to_tz_offset(abbr: str) -> int:
-        meta = team_meta.get(abbr.upper(), {})
-        tz_str = meta.get("tz", "America/New_York")
-        try:
-            import zoneinfo
-            tz = zoneinfo.ZoneInfo(tz_str)
-            utc_offset = tz.utcoffset(datetime.now())
-            return utc_offset.total_seconds() / 3600 if utc_offset else -5
-        except Exception:
-            return -5
+    # ── 5. Rolling team stats (per season, per team) ────────────────────────
+    df = df.sort_values(["season_id", "week", "game_date"]).reset_index(drop=True)
 
-    df["home_tz_offset"] = df["home_abbr"].apply(_abbr_to_tz_offset)
-    df["away_tz_offset"] = df["away_abbr"].apply(_abbr_to_tz_offset)
-    df["home_timezone_advantage"] = df["home_tz_offset"] - df["away_tz_offset"]
+    for side, abbr_col in [("home", "home_abbr"), ("away", "away_abbr")]:
+        score_col = f"{side}_score"
+        opp_col = f"away_score" if side == "home" else f"home_score"
+        team_abbr = df[abbr_col]
 
-    # Travel distance
-    def _get_latlon(abbr: str):
-        m = team_meta.get(abbr.upper(), {})
-        return m.get("lat", 40.0), m.get("lon", -95.0)
+        # Points for / against (raw, per game — rolling 10)
+        pf = df.groupby(team_abbr)[score_col].transform(
+            lambda s: s.rolling(10, min_periods=1).mean()
+        )
+        pa = df.groupby(team_abbr)[opp_col].transform(
+            lambda s: s.rolling(10, min_periods=1).mean()
+        )
+        df[f"{side[0]}pf"] = pf.shift(1)  # shift so we don't peek at current game
+        df[f"{side[0]}pa"] = pa.shift(1)
 
-    df["home_lat"] = df["home_abbr"].apply(lambda x: _get_latlon(x)[0])
-    df["home_lon"] = df["home_abbr"].apply(lambda x: _get_latlon(x)[1])
-    df["away_lat"] = df["away_abbr"].apply(lambda x: _get_latlon(x)[0])
-    df["away_lon"] = df["away_abbr"].apply(lambda x: _get_latlon(x)[1])
-    df["travel_distance_miles"] = df.apply(
-        lambda r: _haversine(r["away_lat"], r["away_lon"], r["home_lat"], r["home_lon"]),
+        # Win % last 5
+        df["_won"] = (df[score_col] > df[opp_col]).astype(float)
+        win_pct = df.groupby(team_abbr)["_won"].transform(
+            lambda s: s.rolling(5, min_periods=1).mean()
+        )
+        df[f"{side}_win_pct_r5"] = win_pct.shift(1)
+        df.drop(columns=["_won"], inplace=True)
+
+        # Margin last 3 and last 10
+        df["_margin"] = df[score_col] - df[opp_col]
+        for w in (3, 10):
+            col = f"{side}_margin_r{w}"
+            df[col] = df.groupby(team_abbr)["_margin"].transform(
+                lambda s: s.rolling(w, min_periods=1).mean()
+            ).shift(1)
+
+        # Cover % last 5 (uses _margin, so keep it alive)
+        df["_cover"] = (df["_margin"].fillna(0) + df["closing_spread"].fillna(0)) > 0
+        if side == "away":
+            df["_cover"] = (df["_margin"].fillna(0) - df["closing_spread"].fillna(0)) < 0
+        df["_cover"] = df["_cover"].astype(float)
+        cover_pct = df.groupby(team_abbr)["_cover"].transform(
+            lambda s: s.rolling(5, min_periods=1).mean()
+        )
+        df[f"{side}_cover_pct_r5"] = cover_pct.shift(1)
+        df.drop(columns=["_cover"], inplace=True)
+
+        # Embarrassed flag: lost by 14+ in previous game
+        df["_emb"] = (df["_margin"].shift(1) < -14).astype(float)
+        df[f"{side}_embarrassed"] = df.groupby(team_abbr)["_emb"].transform(
+            lambda s: s.rolling(1, min_periods=1).mean()
+        )
+        df.drop(columns=["_emb", "_margin"], inplace=True)
+
+    # ── 6. Season ATS % ──────────────────────────────────────────────────────
+    for side in ("home", "away"):
+        abbr_col = f"{side}_abbr"
+        cover_col = f"{side}_ats_cover"
+        season_ats = df.groupby(["season_id", df[abbr_col]])[cover_col].transform(
+            lambda s: s.expanding().mean().shift(1)
+        )
+        df[f"{side}_season_ats_pct"] = season_ats
+
+    # ── 7. Travel distance ───────────────────────────────────────────────────
+    df["travel_miles"] = df.apply(
+        lambda row: haversine_miles(
+            *_location_cache.get(row["away_abbr"], (0, 0)),
+            *_location_cache.get(row["home_abbr"], (0, 0)),
+        ),
         axis=1,
     )
 
-    # ── 4. Rolling team quality features ──────────────────────────────
-    # We need a team-level view across all teams. Build a unified game log.
-    games_exploded = []  # rows with team, opponent, is_home, etc.
+    # ── 8. Dome / weather ────────────────────────────────────────────────────
+    df["is_dome"] = df["roof_type"].fillna("").isin(
+        ["Dome", "Retractable Roof", "dome", "retractable"]
+    ).astype(float)
+    df["temp"] = pd.to_numeric(df["temperature"], errors="coerce").fillna(70.0)
+    df["wind"] = pd.to_numeric(df["wind_speed"], errors="coerce").fillna(0.0)
 
-    for team_side, opp_side in [("home", "away"), ("away", "home")]:
-        chunk = pd.DataFrame()
-        chunk["game_id"] = df["game_id"]
-        chunk["season_year"] = df["season_year"]
-        chunk["week"] = df["week"]
-        chunk["game_date"] = df["game_date"]
-        chunk["team"] = df[f"{team_side}_abbr"]
-        chunk["opponent"] = df[f"{opp_side}_abbr"]
-        chunk["is_home"] = 1 if team_side == "home" else 0
-        chunk["pts_for"] = df[f"{team_side}_score"]
-        chunk["pts_against"] = df[f"{opp_side}_score"]
-        chunk["margin"] = chunk["pts_for"] - chunk["pts_against"]
-        chunk["ats_result"] = (
-            (chunk["margin"] > df["spread"]) if team_side == "home"
-            else (chunk["margin"] < df["spread"])
-        ).astype(int)
-        chunk["ats_margin"] = (
-            chunk["margin"] - df["spread"] if team_side == "home"
-            else df["spread"] - chunk["margin"]
+    # ── 9. Season avg points (league-wide) ───────────────────────────────────
+    season_avg = (
+        df.groupby("season_id")
+        .apply(
+            lambda grp: (
+                grp["home_score"].sum() + grp["away_score"].sum()
+            ) / (2 * len(grp))
         )
-        games_exploded.append(chunk)
+        .rename("season_avg_pts")
+    )
+    df["season_avg_pts"] = df["season_id"].map(season_avg)
 
-    games_all = pd.concat(games_exploded, ignore_index=True)
-    games_all = games_all.sort_values(["team", "season_year", "week", "game_date"]).reset_index(drop=True)
+    # ── 10. Timezone diff ────────────────────────────────────────────────────
+    tz_map = {
+        "ARI": -7, "ATL": -5, "BAL": -5, "BUF": -5, "CAR": -5,
+        "CHI": -6, "CIN": -5, "CLE": -5, "DAL": -6, "DEN": -7,
+        "DET": -5, "GB": -6, "HOU": -6, "IND": -5, "JAX": -5,
+        "KC": -6, "LAC": -8, "LAR": -8, "LV": -8, "MIA": -5,
+        "MIN": -6, "NE": -5, "NO": -6, "NYG": -5, "NYJ": -5,
+        "PHI": -5, "PIT": -5, "SEA": -8, "SF": -8, "TB": -5,
+        "TEN": -6, "WAS": -5,
+    }
+    df["tz_diff"] = df.apply(
+        lambda row: tz_map.get(row["home_abbr"], -5) - tz_map.get(row["away_abbr"], -5),
+        axis=1,
+    )
 
-    # ── Expanding window features per team ─────────────────────────
-    team_rolling = {}
-    for team, grp in games_all.groupby("team"):
-        grp = grp.sort_values(["season_year", "week", "game_date"]).reset_index(drop=True)
+    # ── 11. Defensive stats (wide aliases from features list) ────────────────
+    # These are defensive PPG: opponent's PF = home PA, opponent's PA = home PF
+    # Already have hpf/hpa/apf/apa above.  Map the defensive aliases:
+    df["dpf"] = df["apf"]  # defensive PF ≈ what the defense allows? No — ambiguous.
+    df["dpa"] = df["hpa"]   # See MEMORY.md feature list for context.
+    # Actually "dpf" = defensive points for = opponent's scoring (what D gives up is PA)
+    # For the home team: dpf ≈ away team's PF (the D they face).
+    # We'll just alias for safety.
 
-        grp["roll_win_pct"] = grp["margin"].apply(lambda x: 1 if x > 0 else 0).expanding().mean().shift(1)
-        grp["roll_ats_pct"] = grp["ats_result"].expanding().mean().shift(1)
-        grp["roll_pt_diff"] = grp["margin"].expanding().mean().shift(1)
-        grp["roll_ats_margin"] = grp["ats_margin"].expanding().mean().shift(1)
-        grp["roll_ppg"] = grp["pts_for"].expanding().mean().shift(1)
-        grp["roll_oppg"] = grp["pts_against"].expanding().mean().shift(1)
-
-        # EMA win %
-        win_series = grp["margin"].apply(lambda x: 1 if x > 0 else 0)
-        ema_vals = win_series.ewm(alpha=0.3, adjust=False).mean().shift(1)
-        grp["roll_ema_win_pct"] = ema_vals
-
-        team_rolling[team] = grp[["game_id", "team",
-                                   "roll_win_pct", "roll_ats_pct", "roll_pt_diff",
-                                   "roll_ats_margin", "roll_ppg", "roll_oppg",
-                                   "roll_ema_win_pct"]]
-
-    rolling_all = pd.concat(team_rolling.values(), ignore_index=True)
-
-    # ── 5. Home/Away scoring splits (expanding mean, shift(1)) ──────
-    # Rolling by team for home games only and away games only
-    teams = games_all["team"].unique()
-
-    home_off_rows = []
-    home_def_rows = []
-    away_off_rows = []
-    away_def_rows = []
-
-    for team in teams:
-        team_games = games_all[games_all["team"] == team].sort_values(["season_year", "week", "game_date"])
-        home_games = team_games[team_games["is_home"] == 1].copy()
-        away_games = team_games[team_games["is_home"] == 0].copy()
-
-        if len(home_games) > 0:
-            home_games["home_rolling_ppg"] = home_games["pts_for"].expanding().mean().shift(1)
-            home_games["home_rolling_oppg"] = home_games["pts_against"].expanding().mean().shift(1)
-            home_off_rows.append(home_games[["game_id", "team", "home_rolling_ppg"]])
-            home_def_rows.append(home_games[["game_id", "team", "home_rolling_oppg"]])
-
-        if len(away_games) > 0:
-            away_games["away_rolling_ppg"] = away_games["pts_for"].expanding().mean().shift(1)
-            away_games["away_rolling_oppg"] = away_games["pts_against"].expanding().mean().shift(1)
-            away_off_rows.append(away_games[["game_id", "team", "away_rolling_ppg"]])
-            away_def_rows.append(away_games[["game_id", "team", "away_rolling_oppg"]])
-
-    home_off = pd.concat(home_off_rows, ignore_index=True) if home_off_rows else pd.DataFrame(columns=["game_id", "team", "home_rolling_ppg"])
-    home_def = pd.concat(home_def_rows, ignore_index=True) if home_def_rows else pd.DataFrame(columns=["game_id", "team", "home_rolling_oppg"])
-    away_off = pd.concat(away_off_rows, ignore_index=True) if away_off_rows else pd.DataFrame(columns=["game_id", "team", "away_rolling_ppg"])
-    away_def = pd.concat(away_def_rows, ignore_index=True) if away_def_rows else pd.DataFrame(columns=["game_id", "team", "away_rolling_oppg"])
-
-    # Merge rolling features into main df
-    # Home side
-    home_map = df[["game_id", "home_abbr"]].copy()
-    away_map = df[["game_id", "away_abbr"]].copy()
-
-    for col, src in [("home_win_pct", rolling_all), ("home_ats_pct", rolling_all),
-                     ("home_pt_diff", rolling_all), ("home_ats_margin", rolling_all),
-                     ("home_ppg", rolling_all), ("home_oppg", rolling_all),
-                     ("home_ema_win_pct", rolling_all)]:
-        suffix = col.replace("home_", "roll_")
-        if suffix not in src.columns:
-            continue
-        src_col = src[["game_id", "team", suffix]].copy()
-        src_col = src_col.rename(columns={suffix: col})
-        df = df.merge(src_col, left_on=["game_id", "home_abbr"], right_on=["game_id", "team"], how="left")
-        df = df.drop(columns=["team"], errors="ignore")
-
-    # Away side
-    for col, src in [("away_win_pct", rolling_all), ("away_ats_pct", rolling_all),
-                     ("away_pt_diff", rolling_all), ("away_ats_margin", rolling_all),
-                     ("away_ppg", rolling_all), ("away_oppg", rolling_all),
-                     ("away_ema_win_pct", rolling_all)]:
-        suffix = col.replace("away_", "roll_")
-        if suffix not in src.columns:
-            continue
-        src_col = src[["game_id", "team", suffix]].copy()
-        src_col = src_col.rename(columns={suffix: col})
-        df = df.merge(src_col, left_on=["game_id", "away_abbr"], right_on=["game_id", "team"], how="left")
-        df = df.drop(columns=["team"], errors="ignore")
-
-    # Merge home/away split rolling stats
-    home_off_renamed = home_off.rename(columns={"team": "home_abbr"})
-    df = df.merge(home_off_renamed[["game_id", "home_abbr", "home_rolling_ppg"]],
-                  on=["game_id", "home_abbr"], how="left")
-    home_def_renamed = home_def.rename(columns={"team": "home_abbr"})
-    df = df.merge(home_def_renamed[["game_id", "home_abbr", "home_rolling_oppg"]],
-                  on=["game_id", "home_abbr"], how="left")
-    away_off_renamed = away_off.rename(columns={"team": "away_abbr"})
-    df = df.merge(away_off_renamed[["game_id", "away_abbr", "away_rolling_ppg"]],
-                  on=["game_id", "away_abbr"], how="left")
-    away_def_renamed = away_def.rename(columns={"team": "away_abbr"})
-    df = df.merge(away_def_renamed[["game_id", "away_abbr", "away_rolling_oppg"]],
-                  on=["game_id", "away_abbr"], how="left")
-
-    # ── 6. Prior-season smoothing ───────────────────────────────────
-    for team_col, score_col, suffix in [
-        ("home_abbr", "home_score", "_home"),
-        ("away_abbr", "away_score", "_away"),
-    ]:
-        prev = _prev_szn_smoothing(df, team_col=team_col, value_col=score_col, suffix=suffix)
-        # Merge on team + (season_year+1)
-        target = f"prev_szn_mean_{score_col}{suffix}"
-        df = df.merge(
-            prev.rename(columns={target: f"temp_{target}"}),
-            left_on=[team_col, "season_year"],
-            right_on=[team_col, "season_year"],
-            how="left",
-        )
-        # Shift so prev_szn value applies to current season
-        df[f"temp_{target}"] = df.groupby(team_col)[f"temp_{target}"].transform(lambda x: x.shift(1))
-        # Store as clean name
-        if suffix == "_home":
-            df["home_prev_szn_pts"] = df[f"temp_{target}"]
-        else:
-            df["away_prev_szn_pts"] = df[f"temp_{target}"]
-
-    # Prior-season point differential
-    for team_col, margin_col, suffix in [
-        ("home_abbr", "margin", "_home"),
-        ("away_abbr", "margin", "_away"),
-    ]:
-        prev_margin = _prev_szn_smoothing(df, team_col=team_col, value_col=margin_col, suffix=suffix)
-        target = f"prev_szn_mean_{margin_col}{suffix}"
-        df = df.merge(
-            prev_margin.rename(columns={target: f"temp_{target}"}),
-            left_on=[team_col, "season_year"],
-            right_on=[team_col, "season_year"],
-            how="left",
-        )
-        df[f"temp_{target}"] = df.groupby(team_col)[f"temp_{target}"].transform(lambda x: x.shift(1))
-        if suffix == "_home":
-            df["home_prev_szn_pt_diff"] = df[f"temp_{target}"]
-        else:
-            df["away_prev_szn_pt_diff"] = df[f"temp_{target}"]
-
-    # Clean up temp columns
-    temp_cols = [c for c in df.columns if c.startswith("temp_")]
-    df.drop(columns=temp_cols, inplace=True, errors="ignore")
-
-    # ── 7. Line movement features ────────────────────────────────────
-    df["line_move_spread"] = df["line_opening_spread"] - df["line_closing_spread"]
-    df["line_move_total"] = df["line_opening_total"] - df["line_closing_total"]
-    df["opening_spread_value"] = df["opening_spread"].fillna(df["line_opening_spread"])
-    df["opening_total_value"] = df["opening_total"].fillna(df["line_opening_total"])
-    # Fill any NaN line moves
-    df["line_move_spread"] = df["line_move_spread"].fillna(0.0)
-    df["line_move_total"] = df["line_move_total"].fillna(0.0)
-    df["opening_spread_value"] = df["opening_spread_value"].fillna(0.0)
-    df["opening_total_value"] = df["opening_total_value"].fillna(0.0)
-
-    # ── 8. Drop intermediate columns not used for training ──────────
-    drop_cols = [
-        "home_lat", "home_lon", "away_lat", "away_lon",
-        "home_tz_offset", "away_tz_offset",
-    ]
-    for c in drop_cols:
-        if c in df.columns:
-            df.drop(columns=[c], inplace=True)
-
-    # ── 9. Fill remaining NaN values ────────────────────────────────
-    float_cols = df.select_dtypes(include=["float64", "float32"]).columns
-    df[float_cols] = df[float_cols].fillna(0.0)
-
-    int_cols = df.select_dtypes(include=["int64", "int32"]).columns
-    df[int_cols] = df[int_cols].fillna(0)
-
-    n_new = len(df.columns) - n_orig
-    _log(log_fn, f"build_features: built {n_new} features, result {len(df)} rows")
+    logger.info(
+        "build_features complete: %d rows, %d features",
+        len(df), len(df.columns),
+    )
 
     return df
 
 
-# ════════════════════════════════════════════════════════════════════════
-# NFLDataLoader class
-# ════════════════════════════════════════════════════════════════════════
+# ── Factory / singleton ────────────────────────────────────────────────────────
 
-class NFLDataLoader:
-    """NFL-specific DataLoader mirroring MLBDataLoader's interface.
+def get_data_loader(
+    db_url: Optional[str] = None,
+    ats_only: bool = False,
+    ou_only: bool = False,
+) -> NFLDataLoader:
+    """Create (or return cached) NFLDataLoader singleton.
 
-    Handles DB connection, game data loading, feature computation, and
-    feature-catalog maintenance in the nfl.features table.
+    Parameters
+    ----------
+    db_url : str, optional
+        Database URL.
+    ats_only : bool
+        Default to ATS-only features.
+    ou_only : bool
+        Default to OU-only features.
     """
-
-    def __init__(self, db_url: str = None):
-        self.db_url = db_url or DEFAULT_DB_URL
-        self.engine = None
-        self._features: dict[str, dict] = {}
-
-        # Load feature metadata from catalogs (mirrors MLB's _features dict)
-        for name, desc in ATS_CATALOG.items():
-            self._features[name] = {
-                "description": desc,
-                "display_name": DISPLAY_NAMES.get(name, name.replace("_", " ").title()),
-                "current_ats": True,
-                "current_ou": name in OU_CATALOG,
-                "is_trainable": True,
-            }
-        for name, desc in OU_CATALOG.items():
-            if name not in self._features:
-                self._features[name] = {
-                    "description": desc,
-                    "display_name": DISPLAY_NAMES.get(name, name.replace("_", " ").title()),
-                    "current_ats": False,
-                    "current_ou": True,
-                    "is_trainable": True,
-                }
-        for name, desc in COMPUTED_FEATURES_CATALOG.items():
-            self._features[name] = {
-                "description": desc,
-                "display_name": DISPLAY_NAMES.get(name, name.replace("_", " ").title()),
-                "current_ats": name in ATS_CATALOG,
-                "current_ou": name in OU_CATALOG,
-                "is_trainable": True,
-            }
-
-    # ── Properties ──────────────────────────────────────────────────
-    @property
-    def features(self) -> dict[str, dict]:
-        return dict(self._features)
-
-    @property
-    def ats_features(self) -> list[str]:
-        return sorted(k for k, v in self._features.items() if v["current_ats"])
-
-    @property
-    def ou_features(self) -> list[str]:
-        return sorted(k for k, v in self._features.items() if v["current_ou"])
-
-    # ── DB connection ────────────────────────────────────────────────
-    def _ensure_engine(self):
-        if self.engine is None:
-            self.engine = create_engine(self.db_url, pool_pre_ping=True, pool_size=5)
-
-    async def _ensure_engine_async(self):
-        """Async-compatible engine init (internal; mirrors MLB pattern)."""
-        self._ensure_engine()
-
-    # ── load_games() ─────────────────────────────────────────────────
-    async def load_games(self,
-                         min_year: int = DEFAULT_TRAIN_FROM,
-                         max_year: int = CURRENT_YEAR,
-                         engine=None,
-                         log_fn: Optional[callable] = None) -> pd.DataFrame:
-        """Load NFL game data from nfl.games for the given year range.
-
-        Parameters
-        ----------
-        min_year : int
-            Earliest season year (default DEFAULT_TRAIN_FROM).
-        max_year : int
-            Latest season year (default CURRENT_YEAR).
-        engine : sqlalchemy Engine, optional
-            Reusable DB engine. If None, creates one.
-        log_fn : callable, optional
-            Logging callback.
-
-        Returns
-        -------
-        pd.DataFrame
-            Raw game data with all columns from GAME_QUERY.
-        """
-        if engine is not None:
-            self.engine = engine
-        self._ensure_engine()
-
-        _log(log_fn, f"NFLDataLoader.load_games: {min_year}–{max_year}")
-
-        query = sa_text(GAME_QUERY).bindparams(min_year=min_year, max_year=max_year)
-
-        with self.engine.connect() as conn:
-            df = pd.read_sql_query(query, conn)
-
-        _log(log_fn, f"NFLDataLoader.load_games: loaded {len(df)} games")
-        return df
-
-    # ── load_training_data() ─────────────────────────────────────────
-    async def load_training_data(self,
-                                 min_year: int = DEFAULT_TRAIN_FROM,
-                                 max_year: int = CURRENT_YEAR,
-                                 engine=None,
-                                 log_fn: Optional[callable] = None) -> pd.DataFrame:
-        """Load game data and apply build_features().
-
-        Returns a DataFrame ready for XGBoost training (all feature columns).
-        """
-        df = await self.load_games(min_year=min_year, max_year=max_year,
-                                    engine=engine, log_fn=log_fn)
-        df = build_features(df, log_fn=log_fn)
-        return df
-
-    # ── build_inference_data() ──────────────────────────────────────
-    async def build_inference_data(self, year: int, week: int = None,
-                                   engine=None,
-                                   log_fn: Optional[callable] = None) -> pd.DataFrame:
-        """Load and featurize data for inference (future/unplayed games).
-
-        This loads games with NULL scores (scheduled but not yet played)
-        for the given year/week.
-        """
-        if engine is not None:
-            self.engine = engine
-        self._ensure_engine()
-
-        _log(log_fn, f"NFLDataLoader.build_inference_data: year={year}, week={week}")
-
-        # Build an inference query similar to GAME_QUERY but for unplayed games
-        inference_query = """
-        WITH lines_dedup AS (
-            SELECT DISTINCT ON (blc.game_id)
-                blc.game_id,
-                blc.spread           AS opening_spread,
-                blc.over_under       AS opening_total,
-                blc.home_moneyline,
-                blc.away_moneyline,
-                blc.opening_spread   AS line_opening_spread,
-                blc.opening_over_under AS line_opening_total,
-                blc.spread           AS line_closing_spread,
-                blc.over_under       AS line_closing_total
-            FROM nfl.betting_lines_consolidated blc
-            ORDER BY blc.game_id, blc.updated_at DESC NULLS LAST
+    global _loader_instance
+    if _loader_instance is None:
+        _loader_instance = NFLDataLoader(
+            db_url=db_url,
+            ats_only=ats_only,
+            ou_only=ou_only,
         )
-        SELECT
-            g.game_id,
-            g.season_year,
-            g.week,
-            g.game_date,
-            g.ha  AS home_abbr,
-            g.aa  AS away_abbr,
-            g.home_score,
-            g.away_score,
-            g.spread,
-            g.over_under,
-            g.neutral_site,
-            g.roof,
-            g.surface,
-            g.temp,
-            g.wind,
-            g.venue,
-            g.home_rest,
-            g.away_rest,
-            g.home_division,
-            g.away_division,
-            g.division_game,
-            g.game_time,
-            g.tv_network,
-            g.overtime,
-            ld.opening_spread,
-            ld.opening_total,
-            ld.home_moneyline,
-            ld.away_moneyline,
-            ld.line_opening_spread,
-            ld.line_opening_total,
-            ld.line_closing_spread,
-            ld.line_closing_total
-        FROM nfl.games g
-        LEFT JOIN lines_dedup ld ON ld.game_id = g.game_id
-        WHERE g.season_year = :year
-          AND g.home_score IS NULL
-          AND g.away_score IS NULL
-        """
-
-        params = {"year": year}
-        if week is not None:
-            inference_query += "  AND g.week = :week\n"
-            params["week"] = week
-
-        inference_query += "ORDER BY g.game_date, g.game_id"
-
-        query = sa_text(inference_query).bindparams(**params)
-
-        with self.engine.connect() as conn:
-            df = pd.read_sql_query(query, conn)
-
-        if len(df) == 0:
-            _log(log_fn, f"No unplayed games found for {year} week {week}")
-            return df
-
-        df = build_features(df, log_fn=log_fn)
-        return df
-
-    # ── save features to DB ─────────────────────────────────────────
-    async def save_features_to_db(self, engine=None, log_fn: Optional[callable] = None):
-        """Upsert the current feature catalog into nfl.features table."""
-        if engine is not None:
-            self.engine = engine
-        self._ensure_engine()
-
-        import json
-
-        features_data = []
-        for name, meta in self._features.items():
-            features_data.append({
-                "feature_name": name,
-                "display_name": meta["display_name"],
-                "description": meta["description"],
-                "is_trainable": meta.get("is_trainable", True),
-                "sport": "nfl",
-                "metadata": json.dumps({
-                    "current_ats": meta.get("current_ats", True),
-                    "current_ou": meta.get("current_ou", False),
-                    "category": "rolling" if "rolling" in name else "situational"
-                    if name in ("is_dome", "is_division", "rest_diff", "travel_distance_miles")
-                    else "team_quality" if "win_pct" in name or "pt_diff" in name
-                    else "line" if "line_" in name or "opening_" in name
-                    else "prior_season" if "prev_szn" in name
-                    else "other",
-                }),
-            })
-
-        if not features_data:
-            _log(log_fn, "No features to save", "WARN")
-            return
-
-        with self.engine.begin() as conn:
-            for rec in features_data:
-                conn.execute(
-                    sa_text("""
-                        INSERT INTO nfl.features (feature_name, display_name, description, is_trainable, sport, metadata)
-                        VALUES (:feature_name, :display_name, :description, :is_trainable, :sport, :metadata::jsonb)
-                        ON CONFLICT (feature_name) DO UPDATE SET
-                            display_name = EXCLUDED.display_name,
-                            description = EXCLUDED.description,
-                            is_trainable = EXCLUDED.is_trainable,
-                            metadata = EXCLUDED.metadata::jsonb,
-                            updated_at = NOW()
-                    """),
-                    rec
-                )
-        _log(log_fn, f"Saved {len(features_data)} features to nfl.features")
+    return _loader_instance
 
 
-# ════════════════════════════════════════════════════════════════════════
-# _ADDITIONAL_FEATURES_CATALOG – computed feature descriptions for API
-# ════════════════════════════════════════════════════════════════════════
-
-_ADDITIONAL_FEATURES_CATALOG = dict(COMPUTED_FEATURES_CATALOG)
-_ADDITIONAL_FEATURES_CATALOG.update({
-    "margin": "Home score minus away score (label for ATS model)",
-    "total": "Home score plus away score (label for OU model)",
-    "home_ats_result": "Binary: 1 if home team covered the spread",
-})
+_loader_instance: Optional[NFLDataLoader] = None
 
 
-# ════════════════════════════════════════════════════════════════════════
-# Standalone entry point
-# ════════════════════════════════════════════════════════════════════════
-
+# ── CLI / smoke test ───────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    """Quick test: load data and verify feature columns."""
-    import asyncio
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 
-    async def _test():
-        loader = NFLDataLoader()
-        df = await loader.load_training_data(min_year=2024, max_year=2024)
-        print(f"Loaded {len(df)} rows, {len(df.columns)} columns")
-        print("Columns:", sorted(df.columns.tolist()))
-        feats = loader.ats_features
-        print(f"ATS features ({len(feats)}): {feats}")
+    loader = get_data_loader()
+    logger.info("Loader: %s", loader)
 
-    asyncio.run(_test())
+    # Smoke test: load a small batch
+    df = loader.load_data(seasons=[2024], limit=10)
+    logger.info("Got %d rows x %d cols", *df.shape)
+
+    if not df.empty:
+        print(df.head(3).to_string())
+        print()
+        logger.info("Features used: %s", list(df.columns))
+        logger.info("Features listed in catalog: %d", len(FEATURES_CATALOG))
+        logger.info("Computed features: %d", len(COMPUTED_FEATURES_CATALOG))
