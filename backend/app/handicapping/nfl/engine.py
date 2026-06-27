@@ -39,7 +39,8 @@ MODELS_DIR.mkdir(parents=True, exist_ok=True)
 ATS_MODEL_PATH = MODELS_DIR / "nfl_ats_best.pkl"
 OU_MODEL_PATH = MODELS_DIR / "nfl_ou_best.pkl"
 
-CURRENT_YEAR = datetime.now().year
+_now = datetime.now()
+CURRENT_SEASON = _now.year if _now.month >= 4 else _now.year - 1
 DB_DSN: str = os.environ.get(
     "DATABASE_URL",
     "postgresql://earl:earl2025@localhost:5432/earl_knows_football",
