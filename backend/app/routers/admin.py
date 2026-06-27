@@ -1249,12 +1249,18 @@ async def trigger_training(
     script = _scripts[sport][model_type]
 
     # Run as a subprocess — fire and forget
+    stderr_log = f"/tmp/train_{sport}_{model_type}.log"
+    stderr_fh = open(stderr_log, "w")
     proc = await asyncio.create_subprocess_shell(
         script,
         stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stderr=stderr_fh,
         cwd="/home/rich/.openclaw/workspace/earl-knows-football/backend",
-        env={"PYTHONPATH": "/home/rich/.openclaw/workspace/earl-knows-football/backend", "PATH": os.environ.get("PATH", "")},
+        env={
+            "PYTHONPATH": "/home/rich/.openclaw/workspace/earl-knows-football/backend",
+            "PATH": os.environ.get("PATH", ""),
+            "DATABASE_URL": os.environ.get("DATABASE_URL", "postgresql://earl:earl_dev_pass@localhost:5432/earl_knows_football"),
+        },
     )
 
     return {"status": "ok", "features_updated": len(feature_names), "training_pid": proc.pid, "message": f"Training started for {sport} {model_type} model"}

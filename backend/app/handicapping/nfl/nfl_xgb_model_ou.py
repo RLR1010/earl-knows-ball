@@ -1,473 +1,710 @@
 """
-NFL XGBoost OU (over/under) model — trains on total points vs closing OU.
-Mirrors the MLB OU model pattern exactly, including PKL naming with
-{train_id}-{test_year}.pkl and is_current tracking.
+NFL OU XGBoost Model
+====================
+Structurally mirrors mlb_xgb_model_ou.py.
 
-USAGE:
-    from app.handicapping.nfl.nfl_xgb_model_ou import run_all_years, predict_ou
-    results = await run_all_years()
-    pred = await predict_ou(game_id, home_abbr, away_abbr)
+Trains XGBoost regressors to predict the total points (over/under) for NFL
+games. Supports backtesting across historical seasons, full multi-year
+training runs, single-year training + saving, and DB-persisted predictions.
 """
-import math
+
 import os
-import pickle
-import warnings
-from datetime import date
+import sys
+import json
+import math
+import asyncio
+import traceback
+from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Optional
 
 import numpy as np
 import pandas as pd
 import xgboost as xgb
-
-from app.handicapping.db_training import save_training_run, update_pkl_filename
-
-warnings.filterwarnings("ignore")
-
-import logging
-logging.basicConfig(level=logging.INFO, format="%(message)s")
-log = logging.getLogger("earl.nfl.ou_model").info
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split
 
 from app.handicapping.nfl.data_loader import (
-    get_data_loader,
+    NFLDataLoader,
     build_features,
+    ATS_FEATURES,
     OU_FEATURES,
+    DEFAULT_TRAIN_FROM,
+    DEFAULT_DB_URL,
+    CURRENT_YEAR,
+)
+from app.handicapping.db_training import (
+    save_training_run,
+    update_pkl_filename,
 )
 
-# ── Constants ───────────────────────────────────────────────────────────
+# ════════════════════════════════════════════════════════════════════════
+# Configuration
+# ════════════════════════════════════════════════════════════════════════
 
-_DB_HELPERS_AVAILABLE = True
+SAVED_MODEL_DIR = Path("app/models/nfl")
+SAVED_MODEL_DIR.mkdir(parents=True, exist_ok=True)
 
-CURRENT_YEAR = date.today().year
-DEFAULT_TRAIN_FROM = 2021
+# Sport config — mirrors MLB OU pattern
+SCHEMA = "nfl"
+SPORT_NAME = "nfl"
+TRAIN_FROM = int(os.getenv("NFL_OU_TRAIN_FROM", str(DEFAULT_TRAIN_FROM)))
+FUNCTION_TYPE = "ou"
+MODEL_TYPE = "regressor"  # XGBRegressor for OU
 
-NFL_PKL_DIR = Path("/home/rich/.openclaw/workspace/earl-knows-football/data/models/nfl")
-NFL_PKL_DIR.mkdir(parents=True, exist_ok=True)
-_PKL_DIR = NFL_PKL_DIR
-
-# Module-level caches
-_ou_model: xgb.XGBRegressor | None = None
-_ou_feature_cache: pd.DataFrame | None = None
-
-
-def get_model_features() -> list[str]:
-    return list(OU_FEATURES)
-
-
-def _ensure_ou_features() -> list[str]:
-    return get_model_features()
-
-
-def _ou_label(df: pd.DataFrame) -> pd.Series:
-    return df["home_score"] + df["away_score"]
-
-
-def _score_label(df: pd.DataFrame) -> pd.Series:
-    return df["home_score"] - df["away_score"]
+# XGBoost params (tuned for NFL OU regression)
+XGB_PARAMS = {
+    "n_estimators": 500,
+    "max_depth": 5,
+    "learning_rate": 0.05,
+    "subsample": 0.8,
+    "colsample_bytree": 0.8,
+    "min_child_weight": 3,
+    "gamma": 0.1,
+    "reg_alpha": 0.1,
+    "reg_lambda": 1.0,
+    "random_state": 42,
+    "eval_metric": "mae",
+    "verbosity": 1,
+    "objective": "reg:absoluteerror",
+}
 
 
-# ── Backtest ────────────────────────────────────────────────────────────
+def log(msg: str):
+    """Simple console logger."""
+    ts = datetime.now().strftime("%H:%M:%S")
+    print(f"[{ts}] [{SPORT_NAME.upper()} OU] {msg}")
 
-async def run_backtest(
-    raw: pd.DataFrame,
-    feats: pd.DataFrame,
-    test_year: int,
-    feature_set: str = "full",
-    train_years: list[int] | None = None,
-    training_id: int | None = None,
-) -> dict[str, Any]:
-    """Run a single backtest year for the OU model.
+
+# ════════════════════════════════════════════════════════════════════════
+# Core Functions
+# ════════════════════════════════════════════════════════════════════════
+
+def run_backtest(train_from: int, test_year: int,
+                 skip_db: bool = False,
+                 db_url: str = None,
+                 engine=None,
+                 log_fn: Optional[callable] = None) -> dict:
+    """Run a single year backtest: train on train_from..test_year-1, test on test_year.
+
+    Uses XGBRegressor to predict total points (over/under).
 
     Parameters
     ----------
-    raw : pd.DataFrame
-        Raw game data.
-    feats : pd.DataFrame
-        Feature-engineered DataFrame.
+    train_from : int
+        Earliest season year for training data.
     test_year : int
-        Year to hold out for testing.
-    feature_set : str
-        Label for the feature set.
-    train_years : list[int] | None
-        Years to train on. Defaults to all years < test_year.
-    training_id : int | None
-        DB training_run ID — used to name the PKL {training_id}-{year}.pkl.
+        The season year to backtest against.
+    skip_db : bool
+        If True, skip saving predictions to DB.
+    db_url : str, optional
+        Database URL override.
+    engine : sqlalchemy Engine, optional
+        Pre-existing DB engine.
+    log_fn : callable, optional
+        Logging callback (defaults to built-in log).
 
     Returns
     -------
-    dict of backtest results.
+    dict
+        Results dictionary with keys: test_year, train_years, total_games, test_games,
+        feature_set, feature_importance, mae, roi, ats.
     """
-    if train_years is None:
-        train_years = [y for y in sorted(feats["year"].dropna().unique()) if y < test_year]
+    _log = log_fn or log
+    _log(f"run_backtest: train_from={train_from}, test_year={test_year}")
 
-    train_mask = feats["year"].isin(train_years)
-    test_mask = feats["year"] == test_year
+    # ── 1. Load data ────────────────────────────────────────────────
+    loader = NFLDataLoader(db_url=db_url)
+    raw = asyncio.run(loader.load_games(min_year=train_from, max_year=test_year,
+                                         engine=engine, log_fn=_log))
+    df = build_features(raw, log_fn=_log)
 
-    y = _ou_label(feats)
+    if df.empty:
+        _log("No data loaded", "ERROR")
+        return {"test_year": test_year, "error": "no_data"}
 
-    fcols = _ensure_ou_features()
-    present = [c for c in fcols if c in feats.columns]
-    missing = [c for c in fcols if c not in feats.columns]
-    if missing:
-        log(f"  OU: missing features: {missing}")
+    # ── 2. Split into train / test ──────────────────────────────────
+    train_df = df[df["season_year"] < test_year].copy()
+    test_df = df[df["season_year"] == test_year].copy()
 
-    X_train = feats.loc[train_mask, present].values
-    y_train = y.loc[train_mask].values
-    X_test = feats.loc[test_mask, present].values
-    y_test = y.loc[test_mask].values
+    _log(f"Train: {len(train_df)} games ({train_from}–{test_year-1}), "
+         f"Test: {len(test_df)} games ({test_year})")
 
-    if len(X_train) == 0 or len(X_test) == 0:
-        log(f"OU: no data for test_year={test_year}")
-        return {}
+    if len(test_df) == 0:
+        _log(f"No test data for {test_year}", "WARN")
+        return {"test_year": test_year, "error": "no_test_data"}
 
-    model = xgb.XGBRegressor(
-        n_estimators=300, max_depth=5, learning_rate=0.05,
-        subsample=0.8, colsample_bytree=0.8,
-        random_state=42, n_jobs=-1,
+    # ── 3. Identify available features ──────────────────────────────
+    available = [c for c in OU_FEATURES if c in df.columns]
+    _log(f"Using {len(available)} OU features")
+
+    # ── 4. Prepare feature matrix / label ───────────────────────────
+    X_train = train_df[available].values.astype(np.float32)
+    y_train = train_df["total"].values.astype(np.float32)
+    X_test = test_df[available].values.astype(np.float32)
+    y_test = test_df["total"].values.astype(np.float32)
+
+    # ── 5. Scale features ───────────────────────────────────────────
+    scaler = StandardScaler()
+    X_train_scaled = scaler.fit_transform(X_train)
+    X_test_scaled = scaler.transform(X_test)
+
+    # ── 6. Train model ──────────────────────────────────────────────
+    model = xgb.XGBRegressor(**XGB_PARAMS)
+    model.fit(
+        X_train_scaled, y_train,
+        eval_set=[(X_train_scaled, y_train), (X_test_scaled, y_test)],
+        verbose=False,
     )
-    model.fit(X_train, y_train)
 
-    preds = model.predict(X_test)
-    actual = y_test
-    ous = feats.loc[test_mask, "ou"].values
+    # ── 7. Predict & evaluate ──────────────────────────────────────
+    y_pred = model.predict(X_test_scaled)
 
-    # OU evaluation
-    ou_correct = 0
-    total = len(preds)
-    for i in range(total):
-        pred_over = preds[i] > ous[i]
-        actual_over = actual[i] > ous[i]
-        if pred_over == actual_over:
-            ou_correct += 1
+    mae = float(np.mean(np.abs(y_pred - y_test)))
+    rmse = float(np.sqrt(np.mean((y_pred - y_test) ** 2)))
+    _log(f"MAE: {mae:.2f}, RMSE: {rmse:.2f}")
 
-    accuracy = ou_correct / total if total > 0 else 0.0
-    profit = 0.0
-    for i in range(total):
-        pred_over = preds[i] > ous[i]
-        actual_over = actual[i] > ous[i]
-        profit += 90.91 if pred_over == actual_over else -100.0
-    roi = (profit / (total * 100)) if total > 0 else 0.0
+    # ── 8. Over/Under betting ROI ──────────────────────────────────
+    # Bet $1 on over if predicted > closing total, under if predicted < closing total
+    wins = 0
+    losses = 0
+    pushes = 0
+    results = []
 
-    # Save PKL — use training_id if provided else UUID
-    if training_id is not None:
-        pkl_stem = f"{training_id}-{test_year}"
-    else:
-        import uuid
-        pkl_stem = f"{uuid.uuid4().hex[:8]}-{test_year}"
-    pkl_path = _PKL_DIR / f"{pkl_stem}.pkl"
-    with open(pkl_path, "wb") as f:
-        pickle.dump(model, f)
-    log(f"  OU model saved: {pkl_path.name}")
+    for i in range(len(y_test)):
+        pred_total = y_pred[i]
+        actual_total = y_test[i]
+        closing_total = float(test_df.iloc[i].get("over_under", 0)) or 42.5
 
+        # Determine over/under bet
+        if pred_total > closing_total:
+            bet_over = 1  # bet over
+        elif pred_total < closing_total:
+            bet_over = 0  # bet under
+        else:
+            bet_over = -1  # push / no bet
+
+        actual_over = 1 if actual_total > closing_total else (0 if actual_total < closing_total else -1)
+
+        if bet_over == -1 or actual_over == -1:
+            pushes += 1
+        elif bet_over == actual_over:
+            wins += 1
+        else:
+            losses += 1
+
+        results.append({
+            "game_id": int(test_df.iloc[i]["game_id"]) if "game_id" in test_df.columns else i,
+            "home": str(test_df.iloc[i].get("home_abbr", "")),
+            "away": str(test_df.iloc[i].get("away_abbr", "")),
+            "predicted_total": round(float(pred_total), 1),
+            "actual_total": round(float(actual_total), 1),
+            "closing_total": round(float(closing_total), 1),
+            "error": round(float(abs(pred_total - actual_total)), 1),
+            "home_score": int(test_df.iloc[i].get("home_score", 0)),
+            "away_score": int(test_df.iloc[i].get("away_score", 0)),
+        })
+
+    total_bets = wins + losses + pushes
+    roi = ((wins - losses) * 1.0 / max(total_bets, 1)) * 100 if total_bets > 0 else 0.0
+
+    _log(f"W/L/P: {wins}/{losses}/{pushes}, ROI: {roi:.2f}%")
+
+    # ── 9. Feature importance ──────────────────────────────────────
+    importance = model.feature_importances_
+    feat_imp = {name: float(imp) for name, imp in zip(available, importance)}
+
+    # ── 10. Build result dict ────────────────────────────────────────
     result = {
         "test_year": test_year,
-        "feature_set": feature_set,
-        "ou": {
-            "pct": round(float(accuracy), 4),
-            "correct": int(ou_correct),
-            "total": int(total),
-            "roi": round(float(roi), 4),
+        "train_years": f"{train_from}–{test_year-1}",
+        "total_games": len(df),
+        "test_games": len(test_df),
+        "feature_set": available,
+        "feature_importance": feat_imp,
+        "mae": round(mae, 2),
+        "rmse": round(rmse, 2),
+        "roi": round(roi, 2),
+        "ats": {
+            "wins": wins,
+            "losses": losses,
+            "pushes": pushes,
         },
-        "train_years": train_years,
-        "pkl_stem": pkl_stem,
+        "predictions": results,
     }
-    log(
-        f"  OU {test_year}: {ou_correct}/{total} ({accuracy:.1%}) "
-        f"ROI={roi:+.1%}"
-    )
+
+    # ── 11. Save predictions to DB ──────────────────────────────────
+    if not skip_db and len(results) > 0:
+        try:
+            _save_backtest_prediction(results, test_year, engine=engine, db_url=db_url)
+            _log(f"Saved {len(results)} predictions to DB")
+        except Exception as e:
+            _log(f"Failed to save predictions: {e}\n{traceback.format_exc()}", "WARN")
+
     return result
 
 
-# ── Multi-year runner (mirrors MLB exactly) ─────────────────────────────
+def run_all_years(train_from: int = None,
+                  skip_db: bool = False,
+                  db_url: str = None,
+                  engine=None,
+                  log_fn: Optional[callable] = None) -> dict:
+    """Run backtests for all available test years and save combined model.
 
-async def run_all_years(
-    hide_progress: bool = True,
-    feature_sets: list[str] | None = None,
-    train_from: int = DEFAULT_TRAIN_FROM,
-    test_until: int | None = None,
-    skip_db: bool = False,
-) -> list[dict]:
-    """Run backtests for all available years.
+    Process years from newest to oldest (with train_from as the lower bound),
+    compile results, train a final overall model, and persist to DB.
 
-    Mirrors the MLB OU pattern: creates one DB training_run, saves per-year
-    PKLs as {db_run_id}-{year}.pkl, and updates the pkl_filename column.
+    Parameters
+    ----------
+    train_from : int, optional
+        Earliest training year (default TRAIN_FROM).
+    skip_db : bool
+        If True, skip DB persistence.
+    db_url : str, optional
+        Database URL override.
+    engine : sqlalchemy Engine, optional
+        Pre-existing DB engine.
+    log_fn : callable, optional
+        Logging callback.
+
+    Returns
+    -------
+    dict
+        Combined results with all per-year results and overall summary.
     """
-    if test_until is None:
-        test_until = CURRENT_YEAR
-    if feature_sets is None:
-        feature_sets = ["full"]
+    _log = log_fn or log
+    train_from = train_from or TRAIN_FROM
+    _log(f"run_all_years: train_from={train_from}")
 
-    total_results: list[dict] = []
+    # ── 1. Load full data ───────────────────────────────────────────
+    loader = NFLDataLoader(db_url=db_url)
+    raw = asyncio.run(loader.load_games(min_year=train_from, max_year=CURRENT_YEAR,
+                                         engine=engine, log_fn=_log))
+    df = build_features(raw, log_fn=_log)
 
-    dl = get_data_loader()
-    raw = await dl.load_training_data(min_year=train_from, max_year=test_until)
-    feats = build_features(raw)
-    feats = await dl._add_computed_features(feats)
-    log(f"Loaded {len(raw)} games, {len(feats.columns)} features")
+    if df.empty:
+        _log("No data loaded", "ERROR")
+        return {"error": "no_data"}
 
-    # Determine test years
-    all_years = sorted(feats["year"].dropna().unique().tolist())
-    if len(all_years) < 2:
-        log(f"Not enough unique years for OU backtest: {all_years}")
-        return []
-    test_years = all_years[-2:]
+    # ── 2. Determine available test years ───────────────────────────
+    all_years = sorted(df["season_year"].unique())
+    test_years = [y for y in all_years if y > train_from]
+    _log(f"Available test years: {test_years}")
 
-    for feature_set in feature_sets:
-        for year in test_years:
-            train_years = list(range(train_from, year))
-            result = await run_backtest(raw, feats, year, feature_set, train_years)
-            if result:
-                total_results.append(result)
+    if not test_years:
+        _log("No test years available", "ERROR")
+        return {"error": "no_test_years"}
 
-    # Save to DB
-    if _DB_HELPERS_AVAILABLE and save_training_run and not skip_db and total_results:
+    # ── 3. Run per-year backtests (newest first) ────────────────────
+    combined_results = []
+    for ty in reversed(test_years):
+        result = run_backtest(train_from, ty, skip_db=skip_db,
+                              db_url=db_url, engine=engine, log_fn=_log)
+        if "error" not in result:
+            combined_results.append(result)
+        else:
+            _log(f"Skipping {ty}: {result.get('error')}", "WARN")
+
+    if not combined_results:
+        _log("No backtest results", "ERROR")
+        return {"error": "no_results"}
+
+    # ── 4. Overall summary ──────────────────────────────────────────
+    total_wins = sum(r["ats"]["wins"] for r in combined_results)
+    total_losses = sum(r["ats"]["losses"] for r in combined_results)
+    total_pushes = sum(r["ats"]["pushes"] for r in combined_results)
+    total_test = total_wins + total_losses + total_pushes
+    avg_mae = float(np.mean([r["mae"] for r in combined_results if "mae" in r]))
+    overall_roi = ((total_wins - total_losses) * 1.0 / max(total_test, 1)) * 100
+
+    # ── 5. Build final feature set ──────────────────────────────────
+    final_feature_set = sorted(set(
+        f for r in combined_results for f in r.get("feature_set", [])
+    ))
+
+    # ── 6. Feature importance (average across models) ───────────────
+    avg_importance: dict[str, float] = {}
+    count = 0
+    for r in combined_results:
+        fi = r.get("feature_importance", {})
+        if fi:
+            count += 1
+            for k, v in fi.items():
+                avg_importance[k] = avg_importance.get(k, 0.0) + v
+    if count > 0:
+        for k in avg_importance:
+            avg_importance[k] = round(avg_importance[k] / count, 6)
+
+    # ── 7. Train final overall model ────────────────────────────────
+    available = [c for c in final_feature_set if c in df.columns]
+    if len(available) > 0:
+        X_all = df[available].values.astype(np.float32)
+        y_all = df["total"].values.astype(np.float32)
+
+        scaler = StandardScaler()
+        X_all_scaled = scaler.fit_transform(X_all)
+
+        final_model = xgb.XGBRegressor(**XGB_PARAMS)
+        final_model.fit(X_all_scaled, y_all, verbose=False)
+
+        # ── 8. Save model PKL ───────────────────────────────────────
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        model_filename = f"nfl_ou_{timestamp}.pkl"
+        model_path = SAVED_MODEL_DIR / model_filename
+        import joblib
+        joblib.dump({"model": final_model, "scaler": scaler, "features": available, "params": XGB_PARAMS},
+                     model_path)
+        _log(f"Saved model to {model_path}")
+
+        latest_path = SAVED_MODEL_DIR / "nfl_ou_latest.pkl"
+        joblib.dump({"model": final_model, "scaler": scaler, "features": available, "params": XGB_PARAMS},
+                     latest_path)
+        _log(f"Updated latest model symlink at {latest_path}")
+    else:
+        _log("No features available for final model", "WARN")
+        model_filename = None
+        model_path = None
+
+    # ── 9. Compile results_json ─────────────────────────────────────
+    results_json = {
+        "sport": SPORT_NAME,
+        "function_type": FUNCTION_TYPE,
+        "model_type": MODEL_TYPE,
+        "train_from": train_from,
+        "total_games": int(len(df)),
+        "avg_mae": round(avg_mae, 2),
+        "overall_roi": round(overall_roi, 2),
+        "overall_wins": total_wins,
+        "overall_losses": total_losses,
+        "overall_pushes": total_pushes,
+        "feature_set": final_feature_set,
+        "feature_importance": avg_importance,
+        "params_used": XGB_PARAMS,
+        "year_results": [
+            {
+                "test_year": r["test_year"],
+                "train_years": r.get("train_years", ""),
+                "total_games": r.get("total_games", 0),
+                "test_games": r.get("test_games", 0),
+                "feature_set": r.get("feature_set", []),
+                "feature_importance": r.get("feature_importance", {}),
+                "mae": r.get("mae", 0),
+                "roi": r.get("roi", 0),
+                "ou": r.get("ou", {"wins": 0, "losses": 0, "pushes": 0}),
+            }
+            for r in combined_results
+        ],
+        "model_filename": str(model_filename) if model_filename else None,
+    }
+
+    # ── 10. Save to DB ──────────────────────────────────────────────
+    if not skip_db:
         try:
-            def _sanitize(obj):
-                if isinstance(obj, dict):
-                    return {k: _sanitize(v) for k, v in obj.items()}
-                elif isinstance(obj, list):
-                    return [_sanitize(v) for v in obj]
-                elif isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
-                    return None
-                return obj
-
-            results_list = [_sanitize(r) for r in total_results]
-            for r, flat_entry in zip(total_results, results_list):
-                year = r["test_year"]
-                flat_entry["name"] = f"{year} NFL OU"
-                flat_entry["ou_pct"] = r["ou"]["pct"]
-                flat_entry["ou_correct"] = r["ou"]["correct"]
-                flat_entry["ou_total"] = r["ou"]["total"]
-
-            last_test_year = test_years[-1]
-            last_train_years = list(range(train_from, last_test_year))
-
-            db_run_id = save_training_run(
-                sport="nfl",
-                model_type="ou",
-                test_year=last_test_year,
-                train_years=last_train_years,
-                results_json=results_list,
-                pkl_filename="",
+            run_id = save_training_run(
+                sport=SPORT_NAME,
+                model_type=MODEL_TYPE,
+                results_json=results_json,
+                pkl_filename=str(model_filename) if model_filename else "",
                 algorithm="xgboost",
-                description=f"OU backtest {test_years[0]}-{test_years[-1]}",
+                description=f"OU backtest from {train_from} to {all_years[-1]}",
+                test_year=combined_results[-1]["test_year"],
+                train_years=combined_results[-1].get("train_years", []),
             )
+            _log(f"Saved training_run id={run_id}")
 
-            pkl_names = []
-            for r in total_results:
-                year = r["test_year"]
-                stable_name = f"{db_run_id}-{year}.pkl"
-                temp_pkls = sorted(_PKL_DIR.glob(f"*-{year}.pkl"),
-                                   key=lambda p: p.stat().st_mtime, reverse=True)
-                if temp_pkls:
-                    try:
-                        temp_pkls[0].rename(_PKL_DIR / stable_name)
-                        pkl_names.append(stable_name)
-                        log(f"  Pkl saved: {stable_name}")
-                    except FileNotFoundError:
-                        log(f"  WARNING: temp pkl for {year} not found")
-
-            if pkl_names:
-                update_pkl_filename("nfl", db_run_id, ",".join(pkl_names))
-
-            log(f"  Saved training run {db_run_id}: {len(total_results)} years")
+            if model_filename:
+                update_pkl_filename(sport=SPORT_NAME, training_id=run_id, pkl_filename=str(model_filename))
+                _log(f"Updated pkl_filename to {model_filename}")
         except Exception as e:
-            log(f"  WARNING: failed to save training run: {e}")
+            _log(f"DB save failed: {e}\n{traceback.format_exc()}", "WARN")
+    else:
+        _log("Skipping DB save (skip_db=True)")
 
-    return total_results
+    return results_json
 
 
-# ── Single-year runner ──────────────────────────────────────────────────
+def run_single(train_from: int, test_year: int,
+               skip_db: bool = False,
+               db_url: str = None,
+               engine=None,
+               log_fn: Optional[callable] = None) -> dict:
+    """Train on train_from through test_year-1, test on test_year, save model.
 
-async def run_single(
-    test_year: int,
-    feature_set: str = "full",
-    train_from: int | None = None,
-    skip_db: bool = False,
-) -> dict[str, Any]:
-    """Run backtest for a single test year."""
-    if train_from is None:
-        train_from = DEFAULT_TRAIN_FROM
+    Used for training a single-year OU model for production use.
 
-    dl = get_data_loader()
-    raw = await dl.load_training_data(min_year=train_from, max_year=test_year)
-    if raw.empty:
-        log(f"No games found")
-        return {}
+    Parameters
+    ----------
+    train_from : int
+        Earliest training season year.
+    test_year : int
+        Target season year (test data).
+    skip_db : bool
+        If True, skip DB persistence.
+    db_url : str, optional
+        Database URL override.
+    engine : sqlalchemy Engine, optional
+        Pre-existing DB engine.
+    log_fn : callable, optional
+        Logging callback.
 
-    feats = build_features(raw)
-    feats = await dl._add_computed_features(feats)
+    Returns
+    -------
+    dict
+        Results dictionary with training results and model metadata.
+    """
+    _log = log_fn or log
+    _log(f"run_single: train_from={train_from}, test_year={test_year}")
 
-    all_years = sorted(feats["year"].dropna().unique().tolist())
-    train_years = [y for y in all_years if y < test_year]
+    # ── 1. Load data ────────────────────────────────────────────────
+    loader = NFLDataLoader(db_url=db_url)
+    raw = asyncio.run(loader.load_games(min_year=train_from, max_year=test_year,
+                                         engine=engine, log_fn=_log))
+    df = build_features(raw, log_fn=_log)
 
-    result = await run_backtest(raw, feats, test_year, feature_set,
-                                 train_years, training_id=None)
-    if not result:
-        return {}
+    if df.empty:
+        _log("No data loaded", "ERROR")
+        return {"error": "no_data"}
 
-    pkl_stem = result.get("pkl_stem", "")
-    stable_name = f"{pkl_stem}-{test_year}.pkl"
+    # ── 2. Split ────────────────────────────────────────────────────
+    train_df = df[df["season_year"] < test_year].copy()
+    test_df = df[df["season_year"] == test_year].copy()
+    _log(f"Train: {len(train_df)} games, Test: {len(test_df)} games")
 
-    # Save to DB
-    if _DB_HELPERS_AVAILABLE and save_training_run and not skip_db:
+    if len(test_df) == 0:
+        _log(f"No test data for {test_year}", "WARN")
+        return {"error": "no_test_data"}
+
+    # ── 3. Features ─────────────────────────────────────────────────
+    available = [c for c in OU_FEATURES if c in df.columns]
+    _log(f"Using {len(available)} features")
+
+    X_train = train_df[available].values.astype(np.float32)
+    y_train = train_df["total"].values.astype(np.float32)
+    X_test = test_df[available].values.astype(np.float32)
+    y_test = test_df["total"].values.astype(np.float32)
+
+    # ── 4. Scale & Train ────────────────────────────────────────────
+    scaler = StandardScaler()
+    X_train_scaled = scaler.fit_transform(X_train)
+    X_test_scaled = scaler.transform(X_test)
+
+    model = xgb.XGBRegressor(**XGB_PARAMS)
+    model.fit(
+        X_train_scaled, y_train,
+        eval_set=[(X_train_scaled, y_train), (X_test_scaled, y_test)],
+        verbose=False,
+    )
+
+    # ── 5. Predict & evaluate ──────────────────────────────────────
+    y_pred = model.predict(X_test_scaled)
+
+    mae = float(np.mean(np.abs(y_pred - y_test)))
+    rmse = float(np.sqrt(np.mean((y_pred - y_test) ** 2)))
+    _log(f"MAE: {mae:.2f}, RMSE: {rmse:.2f}")
+
+    # ── 6. Over/Under betting ROI ──────────────────────────────────
+    wins = 0
+    losses = 0
+    pushes = 0
+    results_list = []
+
+    for i in range(len(y_test)):
+        pred_total = y_pred[i]
+        actual_total = y_test[i]
+        closing_total = float(test_df.iloc[i].get("over_under", 0)) or 42.5
+
+        bet_over = 1 if pred_total > closing_total else (0 if pred_total < closing_total else -1)
+        actual_over = 1 if actual_total > closing_total else (0 if actual_total < closing_total else -1)
+
+        if bet_over == -1 or actual_over == -1:
+            pushes += 1
+        elif bet_over == actual_over:
+            wins += 1
+        else:
+            losses += 1
+
+        results_list.append({
+            "game_id": int(test_df.iloc[i]["game_id"]) if "game_id" in test_df.columns else i,
+            "home": str(test_df.iloc[i].get("home_abbr", "")),
+            "away": str(test_df.iloc[i].get("away_abbr", "")),
+            "predicted_total": round(float(pred_total), 1),
+            "actual_total": round(float(actual_total), 1),
+            "closing_total": round(float(closing_total), 1),
+            "home_score": int(test_df.iloc[i].get("home_score", 0)),
+            "away_score": int(test_df.iloc[i].get("away_score", 0)),
+        })
+
+    roi = ((wins - losses) * 1.0 / max((wins + losses + pushes), 1)) * 100
+
+    # ── 7. Feature importance ──────────────────────────────────────
+    importance = model.feature_importances_
+    feat_imp = {name: float(imp) for name, imp in zip(available, importance)}
+
+    # ── 8. Save model ───────────────────────────────────────────────
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    model_filename = f"nfl_ou_single_{test_year}_{timestamp}.pkl"
+    model_path = SAVED_MODEL_DIR / model_filename
+
+    import joblib
+    joblib.dump({"model": model, "scaler": scaler, "features": available, "params": XGB_PARAMS,
+                  "train_from": train_from, "test_year": test_year},
+                 model_path)
+    _log(f"Saved model to {model_path}")
+
+    latest_path = SAVED_MODEL_DIR / "nfl_ou_latest.pkl"
+    joblib.dump({"model": model, "scaler": scaler, "features": available, "params": XGB_PARAMS},
+                 latest_path)
+    _log("Updated latest model")
+
+    # ── 9. Build results object ─────────────────────────────────────
+    results_json = {
+        "sport": SPORT_NAME,
+        "function_type": FUNCTION_TYPE,
+        "model_type": MODEL_TYPE,
+        "train_from": train_from,
+        "test_year": test_year,
+        "total_games": len(df),
+        "test_games": len(test_df),
+        "feature_set": available,
+        "feature_importance": feat_imp,
+        "mae": round(mae, 2),
+        "rmse": round(rmse, 2),
+        "roi": round(roi, 2),
+        "ou": {"wins": wins, "losses": losses, "pushes": pushes},
+        "params_used": XGB_PARAMS,
+        "model_filename": model_filename,
+        "predictions": results_list,
+    }
+
+    # ── 10. DB save ─────────────────────────────────────────────────
+    if not skip_db:
         try:
-            def _sanitize(obj):
-                if isinstance(obj, dict):
-                    return {k: _sanitize(v) for k, v in obj.items()}
-                elif isinstance(obj, list):
-                    return [_sanitize(v) for v in obj]
-                elif isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
-                    return None
-                return obj
-
-            flat_result = _sanitize(result)
-            flat_result["name"] = f"{test_year} NFL OU"
-            flat_result["ou_pct"] = result["ou"]["pct"]
-            flat_result["ou_correct"] = result["ou"]["correct"]
-            flat_result["ou_total"] = result["ou"]["total"]
-
-            temp_pkls = sorted(_PKL_DIR.glob(f"*-{test_year}.pkl"),
-                               key=lambda p: p.stat().st_mtime, reverse=True)
-
-            db_run_id = save_training_run(
-                sport="nfl",
-                model_type="ou",
+            run_id = save_training_run(
+                sport=SPORT_NAME,
+                model_type=MODEL_TYPE,
+                results_json=results_json,
+                pkl_filename=str(model_filename) if model_filename else "",
+                algorithm="xgboost",
+                description=f"OU single run test_year={test_year}",
                 test_year=test_year,
                 train_years=train_years,
-                results_json=[flat_result],
-                pkl_filename=stable_name,
-                algorithm="xgboost",
-                description=f"OU backtest {test_year}",
+            )
+            _log(f"Saved training_run id={run_id}")
+            update_pkl_filename(sport=SPORT_NAME, training_id=run_id, pkl_filename=str(model_filename) if model_filename else "")
+            _log(f"Updated pkl_filename to {model_filename}")
+        except Exception as e:
+            _log(f"DB save failed: {e}\n{traceback.format_exc()}", "WARN")
+
+        try:
+            _save_backtest_prediction(results_list, test_year, engine=engine, db_url=db_url)
+            _log("Saved predictions to nfl.game_predictions")
+        except Exception as e:
+            _log(f"Prediction save failed: {e}\n{traceback.format_exc()}", "WARN")
+
+    return results_json
+
+
+# ════════════════════════════════════════════════════════════════════════
+# _save_backtest_prediction — persist predictions to DB
+# ════════════════════════════════════════════════════════════════════════
+
+def _save_backtest_prediction(results: list[dict],
+                               test_year: int,
+                               engine=None,
+                               db_url: str = None):
+    """Save backtest predictions to nfl.game_predictions table.
+
+    Results are upserted with handicap JSON data including predicted total,
+    closing total, and error.
+    """
+    if not results:
+        return
+
+    from sqlalchemy import create_engine, text
+
+    if engine is None:
+        engine = create_engine(db_url or DEFAULT_DB_URL)
+
+    ts = datetime.now().isoformat()
+
+    with engine.begin() as conn:
+        for rec in results:
+            game_id = rec.get("game_id")
+            if not game_id:
+                continue
+
+            handicap_json = json.dumps({
+                "model_type": "ou",
+                "predicted_total": float(rec.get("predicted_total", 0)),
+                "actual_total": float(rec.get("actual_total", 0)),
+                "closing_total": float(rec.get("closing_total", 0)),
+                "error": float(rec.get("error", 0)),
+                "home_score": int(rec.get("home_score", 0)),
+                "away_score": int(rec.get("away_score", 0)),
+                "home_team": rec.get("home", ""),
+                "away_team": rec.get("away", ""),
+            })
+
+            conn.execute(
+                text("""
+                    INSERT INTO nfl.game_predictions
+                        (game_id, sport, prediction_type, prediction_json, created_at, updated_at)
+                    VALUES
+                        (:game_id, 'nfl', 'ou', :prediction_json::jsonb, :ts, :ts)
+                    ON CONFLICT (game_id, sport, prediction_type)
+                    DO UPDATE SET
+                        prediction_json = EXCLUDED.prediction_json::jsonb,
+                        updated_at = EXCLUDED.updated_at
+                """),
+                {
+                    "game_id": game_id,
+                    "prediction_json": handicap_json,
+                    "ts": ts,
+                },
             )
 
-            if temp_pkls:
-                try:
-                    new_name = f"{db_run_id}-{test_year}.pkl"
-                    temp_pkls[0].rename(_PKL_DIR / new_name)
-                    update_pkl_filename("nfl", db_run_id, new_name)
-                    log(f"  Pkl saved: {new_name}")
-                except FileNotFoundError:
-                    pass
 
-            log(f"  Saved training run {db_run_id}")
-        except Exception as e:
-            log(f"  WARNING: failed to save training run: {e}")
-
-    return result
-
-
-# ── Inference ───────────────────────────────────────────────────────────
-
-def _load_ou_model(path: str | None = None):
-    global _ou_model
-    if _ou_model is not None:
-        return _ou_model
-    path = path or str(_PKL_DIR / "nfl_ou_model.pkl")
-    if not os.path.exists(path):
-        log(f"OU model not found at {path}")
-        return None
-    with open(path, "rb") as f:
-        _ou_model = pickle.load(f)
-    log(f"OU model loaded from {path}")
-    return _ou_model
-
-
-async def predict_ou(
-    game_id: int,
-    home_abbr: str,
-    away_abbr: str,
-    pkl_path: str | None = None,
-) -> dict[str, Any] | None:
-    """Inference for a single game."""
-    global _ou_feature_cache
-
-    model = _load_ou_model(pkl_path)
-    if model is None:
-        return None
-
-    dl = get_data_loader()
-
-    if _ou_feature_cache is None:
-        log("OU: building feature cache from all recent games...")
-        raw_df = await dl.load_training_data(min_year=CURRENT_YEAR - 2,
-                                              max_year=CURRENT_YEAR)
-        upcoming = await dl.load_inference_data(year=CURRENT_YEAR)
-        raw_df = pd.concat([raw_df, upcoming], ignore_index=True)
-        feats = build_features(raw_df)
-        feats = await dl._add_computed_features(feats)
-        _ou_feature_cache = feats
-
-    game_feats = _ou_feature_cache[_ou_feature_cache["game_id"] == game_id]
-
-    if game_feats.empty:
-        game_feats = _ou_feature_cache[
-            (_ou_feature_cache["home_abbr"] == home_abbr)
-            & (_ou_feature_cache["away_abbr"] == away_abbr)
-        ].sort_values("year", ascending=False)
-        if game_feats.empty:
-            return None
-        game_feats = game_feats.iloc[:1]
-
-    fcols = _ensure_ou_features()
-    present = [c for c in fcols if c in game_feats.columns]
-    if not present:
-        return None
-
-    X = game_feats[present].values
-    pred_total = float(model.predict(X)[0])
-    ou_line = float(game_feats["ou"].iloc[0]) if "ou" in game_feats.columns else 0.0
-
-    ou_pick = "OVER" if pred_total > ou_line else "UNDER"
-    confidence = min(abs(pred_total - ou_line) / 20.0, 0.95) if ou_line != 0 else 0.5
-
-    return {
-        "ou_pick": ou_pick,
-        "predicted_total": round(pred_total, 1),
-        "ou_line": ou_line,
-        "confidence": round(confidence, 3),
-        "game_id": game_id,
-    }
-
-
-# ── Save / Load ─────────────────────────────────────────────────────────
-
-def save_model(model: xgb.XGBRegressor, path: str = None) -> str:
-    path = path or str(_PKL_DIR / "nfl_ou_model.pkl")
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "wb") as f:
-        pickle.dump(model, f)
-    log(f"OU model saved to {path}")
-    return path
-
-
-def load_model(path: str = None) -> xgb.XGBRegressor | None:
-    global _ou_model
-    path = path or str(_PKL_DIR / "nfl_ou_model.pkl")
-    return _load_ou_model(path)
-
-
-# ── CLI ─────────────────────────────────────────────────────────────────
-
-async def demo():
-    results = await run_all_years(skip_db=True)
-    log(f"\nOU Results: {len(results)} years")
-    for r in results:
-        log(f"  {r['test_year']}: acc={r['ou']['pct']:.1%} ROI={r['ou']['roi']:+.1%}")
-
+# ════════════════════════════════════════════════════════════════════════
+# CLI Entry Point
+# ════════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
-    import argparse, asyncio
-    parser = argparse.ArgumentParser(description="NFL OU XGBoost model")
-    parser.add_argument("--mode", choices=["single", "all"], default="all",
-                        help="Run single test year or all years")
-    parser.add_argument("--test-year", type=int, default=None,
-                        help="Year to test (single mode)")
+    import argparse
+
+    parser = argparse.ArgumentParser(description="NFL OU XGBoost Model Trainer")
+    parser.add_argument("--mode", choices=["all", "single"], default="all",
+                        help="Run mode: all = backtest all years, single = single year")
+    parser.add_argument("--train-from", type=int, default=DEFAULT_TRAIN_FROM,
+                        help=f"Earliest training season year (default: {DEFAULT_TRAIN_FROM})")
+    parser.add_argument("--test-year", type=int, default=CURRENT_YEAR - 1,
+                        help=f"Test season year (default: {CURRENT_YEAR - 1})")
     parser.add_argument("--skip-db", action="store_true", default=False,
-                        help="Skip saving training run to DB")
+                        help="Skip saving to database")
+    parser.add_argument("--db-url", type=str, default=None,
+                        help="Database connection URL")
+
     args = parser.parse_args()
 
+    log(f"Starting NFL OU training run")
+    log(f"Mode: {args.mode}, train_from: {args.train_from}, skip_db: {args.skip_db}")
+
     if args.mode == "all":
-        asyncio.run(demo())
+        result = run_all_years(
+            train_from=args.train_from,
+            skip_db=args.skip_db,
+            db_url=args.db_url,
+        )
     else:
-        asyncio.run(run_single(test_year=args.test_year or CURRENT_YEAR - 1))
+        result = run_single(
+            train_from=args.train_from,
+            test_year=args.test_year,
+            skip_db=args.skip_db,
+            db_url=args.db_url,
+        )
+
+    if "error" in result:
+        log(f"Run failed: {result['error']}", "ERROR")
+        sys.exit(1)
+
+    log("Run complete")
+    print(json.dumps(result, indent=2, default=str))
