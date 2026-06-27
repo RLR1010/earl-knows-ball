@@ -3011,3 +3011,180 @@ async def db_get_table(
         "limit": limit,
         "has_more": offset + len(rows) < total_count,
     }
+
+
+# ── Data Loader ────────────────────────────────────────────────────────
+# This endpoint lets admins run a data loader for a single game and see
+# every feature (raw + computed) that the data loader produces.
+
+@router.get("/admin/data-loader/{sport}/load")
+async def data_loader_load_game(
+    sport: str,
+    game_id: int = Query(..., description="Game ID to load"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_admin_user),
+):
+    """Load and build all features for a single game via the sport's data loader.
+
+    Returns ALL raw and computed features so admins can inspect what the
+    data loader produces for a given game_id.
+    """
+    sport = sport.lower()
+    if sport not in ("nfl", "mlb"):
+        raise HTTPException(status_code=400, detail=f"Unsupported sport '{sport}'. Supported: nfl, mlb")
+
+    # Build the DB URL for the data loader (sync psycopg2 connection)
+    from app.core.config import settings
+    db_url = str(settings.DATABASE_URL).replace("+asyncpg", "")
+    if "asyncpg" in str(settings.DATABASE_URL):
+        db_url = str(settings.DATABASE_URL).replace("postgresql+asyncpg://", "postgresql://")
+    else:
+        db_url = str(settings.DATABASE_URL).replace("+asyncpg", "")
+    db_url = db_url.replace("+psycopg2", "")
+
+    try:
+        # Import and instantiate the right data loader
+        if sport == "nfl":
+            from app.handicapping.nfl.data_loader import NFLDataLoader, build_features as nfl_build_features
+            dl = NFLDataLoader(db_url=db_url, logger_name="nfl_data_loader")
+        else:  # mlb
+            from app.handicapping.mlb.data_loader import MLBDataLoader, build_features as mlb_build_features
+            dl = MLBDataLoader(db_url=db_url, logger_name="mlb_data_loader")
+
+        # Step 1: Load raw game data
+        raw_df = dl.load_games(game_ids=[game_id])
+        if raw_df.empty:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No game found with game_id={game_id} for {sport.upper()}",
+            )
+
+        # Step 2: Build features
+        built_df = dl.build_features(raw_df)
+
+        # Step 3: Get the single row (merged raw + built features)
+        raw_row = raw_df.iloc[0].to_dict()
+        built_row = built_df.iloc[0].to_dict()
+
+        # Step 4: Collect feature metadata from the data loader catalogs
+        feature_metadata = dl.get_all_with_display()
+        # feature_metadata is dict: feature_name -> {display_name, description, group}
+
+        # Build the organized output
+        # Separate raw columns (pre-build_features) from computed columns
+        raw_columns = set(raw_row.keys())
+        built_columns = set(built_row.keys())
+        computed_cols = built_columns - raw_columns
+
+        # Build feature list with display info
+        features = []
+        for col_name in sorted(raw_columns):
+            val = raw_row.get(col_name)
+            if isinstance(val, (float, int)) and val != val:  # NaN check
+                val = None
+            info = feature_metadata.get(col_name, {})
+            features.append({
+                "name": col_name,
+                "display_name": info.get("display_name", col_name),
+                "group": info.get("group", "raw"),
+                "description": info.get("description", ""),
+                "value": val,
+                "type": "raw",
+            })
+
+        for col_name in sorted(computed_cols):
+            val = built_row.get(col_name)
+            if isinstance(val, (float, int)) and val != val:  # NaN check
+                val = None
+            info = feature_metadata.get(col_name, {})
+            features.append({
+                "name": col_name,
+                "display_name": info.get("display_name", col_name),
+                "group": info.get("group", "computed"),
+                "description": info.get("description", ""),
+                "value": val,
+                "type": "computed",
+            })
+
+        # Build a summary for the frontend
+        game_info = {}
+        sport_lower = sport
+        if sport == "nfl":
+            for key in ("game_id", "season_id", "week", "home_team", "away_team",
+                        "home_score", "away_score", "game_date", "status"):
+                if key in raw_row:
+                    game_info[key] = raw_row[key]
+        else:  # mlb
+            for key in ("game_id", "season_id", "ha", "aa",
+                        "home_score", "away_score", "game_date", "status"):
+                if key in raw_row:
+                    game_info[key] = raw_row[key]
+
+        return {
+            "sport": sport_lower,
+            "game_info": game_info,
+            "total_features": len(features),
+            "raw_features": sum(1 for f in features if f["type"] == "raw"),
+            "computed_features": sum(1 for f in features if f["type"] == "computed"),
+            "features": features,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        tb = traceback.format_exc()
+        logger.error("Data loader error for %s game_id=%d: %s\n%s", sport, game_id, str(e), tb)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Data loader error: {str(e)}",
+        )
+
+
+@router.get("/admin/data-loader/{sport}/game-info")
+async def data_loader_game_info(
+    sport: str,
+    game_id: int = Query(..., description="Game ID to look up"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_admin_user),
+):
+    """Quick lookup: check if a game_id exists and return basic info."""
+    sport = sport.lower()
+    if sport not in ("nfl", "mlb"):
+        raise HTTPException(status_code=400, detail=f"Unsupported sport '{sport}'")
+
+    schema_name = sport
+    table_name = "games"
+
+    try:
+        result = await db.execute(
+            text(f'SELECT * FROM "{schema_name}"."{table_name}" WHERE game_id = :gid'),
+            {"gid": game_id},
+        )
+        row = result.mappings().first()
+        if not row:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No game found with game_id={game_id} in {sport.upper()}",
+            )
+
+        # Convert to dict — only basic fields
+        basic_fields = ["game_id", "season_id", "home_team", "away_team",
+                        "home_score", "away_score", "game_date", "status", "week"]
+        info = {k: row[k] for k in basic_fields if k in row._mapping}
+
+        # Also get home/away abbreviations if they exist
+        if "ha" in row._mapping:
+            info["ha"] = row["ha"]
+        if "aa" in row._mapping:
+            info["aa"] = row["aa"]
+        if "home_abbr" in row._mapping:
+            info["home_abbr"] = row["home_abbr"]
+        if "away_abbr" in row._mapping:
+            info["away_abbr"] = row["away_abbr"]
+
+        return {"game_id": game_id, "sport": sport, "exists": True, "info": info}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

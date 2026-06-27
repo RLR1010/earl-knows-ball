@@ -1,5 +1,5 @@
 """
-Handicapping API endpoints: pick cards, matchup analysis, team stats.
+Handicapping API endpoints: pick cards, matchup analysis.
 """
 import logging
 from typing import Optional
@@ -10,7 +10,10 @@ from sqlalchemy import select
 
 from app.database import get_db
 from app.models import Season, Game, Team, BettingLine, GamePrediction
-from app.handicapping.nfl.engine import Handicapper, TeamStatsBuilder, CURRENT_SEASON, backtest_season
+from app.handicapping.nfl.engine import NFLHandicapper
+
+# CURRENT_SEASON used to live in engine.py; define it here for now
+CURRENT_SEASON = 2026
 from app.handicapping.nfl.situational import SituationalAnalyzer
 from app.handicapping.nfl.splits import SplitAnalyzer
 
@@ -31,7 +34,7 @@ async def get_week_picks(
     Returns spread picks, over/under picks, and moneyline recommendations
     with confidence scores and reasoning for every game.
     """
-    handicapper = Handicapper(db)
+    handicapper = NFLHandicapper(db)
     picks = await handicapper.handicap_week(
         year=year,
         week=week,
@@ -62,141 +65,73 @@ async def get_matchup_picks(
     home: str = Query(..., description="Home team abbreviation"),
     away: str = Query(..., description="Away team abbreviation"),
     year: int = Query(CURRENT_SEASON, description="Season year"),
-    week: int = Query(1, description="Week number"),
-    num_games: int = Query(5, description="Number of recent games to analyze"),
+    num_games: Optional[int] = Query(None, description="Number of recent games to analyze per team (None = all)"),
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Analyze a specific matchup (home team @ away team) for a given week.
+    Produce a single pick card for a hypothetical matchup.
 
-    Used by Earl's chat to provide quick matchup analysis.
+    Unlike the week endpoint, this works without a specific Game row —
+    just two team abbreviations and the season year.
     """
-    # Validate teams
-    home_r = await db.execute(select(Team).where(Team.abbreviation == home.upper()))
-    away_r = await db.execute(select(Team).where(Team.abbreviation == away.upper()))
-    if not home_r.scalar_one_or_none():
-        raise HTTPException(status_code=404, detail=f"Team '{home}' not found")
-    if not away_r.scalar_one_or_none():
-        raise HTTPException(status_code=404, detail=f"Team '{away}' not found")
-
-    handicapper = Handicapper(db)
-    card = await handicapper.analyze_matchup(
-        home_team_abbr=home.upper(),
-        away_team_abbr=away.upper(),
+    handicapper = NFLHandicapper(db)
+    pick = await handicapper.handicap_matchup(
+        home_abbr=home,
+        away_abbr=away,
         year=year,
-        week=week,
-        num_games_analysis=num_games,
+        num_games=num_games,
     )
-    if not card:
-        raise HTTPException(
-            status_code=404,
-            detail=f"No matchup found for {away} @ {home} in {year} week {week}",
-        )
-    return card
+    if not pick:
+        raise HTTPException(status_code=404, detail="Could not analyze matchup — check team abbreviations")
 
-
-@router.get("/handicapping/team-stats/{year}/{team}")
-async def get_team_stats(
-    year: int,
-    team: str,
-    num_games: Optional[int] = Query(None, description="Recent N games (None = all)"),
-    db: AsyncSession = Depends(get_db),
-):
-    """Get detailed team statistics for handicapping analysis."""
-    team_r = await db.execute(select(Team).where(Team.abbreviation == team.upper()))
-    t = team_r.scalar_one_or_none()
-    if not t:
-        raise HTTPException(status_code=404, detail=f"Team '{team}' not found")
-
-    builder = TeamStatsBuilder(db)
-    all_stats = await builder.build(year, num_games=num_games)
-    stats = all_stats.get(team.upper())
-    if not stats:
-        raise HTTPException(
-            status_code=404,
-            detail=f"No stats for {team} in {year}",
-        )
-    return stats.to_dict()
-
-
-@router.get("/handicapping/ats-standings/{year}")
-async def get_ats_standings(
-    year: int,
-    num_games: Optional[int] = Query(None, description="Recent N games"),
-    min_games: int = Query(4, description="Minimum games for ATS qualification"),
-    db: AsyncSession = Depends(get_db),
-):
-    """
-    Get ATS standings for all teams in a season.
-
-    Shows which teams are covering the spread, hitting overs/unders,
-    and their straight-up records.
-    """
-    builder = TeamStatsBuilder(db)
-    all_stats = await builder.build(year, num_games=num_games)
-
-    standings = []
-    for abbr, stats in all_stats.items():
-        if stats.games >= min_games:
-            standings.append(stats.to_dict())
-
-    standings.sort(key=lambda x: (x.get("ats_pct") or 0), reverse=True)
-
-    return {
-        "year": year,
-        "num_games": num_games or "all",
-        "standings": standings,
-    }
+    await db.commit()
+    return pick
 
 
 @router.get("/handicapping/situational/game/{game_id}")
-async def get_game_situation(
+async def get_situational_game(
     game_id: int,
     db: AsyncSession = Depends(get_db),
 ):
-    """Get situational factors for a single game (rest, travel, division, venue)."""
+    """Get situational handicapping info for a specific game."""
     analyzer = SituationalAnalyzer(db)
-    ctx = await analyzer.analyze_game(game_id)
-    if not ctx:
-        raise HTTPException(status_code=404, detail=f"Game {game_id} not found")
-    return ctx.to_dict()
+    info = await analyzer.get_situational_context_for_game(game_id)
+    return {"game_id": game_id, "situational": info}
 
 
 @router.get("/handicapping/situational/week/{year}/{week}")
-async def get_week_situations(
+async def get_situational_week(
     year: int,
     week: int,
     db: AsyncSession = Depends(get_db),
 ):
-    """Get situational factors for all games in a week."""
+    """Get situational handicapping info for all games in a week."""
     analyzer = SituationalAnalyzer(db)
-    results = await analyzer.analyze_week(year, week)
-    return {"season": year, "week": week, "games": [r.to_dict() for r in results]}
+    info = await analyzer.get_week_situational(year, week)
+    return {"season": year, "week": week, "situational": info}
 
 
 @router.get("/handicapping/splits/game/{game_id}")
-async def get_game_splits(
+async def get_splits_game(
     game_id: int,
     db: AsyncSession = Depends(get_db),
 ):
-    """Get betting splits for a single game (line movement + implied public %)."""
+    """Get betting splits / trends for a specific game."""
     analyzer = SplitAnalyzer(db)
-    split = await analyzer.analyze_game(game_id)
-    if not split:
-        raise HTTPException(status_code=404, detail=f"No betting data for game {game_id}")
-    return split.to_dict()
+    splits = await analyzer.get_game_splits(game_id)
+    return {"game_id": game_id, "splits": splits}
 
 
 @router.get("/handicapping/splits/week/{year}/{week}")
-async def get_week_splits(
+async def get_splits_week(
     year: int,
     week: int,
     db: AsyncSession = Depends(get_db),
 ):
-    """Get betting splits for all games in a week."""
+    """Get betting splits / trends for all games in a week."""
     analyzer = SplitAnalyzer(db)
-    results = await analyzer.analyze_week(year, week)
-    return {"season": year, "week": week, "games": [r.to_dict() for r in results]}
+    splits = await analyzer.get_week_splits(year, week)
+    return {"season": year, "week": week, "splits": splits}
 
 
 @router.get("/handicapping/predictions")
@@ -284,60 +219,7 @@ async def get_predictions(
     return {"predictions": results, "count": len(results)}
 
 
-@router.get("/handicapping/backtest/{year}")
-async def run_backtest(
-    year: int,
-    start_week: int = Query(1, description="First week to test (default: 1, includes all weeks)"),
-    end_week: Optional[int] = Query(None, description="Last week to test (default: season's last)"),
-    num_games: Optional[int] = Query(3, description="Number of recent games to use per team for stats"),
-    db: AsyncSession = Depends(get_db),
-):
-    """
-    Run a week-by-week backtest of the handicapping engine.
-
-    For each week N, builds team stats ONLY from games before week N
-    (simulating what you'd know before kickoff), then compares predictions
-    against actual results.
-
-    Returns ATS, O/U, and moneyline accuracy across the season.
-    """
-    result = await backtest_season(
-        db=db,
-        year=year,
-        end_week=end_week,
-        num_games=num_games,
-    )
-    return result
-
-
-@router.get("/handicapping/mlb/backtest/{year}")
-async def run_mlb_backtest(
-    year: int,
-    resume: bool = Query(True, description="Skip games already in game_predictions"),
-):
-    """
-    Run MLB season backtest in the background.
-    Trains all three XGBoost models on a 5-year lookback, then evaluates
-    predictions against every completed game. When resume=True, skips games
-    already in game_predictions so you can pick up where you left off.
-    """
-    import asyncio
-    from app.database import async_session
-    from app.handicapping.mlb.mlb_engine import backtest_season
-
-    async def _run():
-        async with async_session() as db:
-            result = await backtest_season(db, year=year, resume=resume, num_games=10)
-            logger = __import__('logging').getLogger('earl.mlb_backtest')
-            logger.info(f"MLB backtest {year} complete: RL={result.get('run_line',{}).get('pct')}, OU={result.get('over_under',{}).get('pct')}, ML={result.get('moneyline',{}).get('pct')}")
-            return result
-
-    asyncio.create_task(_run())
-    return {"status": "started", "message": f"MLB backtest {year} running in background (resume={resume}). Check API logs for progress."}
-
-
 @router.get("/handicapping/predictions/stats")
-
 async def get_prediction_stats(
     year: int = Query(None, description="Season year"),
     db: AsyncSession = Depends(get_db),
@@ -355,30 +237,34 @@ async def get_prediction_stats(
     where = and_(*conditions) if conditions else True
 
     def _pct(win, total):
-        return round(win / max(total, 1) * 100, 1) if total > 0 else 0
+        return round(win / total * 100, 1) if total else None
 
-    async def _count(col):
-        q = (
-            select(col, f.count())
-            .select_from(GamePrediction)
-            .join(Game, Game.id == GamePrediction.game_id)
-            .where(where)
-            .group_by(col)
+    # Stats from game_predictions
+    pg = await db.execute(
+        select(
+            f.count(GamePrediction.id).label("total"),
+            f.sum(f.cast(GamePrediction.ats_result == "win", f.Integer)).label("ats_wins"),
+            f.sum(f.cast(GamePrediction.ou_result == "win", f.Integer)).label("ou_wins"),
+            f.sum(f.cast(GamePrediction.ml_result == "win", f.Integer)).label("ml_wins"),
         )
-        return {r[0]: r[1] for r in (await db.execute(q)).fetchall() if r[0]}
+        .select_from(GamePrediction)
+        .join(Game)
+        .join(Season)
+        .where(where)
+    )
+    stats = pg.one()
 
-    ats = await _count(GamePrediction.ats_result)
-    ou = await _count(GamePrediction.ou_result)
-    ml = await _count(GamePrediction.ml_result)
-
-    ats_w = ats.get("Win", 0); ats_l = ats.get("Loss", 0); ats_p = ats.get("Push", 0)
-    ou_w = ou.get("Win", 0); ou_l = ou.get("Loss", 0); ou_p = ou.get("Push", 0)
-    ml_w = ml.get("Win", 0); ml_l = ml.get("Loss", 0)
+    total = stats.total or 0
+    ats_w = stats.ats_wins or 0
+    ou_w = stats.ou_wins or 0
+    ml_w = stats.ml_wins or 0
 
     return {
-        "ats": {"wins": ats_w, "losses": ats_l, "pushes": ats_p, "pct": _pct(ats_w, ats_w + ats_l)},
-        "ou":  {"wins": ou_w,  "losses": ou_l,  "pushes": ou_p,  "pct": _pct(ou_w,  ou_w + ou_l)},
-        "ml":  {"wins": ml_w,  "losses": ml_l,  "pct": _pct(ml_w,  ml_w + ml_l)},
+        "year": year or "all",
+        "total_games": total,
+        "ats": {"wins": ats_w, "total": total, "pct": _pct(ats_w, total)},
+        "over_under": {"wins": ou_w, "total": total, "pct": _pct(ou_w, total)},
+        "moneyline": {"wins": ml_w, "total": total, "pct": _pct(ml_w, total)},
     }
 
 
@@ -387,70 +273,95 @@ async def get_game_prediction(
     game_id: int,
     db: AsyncSession = Depends(get_db),
 ):
-    """Get a single game prediction (public, no auth)."""
-    from sqlalchemy import text as _t
-    r = await db.execute(_t("""
-        SELECT gp.predicted_home_score, gp.predicted_away_score, gp.predicted_total,
-               gp.predicted_margin, gp.actual_home_score, gp.actual_away_score,
-               gp.actual_total, gp.actual_margin, gp.ats_result, gp.ou_result, gp.ml_result,
-               gp.margin_conf, gp.ou_conf,
-               g.week, g.date, ht.abbreviation as ha, at.abbreviation as aa, s.year as season,
-               bl.spread, bl.over_under
-        FROM nfl.game_predictions gp
-        JOIN nfl.games g ON g.id = gp.game_id
-        JOIN nfl.seasons s ON s.id = g.season_id
-        JOIN nfl.teams ht ON ht.id = g.home_team_id
-        JOIN nfl.teams at ON at.id = g.away_team_id
-        LEFT JOIN LATERAL (
-            SELECT bl2.spread, bl2.over_under
-            FROM nfl.betting_lines bl2
-            WHERE bl2.game_id = g.id
-            ORDER BY
-                CASE bl2.source
-                    WHEN 'nflverse' THEN 1
-                    WHEN 'sbr_closing' THEN 2
-                    WHEN 'the_odds_api' THEN 3
-                    WHEN 'the_odds_api_opening' THEN 4
-                    ELSE 5
-                END,
-                bl2.recorded_at DESC
-            LIMIT 1
-        ) bl ON TRUE
-        WHERE gp.game_id = :gid AND gp.source = 'api'
-        LIMIT 1
-    """), {"gid": game_id})
-    row = r.fetchone()
+    """Get a single game's prediction with line info and confidence."""
+    # Load GamePrediction with its Game
+    pred = await db.execute(
+        select(GamePrediction)
+        .where(GamePrediction.game_id == game_id)
+        .options(
+            GamePrediction.game.and_(
+                select(Game).where(Game.id == game_id)
+            )
+        )
+    )
+    row = pred.scalar_one_or_none()
     if not row:
-        return {"error": "No prediction found", "game_id": game_id}
+        # Not in game_predictions yet; check if game exists
+        game_r = await db.execute(
+            select(Game, Season, Team)
+            .join(Season)
+            .outerjoin(Team, Game.id.isnot(None))
+            .where(Game.id == game_id)
+            .limit(1)
+        )
+        game = game_r.one_or_none()
+        if not game:
+            raise HTTPException(status_code=404, detail="Game not found")
+        return {"game_id": game_id, "prediction": None, "message": "No prediction run yet for this game"}
 
-    # Calibrate confidence — maps raw stored value to empirical accuracy
-    try:
-        from app.handicapping.calibrate_confidence import calibrate as _cal
-        raw_mc = float(row.margin_conf) if row.margin_conf else None
-        raw_ou = float(row.ou_conf) if row.ou_conf else None
-        cal_overall = _cal(raw_mc, "overall") if raw_mc else None
-        cal_ats = _cal(raw_mc, "ats") if raw_mc else None
-        cal_ou = _cal(raw_ou or raw_mc, "ou") if (raw_ou or raw_mc) else None
-        cal_ml = _cal(raw_mc, "ml") if raw_mc else None
-    except ImportError:
-        cal_overall = float(row.margin_conf) if row.margin_conf else None
-        cal_ats = None
-        cal_ou = float(row.ou_conf) if row.ou_conf else None
-        cal_ml = None
+    # Build response
+    from app.models import _is_nfl
+    from app.handicapping.confidence import confidence_score as _cal
+
+    # Load game for extra info
+    g = await db.execute(
+        select(Game).where(Game.id == game_id)
+    )
+    game = g.scalar_one_or_none()
+
+    s = await db.execute(
+        select(Season).where(Season.id == game.season_id)
+    )
+    season = s.scalar_one_or_none()
+
+    home_team_r = await db.execute(
+        select(Team).where(Team.id == game.home_team_id)
+    )
+    away_team_r = await db.execute(
+        select(Team).where(Team.id == game.away_team_id)
+    )
+    ht = home_team_r.scalar_one_or_none()
+    at = away_team_r.scalar_one_or_none()
+
+    home_abbr = ht.abbreviation if ht else "?"
+    away_abbr = at.abbreviation if at else "?"
+
+    # Load betting line
+    line_r = await db.execute(
+        select(BettingLine)
+        .where(BettingLine.game_id == game_id)
+        .order_by(BettingLine.date.desc()).limit(1)
+    )
+    line = line_r.scalar_one_or_none()
 
     return {
         "game_id": game_id,
-        "season": row.season, "week": row.week,
-        "home_team": row.ha, "away_team": row.aa,
-        "date": str(row.date) if row.date else None,
-        "predicted": {"home_score": row.predicted_home_score, "away_score": row.predicted_away_score, "total": row.predicted_total, "margin": row.predicted_margin},
-        "actual": {"home_score": row.actual_home_score, "away_score": row.actual_away_score, "total": row.actual_total, "margin": row.actual_margin},
-        "results": {"ats": row.ats_result, "ou": row.ou_result, "ml": row.ml_result},
-        "confidence": {
-            "overall": cal_overall,
-            "ats": cal_ats,
-            "ou": cal_ou,
-            "ml": cal_ml,
+        "season": season.year if season else "?",
+        "week": game.week,
+        "home_team": home_abbr,
+        "away_team": away_abbr,
+        "date": game.date.isoformat() if game.date else None,
+        "predicted": {
+            "home_score": row.predicted_home_score,
+            "away_score": row.predicted_away_score,
+            "total": row.predicted_total,
+            "margin": row.predicted_margin,
         },
-        "line": {"spread": float(row.spread) if row.spread else None, "over_under": float(row.over_under) if row.over_under else None},
+        "actual": {
+            "home_score": row.actual_home_score,
+            "away_score": row.actual_away_score,
+            "total": row.actual_total,
+            "margin": row.actual_margin,
+        },
+        "results": {
+            "ats": row.ats_result,
+            "ou": row.ou_result,
+            "ml": row.ml_result,
+        },
+        "line": {
+            "spread": float(line.spread) if line and line.spread else None,
+            "over_under": float(line.over_under) if line and line.over_under else None,
+            "home_moneyline": line.home_moneyline if line else None,
+            "away_moneyline": line.away_moneyline if line else None,
+        },
     }
