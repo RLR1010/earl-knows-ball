@@ -1,6 +1,9 @@
 import asyncio
+import logging
 from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, Header, Query, status
+
+logger = logging.getLogger(__name__)
 from sqlalchemy import select, func, case, desc, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel, EmailStr
@@ -3017,7 +3020,7 @@ async def db_get_table(
 # This endpoint lets admins run a data loader for a single game and see
 # every feature (raw + computed) that the data loader produces.
 
-@router.get("/admin/data-loader/{sport}/load")
+@router.get("/data-loader/{sport}/load")
 async def data_loader_load_game(
     sport: str,
     game_id: int = Query(..., description="Game ID to load"),
@@ -3033,25 +3036,21 @@ async def data_loader_load_game(
     if sport not in ("nfl", "mlb"):
         raise HTTPException(status_code=400, detail=f"Unsupported sport '{sport}'. Supported: nfl, mlb")
 
-    # Build the DB URL for the data loader (sync psycopg2 connection)
+    # Build the DB URL for the data loader (sync SQLAlchemy engine)
     from app.core.config import settings
-    db_url = str(settings.DATABASE_URL).replace("+asyncpg", "")
-    if "asyncpg" in str(settings.DATABASE_URL):
-        db_url = str(settings.DATABASE_URL).replace("postgresql+asyncpg://", "postgresql://")
-    else:
-        db_url = str(settings.DATABASE_URL).replace("+asyncpg", "")
-    db_url = db_url.replace("+psycopg2", "")
+    db_url = str(settings.database_url).replace("+asyncpg", "")
 
     try:
         # Import and instantiate the right data loader
         if sport == "nfl":
-            from app.handicapping.nfl.data_loader import NFLDataLoader, build_features as nfl_build_features
-            dl = NFLDataLoader(db_url=db_url, logger_name="nfl_data_loader")
+            from app.handicapping.nfl.data_loader import NFLDataLoader
+            dl = NFLDataLoader(db_url=db_url)
         else:  # mlb
-            from app.handicapping.mlb.data_loader import MLBDataLoader, build_features as mlb_build_features
-            dl = MLBDataLoader(db_url=db_url, logger_name="mlb_data_loader")
+            from app.handicapping.mlb.data_loader import MLBDataLoader
+            dl = MLBDataLoader(db_url=db_url)
 
-        # Step 1: Load raw game data
+        # Step 1: Find the game's season_id so we can load enough context
+        # for rolling stats (need current + previous season)
         raw_df = dl.load_games(game_ids=[game_id])
         if raw_df.empty:
             raise HTTPException(
@@ -3059,35 +3058,74 @@ async def data_loader_load_game(
                 detail=f"No game found with game_id={game_id} for {sport.upper()}",
             )
 
-        # Step 2: Build features
-        built_df = dl.build_features(raw_df)
+        game_row = raw_df.iloc[0]
 
-        # Step 3: Get the single row (merged raw + built features)
+        # The `seasons` parameter semantics differ by sport:
+        #   NFL: internal DB season_id (e.g. 229, 230)
+        #   MLB: calendar year (e.g. 2025, 2026)
+        # We need current + previous season so rolling stats compute correctly.
+        if sport == "nfl":
+            season_val = int(game_row["season_id"])
+            full_raw_df = dl.load_games(seasons=[season_val - 1, season_val])
+        else:  # mlb
+            season_val = int(game_row["season_year"])
+            full_raw_df = dl.load_games(seasons=[season_val - 1, season_val])
+
+        logger.info(
+            "Data loader for %s game_id=%d — loaded %d game rows from seasons around %s",
+            sport, game_id, len(full_raw_df), season_val,
+        )
+
+        if full_raw_df.empty:
+            # Fallback: just load the target season alone
+            full_raw_df = dl.load_games(seasons=[season_val])
+
+        # Step 3: Build features on the full context
+        if sport == "nfl":
+            from app.handicapping.nfl.data_loader import build_features as nfl_build_features
+            full_built_df = nfl_build_features(full_raw_df)
+        else:  # mlb
+            from app.handicapping.mlb.data_loader import build_features as mlb_build_features
+            full_built_df = mlb_build_features(full_raw_df)
+
+        # Step 4: Filter to just our target game
+        built_df = full_built_df[full_built_df["game_id"] == game_id]
+        if built_df.empty:
+            # Edge case: build_features may have renamed game_id — try the index
+            try:
+                built_df = full_built_df.loc[[game_id]]
+            except (KeyError, IndexError):
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Game {game_id} disappeared after feature engineering",
+                )
+
+        # Also filter raw_df to match
+        raw_df = full_raw_df[full_raw_df["game_id"] == game_id]
+
         raw_row = raw_df.iloc[0].to_dict()
         built_row = built_df.iloc[0].to_dict()
 
-        # Step 4: Collect feature metadata from the data loader catalogs
-        feature_metadata = dl.get_all_with_display()
-        # feature_metadata is dict: feature_name -> {display_name, description, group}
+        # Step 4: Collect feature metadata from the data loader
+        catalog = dl.get_features_catalog()  # {name: description}
+        # get_display_name is available on both NFL (returns str) and MLB data loaders
 
-        # Build the organized output
         # Separate raw columns (pre-build_features) from computed columns
         raw_columns = set(raw_row.keys())
         built_columns = set(built_row.keys())
         computed_cols = built_columns - raw_columns
 
-        # Build feature list with display info
+        # Build feature list
         features = []
         for col_name in sorted(raw_columns):
             val = raw_row.get(col_name)
             if isinstance(val, (float, int)) and val != val:  # NaN check
                 val = None
-            info = feature_metadata.get(col_name, {})
             features.append({
                 "name": col_name,
-                "display_name": info.get("display_name", col_name),
-                "group": info.get("group", "raw"),
-                "description": info.get("description", ""),
+                "display_name": dl.get_display_name(col_name),
+                "group": "raw",
+                "description": catalog.get(col_name, ""),
                 "value": val,
                 "type": "raw",
             })
@@ -3096,12 +3134,11 @@ async def data_loader_load_game(
             val = built_row.get(col_name)
             if isinstance(val, (float, int)) and val != val:  # NaN check
                 val = None
-            info = feature_metadata.get(col_name, {})
             features.append({
                 "name": col_name,
-                "display_name": info.get("display_name", col_name),
-                "group": info.get("group", "computed"),
-                "description": info.get("description", ""),
+                "display_name": dl.get_display_name(col_name),
+                "group": "computed",
+                "description": catalog.get(col_name, ""),
                 "value": val,
                 "type": "computed",
             })
@@ -3111,7 +3148,7 @@ async def data_loader_load_game(
         sport_lower = sport
         if sport == "nfl":
             for key in ("game_id", "season_id", "week", "home_team", "away_team",
-                        "home_score", "away_score", "game_date", "status"):
+                        "ha", "aa", "home_score", "away_score", "game_date", "status"):
                 if key in raw_row:
                     game_info[key] = raw_row[key]
         else:  # mlb
@@ -3141,7 +3178,7 @@ async def data_loader_load_game(
         )
 
 
-@router.get("/admin/data-loader/{sport}/game-info")
+@router.get("/data-loader/{sport}/game-info")
 async def data_loader_game_info(
     sport: str,
     game_id: int = Query(..., description="Game ID to look up"),
