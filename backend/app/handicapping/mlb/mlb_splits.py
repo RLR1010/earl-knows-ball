@@ -1,7 +1,7 @@
 """
 MLB betting splits — line movement analysis + implied public betting.
 
-Queries mlb.betting_lines for opening vs closing line movement.
+Queries mlb.betting_lines_consolidated for opening vs closing line movement.
 Same estimation heuristics as the NFL version but adapted for MLB
 run line (±1.5 being the key number) and lower totals.
 """
@@ -11,7 +11,8 @@ from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.mlb import MLBBettingLine, MLBGames, MLBSeason
+from app.models.mlb.consolidated import MLBBettingLineConsolidated
+from app.models.mlb import MLBGames, MLBSeason
 
 logger = logging.getLogger("earl.mlb_splits")
 
@@ -74,98 +75,53 @@ class MLBBettingSplit:
 
 
 class MLBSplitAnalyzer:
-    """Builds betting split analysis for MLB games."""
+    """Builds betting split analysis for MLB games using consolidated opening/closing lines."""
 
     def __init__(self, db: AsyncSession):
         self.db = db
 
     async def analyze_game(self, game_id: int) -> Optional[MLBBettingSplit]:
-        """Analyze splits for a single MLB game using opening vs current lines."""
-        # Get opening line (is_opening='true' or earliest recorded)
+        """Analyze splits for a single MLB game using consolidated opening vs closing lines."""
         r = await self.db.execute(
-            select(MLBBettingLine).where(
-                MLBBettingLine.game_id == game_id,
-                MLBBettingLine.is_opening == "true",
+            select(MLBBettingLineConsolidated).where(
+                MLBBettingLineConsolidated.game_id == game_id,
             ).limit(1)
         )
-        opening = r.scalar_one_or_none()
+        cons = r.scalar_one_or_none()
 
-        if not opening:
-            # Fall back to earliest non-opening line
-            r = await self.db.execute(
-                select(MLBBettingLine).where(
-                    MLBBettingLine.game_id == game_id,
-                ).order_by(MLBBettingLine.recorded_at.asc()).limit(1)
-            )
-            opening = r.scalar_one_or_none()
-
-        # Get latest recorded line
-        r = await self.db.execute(
-            select(MLBBettingLine).where(
-                MLBBettingLine.game_id == game_id,
-            ).order_by(MLBBettingLine.recorded_at.desc()).limit(1)
-        )
-        current = r.scalar_one_or_none()
-
-        if not current:
+        if not cons:
+            logger.debug("No consolidated betting line found for game_id=%s", game_id)
             return None
 
         split = MLBBettingSplit(game_id)
-        split.current_spread = current.spread
-        split.current_over_under = current.over_under
-        split.current_home_ml = current.home_moneyline
-        split.current_away_ml = current.away_moneyline
 
-        if opening:
-            split.opening_spread = opening.opening_spread or opening.spread
-            split.opening_over_under = opening.opening_total or opening.over_under
-            split.opening_home_ml = opening.opening_home_moneyline or opening.home_moneyline
-            split.opening_away_ml = opening.opening_away_moneyline or opening.away_moneyline
+        # Spread
+        split.current_spread = cons.closing_spread
+        split.opening_spread = cons.opening_spread
+        if split.opening_spread is not None and split.current_spread is not None:
+            split.spread_movement = round(
+                split.current_spread - split.opening_spread, 1
+            )
+            split.home_side_pct = _estimate_split(split.spread_movement)
 
-            if current.spread is not None and opening.spread is not None:
-                # For run line (-1.5/-1.5): movement significant
-                spread_movement = current.spread - opening.spread
-                split.spread_movement = round(spread_movement, 1)
-                split.home_side_pct = _estimate_split(spread_movement)
+        # Over/Under
+        split.current_over_under = cons.closing_ou
+        split.opening_over_under = cons.opening_ou
+        if split.opening_over_under is not None and split.current_over_under is not None:
+            split.ou_movement = round(
+                split.current_over_under - split.opening_over_under, 1
+            )
+            split.over_pct = _estimate_split(split.ou_movement)
 
-            if current.over_under is not None and opening.over_under is not None:
-                split.ou_movement = round(current.over_under - opening.over_under, 1)
-                split.over_pct = _estimate_split(split.ou_movement)
+        # Moneyline
+        split.current_home_ml = cons.closing_home_ml
+        split.current_away_ml = cons.closing_away_ml
+        split.opening_home_ml = cons.opening_home_ml
+        split.opening_away_ml = cons.opening_away_ml
 
-        if current.home_moneyline and current.away_moneyline:
-            split.home_ml_implied_prob = _moneyline_to_implied_prob(current.home_moneyline)
-
-        if not opening:
-            split.home_side_pct = 50.0
-            split.over_pct = 50.0
-            split.opening_spread = current.spread
-            split.opening_over_under = current.over_under
+        # Implied probability from closing moneyline
+        home_ml = split.current_home_ml
+        if home_ml is not None and home_ml != 0 and home_ml is not None:
+            split.home_ml_implied_prob = _moneyline_to_implied_prob(home_ml)
 
         return split
-
-    async def analyze_date(self, game_date: str) -> list[MLBBettingSplit]:
-        """Analyze betting splits for all games on a given date."""
-        from datetime import datetime, timezone, timedelta
-        dt = datetime.strptime(game_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-        r = await self.db.execute(
-            select(MLBGames.id).where(
-                MLBGames.date >= dt,
-                MLBGames.date < dt + timedelta(days=1),
-            ).order_by(MLBGames.date)
-        )
-        game_ids = [row[0] for row in r.fetchall()]
-        results = []
-        for gid in game_ids:
-            split = await self.analyze_game(gid)
-            if split:
-                results.append(split)
-        return results
-
-    async def analyze_games(self, game_ids: list[int]) -> list[MLBBettingSplit]:
-        """Analyze betting splits for a list of game IDs."""
-        results = []
-        for gid in game_ids:
-            split = await self.analyze_game(gid)
-            if split:
-                results.append(split)
-        return results

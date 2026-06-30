@@ -145,7 +145,8 @@ export default function DataLoaderPage() {
     setResult(null);
 
     try {
-      const res = await fetch(`/api/admin/data-loader/${sport}/load?game_id=${gid}`, {
+      // Call backend directly to avoid Next.js dev proxy 30s timeout
+      const res = await fetch(`http://localhost:8001/api/admin/data-loader/${sport}/load?game_id=${gid}`, {
         headers: { Authorization: `Bearer ${token()}` },
       });
       if (!res.ok) {

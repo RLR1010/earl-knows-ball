@@ -5,7 +5,7 @@ import certifi
 import logging
 from datetime import datetime, timezone, timedelta
 
-from sqlalchemy import select, delete
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings as app_settings
@@ -101,8 +101,12 @@ def _extract_odds_from_markets(markets: list, home_team_name: str, away_team_nam
                 point = ent.get("point")
                 price = ent.get("price")
                 if name == home_team_name:
-                    # API returns spread from home perspective, negate for our convention
-                    result["spread"] = -point
+                    # The Odds API returns point from the team's perspective:
+                    #   point < 0 = team is favored by |point|
+                    #   point > 0 = team is underdog by point
+                    # Our convention: negative = home favored, positive = home underdog.
+                    # The home team's point value is our spread directly.
+                    result["spread"] = point
                     result["spread_home_odds"] = price
                 elif name == away_team_name:
                     result["spread_away_odds"] = price
@@ -230,23 +234,23 @@ async def snapshot_mlb_opening_lines(
                 continue
 
             # ── Delete old CLOSING rows for this game ──
-            # Replace closing lines fresh each run; preserve opening lines unchanged.
+            # Use text() to bypass ORM identity-map collision when PKs are un-persisted.
             await db.execute(
-                delete(MLBBettingLine).where(
-                    MLBBettingLine.game_id == gid,
-                    MLBBettingLine.source == "the_odds_api_current",
-                    MLBBettingLine.is_opening == "false",
-                )
+                text(
+                    "DELETE FROM mlb.betting_lines "
+                    "WHERE game_id = :gid AND source = :src AND is_opening = :opening"
+                ),
+                {"gid": gid, "src": "the_odds_api_current", "opening": "false"},
             )
 
             # Track which opening rows already exist for this game
             existing_openings = set()
             open_rows = await db.execute(
-                select(MLBBettingLine.sportsbook).where(
-                    MLBBettingLine.game_id == gid,
-                    MLBBettingLine.source == "the_odds_api_current",
-                    MLBBettingLine.is_opening == "true",
-                )
+                text(
+                    "SELECT sportsbook FROM mlb.betting_lines "
+                    "WHERE game_id = :gid AND source = :src AND is_opening = :opening"
+                ),
+                {"gid": gid, "src": "the_odds_api_current", "opening": "true"},
             )
             for (sb,) in open_rows:
                 existing_openings.add(sb)
@@ -255,6 +259,8 @@ async def snapshot_mlb_opening_lines(
             # Two rows per book: opening (is_opening=True) and closing (is_opening=False)
             # The API sometimes provides an "openings" sub-dict per market.
             any_saved = False
+            # Only record FanDuel and DraftKings — reliable run line data, ~100% coverage.
+            bookmakers = [b for b in bookmakers if b.get("key", "").lower() in {'fanduel', 'draftkings'}]
             for bookmaker in bookmakers:
                 sb_key = bookmaker.get("key", "").lower().strip()
                 sb_name = ODDS_API_SPORTSBOOK_MAP.get(sb_key, sb_key)
@@ -279,42 +285,62 @@ async def snapshot_mlb_opening_lines(
                         )
                         opening.update(o_entry)
 
-                # Save closing row
-                closing_line = MLBBettingLine(
-                    game_id=gid,
-                    source="the_odds_api_current",
-                    sportsbook=sb_name,
-                    is_opening="false",
-                    spread=closing.get("spread"),
-                    over_under=closing.get("over_under"),
-                    home_moneyline=closing.get("home_moneyline"),
-                    away_moneyline=closing.get("away_moneyline"),
-                    spread_home_odds=closing.get("spread_home_odds"),
-                    spread_away_odds=closing.get("spread_away_odds"),
-                    over_odds=closing.get("over_odds"),
-                    under_odds=closing.get("under_odds"),
+                # Save closing row via raw SQL to bypass ORM identity-map collision
+                await db.execute(
+                    text(
+                        "INSERT INTO mlb.betting_lines "
+                        "(game_id, source, sportsbook, is_opening, spread, over_under, "
+                        "home_moneyline, away_moneyline, spread_home_odds, spread_away_odds, "
+                        "over_odds, under_odds) "
+                        "VALUES (:game_id, :source, :sportsbook, :is_opening, :spread, :over_under, "
+                        ":home_moneyline, :away_moneyline, :spread_home_odds, :spread_away_odds, "
+                        ":over_odds, :under_odds)"
+                    ),
+                    {
+                        "game_id": gid,
+                        "source": "the_odds_api_current",
+                        "sportsbook": sb_name,
+                        "is_opening": "false",
+                        "spread": closing.get("spread"),
+                        "over_under": closing.get("over_under"),
+                        "home_moneyline": closing.get("home_moneyline"),
+                        "away_moneyline": closing.get("away_moneyline"),
+                        "spread_home_odds": closing.get("spread_home_odds"),
+                        "spread_away_odds": closing.get("spread_away_odds"),
+                        "over_odds": closing.get("over_odds"),
+                        "under_odds": closing.get("under_odds"),
+                    },
                 )
-                db.add(closing_line)
                 loaded += 1  # count the closing row
 
                 # Save opening row (only first time this sportsbook is seen for this game)
                 # Opening lines are NEVER overwritten after first insert.
                 if sb_name not in existing_openings:
-                    opening_line = MLBBettingLine(
-                        game_id=gid,
-                        source="the_odds_api_current",
-                        sportsbook=sb_name,
-                        is_opening="true",
-                        spread=opening.get("spread") or closing.get("spread"),
-                        over_under=opening.get("over_under") or closing.get("over_under"),
-                        home_moneyline=opening.get("home_moneyline") or closing.get("home_moneyline"),
-                        away_moneyline=opening.get("away_moneyline") or closing.get("away_moneyline"),
-                        spread_home_odds=opening.get("spread_home_odds") or closing.get("spread_home_odds"),
-                        spread_away_odds=opening.get("spread_away_odds") or closing.get("spread_away_odds"),
-                        over_odds=opening.get("over_odds") or closing.get("over_odds"),
-                        under_odds=opening.get("under_odds") or closing.get("under_odds"),
+                    await db.execute(
+                        text(
+                            "INSERT INTO mlb.betting_lines "
+                            "(game_id, source, sportsbook, is_opening, spread, over_under, "
+                            "home_moneyline, away_moneyline, spread_home_odds, spread_away_odds, "
+                            "over_odds, under_odds) "
+                            "VALUES (:game_id, :source, :sportsbook, :is_opening, :spread, :over_under, "
+                            ":home_moneyline, :away_moneyline, :spread_home_odds, :spread_away_odds, "
+                            ":over_odds, :under_odds)"
+                        ),
+                        {
+                            "game_id": gid,
+                            "source": "the_odds_api_current",
+                            "sportsbook": sb_name,
+                            "is_opening": "true",
+                            "spread": opening.get("spread") or closing.get("spread"),
+                            "over_under": opening.get("over_under") or closing.get("over_under"),
+                            "home_moneyline": opening.get("home_moneyline") or closing.get("home_moneyline"),
+                            "away_moneyline": opening.get("away_moneyline") or closing.get("away_moneyline"),
+                            "spread_home_odds": opening.get("spread_home_odds") or closing.get("spread_home_odds"),
+                            "spread_away_odds": opening.get("spread_away_odds") or closing.get("spread_away_odds"),
+                            "over_odds": opening.get("over_odds") or closing.get("over_odds"),
+                            "under_odds": opening.get("under_odds") or closing.get("under_odds"),
+                        },
                     )
-                    db.add(opening_line)
                     existing_openings.add(sb_name)  # prevent duplicate insert
                     loaded += 1  # count the new opening row
                 # closing row always inserted fresh (already added above)
@@ -330,13 +356,12 @@ async def snapshot_mlb_opening_lines(
             event_id = event.get("id", "?")
             logger.warning(f"Error on event {event_id}: {e}")
             skipped.append(str(e))
-
-    await db.commit()
     logger.info(
         f"MLB per-book lines: {loaded} rows for {len(data)} games, "
         f"{len(updated_game_ids)} updated"
     )
 
+    await db.commit()
     return {
         "loaded": loaded,
         "updated_game_ids": list(updated_game_ids),

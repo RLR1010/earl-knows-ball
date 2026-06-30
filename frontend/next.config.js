@@ -16,6 +16,10 @@ const nextConfig = {
       { source: "/health", destination: "http://localhost:8001/health" },
     ];
   },
+  // Increase proxy timeout for slow data loader queries
+  httpAgentOptions: {
+    keepAlive: true,
+  },
 };
 
 module.exports = nextConfig;

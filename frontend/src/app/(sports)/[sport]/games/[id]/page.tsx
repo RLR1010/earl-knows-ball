@@ -464,18 +464,18 @@ function MLBClassicPage({ gameId }: { gameId: string | undefined }) {
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             <div className="text-center p-3 rounded-lg bg-white/[0.03]">
               <div className="text-[10px] text-gray-500 uppercase">Moneyline</div>
-              <div className="text-sm mt-1"><span className="text-earl-400">{game.home_team}</span> {formatOdds(betting_lines[0]?.home_moneyline)}<span className="text-gray-600 mx-2">|</span><span className="text-gray-400">{game.away_team}</span> {formatOdds(betting_lines[0]?.away_moneyline)}</div>
+              <div className="text-sm mt-1"><span className="text-earl-400">{game.away_team}</span> {formatOdds(betting_lines[0]?.away_moneyline)}<span className="text-gray-600 mx-2">|</span><span className="text-gray-400">{game.home_team}</span> {formatOdds(betting_lines[0]?.home_moneyline)}</div>
             </div>
             <div className="text-center p-3 rounded-lg bg-white/[0.03]">
               <div className="text-[10px] text-gray-500 uppercase">Run Line</div>
               <div className="text-sm mt-1">
                 {betting_lines[0]?.spread != null ? (
                   <>
-                    <span className="text-earl-400">{game.home_team}</span> {betting_lines[0].spread > 0 ? "+"+betting_lines[0].spread : betting_lines[0].spread}
-                    <span className="text-gray-500 text-xs ml-1">({formatOdds(betting_lines[0]?.spread_home_odds ?? -110)})</span>
-                    <span className="text-gray-600 mx-1">|</span>
-                    <span className="text-gray-400">{game.away_team}</span>
+                    <span className="text-earl-400">{game.away_team}</span> {(betting_lines[0].spread * -1) > 0 ? "+"+(betting_lines[0].spread * -1) : betting_lines[0].spread * -1}
                     <span className="text-gray-500 text-xs ml-1">({formatOdds(betting_lines[0]?.spread_away_odds ?? -110)})</span>
+                    <span className="text-gray-600 mx-1">|</span>
+                    <span className="text-gray-400">{game.home_team}</span> {betting_lines[0].spread > 0 ? "+"+betting_lines[0].spread : betting_lines[0].spread}
+                    <span className="text-gray-500 text-xs ml-1">({formatOdds(betting_lines[0]?.spread_home_odds ?? -110)})</span>
                   </>
                 ) : "-"}
               </div>
@@ -586,27 +586,21 @@ function MLBClassicPage({ gameId }: { gameId: string | undefined }) {
                       {pick_card.results.run_line}
                     </div>
                     <div className="flex items-center gap-2 mt-1">
-                      <div className="h-1.5 w-full bg-gray-700 rounded-full overflow-hidden">
-                        <div className={`h-full rounded-full ${pick_card.confidence?.rl != null ? confidenceBar(pick_card.confidence.rl) : "bg-gray-500"}`} 
-                          style={{width: `${Math.round((pick_card.confidence?.rl || 0) * 100)}%`}}/>
-                      </div>
-                      <span className="text-[10px] font-semibold text-gray-400">{Math.round((pick_card.confidence?.rl || 0) * 100)}%</span>
-                    </div>
-                    <div className="text-xs text-gray-500 mt-1">
+                    {pick_card.expected_value?.rl != null && (
+                      <span className={`text-[10px] font-semibold mt-1 ${pick_card.expected_value.rl >= 0 ? "text-green-400" : "text-red-400"}`}>
+                        EV: {pick_card.expected_value.rl >= 0 ? "+" : ""}{pick_card.expected_value.rl.toFixed(1)}¢
+                      </span>
+                    )}
                       Pick: {pick_card.picks?.run_line || "-"}
                     </div>
                   </>
                 ) : pick_card.picks?.run_line && pick_card.picks.run_line !== "-" ? (
                   <>
                     <div className="text-lg font-bold mt-1 text-blue-400">{pick_card.picks.run_line}</div>
-                    {pick_card.confidence?.rl != null && (
-                      <div className="flex items-center gap-2 mt-1">
-                        <div className="h-1.5 w-full bg-gray-700 rounded-full overflow-hidden">
-                          <div className={`h-full rounded-full ${confidenceBar(pick_card.confidence.rl)}`} 
-                            style={{width: `${Math.round(pick_card.confidence.rl * 100)}%`}}/>
-                        </div>
-                        <span className="text-[10px] font-semibold text-gray-400">{Math.round(pick_card.confidence.rl * 100)}%</span>
-                      </div>
+                    {pick_card.expected_value?.rl != null && (
+                      <span className={`text-[10px] font-semibold mt-1 ${pick_card.expected_value.rl >= 0 ? "text-green-400" : "text-red-400"}`}>
+                        EV: {pick_card.expected_value.rl >= 0 ? "+" : ""}{pick_card.expected_value.rl.toFixed(1)}¢
+                      </span>
                     )}
                     <div className="text-xs text-gray-500 mt-1">
                       {pick_card.lines?.run_line != null && pick_card.picks?.run_line && pick_card.picks.run_line !== "-" && (
@@ -628,13 +622,11 @@ function MLBClassicPage({ gameId }: { gameId: string | undefined }) {
                       {pick_card.results.over_under}
                     </div>
                     <div className="flex items-center gap-2 mt-1">
-                      <div className="h-1.5 w-full bg-gray-700 rounded-full overflow-hidden">
-                        <div className={`h-full rounded-full ${pick_card.confidence?.ou != null ? confidenceBar(pick_card.confidence.ou) : "bg-gray-500"}`}
-                          style={{width: `${Math.round((pick_card.confidence?.ou || 0) * 100)}%`}}/>
-                      </div>
-                      <span className="text-[10px] font-semibold text-gray-400">{Math.round((pick_card.confidence?.ou || 0) * 100)}%</span>
-                    </div>
-                    <div className="text-xs text-gray-500 mt-1">
+                    {pick_card.expected_value?.ou != null && (
+                      <span className={`text-[10px] font-semibold mt-1 ${pick_card.expected_value.ou >= 0 ? "text-green-400" : "text-red-400"}`}>
+                        EV: {pick_card.expected_value.ou >= 0 ? "+" : ""}{pick_card.expected_value.ou.toFixed(1)}¢
+                      </span>
+                    )}
                       Pick: {pick_card.picks?.over_under || "-"}
                     </div>
                   </>
@@ -643,14 +635,10 @@ function MLBClassicPage({ gameId }: { gameId: string | undefined }) {
                 ) : pick_card.picks?.over_under && pick_card.picks.over_under !== "-" ? (
                   <>
                     <div className="text-lg font-bold mt-1 text-yellow-400">{pick_card.picks.over_under.toUpperCase()}</div>
-                    {pick_card.confidence?.ou != null && (
-                      <div className="flex items-center gap-2 mt-1">
-                        <div className="h-1.5 w-full bg-gray-700 rounded-full overflow-hidden">
-                          <div className={`h-full rounded-full ${confidenceBar(pick_card.confidence.ou)}`}
-                            style={{width: `${Math.round(pick_card.confidence.ou * 100)}%`}}/>
-                        </div>
-                        <span className="text-[10px] font-semibold text-gray-400">{Math.round(pick_card.confidence.ou * 100)}%</span>
-                      </div>
+                    {pick_card.expected_value?.ou != null && (
+                      <span className={`text-[10px] font-semibold mt-1 ${pick_card.expected_value.ou >= 0 ? "text-green-400" : "text-red-400"}`}>
+                        EV: {pick_card.expected_value.ou >= 0 ? "+" : ""}{pick_card.expected_value.ou.toFixed(1)}¢
+                      </span>
                     )}
                     <div className="text-xs text-gray-500 mt-1">
                       {pick_card.lines?.over_under != null && `O/U ${pick_card.lines.over_under}`}
@@ -670,13 +658,11 @@ function MLBClassicPage({ gameId }: { gameId: string | undefined }) {
                       {pick_card.results.moneyline}
                     </div>
                     <div className="flex items-center gap-2 mt-1">
-                      <div className="h-1.5 w-full bg-gray-700 rounded-full overflow-hidden">
-                        <div className={`h-full rounded-full ${pick_card.confidence?.ml != null ? confidenceBar(pick_card.confidence.ml) : "bg-gray-500"}`}
-                          style={{width: `${Math.round((pick_card.confidence?.ml || 0) * 100)}%`}}/>
-                      </div>
-                      <span className="text-[10px] font-semibold text-gray-400">{Math.round((pick_card.confidence?.ml || 0) * 100)}%</span>
-                    </div>
-                    <div className="text-xs text-gray-500 mt-1">
+                    {pick_card.expected_value?.ml != null && (
+                      <span className={`text-[10px] font-semibold mt-1 ${pick_card.expected_value.ml >= 0 ? "text-green-400" : "text-red-400"}`}>
+                        EV: {pick_card.expected_value.ml >= 0 ? "+" : ""}{pick_card.expected_value.ml.toFixed(1)}¢
+                      </span>
+                    )}
                       Pick: {pick_card.picks?.moneyline === "home" ? game.home_team : pick_card.picks?.moneyline === "away" ? game.away_team : pick_card.picks?.moneyline || "-"}
                     </div>
                   </>
@@ -686,35 +672,27 @@ function MLBClassicPage({ gameId }: { gameId: string | undefined }) {
                       {pick_card.picks.moneyline === "home" ? game.home_team :
                        pick_card.picks.moneyline === "away" ? game.away_team : pick_card.picks.moneyline}
                     </div>
-                    {pick_card.confidence?.ml != null && pick_card.confidence.ml > 0 && (
-                      <div className="flex items-center gap-2 mt-1">
-                        <div className="h-1.5 w-full bg-gray-700 rounded-full overflow-hidden">
-                          <div className={`h-full rounded-full ${confidenceBar(pick_card.confidence.ml)}`}
-                            style={{width: `${Math.round(pick_card.confidence.ml * 100)}%`}}/>
-                        </div>
-                        <span className="text-[10px] font-semibold text-gray-400">{Math.round(pick_card.confidence.ml * 100)}%</span>
-                      </div>
+                    {pick_card.expected_value?.ml != null && (
+                      <span className={`text-[10px] font-semibold mt-1 ${pick_card.expected_value.ml >= 0 ? "text-green-400" : "text-red-400"}`}>
+                        EV: {pick_card.expected_value.ml >= 0 ? "+" : ""}{pick_card.expected_value.ml.toFixed(1)}¢
+                      </span>
                     )}
                     <div className="text-xs text-gray-500 mt-1">
                       {pick_card.lines?.home_moneyline != null && pick_card.lines.away_moneyline != null && (
-                        <>{game.home_team} {formatOdds(pick_card.lines.home_moneyline)} | {game.away_team} {formatOdds(pick_card.lines.away_moneyline)}</>
+                        <>{game.away_team} {formatOdds(pick_card.lines.away_moneyline)} | {game.home_team} {formatOdds(pick_card.lines.home_moneyline)}</>
                       )}
                     </div>
                   </>
                 ) : betting_lines && betting_lines[0]?.home_moneyline != null ? (
                   <>
                     <div className="text-xs text-gray-500 mt-1">Waiting for edge</div>
-                    {pick_card.confidence?.ml != null && pick_card.confidence.ml > 0 && (
-                      <div className="flex items-center gap-2 mt-1">
-                        <div className="h-1.5 w-full bg-gray-700 rounded-full overflow-hidden">
-                          <div className="h-full rounded-full bg-cyan-500"
-                            style={{width: `${Math.round(pick_card.confidence.ml * 100)}%`}}/>
-                        </div>
-                        <span className="text-[10px] font-semibold text-gray-400">{Math.round(pick_card.confidence.ml * 100)}%</span>
-                      </div>
+                    {pick_card.expected_value?.ml != null && (
+                      <span className={`text-[10px] font-semibold mt-1 ${pick_card.expected_value.ml >= 0 ? "text-green-400" : "text-red-400"}`}>
+                        EV: {pick_card.expected_value.ml >= 0 ? "+" : ""}{pick_card.expected_value.ml.toFixed(1)}¢
+                      </span>
                     )}
                     <div className="text-xs text-gray-500 mt-1">
-                      {game.home_team} {formatOdds(betting_lines[0].home_moneyline)} | {game.away_team} {formatOdds(betting_lines[0].away_moneyline)}
+                      {game.away_team} {formatOdds(betting_lines[0].away_moneyline)} | {game.home_team} {formatOdds(betting_lines[0].home_moneyline)}
                     </div>
                   </>
                 ) : (

@@ -1135,6 +1135,10 @@ async def mlb_game_boxscore(
                 closing_ou AS over_under,
                 closing_home_ml AS home_moneyline,
                 closing_away_ml AS away_moneyline,
+                closing_spread_home_odds AS spread_home_odds,
+                closing_spread_away_odds AS spread_away_odds,
+                closing_over_odds AS over_odds,
+                closing_under_odds AS under_odds,
                 closing_home_implied_probability AS home_implied_probability,
                 closing_away_implied_probability AS away_implied_probability,
                 opening_spread,
@@ -1151,30 +1155,13 @@ async def mlb_game_boxscore(
         lines.append(dict(row._mapping))
         # Cast Decimals to float for JSON
         for key in ['spread', 'over_under', 'home_moneyline', 'away_moneyline',
+                     'spread_home_odds', 'spread_away_odds',
+                     'over_odds', 'under_odds',
                      'home_implied_probability', 'away_implied_probability',
                      'opening_spread', 'opening_total',
                      'opening_home_moneyline', 'opening_away_moneyline']:
             if key in lines[0] and isinstance(lines[0][key], decimal.Decimal):
                 lines[0][key] = float(lines[0][key])
-
-        # Also fetch spread odds and over/under odds from raw betting_lines
-        odds_r = await db.execute(
-            text("""
-                SELECT spread_home_odds, spread_away_odds, over_odds, under_odds
-                FROM mlb.betting_lines
-                WHERE game_id = :game_id
-                  AND spread_home_odds IS NOT NULL
-                ORDER BY recorded_at DESC
-                LIMIT 1
-            """), {"game_id": game_id}
-        )
-        odds_row = odds_r.fetchone()
-        if odds_row:
-            odds_dict = dict(odds_row._mapping)
-            for key in ['spread_home_odds', 'spread_away_odds', 'over_odds', 'under_odds']:
-                if odds_dict.get(key) is not None and isinstance(odds_dict[key], decimal.Decimal):
-                    odds_dict[key] = float(odds_dict[key])
-            lines[0].update(odds_dict)
 
     # Pick card: from game_predictions table for completed games,
     # or generate fresh for upcoming games
@@ -1310,6 +1297,11 @@ async def mlb_game_boxscore(
                     "ou": round(pred.ou_conf or 0, 2),
                     "ml": round(pred.ml_conf or 0, 2),
                 },
+            },
+            "expected_value": {
+                "rl": round(pred.ats_ev or 0, 2),
+                "ou": round(pred.ou_ev or 0, 2),
+                "ml": round(pred.ml_ev or 0, 2),
             },
             "picks": {
                 "run_line": pred.run_line_pick,

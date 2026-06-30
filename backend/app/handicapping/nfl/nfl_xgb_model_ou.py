@@ -25,6 +25,7 @@ import psycopg2
 import xgboost as xgb
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
+from app.handicapping.db_training import save_training_run, update_pkl_filename
 from app.handicapping.nfl.data_loader import (
     FEATURES_CATALOG,
     NFLDataLoader,
@@ -286,6 +287,23 @@ def run_single(
         with open(path, "wb") as f:
             pickle.dump(result["model"], f)
         logger.info("Saved OU model to %s", path)
+
+        test_year = CURRENT_YEAR
+        train_seasons = list(range(2015, test_year))
+        training_id = save_training_run(
+            sport="nfl",
+            model_type="ou",
+            test_year=test_year,
+            train_years=train_seasons,
+            results_json={
+                "n_train": result.get("n_train", 0),
+                "mae": result.get("mae", 0),
+                "r2": result.get("r2", 0),
+            },
+            pkl_filename="",
+        )
+        result["training_id"] = training_id
+
         del result["model"]
 
     return result
@@ -400,15 +418,30 @@ def predict_ou_game(
 
 
 # ── Train model (async full pipeline) ────────────────────────────────────────────
+TEST_YEARS = [2024, 2025]
+
+
+def _train_years_for_test_year(test_year: int) -> List[int]:
+    """Return the training years for the given test year.
+
+    2024: trains on 2021, 2022, 2023
+    2025: trains on 2021, 2022, 2023, 2024
+    """
+    return list(range(2021, test_year))
+
+
 async def train_model(
-    seasons: Optional[List[int]] = None,
     model_path: Optional[Path] = None,
     hyperparams: Optional[Dict[str, Any]] = None,
     label: str = "nfl_ou_training",
 ) -> Dict[str, Any]:
-    """Full OU training pipeline: load data, train XGBoost regression,
-    save model, return metadata."""
+    """Full OU training pipeline: trains one OU model per test year (2024, 2025),
+    saves each model & its training run to the database."""
     t0 = time.time()
+
+    model_type = "ou"
+    model_dir = model_path if model_path else NFL_PKL_DIR
+    model_dir.mkdir(parents=True, exist_ok=True)
 
     dl = get_data_loader(ou_only=True)
     df = dl.load_data()
@@ -420,11 +453,7 @@ async def train_model(
     df = _ensure_ou_features(df)
     df = df.sort_values(["season_year", "week"]).reset_index(drop=True)
 
-    # Drop NaN target
-    df = df.dropna(subset=["total_points"]).copy()
-
-    if seasons:
-        df = df[df["season_year"].isin(seasons)].copy()
+    df_all = df.dropna(subset=["total_points"]).copy()
 
     hp = hyperparams or {}
     params: Dict[str, Any] = {
@@ -445,52 +474,149 @@ async def train_model(
     finally:
         conn.close()
 
-    available = [c for c in feature_cols if c in df.columns]
-    df = df.dropna(subset=available)
-
-    X = df[available].values
-    y = df["total_points"].values
-
-    dtrain = xgb.DMatrix(X, label=y, feature_names=available)
-
     n_estimators = hp.get("n_estimators", DEFAULT_N_ESTIMATORS)
-    model = xgb.train(params, dtrain, num_boost_round=n_estimators, verbose_eval=False)
 
-    y_pred = model.predict(dtrain)
-    train_mae = mean_absolute_error(y, y_pred)
-    train_r2 = r2_score(y, y_pred)
-
-    importance = model.get_score(importance_type="gain")
-    fi_sorted = sorted(
-        [{"feature": k, "importance": round(v, 4)} for k, v in importance.items()],
-        key=lambda x: -x["importance"],
+    # Create the training run FIRST to get the training_id
+    training_id = save_training_run(
+        sport="nfl",
+        model_type=model_type,
+        test_year=TEST_YEARS[-1],
+        train_years=_train_years_for_test_year(TEST_YEARS[-1]),
+        results_json=[],
+        pkl_filename="",
     )
 
-    path = model_path or OU_MODEL_PATH
-    with open(path, "wb") as f:
-        pickle.dump(model, f)
-    logger.info("OU model saved to %s", path)
+    total_results = []
 
-    results_json = json.dumps({
-        "feature_importance": fi_sorted,
-        "params": params,
-        "n_train": len(X),
-        "train_mae": round(float(train_mae), 4),
-        "train_r2": round(float(train_r2), 4),
-    })
+    for test_year in TEST_YEARS:
+        ty_t0 = time.time()
+
+        train_seasons = _train_years_for_test_year(test_year)
+        logger.info("Training OU model for test_year=%d using train_years=%s", test_year, train_seasons)
+
+        df_train = df_all[df_all["season_year"].isin(train_seasons)].copy()
+        df_test = df_all[df_all["season_year"] == test_year].copy()
+
+        if df_train.empty:
+            logger.warning("No training data for test_year=%d, skipping", test_year)
+            continue
+
+        available = [c for c in feature_cols if c in df_train.columns]
+        df_train = df_train.dropna(subset=available)
+
+        X = df_train[available].values
+        y = df_train["total_points"].values
+
+        dtrain = xgb.DMatrix(X, label=y, feature_names=available)
+
+        model = xgb.train(params, dtrain, num_boost_round=n_estimators, verbose_eval=False)
+
+        y_pred = model.predict(dtrain)
+        train_mae = mean_absolute_error(y, y_pred)
+        train_r2 = r2_score(y, y_pred)
+
+        importance = model.get_score(importance_type="gain")
+        total_gain = sum(importance.values()) or 1.0
+        fi_sorted = sorted(
+            [{"feature": k, "importance": round(v / total_gain, 6)} for k, v in importance.items()],
+            key=lambda x: -x["importance"],
+        )
+
+        # OU accuracy: evaluate on test year
+        ou_total = 0
+        ou_correct = 0
+        ou_push = 0
+
+        if not df_test.empty and len(df_test) > 0:
+            available_test = [c for c in feature_cols if c in df_test.columns]
+            df_test_clean = df_test.dropna(subset=available_test)
+
+            if len(df_test_clean) > 0:
+                X_test = df_test_clean[available].values
+                y_test = df_test_clean["total_points"].values
+                dtest = xgb.DMatrix(X_test, feature_names=available)
+                pred_totals = model.predict(dtest)
+
+                ou_total = len(y_test)
+                if "closing_ou" in df_test_clean.columns:
+                    closing_ou_values = df_test_clean["closing_ou"].values
+                    for i in range(ou_total):
+                        actual_over = y_test[i] > closing_ou_values[i]
+                        pred_over = pred_totals[i] > closing_ou_values[i]
+                        if abs(y_test[i] - closing_ou_values[i]) < 0.05:
+                            ou_push += 1
+                        elif pred_over == actual_over:
+                            ou_correct += 1
+
+        ou_incorrect = ou_total - ou_correct - ou_push
+        ou_non_push = ou_total - ou_push
+        ou_pct = round(100 * ou_correct / max(ou_non_push, 1), 2)
+
+        ty_elapsed = time.time() - ty_t0
+
+        # Save .pkl with training_id in filename
+        pkl_path = model_dir / f"{training_id}-{test_year}.pkl"
+        with open(pkl_path, "wb") as f:
+            pickle.dump(model, f)
+        logger.info("OU pkl saved to %s for test_year=%d", pkl_path, test_year)
+
+        ty_result = {
+            "name": f"{test_year} NFL OU",
+            "test_year": test_year,
+            "total_games": ou_total,
+            "mae": round(float(train_mae), 4),
+            "r2": round(float(train_r2), 4),
+            "input_features": len(available),
+            "feature_importance": fi_sorted,
+            "model_params": {**params, "n_estimators": n_estimators},
+            "duration_seconds": round(ty_elapsed, 2),
+            "ou": {
+                "total": ou_total,
+                "non_push": ou_non_push,
+                "correct": ou_correct,
+                "incorrect": ou_incorrect,
+                "push": ou_push,
+                "pct": ou_pct,
+            },
+            "ou_total": ou_total,
+            "ou_correct": ou_correct,
+            "ou_pct": ou_pct,
+            "pkl_filename": pkl_path.name,
+        }
+        total_results.append(ty_result)
+
+    if not total_results:
+        return {"error": "no test years trained"}
+
+    # Update the training_run with comma-separated pkl filenames and results_json
+    all_pkl_names = ",".join(f"{training_id}-{ty}.pkl" for ty in TEST_YEARS)
+    update_pkl_filename("nfl", training_id, all_pkl_names)
+
+    # Update results_json via SQL
+    conn = psycopg2.connect(DB_DSN)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                f'UPDATE nfl.training_runs SET results_json = %s WHERE training_id = %s',
+                (json.dumps(total_results, default=str), training_id)
+            )
+            conn.commit()
+            logger.info("Updated results_json on training_run %s", training_id)
+    except Exception as e:
+        logger.error("Failed to update results_json: %s", e)
+    finally:
+        conn.close()
 
     elapsed = time.time() - t0
 
     return {
+        "training_id": training_id,
         "label": label,
-        "train_mae": round(float(train_mae), 4),
-        "train_r2": round(float(train_r2), 4),
-        "n_train": len(X),
-        "n_features": len(available),
-        "feature_importance": fi_sorted,
+        "model_type": model_type,
+        "test_years": TEST_YEARS,
+        "n_results": len(total_results),
+        "total_results": total_results,
         "elapsed_seconds": round(elapsed, 2),
-        "model_path": str(path),
-        "results_json": results_json,
     }
 
 

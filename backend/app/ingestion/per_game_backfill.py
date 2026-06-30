@@ -9,7 +9,7 @@ Usage:
     python -m app.ingestion.per_game_backfill --sport mlb --start 2021 --end 2025
 """
 import asyncio, logging, os, sys
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 import httpx
@@ -107,8 +107,10 @@ async def run():
     parser = argparse.ArgumentParser()
     parser.add_argument("--sport", choices=["nfl", "mlb", "nba"], required=True)
     parser.add_argument("--year", type=int, action="append")
-    parser.add_argument("--start", type=int, default=2021)
-    parser.add_argument("--end", type=int, default=2025)
+    parser.add_argument("--start", type=int, default=2026)
+    parser.add_argument("--end", type=int, default=2026)
+    parser.add_argument("--start-date", type=str, help="Earliest game date inclusive (YYYY-MM-DD), e.g. 2026-06-16")
+    parser.add_argument("--end-date", type=str, help="Latest game date inclusive (YYYY-MM-DD), e.g. 2026-06-29")
     parser.add_argument("--opening-only", action="store_true")
     parser.add_argument("--closing-only", action="store_true")
     args = parser.parse_args()
@@ -151,9 +153,14 @@ async def run():
             JOIN {args.sport}.teams at ON at.id = g.away_team_id
             WHERE s.year IN ({year_condition})
               AND g.date < NOW()
+              AND (CAST(:start_date AS timestamp) IS NULL OR g.date >= CAST(:start_date AS timestamp))
+              AND (CAST(:end_date AS timestamp) IS NULL OR g.date < CAST(:end_date AS timestamp) + interval '1 day')
             ORDER BY g.date
         """)
-        r = await db.execute(sql)
+        start_date_obj = date.fromisoformat(args.start_date) if args.start_date else None
+        end_date_obj = date.fromisoformat(args.end_date) if args.end_date else None
+        params = {"start_date": start_date_obj, "end_date": end_date_obj}
+        r = await db.execute(sql, params)
         games = r.fetchall()
         logger.info(f"{args.sport.upper()} {years}: {len(games)} games total")
 
@@ -243,9 +250,11 @@ async def run():
                             continue
 
                         # Extract per-sportsbook lines
+                        # Only FanDuel and DraftKings — reliable run line data, ~100% coverage.
                         batch = []
                         fanduel_row = None
-                        for bk in matched_ev.get("bookmakers", []):
+                        allowed_books = {'fanduel', 'draftkings'}
+                        for bk in [b for b in matched_ev.get("bookmakers", []) if b.get("key", "").lower() in allowed_books]:
                             row = {
                                 "game_id": g.id, "source": source_name, "sportsbook": bk["key"],
                                 "spread": None, "spread_home_odds": None, "spread_away_odds": None,

@@ -157,6 +157,18 @@ def fetch_boxscore(mlb_game_id: int) -> Optional[dict]:
     return None
 
 
+def fetch_game_weather(mlb_game_id: int) -> Optional[dict]:
+    """Fetch weather data from MLB Stats API live feed."""
+    import urllib.request
+    url = f"https://statsapi.mlb.com/api/v1.1/game/{mlb_game_id}/feed/live"
+    try:
+        req = urllib.request.urlopen(url, timeout=15)
+        data = json.loads(req.read())
+        return data.get("gameData", {}).get("weather", {})
+    except Exception:
+        return None
+
+
 def lookup_player_id(conn, mlb_id: int, player_name: str) -> Optional[int]:
     """Find our player_id from mlb_id or name."""
     # Try by mlb_id first
@@ -277,6 +289,177 @@ async def process_game(conn, game: dict) -> int:
 
     return rows_saved
 
+
+async def process_pitchers(conn, game: dict) -> int:
+    """Fetch and store boxscore pitcher stats for one game."""
+    mlb_gid = game["mlb_game_id"]
+    our_gid = game["id"]
+
+    box = fetch_boxscore(mlb_gid)
+    if box is None:
+        return 0
+
+    teams = box.get("teams", {})
+    rows_saved = 0
+
+    for side in ["home", "away"]:
+        team_data = teams.get(side, {})
+        players = team_data.get("players", {})
+
+        for pid_str, pdata in players.items():
+            stats = pdata.get("stats", {}).get("pitching", {})
+            if not stats or stats.get("inningsPitched", "0") in ("0", "0.0", ""):
+                continue
+
+            person = pdata.get("person", {})
+            mlb_player_id = person.get("id")
+            full_name = person.get("fullName", "")
+
+            our_pid = None
+            if mlb_player_id:
+                r = await conn.fetchrow(
+                    "SELECT id FROM mlb.players WHERE mlb_id = $1", mlb_player_id
+                )
+                if r:
+                    our_pid = r["id"]
+
+            ip_str = stats.get("inningsPitched", "0")
+            ip = 0.0
+            if ip_str:
+                parts = ip_str.split(".")
+                if len(parts) == 2:
+                    ip = float(parts[0]) + int(parts[1]) / 3
+                else:
+                    ip = float(parts[0])
+
+            er = stats.get("earnedRuns", 0)
+            h = stats.get("hits", 0)
+            hr = stats.get("homeRuns", 0)
+            bb = stats.get("baseOnBalls", 0)
+            ibb = stats.get("intentionalWalks", 0)
+            so = stats.get("strikeOuts", 0)
+            hbp = stats.get("hitByPitch", 0)
+            wp = stats.get("wildPitches", 0)
+            balk = stats.get("balks", 0)
+            runs_allowed = stats.get("runs", 0)
+            pitches_thrown = stats.get("numberOfPitches", 0)
+            strikes = stats.get("strikes", 0)
+            go = stats.get("groundOuts", 0)
+            ao = stats.get("airOuts", 0)
+            fo = stats.get("flyOuts", 0)
+            gidp = stats.get("groundIntoDoublePlay", 0)
+            inherited_runners = stats.get("inheritedRunners", 0)
+            inherited_scored = stats.get("inheritedRunnersScored", 0)
+            is_starter = stats.get("isStartingPitcher", False) or stats.get("gameStarted", False)
+            decision = stats.get("note", "")
+
+            team_abbr = team_data.get("team", {}).get("abbreviation", "")
+
+            try:
+                await conn.execute("""
+                    INSERT INTO mlb.pitcher_game_stats
+                        (game_id, mlb_game_id, pitcher_mlb_id, team_abbr, pitcher_name,
+                         ip, er, h, home_runs, base_on_balls, intentional_walks,
+                         strikeouts, hit_by_pitch, wild_pitches, balks,
+                         runs_allowed, pitches_thrown, strikes,
+                         ground_outs, air_outs, fly_outs,
+                         ground_into_double_play,
+                         is_starter, decision)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+                            $11, $12, $13, $14, $15, $16, $17,
+                            $18, $19, $20, $21, $22, $23,
+                            $24)
+                    ON CONFLICT (mlb_game_id, pitcher_mlb_id) WHERE pitcher_mlb_id IS NOT NULL
+                    DO UPDATE SET
+                        game_id = EXCLUDED.game_id,
+                        ip = EXCLUDED.ip,
+                        er = EXCLUDED.er,
+                        h = EXCLUDED.h,
+                        base_on_balls = EXCLUDED.base_on_balls,
+                        strikeouts = EXCLUDED.strikeouts,
+                        runs_allowed = EXCLUDED.runs_allowed,
+                        is_starter = EXCLUDED.is_starter
+                """,
+                    our_gid, mlb_gid, mlb_player_id, team_abbr, full_name,
+                    ip, er, h, hr, bb, ibb,
+                    so, hbp, wp, balk,
+                    runs_allowed, pitches_thrown, strikes,
+                    go, ao, fo, gidp,
+                    is_starter, decision)
+                rows_saved += 1
+            except Exception as e:
+                logger.warning(f"  Pitcher insert error for game {our_gid} player {full_name}: {e}")
+
+    return rows_saved
+
+
+async def refresh_boxscores_for_recent_games(conn) -> dict:
+    """Load boxscore data for today's and yesterday's FINAL games.
+    process_game() handles both batting AND pitching from the boxscore.
+    """
+    rows = await conn.fetch("""
+        SELECT id, mlb_game_id
+        FROM mlb.games
+        WHERE status = 'FINAL'
+          AND date >= CURRENT_DATE - INTERVAL '2 days'
+          AND (
+              NOT EXISTS (SELECT 1 FROM mlb.batting_game_stats bgs WHERE bgs.game_id = mlb.games.id)
+              OR NOT EXISTS (SELECT 1 FROM mlb.pitcher_game_stats pgs WHERE pgs.game_id = mlb.games.id)
+          )
+        ORDER BY date DESC
+        LIMIT 50
+    """)
+    games = [dict(r) for r in rows]
+
+    if not games:
+        return {"batting_rows": 0, "pitching_rows": 0, "games_processed": 0}
+
+    total_batting = 0
+    total_pitching = 0
+    for game in games:
+        try:
+            batting_result = await process_game(conn, game)
+            total_batting += batting_result
+            total_pitching += await process_pitchers(conn, game)
+        except Exception as e:
+            logger.warning(f"  Error processing game {game['id']}: {e}")
+
+    # Step 2: Update weather for all recent games (even if boxscores already loaded)
+    logger.info("  Updating weather for recent games...")
+    weather_games = await conn.fetch("""
+        SELECT id, mlb_game_id
+        FROM mlb.games
+        WHERE date >= CURRENT_DATE - INTERVAL '2 days'
+        ORDER BY date DESC
+        LIMIT 100
+    """)
+    weather_updated = 0
+    for wg in weather_games:
+        try:
+            wth = fetch_game_weather(wg["mlb_game_id"])
+            if wth:
+                temp = wth.get("temp")
+                condition = wth.get("condition")
+                wind = wth.get("wind")
+                await conn.execute("""
+                    UPDATE mlb.games
+                    SET temp = $1, condition = $2, wind = $3
+                    WHERE id = $4
+                """, temp, condition, wind, wg["id"])
+                weather_updated += 1
+        except Exception as e:
+            logger.warning(f"  Weather error for game {wg['id']}: {e}")
+    logger.info(f"  Weather updated for {weather_updated} games")
+
+    return {
+        "batting_rows": total_batting,
+        "pitching_rows": total_pitching,
+        "games_processed": len(games),
+        "weather_updated": weather_updated,
+    }
+
+
+# ---- Backfill: batch loading (standalone use) ----
 
 async def main():
     parser = argparse.ArgumentParser(description="Ingest MLB boxscore data")

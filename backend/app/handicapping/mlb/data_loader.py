@@ -111,7 +111,13 @@ WITH team_ops AS (
         ((SUM(bgs.hits) + SUM(bgs.base_on_balls) + SUM(bgs.hit_by_pitch))::numeric /
             NULLIF(SUM(bgs.at_bats) + SUM(bgs.base_on_balls) + SUM(bgs.hit_by_pitch) + SUM(bgs.sacrifice_flies), 0) * 1.0)
         +
-        (SUM(bgs.total_bases)::numeric / NULLIF(SUM(bgs.at_bats), 0) * 1.0) AS avg_team_ops
+        (SUM(bgs.total_bases)::numeric / NULLIF(SUM(bgs.at_bats), 0) * 1.0) AS avg_team_ops,
+        -- Raw batting stats for feature engineering
+        SUM(bgs.at_bats)::numeric AS team_at_bats,
+        SUM(bgs.hits)::numeric AS team_hits,
+        SUM(bgs.base_on_balls)::numeric AS team_walks,
+        SUM(bgs.total_bases)::numeric AS team_total_bases,
+        SUM(bgs.plate_appearances)::numeric AS team_pa
     FROM mlb.batting_game_stats bgs
     WHERE bgs.plate_appearances IS NOT NULL AND bgs.team_side IS NOT NULL
     GROUP BY bgs.game_id, bgs.team_side
@@ -145,8 +151,12 @@ starter_era AS (
         s.game_id,
         MAX(CASE WHEN s.team_abbr = h_t.abbreviation THEN s.pitcher_era ELSE NULL END) AS home_starter_era,
         MAX(CASE WHEN s.team_abbr = h_t.abbreviation THEN s.pitcher_name ELSE NULL END) AS home_starter_name,
+        MAX(CASE WHEN s.team_abbr = h_t.abbreviation THEN s.ip ELSE NULL END) AS home_starter_ip,
+        MAX(CASE WHEN s.team_abbr = h_t.abbreviation THEN s.er ELSE NULL END) AS home_starter_er,
         MAX(CASE WHEN s.team_abbr = a_t.abbreviation THEN s.pitcher_era ELSE NULL END) AS away_starter_era,
-        MAX(CASE WHEN s.team_abbr = a_t.abbreviation THEN s.pitcher_name ELSE NULL END) AS away_starter_name
+        MAX(CASE WHEN s.team_abbr = a_t.abbreviation THEN s.pitcher_name ELSE NULL END) AS away_starter_name,
+        MAX(CASE WHEN s.team_abbr = a_t.abbreviation THEN s.ip ELSE NULL END) AS away_starter_ip,
+        MAX(CASE WHEN s.team_abbr = a_t.abbreviation THEN s.er ELSE NULL END) AS away_starter_er
     FROM game_starter_stats s
     JOIN mlb.games g ON g.id = s.game_id
     JOIN mlb.teams h_t ON h_t.id = g.home_team_id
@@ -229,7 +239,22 @@ SELECT
     gse.home_starter_era                                    AS h_starter_era,
     gse.away_starter_era                                    AS a_starter_era,
     gse.home_starter_name                                   AS h_starter_name,
-    gse.away_starter_name                                   AS a_starter_name
+    gse.away_starter_name                                   AS a_starter_name,
+    gse.home_starter_ip                                    AS h_starter_ip,
+    gse.home_starter_er                                    AS h_starter_er,
+    gse.away_starter_ip                                    AS a_starter_ip,
+    gse.away_starter_er                                    AS a_starter_er,
+    -- Batting stat columns
+    toh.team_at_bats                                        AS home_at_bats,
+    toh.team_hits                                           AS home_hits,
+    toh.team_walks                                          AS home_walks,
+    toh.team_total_bases                                    AS home_total_bases,
+    toh.team_pa                                             AS home_pa,
+    toa.team_at_bats                                        AS away_at_bats,
+    toa.team_hits                                           AS away_hits,
+    toa.team_walks                                          AS away_walks,
+    toa.team_total_bases                                    AS away_total_bases,
+    toa.team_pa                                             AS away_pa
 
 FROM mlb.games g
 LEFT JOIN mlb.teams h         ON h.id = g.home_team_id
@@ -641,12 +666,29 @@ def build_features(df: pd.DataFrame, log_fn=None) -> pd.DataFrame:
         "h_ops", "a_ops",
         "h_slg", "a_slg",
         "h_starter_era", "a_starter_era",
+        "h_starter_er", "h_starter_ip",
+        "a_starter_er", "a_starter_ip",
+        "home_at_bats", "away_at_bats",
+        "home_hits", "away_hits",
+        "home_walks", "away_walks",
+        "home_total_bases", "away_total_bases",
+        "home_pa", "away_pa",
     ]].copy()
 
     # Team-level roll-up: one row per team-game
-    home = pivot_df.rename(columns={"ha": "team", "aa": "opp", "home_score": "rf", "away_score": "ra", "h_ops": "team_ops", "h_slg": "team_slg", "h_starter_era": "starter_era"})
+    home = pivot_df.rename(columns={"ha": "team", "aa": "opp", "home_score": "rf", "away_score": "ra",
+        "h_ops": "team_ops", "h_slg": "team_slg",
+        "h_starter_era": "starter_era",
+        "h_starter_er": "starter_er", "h_starter_ip": "starter_ip",
+        "home_at_bats": "ab", "home_hits": "hits",
+        "home_walks": "bb", "home_total_bases": "tb", "home_pa": "pa"})
     home["home_ind"] = 1
-    away = pivot_df.rename(columns={"aa": "team", "ha": "opp", "away_score": "rf", "home_score": "ra", "a_ops": "team_ops", "a_slg": "team_slg", "a_starter_era": "starter_era"})
+    away = pivot_df.rename(columns={"aa": "team", "ha": "opp", "away_score": "rf", "home_score": "ra",
+        "a_ops": "team_ops", "a_slg": "team_slg",
+        "a_starter_era": "starter_era",
+        "a_starter_er": "starter_er", "a_starter_ip": "starter_ip",
+        "away_at_bats": "ab", "away_hits": "hits",
+        "away_walks": "bb", "away_total_bases": "tb", "away_pa": "pa"})
     away["home_ind"] = 0
 
     tg = pd.concat([home, away], ignore_index=True)
@@ -1319,18 +1361,31 @@ def build_features(df: pd.DataFrame, log_fn=None) -> pd.DataFrame:
     else:
         log("  Starter appearance data not available from DB")
 
+    # Build fallback: most recent game per pitcher (for SCHEDULED/LIVE)
+    _by_pitcher = {}
+    for (gid, pname), pstats in _pitcher_lookup.items():
+        if pname not in _by_pitcher or gid > _by_pitcher[pname]["_gid"]:
+            _by_pitcher[pname] = {**pstats, "_gid": gid}
+    _by_pitcher = {k: {kk: vv for kk, vv in v.items() if kk != "_gid"} for k, v in _by_pitcher.items()}
+
     # Apply per-pitcher rolling stats by looking up (game_id, starter_name)
     if _sp_df.empty or "h_starter_name" not in feats.columns:
         log("  Starter name data not available on query; keeping team-rolling pitcher ERA")
     else:
         gids = feats["game_id"].astype(int).tolist()
-        h_names = feats["h_starter_name"].tolist()
-        a_names = feats["a_starter_name"].tolist()
+        h_names_raw = feats["h_starter_name"].tolist()
+        a_names_raw = feats["a_starter_name"].tolist()
+        h_fallback = feats["home_pitcher_name"].tolist() if "home_pitcher_name" in feats.columns else [None]*len(feats)
+        a_fallback = feats["away_pitcher_name"].tolist() if "away_pitcher_name" in feats.columns else [None]*len(feats)
+        h_names = [n if pd.notna(n) else fb for n, fb in zip(h_names_raw, h_fallback)]
+        a_names = [n if pd.notna(n) else fb for n, fb in zip(a_names_raw, a_fallback)]
         for side, names in [("h", h_names), ("a", a_names)]:
             eras_l20, eras_l5, k9s_l20, k9s_l5, whips_l20, whips_l5, kbbs_l20, kbbs_l5 = [], [], [], [], [], [], [], []
             for gid, pname in zip(gids, names):
                 if pname is not None and pd.notna(pname) and (int(gid), pname) in _pitcher_lookup:
                     pstats = _pitcher_lookup[(int(gid), pname)]
+                elif pname is not None and pd.notna(pname):
+                    pstats = _by_pitcher.get(pname)
                 else:
                     pstats = None
                 if pstats:
@@ -1453,6 +1508,12 @@ def build_features(df: pd.DataFrame, log_fn=None) -> pd.DataFrame:
                     "era_l5": r["bp_era_l5"],
                     "ip_l5": r["bp_ip_l5"]
                 }
+            # Fallback: most recent bullpen per team (for SCHEDULED/LIVE)
+            _bp_by_team = {}
+            for (gid, team_abbr), stats in _bp_lookup.items():
+                if team_abbr not in _bp_by_team or gid > _bp_by_team[team_abbr]["_gid"]:
+                    _bp_by_team[team_abbr] = {**stats, "_gid": gid}
+            _bp_by_team = {k: {kk: vv for kk, vv in v.items() if kk != "_gid"} for k, v in _bp_by_team.items()}
 
             # Map to home/away using team_abbr from game query
             gids = feats["game_id"].astype(int).tolist()
@@ -1470,6 +1531,10 @@ def build_features(df: pd.DataFrame, log_fn=None) -> pd.DataFrame:
                     if key in _bp_lookup:
                         eras_l5.append(_bp_lookup[key]["era_l5"])
                         ips_l5.append(_bp_lookup[key]["ip_l5"])
+                    elif team_abbr in _bp_by_team:
+                        bps = _bp_by_team[team_abbr]
+                        eras_l5.append(bps.get("era_l5"))
+                        ips_l5.append(bps.get("ip_l5"))
                     else:
                         eras_l5.append(None)
                         ips_l5.append(None)

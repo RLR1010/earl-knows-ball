@@ -441,9 +441,9 @@ async def predict_ats(
         "over_under": ou,
         "home_moneyline": home_ml,
         "away_moneyline": away_ml,
-        "ats_pick": "home" if pred_margin > spread else "away",
+        "ats_pick": "home" if (pred_margin + spread) > 0 else "away",
         "ou_pick": "over" if pred_margin > 4.5 else "under",
-        "confidence": min(abs(pred_margin - spread) / 3, 0.95),
+        "confidence": min(abs(pred_margin + spread) / 3, 0.95),
     }
 
 

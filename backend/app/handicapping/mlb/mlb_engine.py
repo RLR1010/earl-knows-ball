@@ -384,21 +384,21 @@ async def _save_api_prediction(
     ml_ev = _ev(ml_conf, ml_odds) if ml_odds else 0.0
 
     # Predicted score (inferred from margin + total)
-    predicted_home_score = int(max(0, round(
-        (pred_margin + pred_total) / 2.0 + 0.5 * (pred_margin if pred_margin > 0 else 0)
-    )))
-    predicted_away_score = int(max(0, round(
-        (pred_total - pred_margin) / 2.0 + 0.5 * (-pred_margin if pred_margin < 0 else 0)
-    )))
+    home_score_raw = (pred_total + pred_margin) / 2.0
+    away_score_raw = (pred_total - pred_margin) / 2.0
+    predicted_home_score = round(home_score_raw, 1)
+    predicted_away_score = round(away_score_raw, 1)
 
     # Pick text
-    if rl_picked_home:
-        sign = "+" if spread > 0 else ""
-        rl_pick_str = f"{home_team} {sign}{-spread:+g}" if spread else ""
+    if spread is not None:
+        home_run_line_val = spread          # home team perspective
+        away_run_line_val = -spread          # away team perspective
+        if rl_picked_home:
+            rl_pick_str = f"{home_team} {home_run_line_val:+g}"
+        else:
+            rl_pick_str = f"{away_team} {away_run_line_val:+g}"
     else:
-        sign = "+" if spread < 0 else ""
-        rl_pick_str = f"{away_team} {sign}{spread:+g}" if spread else ""
-    rl_pick_str = rl_pick_str.replace("+", "").replace("-", "-")
+        rl_pick_str = ""
 
     # Remove old prediction for this game+source pair, then insert fresh
     from sqlalchemy import delete as sa_delete
@@ -894,22 +894,19 @@ async def _save_backtest_prediction(
     ou_ev = _ev(ou_conf, ou_odds)
     ml_ev = _ev(ml_conf, ml_odds)
 
-    # Predicted score
-    predicted_home_score = int(max(0, round(
-        (pred_margin + pred_total) / 2.0 + 0.5 * (pred_margin if pred_margin > 0 else 0)
-    )))
-    predicted_away_score = int(max(0, round(
-        (pred_total - pred_margin) / 2.0 + 0.5 * (-pred_margin if pred_margin < 0 else 0)
-    )))
+    # Predicted score (inferred from margin + total)
+    home_score_raw = (pred_total + pred_margin) / 2.0
+    away_score_raw = (pred_total - pred_margin) / 2.0
+    predicted_home_score = round(home_score_raw, 1)
+    predicted_away_score = round(away_score_raw, 1)
 
     # Pick text
+    home_run_line_val = spread          # home team perspective
+    away_run_line_val = -spread          # away team perspective
     if rl_picked_home:
-        sign = "+" if spread > 0 else ""
-        rl_pick_str = f"{home_team} {sign}{-spread:+g}"
+        rl_pick_str = f"{home_team} {home_run_line_val:+g}"
     else:
-        sign = "+" if spread < 0 else ""
-        rl_pick_str = f"{away_team} {sign}{spread:+g}"
-    rl_pick_str = rl_pick_str.replace("+", "").replace("-", "-")
+        rl_pick_str = f"{away_team} {away_run_line_val:+g}"
 
     # Remove old prediction for this game+source pair, then insert fresh
     gp = MLBGamePrediction(

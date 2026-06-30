@@ -2,7 +2,7 @@
 Unified MLB betting lines consolidation.
 
 Strategy (per-game):
-  1. Try Tier 1 sportsbooks in priority order (betrivers → fanduel → draftkings → williamhill_us).
+  1. Try Tier 1 sportsbooks in priority order (fanduel → draftkings).
   2. For a sportsbook to be accepted for a game, it must supply:
      - ALL closing fields: spread, OU, home_ml, away_ml, spread_home_odds, spread_away_odds, over_odds, under_odds
      - ALL opening fields: spread, OU, home_ml, away_ml
@@ -45,42 +45,11 @@ DB_URL = os.environ.get(
 
 # ── Sportsbook priority tiers ──
 # Within each tier, order controls preference.
+# Only FanDuel and DraftKings are used — reliable run line data, ~100% coverage.
 TIERS = {
     "tier1": [
-        "betrivers",
         "fanduel",
         "draftkings",
-        "williamhill_us",
-    ],
-    "tier2": [
-        "bovada",
-        "lowvig",
-        "betmgm",
-    ],
-    "tier3": [
-        "pointsbetus",
-        "barstool",
-        "fanatics",
-        "foxbet",
-        "wynnbet",
-        "sugarhouse",
-        "twinspires",
-    ],
-    "tier4": [
-        "unibet",
-        "bovada",    # already in tier2, keep here too
-        "betonlineag",
-        "betus",
-        "betmgm",     # already in tier2
-        "gtbets",
-        "intertops",
-        "mybookieag",
-        "circasports",
-        "betfair",
-        "unibet_us",
-        "lowvig",     # already in tier2
-        "superbook",
-        "caesars",
     ],
 }
 
@@ -89,7 +58,7 @@ def _flatten_tiers():
     """One flat list of sportsbook names, deduplicated."""
     seen = set()
     result = []
-    for tier_name in ["tier1", "tier2", "tier3", "tier4"]:
+    for tier_name in sorted(TIERS.keys()):
         for sb in TIERS[tier_name]:
             sl = sb.lower().strip()
             if sl not in seen:
@@ -291,17 +260,30 @@ class GameCandidate:
 
     def check_ml_spread_alignment(self):
         """
-        For decisive games, the spread favorite should match the ML favorite.
-        For pick-'ems (spread == 0.0 or both sides near even), we trust ML.
-        Returns True if aligned or if the check doesn't apply.
+        Verifies the spread sign matches the run line favorite.
+        Uses spread odds (not moneyline) to determine which side is favored:
+          - If spread_home_odds < spread_away_odds → home is RL favored → spread should be negative
+          - If spread_home_odds > spread_away_odds → away is RL favored → spread should be positive
         """
-        if not self.is_decisive():
-            return True  # pick-'em — no meaningful check
-        spread_side = spread_favored_side(self.closing_spread)
-        ml_side = ml_favored_side(self.closing_home_ml, self.closing_away_ml)
-        if spread_side is None or ml_side is None:
-            return True  # can't compare
-        return spread_side == ml_side
+        sp = self.closing_spread
+        ho = self.closing_spread_home_odds
+        ao = self.closing_spread_away_odds
+        if sp is None or ho is None or ao is None:
+            return True
+        sp = float(sp)
+        ho = float(ho)
+        ao = float(ao)
+        # Both odds same sign → ambiguous RL favorite, trust spread as-is
+        if (ho < 0 and ao < 0) or (ho > 0 and ao > 0):
+            return True
+        # Lower odds = more juice = that side is the RL favorite
+        if ho < ao and sp > 0:
+            # home is RL favorite but spread says away favored → flip needed
+            return False
+        if ao < ho and sp < 0:
+            # away is RL favorite but spread says home favored → flip needed
+            return False
+        return True
 
     def check_spread_reasonable(self):
         """
@@ -495,14 +477,16 @@ WHERE g.id = ANY(%(game_ids)s)
 # ── Consensus: what is the majority opinion on favored side? ──
 def build_consensus(all_candidates):
     """
-    Given ALL candidates for a game (from all sportsbooks), determine:
-    - the consensus favored side
-    - the consensus spread value (median)
+    Given ALL candidates for a game, determine consensus.
+    Only counts FanDuel and DraftKings — everything else is ignored.
     Return dict: {side: count, total_sources, majority_side, majority_side_pct}
     """
+    allowed = {'fanduel', 'draftkings'}
     sides = {"home": 0, "away": 0, "pk": 0}
     spreads = []
     for c in all_candidates:
+        if c.sportsbook not in allowed:
+            continue
         if c.closing_spread is not None and value_plausible(c.closing_spread, "spread"):
             side = spread_favored_side(c.closing_spread)
             sides[side] = sides.get(side, 0) + 1
@@ -527,66 +511,20 @@ def build_consensus(all_candidates):
 def select_best_candidate(candidates, consensus):
     """
     From a list of GameCandidates for one game, pick the best one.
-    Returns a single GameCandidate or None.
+    Only FanDuel and DraftKings are considered. Priority: FanDuel > DraftKings
+    when both have complete data. FanDuel and DraftKings return reliable run line
+    data, so no additional validation is needed. Returns the first acceptable
+    candidate or None.
     """
-    # First pass: try Tier 1 books in priority order
     for sb in PRIORITY_LIST:
         for c in candidates:
             if c.sportsbook != sb:
                 continue
-            if not c.has_closing_set():
-                continue
-            if not c.has_opening_set():
+            if not c.has_closing_set() or not c.has_opening_set():
                 continue
             if not c.check_spread_reasonable():
                 continue
-
-            # Consensus check: our book must agree with the majority.
-            # Skip for true pick-'ems where ML difference is tiny — the spread
-            # direction is arbitrary when both sides are near even money.
-            my_side = spread_favored_side(c.closing_spread)
-            if my_side != consensus["majority_side"]:
-                if consensus["total"] >= MIN_CONSENSUS_SOURCES and not c.is_pickem_on_ml():
-                    logger.debug(
-                        f"Game {c.game_id}: {c.sportsbook} says {my_side}, "
-                        f"majority says {consensus['majority_side']} "
-                        f"({consensus['sides']}) — skipping"
-                    )
-                    continue
-
-            # ML/spread alignment
-            if not c.check_ml_spread_alignment():
-                logger.debug(
-                    f"Game {c.game_id}: {c.sportsbook} ML/spread mismatch "
-                    f"(spread={c.closing_spread}, "
-                    f"ML: h={c.closing_home_ml}, a={c.closing_away_ml}) — skipping"
-                )
-                continue
-
-            # Passes all checks — use it!
             return c
-
-    # Second pass: try ANY book that has both opening+closing sets
-    for c in candidates:
-        if c.has_closing_set() and c.has_opening_set():
-            # Lax consensus: just check ML/spread alignment
-            if not c.check_ml_spread_alignment():
-                continue
-            logger.info(
-                f"Game {c.game_id}: Tier fallback to {c.sportsbook} "
-                f"(partial consensus)"
-            )
-            return c
-
-    # Third pass: any book with at least a closing set
-    for c in candidates:
-        if c.has_closing_set():
-            logger.warning(
-                f"Game {c.game_id}: strong fallback to {c.sportsbook} "
-                f"(no opening data)"
-            )
-            return c
-
     return None
 
 
@@ -798,7 +736,7 @@ def _full_insert_batch(cursor, conn, rows, game_meta_map, batch_size):
         execute_values(cursor, insert_sql, batch, template=None, page_size=batch_size)
         conn.commit()
     logger.info(f"Full-inserted {len(values)} new rows")
-    return insert_rows
+    return len(values)
 
 
 def upsert_consolidated(conn, rows, game_meta_map, batch_size=500, incremental=False):
@@ -946,19 +884,18 @@ def run(rebuild_full=False, game_ids_filter=None, cursor=None, conn=None):
                 closing_only_by_game.setdefault(gid, []).append(GameCandidate(row_dict))
 
             closing_only_selected = 0
+            allowed_books = {'fanduel': True, 'draftkings': True}
             for game_id, candidates in closing_only_by_game.items():
-                consensus = build_consensus(candidates)
-                # Use same selection logic but don't require opening data
-                for c in candidates:
+                # Filter to only FD/DK
+                fd_candidates = [c for c in candidates if c.sportsbook in allowed_books]
+                if not fd_candidates:
+                    continue
+                consensus = build_consensus(fd_candidates)
+                for c in fd_candidates:
                     if not c.has_closing_set():
                         continue
                     if not c.check_spread_reasonable():
                         continue
-                    # Consensus for closing-only: must match majority
-                    my_side = spread_favored_side(c.closing_spread)
-                    if my_side != consensus["majority_side"]:
-                        if consensus["total"] >= MIN_CONSENSUS_SOURCES and not c.is_pickem_on_ml():
-                            continue
                     if not c.check_ml_spread_alignment():
                         continue
                     selected[game_id] = c

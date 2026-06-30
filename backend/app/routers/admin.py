@@ -1237,8 +1237,8 @@ async def trigger_training(
     # Launch the training script in the background
     _scripts = {
         "nfl": {
-            "ou": "python3 -m app.handicapping.nfl.nfl_xgb_model_ou --mode all",
-            "ats": "python3 -m app.handicapping.nfl.nfl_xgb_model_ats --mode all",
+            "ou": "python3 -m app.handicapping.nfl.nfl_xgb_model_ou train",
+            "ats": "python3 -m app.handicapping.nfl.nfl_xgb_model_ats train",
         },
         "mlb": {
             "ou": "python3 -m app.handicapping.mlb.mlb_xgb_model_ou --mode all",
