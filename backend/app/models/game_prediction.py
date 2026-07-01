@@ -25,6 +25,7 @@ class GamePrediction(Base):
     # Model confidence
     margin_conf = Column(Float, nullable=True)
     ou_conf = Column(Float, nullable=True)
+    ml_conf = Column(Float, nullable=True)
 
     # O/U pick
     ou_pick = Column(String(10), nullable=True)  # "Over", "Under", "Push"
@@ -49,6 +50,12 @@ class GamePrediction(Base):
     ou_result = Column(String(10), nullable=True)    # "Win", "Loss", "Push"
     ml_result = Column(String(10), nullable=True)    # "Win", "Loss"
     spread_pick = Column(String(50), nullable=True)  # e.g. "BAL -6.0"
+    ml_pick = Column(String(50), nullable=True)      # e.g. "BAL"
+
+    # Expected value
+    ats_ev = Column(Float, nullable=True)
+    ou_ev = Column(Float, nullable=True)
+    ml_ev = Column(Float, nullable=True)
 
     # PnL tracking
     ats_odds = Column(Integer, nullable=True)

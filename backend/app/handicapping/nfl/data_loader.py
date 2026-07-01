@@ -304,7 +304,7 @@ DISPLAY_NAMES: Dict[str, str] = {
 
 
 # ── Feature name helpers ────────────────────────────────────────────────────────
-def get_model_features(cursor: Any, ats_only: bool = False, ou_only: bool = False) -> List[str]:
+def get_model_features(cursor: Any, ats_only: bool = False, ou_only: bool = False, live_ats_only: bool = False, live_ou_only: bool = False) -> List[str]:
     """Return feature column names from ``nfl.features``.
 
     Parameters
@@ -315,6 +315,10 @@ def get_model_features(cursor: Any, ats_only: bool = False, ou_only: bool = Fals
         If True, only return features flagged ``current_ats = True``.
     ou_only : bool
         If True, only return features flagged ``current_ou = True``.
+    live_ats_only : bool
+        If True, only return features flagged ``live_ats = True``.
+    live_ou_only : bool
+        If True, only return features flagged ``live_ou = True``.
 
     Returns
     -------
@@ -326,6 +330,10 @@ def get_model_features(cursor: Any, ats_only: bool = False, ou_only: bool = Fals
         conditions.append("current_ats = TRUE")
     if ou_only:
         conditions.append("current_ou = TRUE")
+    if live_ats_only:
+        conditions.append("live_ats = TRUE")
+    if live_ou_only:
+        conditions.append("live_ou = TRUE")
     where_clause = " AND ".join(conditions) if conditions else "TRUE"
 
     sql = f"SELECT name FROM nfl.features WHERE {where_clause} AND is_trainable = TRUE ORDER BY id"
@@ -594,6 +602,10 @@ class NFLDataLoader:
             "home_abbr", "away_abbr",
             "venue", "surface", "roof_type",
             "week", "game_id", "game_type",
+            # Moneyline and odds columns (for handicapper info + PnL)
+            "closing_home_ml", "closing_away_ml",
+            "closing_spread_home_odds", "closing_spread_away_odds",
+            "closing_over_odds", "closing_under_odds",
         }
         for c in context_cols:
             if c in df.columns and c not in feature_names:

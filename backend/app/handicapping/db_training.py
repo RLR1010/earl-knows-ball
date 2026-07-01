@@ -174,12 +174,21 @@ def set_training_run_as_current(sport: str, run_id: int) -> Optional[dict]:
                     if not isinstance(yr, dict):
                         continue
                     if model_type == "ats":
+                        # ATS: try feature_set first, then fall back to feature_importance
                         fs = yr.get("feature_set", [])
-                        if isinstance(fs, list):
+                        if isinstance(fs, list) and fs:
                             for fname in fs:
                                 if isinstance(fname, str) and fname not in seen:
                                     seen.add(fname)
                                     features.append(fname)
+                        else:
+                            fi = yr.get("feature_importance", [])
+                            if isinstance(fi, list):
+                                for entry in fi:
+                                    fname = entry.get("feature") if isinstance(entry, dict) else None
+                                    if fname and isinstance(fname, str) and fname not in seen:
+                                        seen.add(fname)
+                                        features.append(fname)
                     else:
                         # OU / any other model type that stores feature_importance
                         fi = yr.get("feature_importance", [])
@@ -258,15 +267,15 @@ def set_training_run_as_live(sport: str, run_id: int) -> Optional[dict]:
                 for yr in results:
                     if not isinstance(yr, dict):
                         continue
-                    if model_type == "ats":
-                        fs = yr.get("feature_set", [])
-                        if isinstance(fs, list):
-                            for fname in fs:
-                                if isinstance(fname, str) and fname not in seen:
-                                    seen.add(fname)
-                                    features.append(fname)
-                    else:
-                        # OU / any other model type that stores feature_importance
+                    # Try feature_set first (MLB format)
+                    fs = yr.get("feature_set", [])
+                    if isinstance(fs, list) and len(fs) > 0:
+                        for fname in fs:
+                            if isinstance(fname, str) and fname not in seen:
+                                seen.add(fname)
+                                features.append(fname)
+                    # Fall back to feature_importance (NFL format — used by both ATS and OU)
+                    if not features:
                         fi = yr.get("feature_importance", [])
                         if isinstance(fi, list):
                             for entry in fi:
@@ -289,21 +298,32 @@ def set_training_run_as_live(sport: str, run_id: int) -> Optional[dict]:
                 (run_id,)
             )
 
-            # ── Update sport.features table ──
-            col = {"ou": "live_ou", "ats": "live_ats"}.get(model_type)
-            if col:
-                # Clear the column for all features first
+            # ── Update sport.features table (current_* = what frontend reads, live_* = legacy) ──
+            current_col = {"ou": "current_ou", "ats": "current_ats"}.get(model_type)
+            live_col = {"ou": "live_ou", "ats": "live_ats"}.get(model_type)
+            if current_col:
+                # Clear both columns for all features first
                 cur.execute(
-                    f'UPDATE {sport}.features SET {col} = FALSE'
+                    f'UPDATE {sport}.features SET {current_col} = FALSE'
                 )
+                if live_col:
+                    cur.execute(
+                        f'UPDATE {sport}.features SET {live_col} = FALSE'
+                    )
                 # Set it for features used in this training run
                 if features:
                     placeholders = ",".join("%s" for _ in features)
                     cur.execute(
-                        f'UPDATE {sport}.features SET {col} = TRUE '
+                        f'UPDATE {sport}.features SET {current_col} = TRUE '
                         f'WHERE name IN ({placeholders})',
                         features
                     )
+                    if live_col:
+                        cur.execute(
+                            f'UPDATE {sport}.features SET {live_col} = TRUE '
+                            f'WHERE name IN ({placeholders})',
+                            features
+                        )
 
         conn.commit()
 

@@ -36,7 +36,8 @@ from app.handicapping.nfl.data_loader import (
 logger = logging.getLogger(__name__)
 
 # ── Model paths ─────────────────────────────────────────────────────────────────
-NFL_PKL_DIR = Path(__file__).parent / "models" / "xgboost"
+# PKL directory for NFL models (matches MLB pattern: data/models/<sport>/)
+NFL_PKL_DIR = Path("/home/rich/.openclaw/workspace/earl-knows-football/data/models/nfl")
 OU_MODEL_PATH = NFL_PKL_DIR / "nfl_ou_best.pkl"
 NFL_PKL_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -204,6 +205,7 @@ def run_backtest(
         "mean_predicted": round(float(y_pred.mean()), 2),
         "ou_accuracy": ou_acc,
         "feature_importance": fi_sorted,
+        "feature_set": available,
         "n_train": len(X_train),
         "n_test": len(X_test),
         "train_mae": round(float(train_mae), 4),
