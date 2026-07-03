@@ -5772,6 +5772,14 @@ async def data_loader_load_game(
                 "type": "computed",
             })
 
+        def _clean_val(v):
+            """Replace NaN/Inf with None so JSON serialization doesn't fail."""
+            if v is None:
+                return None
+            if isinstance(v, float) and (v != v or v == float('inf') or v == float('-inf')):
+                return None
+            return v
+
         # Build a summary for the frontend
         game_info = {}
         sport_lower = sport
@@ -5779,20 +5787,20 @@ async def data_loader_load_game(
             for key in ("game_id", "season_id", "week", "home_team", "away_team",
                         "ha", "aa", "home_score", "away_score", "game_date", "status"):
                 if key in raw_row:
-                    game_info[key] = raw_row[key]
+                    game_info[key] = _clean_val(raw_row[key])
         elif sport == "mlb":
             for key in ("game_id", "season_id", "ha", "aa",
                         "home_score", "away_score", "game_date", "status"):
                 if key in raw_row:
-                    game_info[key] = raw_row[key]
+                    game_info[key] = _clean_val(raw_row[key])
         else:  # nba
             for key in ("game_id", "season_id", "home_team", "away_team",
                         "home_abbr", "away_abbr", "home_score", "away_score", "status"):
                 if key in raw_row:
-                    game_info[key] = raw_row[key]
+                    game_info[key] = _clean_val(raw_row[key])
             # NBA uses `date` column, not `game_date`
             if "date" in raw_row:
-                game_info["game_date"] = raw_row["date"]
+                game_info["game_date"] = _clean_val(raw_row["date"])
 
         return {
             "sport": sport_lower,
