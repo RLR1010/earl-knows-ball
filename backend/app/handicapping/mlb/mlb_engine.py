@@ -25,13 +25,14 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
-from sqlalchemy import text
+from sqlalchemy import select as sa_select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 # Local helpers
 from app.handicapping.mlb.data_loader import MLBDataLoader, build_features, get_data_loader, get_model_features
 from app.handicapping.calibrate_confidence import calibrate
+from app.models.mlb.consolidated import MLBBettingLineConsolidated
 from app.models.mlb.game_prediction import MLBGamePrediction
 
 logger = logging.getLogger("earl.mlb_handicapping")
@@ -157,177 +158,120 @@ def _extract_feature_vector(row: pd.Series, model_type: str) -> Optional[np.ndar
     return np.array(vals, dtype=np.float32)
 
 
-def _infer_margin(row: pd.Series, model_type: str, prob: float) -> float:
-    """Crude margin inference — only used by _build_reasoning for display.
 
-    For ATS: probability -> implied margin.
-    For OU:  probability -> implied total.
+async def batch_predict_upcoming_games(
+    db: AsyncSession,
+    game_ids: List[int],
+    _logger: logging.Logger,
+    year: int = CURRENT_YEAR,
+) -> List[Dict[str, Any]]:
     """
-    if model_type == "ats":
-        spread = float(row.get("h_line_runline", row.get("a_line_runline", 1.5)) or 1.5)
-        return (prob - 0.5) * spread * 2.0
-    total = float(row.get("over_under", row.get("ou_line", 8.5)) or 8.5)
-    return total + (prob - 0.5) * 2.0
+    Load models, build features, and generate predictions for a batch of
+    upcoming MLB games.  This is the core prediction pipeline used by
+    /ingest/mlb/lines-and-picks.
 
-
-# ═══════════════════════════════════════════════════════════════════
-# MLBHandicapper — class-based entry-point used by handicap_mlb.py routes
-# ═══════════════════════════════════════════════════════════════════
-
-class MLBHandicapper:
-    """Backward-compatible wrapper.  Instantiate once per request.
-
-    ``handicap_game(game_id)`` is called by the routes.  Features are built
-    via the data_loader pipeline; models use the **current** year's pkl file
-    from the training_runs table.
+    Returns a list of dicts, one per game.
     """
+    import pandas as pd
+    import numpy as np
 
-    def __init__(self, db: AsyncSession, sport_slug: str = "mlb") -> None:
-        self._db = db
-        self._sport = sport_slug
-        self._game_df: Optional[pd.DataFrame] = None
-        self._ats_model: Any = None
-        self._ou_model: Any = None
+    ats_model = _load_model_for_year("ats", year)
+    ou_model = _load_model_for_year("ou", year)
+    _logger.info(
+        f"Models loaded for {year} (ats={'loaded' if ats_model else 'none'}, "
+        f"ou={'loaded' if ou_model else 'none'})"
+    )
 
-    # ── public methods ───────────────────────────────────────────
+    dl = get_data_loader()
+    all_historic = dl.load_games(status="FINAL", include_upcoming=False)
+    target_games = dl.load_games(status=None, include_upcoming=True, game_ids=game_ids)
+    combined = pd.concat([all_historic, target_games], ignore_index=True)
+    df = build_features(combined)
+    _logger.info(f"Feature df built: {df.shape[0]} rows, {df.shape[1]} cols")
 
-    async def handicap_game(self, game_id: int | str) -> Optional[Dict[str, Any]]:
-        """Return a pick-card dict for *game_id*.
+    rows_result = await db.execute(
+        sa_select(MLBBettingLineConsolidated).where(
+            MLBBettingLineConsolidated.game_id.in_(game_ids)
+        )
+    )
+    line_rows = {r.game_id: r for r in rows_result.scalars().all()}
 
-        Works for any game in the schedule — completed, pregame, or live.
-        Loads the single game via a targeted SQL query so upcoming games
-        are found without scanning self._game_df (which only holds FINAL
-        games).  The new row is merged into the historic feature DataFrame
-        so rolling feature windows compute correctly.
-        """
-        logger.info("MLBHandicapper.handicap_game(%s)", game_id)
-
-        if self._ats_model is None:
-            self._ats_model = _load_model_for_year("ats", CURRENT_YEAR)
-        if self._ou_model is None:
-            self._ou_model = _load_model_for_year("ou", CURRENT_YEAR)
-
-        from app.handicapping.mlb.data_loader import get_data_loader, build_features
-        dl = get_data_loader()
-
-        # Ensure historic feature df is loaded once
-        if self._game_df is None:
-            self._game_df = await self._load_feature_df()
-
-        # Load just this one target game (any status) by ID
-        target = dl.load_games(status=None, include_upcoming=True,
-                               game_ids=[int(game_id)])
-        if target.empty:
-            logger.warning("  game_id %s not found in games table", game_id)
-            return None
-
-        # Keep the raw game DataFrame so we can add new games and rebuild
-        if not hasattr(self, '_raw_game_df') or self._raw_game_df is None:
-            self._raw_game_df = dl.load_games(status='FINAL', include_upcoming=False)
-
-        # Remove the target game from raw if it's already there (e.g. completed game)
-        # to avoid duplicate game_id rows causing pandas join explosions
-        gid_int = int(game_id)
-        drops = self._raw_game_df['game_id'] == gid_int
-        if drops.any():
-            _dropped_raw = self._raw_game_df[~drops].copy()
-        else:
-            _dropped_raw = self._raw_game_df
-
-        # Append the target game and rebuild features
-        combined = pd.concat([_dropped_raw, target], ignore_index=True)
-        df = build_features(combined)
-        row_feat = df[df["game_id"].astype(str) == str(game_id)]
-        if row_feat.empty:
-            logger.warning("  game_id %s not found after feature engineering", game_id)
-            return None
-        row_feat = row_feat.iloc[0]
-
-        # Update cached feature df and raw df for subsequent calls
-        self._game_df = df
-        self._raw_game_df = combined
-
-        ats_pred = self._predict_ats(row_feat)
-        ou_pred = self._predict_ou(row_feat)
-        return _build_pick_card(row_feat, ats_pred, ou_pred)
-
-    async def handicap_date(self, target_date: date) -> List[Dict[str, Any]]:
-        """Generate pick cards for all games on *target_date*."""
-        logger.info("MLBHandicapper.handicap_date(%s)", target_date)
-        dl = get_data_loader()
-        games = dl.load_games(seasons=[target_date.year], status=None, include_upcoming=True)
-        if games.empty:
-            return []
-        df = build_features(games)
-        target_str = str(target_date)
-        df = df[df["game_date"].astype(str) == target_str].copy()
-        if df.empty:
-            return []
-
-        if self._ats_model is None:
-            self._ats_model = _load_model_for_year("ats", CURRENT_YEAR)
-        if self._ou_model is None:
-            self._ou_model = _load_model_for_year("ou", CURRENT_YEAR)
-
-        cards: List[Dict[str, Any]] = []
-        for _, row in df.iterrows():
-            ats_pred = self._predict_ats(row) if self._ats_model else None
-            ou_pred = self._predict_ou(row) if self._ou_model else None
-            cards.append(_build_pick_card(row, ats_pred, ou_pred))
-        return cards
-
-    # ── internals ────────────────────────────────────────────────
-
-    async def _load_feature_df(self) -> Optional[pd.DataFrame]:
-        dl = get_data_loader()
-        games = dl.load_games(status="FINAL")
-        if games.empty:
-            logger.warning("MLBHandicapper: no games loaded")
-            return None
-        df = build_features(games)
-        logger.info("MLBHandicapper: feature DF loaded (%d rows, %d cols)", len(df), len(df.columns))
-        return df
-
-    def _predict_ats(self, row: pd.Series) -> Optional[Dict[str, Any]]:
-        if self._ats_model is None:
-            return None
+    pick_results: List[Dict[str, Any]] = []
+    for gid in game_ids:
         try:
-            feats = _extract_feature_vector(row, "ats")
-            if feats is None:
-                return None
-            pred_margin = float(self._ats_model.predict(feats[np.newaxis, :])[0])
-            spread = float(row.get("spread", row.get("h_line_runline", 1.5)) or 1.5)
-            # home covers iff predicted margin + spread > 0  (matches training eval)
-            home_cover_prob = min(max((pred_margin + spread) / (spread * 4) + 0.5, 0.0), 1.0)
-            return {
-                "home_cover_prob": round(float(home_cover_prob), 4),
-                "model_margin": round(pred_margin, 2),
-            }
+            row = df[df["game_id"].astype(str) == str(gid)]
+            if row.empty:
+                _logger.warning(f"Game {gid} not in feature set")
+                pick_results.append({"game_id": gid, "error": "not_in_feature_set"})
+                continue
+            row_s = row.iloc[0]
+
+            line = line_rows.get(gid)
+            spread = (
+                float(line.closing_spread)
+                if line and line.closing_spread
+                else (
+                    float(row_s.get("spread", row_s.get("h_line_runline", 1.5)))
+                    if pd.notna(row_s.get("spread"))
+                    else None
+                )
+            )
+            total = (
+                float(line.closing_ou)
+                if line and line.closing_ou
+                else (
+                    float(row_s.get("over_under", row_s.get("ou_line", 8.5)))
+                    if pd.notna(row_s.get("over_under"))
+                    else None
+                )
+            )
+
+            ats_feats = _extract_feature_vector(row_s, "ats")
+            ou_feats = _extract_feature_vector(row_s, "ou")
+
+            if ats_feats is not None and ats_model:
+                pred_margin = float(ats_model.predict(ats_feats[np.newaxis, :])[0])
+            else:
+                pred_margin = 0.0
+
+            if ou_feats is not None and ou_model:
+                pred_total = float(ou_model.predict(ou_feats[np.newaxis, :])[0])
+            else:
+                pred_total = total or 8.5
+
+            pred_home_covers = pred_margin > -(spread or 0) if spread else True
+            pred_over = pred_total > (total or 8.5) if total else True
+            pred_home_wins = pred_margin > 0
+
+            await _save_api_prediction(
+                db=db,
+                row=row_s,
+                year=year,
+                spread=spread,
+                total=total,
+                pred_margin=pred_margin,
+                pred_total=pred_total,
+                pred_home_covers=pred_home_covers,
+                pred_over=pred_over,
+                pred_home_wins=pred_home_wins,
+            )
+
+            pick_results.append(
+                {
+                    "game_id": gid,
+                    "predicted_margin": round(pred_margin, 2),
+                    "predicted_total": round(pred_total, 2),
+                    "pred_home_covers": pred_home_covers,
+                    "pred_over": pred_over,
+                    "pred_home_wins": pred_home_wins,
+                }
+            )
         except Exception as exc:
-            logger.warning("_predict_ats failed for %s: %s", row.get("game_id"), exc)
-            return None
+            _logger.warning(f"Prediction failed for game {gid}: {exc}")
+            pick_results.append({"game_id": gid, "error": str(exc)[:200]})
 
-    def _predict_ou(self, row: pd.Series) -> Optional[Dict[str, Any]]:
-        if self._ou_model is None:
-            return None
-        try:
-            feats = _extract_feature_vector(row, "ou")
-            if feats is None:
-                return None
-            pred_total = float(self._ou_model.predict(feats[np.newaxis, :])[0])
-            line_total = float(row.get("over_under", row.get("ou_line", 8.5)) or 8.5)
-            return {
-                "over_prob": round(float(min(max(pred_total / line_total, 0.0), 1.0)), 4),
-                "predicted_total": round(pred_total, 2),
-            }
-        except Exception as exc:
-            logger.warning("_predict_ou failed for %s: %s", row.get("game_id"), exc)
-            return None
-
-
-# ═══════════════════════════════════════════════════════════════════
-# Pick Card Builder
-# ═══════════════════════════════════════════════════════════════════
+    await db.commit()
+    return pick_results
 
 async def _save_api_prediction(
     db: AsyncSession,
@@ -438,119 +382,6 @@ async def _save_api_prediction(
     await db.flush()
     return 1
 
-
-def _build_pick_card(
-    game_row: pd.Series,
-    ats_pred: Optional[Dict[str, Any]],
-    ou_pred: Optional[Dict[str, Any]],
-) -> Dict[str, Any]:
-    """Build the pick-card dict from a single feature-row + prediction results."""
-    home_team = str(game_row.get("ha", ""))
-    away_team = str(game_row.get("aa", ""))
-
-    card: Dict[str, Any] = {
-        "game_id": str(game_row.get("game_id", "")),
-        "home_team": home_team,
-        "away_team": away_team,
-        "game_date": str(game_row.get("game_date", date.today())),
-        "season_year": int(game_row.get("season_year", CURRENT_YEAR)),
-        "ats_pick": None,
-        "ou_pick": None,
-        "confidence": 0.0,
-        "reasoning": _build_reasoning(game_row, ats_pred, ou_pred),
-    }
-
-    if ats_pred:
-        home_cover_prob = ats_pred["home_cover_prob"]
-        if home_cover_prob >= 0.50:
-            pick_team = home_team
-            pick_side = "home"
-            confidence = calibrate(home_cover_prob, "mlb", "ats")
-        else:
-            pick_team = away_team
-            pick_side = "away"
-            confidence = calibrate(1 - home_cover_prob, "mlb", "ats")
-        card["ats_pick"] = {
-            "pick": pick_team,
-            "side": pick_side,
-            "cover_probability": home_cover_prob,
-            "model_margin": ats_pred["model_margin"],
-        }
-        card["confidence"] = max(card["confidence"], confidence)
-
-    if ou_pred:
-        over_prob = ou_pred["over_prob"]
-        card["ou_pick"] = {
-            "pick": "over" if over_prob >= 0.50 else "under",
-            "over_probability": over_prob,
-            "predicted_total": ou_pred["predicted_total"],
-        }
-        conf = calibrate(max(over_prob, 1 - over_prob), "mlb", "ou")
-        card["confidence"] = max(card["confidence"], conf)
-
-    row_dict = dict(game_row)
-    card["handicap_info"] = {
-        "home_stats": _build_mlb_home_stats(row_dict),
-        "away_stats": _build_mlb_away_stats(row_dict),
-        "situational": _build_mlb_situational(row_dict),
-        "splits": _build_mlb_splits(row_dict),
-    }
-
-    return card
-
-
-def _build_reasoning(
-    game_row: pd.Series,
-    ats_pred: Optional[Dict[str, Any]],
-    ou_pred: Optional[Dict[str, Any]],
-) -> str:
-    """Generate a readable reasoning string (abbreviated for pick cards)."""
-    parts: List[str] = []
-    home_team = str(game_row.get("ha", ""))
-    away_team = str(game_row.get("aa", ""))
-
-    rest_h = int(game_row.get("h_rest_days", 0))
-    rest_a = int(game_row.get("a_rest_days", 0))
-    rest_diff = rest_h - rest_a
-    parts.append(f"{home_team} rest={rest_h}d, {away_team} rest={rest_a}d (diff={rest_diff:+d})")
-
-    dome_h = int(game_row.get("h_dome_flag", 0))
-    if dome_h:
-        parts.append("Home dome")
-
-    h_form = game_row.get("h_form_10", "n/a")
-    if h_form != "n/a":
-        parts.append(f"{home_team} L10: {float(h_form):.0%}")
-
-    h_era = game_row.get("h_starter_era", None)
-    a_era = game_row.get("a_starter_era", None)
-    if h_era is not None and not np.isnan(h_era):
-        parts.append(f"Starter ERA: {home_team}={h_era:.2f}")
-    if a_era is not None and not np.isnan(a_era):
-        parts.append(f"{away_team}={a_era:.2f}")
-
-    h_ops = game_row.get("h_ops", None)
-    a_ops = game_row.get("a_ops", None)
-    if h_ops is not None and not np.isnan(h_ops):
-        parts.append(f"OPS: {home_team}={h_ops:.3f}, {away_team}={a_ops:.3f}")
-
-    if ats_pred:
-        prob = ats_pred["home_cover_prob"]
-        if prob >= 0.50:
-            parts.append(f"ATS->{home_team} ({prob:.1%})")
-        else:
-            parts.append(f"ATS->{away_team} ({(1 - prob):.1%})")
-
-    if ou_pred:
-        op = ou_pred["over_prob"]
-        parts.append(f"O/U->{'Over' if op >= 0.50 else 'Under'} ({op:.1%})")
-
-    return " | ".join(parts)
-
-
-# ═══════════════════════════════════════════════════════════════════
-# backtest_season — standalone function, matches route signature
-# ═══════════════════════════════════════════════════════════════════
 
 async def backtest_season(
     db: AsyncSession,

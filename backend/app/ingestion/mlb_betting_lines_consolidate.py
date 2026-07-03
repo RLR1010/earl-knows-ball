@@ -411,8 +411,9 @@ WHERE bl.is_opening = 'false'
   AND bl.spread_away_odds IS NOT NULL
   AND bl.over_odds IS NOT NULL
   AND bl.under_odds IS NOT NULL
-ORDER BY bl.game_id
 """
+
+ORDER_BY_GAME_ID = "ORDER BY bl.game_id"
 
 # ── Game metadata ──
 FETCH_GAME_META_SQL = """
@@ -823,9 +824,9 @@ def run(rebuild_full=False, game_ids_filter=None, cursor=None, conn=None):
         if missing_game_ids:
             if game_ids_filter:
                 # In incremental mode, only process the specific missing games
-                cursor.execute(FETCH_CLOSING_ONLY_SQL + " AND bl.game_id = ANY(%s)", (list(missing_game_ids),))
+                cursor.execute(FETCH_CLOSING_ONLY_SQL + " AND bl.game_id = ANY(%s) " + ORDER_BY_GAME_ID, (list(missing_game_ids),))
             else:
-                cursor.execute(FETCH_CLOSING_ONLY_SQL)
+                cursor.execute(FETCH_CLOSING_ONLY_SQL + " " + ORDER_BY_GAME_ID)
             closing_only_by_game = {}
             for db_row in cursor.fetchall():
                 row_dict = dict(zip(

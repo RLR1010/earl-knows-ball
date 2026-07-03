@@ -21,7 +21,6 @@ from app.ingestion.articles_hoopsrumors import scrape_hoopsrumors_all
 from app.ingestion.historical import generate_all_seasons
 from app.ingestion.depth_charts import scrape_team_depth_chart, scrape_all_teams
 from app.ingestion.historical_games import ingest_historical_games as _ingest_historical_games
-from app.ingestion.sbnation_archives import scrape_all_blogs, scrape_blog_archives, SBNATION_BLOGS, NBA_BLOGS, MLB_BLOGS
 from app.ingestion.player_profiles import generate_all_profiles, generate_profile_for_player
 from app.ingestion.national_archives import scrape_source, scrape_all_sources, NATIONAL_SOURCES
 from app.ingestion.pft_archives import scrape_from_sitemaps, scrape_latest_rss as scrape_pft_rss
@@ -320,7 +319,6 @@ async def ingest_manual_article(
     return {"status": "ok", "article_id": article.id, "title": article.title}
 
 
-
 @router.post("/ingest/historical")
 async def ingest_historical_seasons(
     start: int = Query(2005, description="First season year"),
@@ -587,309 +585,6 @@ async def ingest_single_profile(
 # ── SB Nation Archive Scraping ────────────────────────────────────────────
 
 
-@router.post("/ingest/articles/sbnation/blog")
-async def ingest_sbnation_blog(
-    blog: str = Query(..., description="SB Nation blog domain, e.g. acmepackingcompany"),
-    start_year: int = Query(2022, description="First year to scrape"),
-    end_year: int | None = Query(None, description="Last year (default: current year)"),
-    max_articles: int | None = Query(None, description="Max articles for this blog"),
-    delay: float = Query(1.5, description="Seconds between requests"),
-    db: AsyncSession = Depends(get_db),
-):
-    """Scrape archives for a single SB Nation team blog."""
-    if blog not in SBNATION_BLOGS:
-        available = ", ".join(sorted(SBNATION_BLOGS.keys()))
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unknown blog '{blog}'. Available: {available}",
-        )
-    result = await scrape_blog_archives(
-        db=db,
-        blog_domain=blog,
-        start_year=start_year,
-        end_year=end_year,
-        delay=delay,
-        max_articles=max_articles,
-    )
-    return {"status": "ok", **result}
-
-
-@router.post("/ingest/articles/sbnation/all")
-async def ingest_sbnation_all(
-    start_year: int = Query(2022, description="First year to scrape"),
-    end_year: int | None = Query(None, description="Last year (default: current year)"),
-    max_per_blog: int | None = Query(None, description="Max articles per blog"),
-    delay: float = Query(1.5, description="Seconds between requests"),
-    blog_filter: str | None = Query(None, description="Comma-separated blog domains to scrape (omit for all 32)"),
-    db: AsyncSession = Depends(get_db),
-):
-    """Scrape archives for all (or filtered) SB Nation team blogs."""
-    filter_list = blog_filter.split(",") if blog_filter else None
-    result = await scrape_all_blogs(
-        db=db,
-        start_year=start_year,
-        end_year=end_year,
-        delay=delay,
-        max_per_blog=max_per_blog,
-        blog_filter=filter_list,
-    )
-    return {"status": "ok", **result}
-
-
-@router.post("/ingest/articles/sbnation/nba/all")
-async def ingest_sbnation_nba_all(
-    start_year: int = Query(2026, description="First year to scrape"),
-    end_year: int | None = Query(None, description="Last year (default: current year)"),
-    max_per_blog: int | None = Query(None, description="Max articles per blog"),
-    delay: float = Query(0.75, description="Seconds between requests"),
-    blog_filter: str | None = Query(None, description="Comma-separated blog domains (omit for all 30)"),
-    db: AsyncSession = Depends(get_db),
-):
-    """Scrape archives for all (or filtered) SB Nation NBA team blogs."""
-    filter_list = blog_filter.split(",") if blog_filter else None
-    result = await scrape_all_blogs(
-        db=db,
-        start_year=start_year,
-        end_year=end_year,
-        delay=delay,
-        max_per_blog=max_per_blog,
-        blog_filter=filter_list,
-        blogs=NBA_BLOGS,
-    )
-    return {"status": "ok", **result}
-
-
-@router.post("/ingest/articles/sbnation/mlb/all")
-async def ingest_sbnation_mlb_all(
-    start_year: int = Query(2026, description="First year to scrape"),
-    end_year: int | None = Query(None, description="Last year (default: current year)"),
-    max_per_blog: int | None = Query(None, description="Max articles per blog"),
-    delay: float = Query(0.75, description="Seconds between requests"),
-    blog_filter: str | None = Query(None, description="Comma-separated blog domains (omit for all 30)"),
-    db: AsyncSession = Depends(get_db),
-):
-    """Scrape archives for all (or filtered) SB Nation MLB team blogs."""
-    filter_list = blog_filter.split(",") if blog_filter else None
-    result = await scrape_all_blogs(
-        db=db,
-        start_year=start_year,
-        end_year=end_year,
-        delay=delay,
-        max_per_blog=max_per_blog,
-        blog_filter=filter_list,
-        blogs=MLB_BLOGS,
-    )
-    return {"status": "ok", **result}
-
-
-# ── MLB Betting Lines ──────────────────────────────────────────────────────
-
-
-@router.post("/ingest/mlb/betting-lines/historical/github")
-async def ingest_mlb_historical_github_betting_lines(
-    start_date: str | None = Query(None, description="Start date YYYY-MM-DD (dataset: 2021-04-01)"),
-    end_date: str | None = Query(None, description="End date YYYY-MM-DD (dataset: 2025-08-16)"),
-    source: str = Query("mlb_odds_dataset", description="Data source label"),
-    sportsbook: str = Query("fanduel", description="Preferred sportsbook (fanduel, draftkings, betmgm, etc)"),
-    db: AsyncSession = Depends(get_db),
-):
-    """
-    Load historical MLB betting lines from the free GitHub dataset (2021-2025).
-
-    Downloads a 76 MB JSON file with opening + closing lines from multiple
-    sportsbooks (FanDuel, DraftKings, BetMGM, Bet365, Caesars, BetRivers).
-    """
-    result = await ingest_historical_mlb_lines(
-        db=db,
-        start_date=start_date,
-        end_date=end_date,
-        source_name=source,
-        preferred_sportsbook=sportsbook,
-    )
-    return {"status": "ok", **result}
-
-
-@router.post("/ingest/mlb/betting-lines/historical/sbr")
-async def ingest_mlb_historical_sbr_betting_lines(
-    start_year: int = Query(2011, description="First season (min: 2011)"),
-    end_year: int = Query(2021, description="Last season (max: 2021)"),
-    source: str = Query("sbr_historical", description="Data source label"),
-    db: AsyncSession = Depends(get_db),
-):
-    """
-    Load historical MLB betting lines from SportsbookReview 10Y dataset (2011-2021).
-
-    Downloads an 18 MB JSON file with opening/closing moneylines and totals
-    from sportsbookreview.com for MLB seasons 2011-2021.
-    """
-    result = await ingest_historical_sbr_mlb_lines(
-        db=db,
-        start_year=start_year,
-        end_year=end_year,
-        source_name=source,
-    )
-    return {"status": "ok", **result}
-
-
-@router.post("/ingest/mlb/betting-lines/historical")
-async def ingest_mlb_historical_betting_lines(
-    start_year: int = Query(2011, description="First year (SBR: 2011-2021, GitHub: 2021-2025)"),
-    end_year: int | None = Query(None, description="Last year (default: current)"),
-    sportsbook: str = Query("fanduel", description="Preferred sportsbook for GitHub dataset"),
-    db: AsyncSession = Depends(get_db),
-):
-    """
-    Load ALL historical MLB betting lines.
-
-    Combines two datasets:
-      - SBR 10Y (2011-2021): opening/closing ML + totals
-      - GitHub (2021-2025): opening/closing ML + spread + totals (per sportsbook)
-
-    This endpoint runs both datasets. Use the /github and /sbr sub-endpoints
-    for more granular control.
-    """
-    from datetime import datetime as dt_module
-    now = dt_module.now(timezone.utc)
-    if end_year is None:
-        end_year = now.year
-
-    results = {}
-
-    # SBR dataset (2011-2021)
-    if start_year <= 2021:
-        sbr_end = min(end_year, 2021)
-        sbr_start = max(start_year, 2011)
-        if sbr_start <= sbr_end:
-            logger.info("Running SBR dataset ingestion...")
-            sbr_result = await ingest_historical_sbr_mlb_lines(
-                db=db, start_year=sbr_start, end_year=sbr_end,
-            )
-            results["sbr"] = sbr_result
-
-    # GitHub dataset (2021-2025)
-    if end_year >= 2021:
-        git_start = "2021-04-01"
-        git_end = f"{min(end_year, 2025)}-12-31"
-        if start_year <= 2025:
-            logger.info("Running GitHub dataset ingestion...")
-            git_result = await ingest_historical_mlb_lines(
-                db=db,
-                start_date=git_start,
-                end_date=git_end,
-                preferred_sportsbook=sportsbook,
-            )
-            results["github"] = git_result
-
-    return {"status": "ok", "datasets": results}
-    """
-    Load historical MLB betting lines from the free GitHub dataset.
-
-    Downloads a 76 MB JSON file with opening + closing lines from multiple
-    sportsbooks (FanDuel, DraftKings, BetMGM, Bet365, Caesars, BetRivers).
-
-    Date range available: 2021-04-01 to 2025-08-16
-    """
-    result = await ingest_historical_mlb_lines(
-        db=db,
-        start_date=start_date,
-        end_date=end_date,
-        source_name=source,
-        preferred_sportsbook=sportsbook,
-    )
-    return {"status": "ok", **result}
-
-
-@router.post("/ingest/mlb/betting-lines/current")
-async def ingest_mlb_current_betting_lines(
-    api_key: str = Query("", description="The Odds API key. Falls back to ODDS_API_KEY env var."),
-    days_from_now: int = Query(14, description="Look ahead this many days for upcoming games"),
-    source: str = Query("the_odds_api", description="Data source label"),
-    sportsbook: str | None = Query(None, description="Specific sportsbook filter"),
-    db: AsyncSession = Depends(get_db),
-):
-    """
-    Fetch current MLB betting lines from The Odds API.
-
-    Uses the baseball_mlb sport key. Requires a free API key.
-    Falls back to ODDS_API_KEY environment variable.
-    """
-    if not api_key:
-        api_key = os.getenv("ODDS_API_KEY", "")
-    result = await ingest_current_mlb_lines(
-        db=db,
-        api_key=api_key,
-        source_name=source,
-        days_from_now=days_from_now,
-        sportsbook=sportsbook,
-    )
-    return {"status": "ok", **result}
-
-
-@router.post("/ingest/mlb/opening-lines/snapshot")
-async def ingest_mlb_opening_lines_snapshot(
-    api_key: str = Query("", description="The Odds API key. Falls back to ODDS_API_KEY env var."),
-    days_from_now: int = Query(14, description="Look ahead from today"),
-    db: AsyncSession = Depends(get_db),
-):
-    """
-    Snapshot MLB opening lines from The Odds API.
-
-    Saves with is_opening='true' and source='the_odds_api_opening'.
-    Only saves for games that don't already have an opening line.
-    """
-    if not api_key:
-        api_key = os.getenv("ODDS_API_KEY", "")
-    if not api_key:
-        return {"status": "error", "detail": "No API key provided. Get one free at https://the-odds-api.com/"}
-    result = await snapshot_mlb_opening_lines(
-        db=db,
-        api_key=api_key,
-        days_from_now=days_from_now,
-    )
-    return {"status": "ok", **result}
-
-
-@router.post("/ingest/mlb/betting-lines/historical/odds-api")
-async def ingest_mlb_historical_odds_api(
-    api_key: str = Query("", description="The Odds API key. Falls back to ODDS_API_KEY env var."),
-    start_date: str = Query(None, description="Start date YYYY-MM-DD (default 2020-06-30)"),
-    end_date: str = Query(None, description="End date YYYY-MM-DD (default today)"),
-    source: str = Query("the_odds_api_historical", description="Data source label"),
-    markets: str = Query("totals,spreads,h2h", description="Markets to fetch (comma-sep)"),
-    db: AsyncSession = Depends(get_db),
-):
-    """
-    Ingest historical MLB betting lines from The Odds API paid-tier.
-
-    Uses the odds-history endpoint. Requires a Professional (paid) API key.
-    Available from 2020-06-30 onward. Costs 10 credits per region per market.
-
-    Queries once per game date at ~19:00 UTC (3 PM ET) to capture
-    closing-adjacent lines from multiple sportsbooks.
-    """
-    if not api_key:
-        api_key = os.getenv("ODDS_API_KEY", "")
-    if not api_key:
-        return {"status": "error", "detail": "No API key provided. Paid key required."}
-
-    start = None
-    end = None
-    if start_date:
-        start = datetime.strptime(start_date, "%Y-%m-%d").date()
-    if end_date:
-        end = datetime.strptime(end_date, "%Y-%m-%d").date()
-
-    result = await ingest_historical_odds_api_mlb_lines(
-        db=db,
-        api_key=api_key,
-        start_date=start,
-        end_date=end,
-        source_name=source,
-        markets=markets,
-    )
-    return {"status": "ok", **result}
-
-
 @router.post("/ingest/nfl/pace")
 async def ingest_nfl_pace_data(
     years: str = Query(None, description="Comma-separated years e.g. '2022,2023,2024'. Defaults to 2012-current"),
@@ -1109,94 +804,6 @@ async def ingest_mlb_backfill_scores():
         }
 
 
-@router.post("/ingest/mlb/daily-prep")
-async def ingest_mlb_daily_prep(
-    api_key: str = Query("", description="The Odds API key. Falls back to ODDS_API_KEY env var."),
-    db: AsyncSession = Depends(get_db),
-):
-    """
-    MLB daily morning pipeline:
-      1. Snapshot opening lines from The Odds API
-      2. Generate predictions for today's games via MLBHandicapper
-
-    Runs before first pitch (target ~9:00 AM CT).
-    """
-    from app.ingestion.mlb_betting_lines import snapshot_mlb_opening_lines
-    from app.handicapping.mlb.mlb_engine import MLBHandicapper
-
-    if not api_key:
-        api_key = os.getenv("ODDS_API_KEY", "")
-
-    results = {"opening_lines": None, "predictions": None, "errors": [], "consolidated": None}
-
-    # Step 1: Snapshot opening + current lines from The Odds API
-    updated_game_ids = []
-    if api_key:
-        try:
-            lines_result = await snapshot_mlb_opening_lines(
-                db=db,
-                api_key=api_key,
-                days_from_now=3,
-            )
-            results["opening_lines"] = lines_result
-            updated_game_ids = lines_result.get("updated_game_ids", [])
-        except Exception as e:
-            results["errors"].append(f"Opening lines snapshot failed: {e}")
-    else:
-        results["opening_lines"] = {"detail": "No API key, skipped"}
-
-    # Step 1b: Run consolidation (uses best sportsbook per game with consensus checking)
-    if updated_game_ids:
-        try:
-            import subprocess as _sp
-            import os
-            script_path = os.path.join(
-                os.path.dirname(os.path.abspath(__file__)),
-                "../ingestion/mlb_betting_lines_consolidate.py"
-            )
-            proc = _sp.run(
-                [sys.executable, script_path, "--games"] + [str(gid) for gid in updated_game_ids],
-                capture_output=True, text=True, timeout=120,
-                cwd=os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."),
-                env={**os.environ, "PYTHONPATH": os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")},
-            )
-            for line in proc.stdout.split("\n"):
-                if line.strip():
-                    logger.info(f"[consolidated] {line}")
-            if proc.returncode != 0:
-                results["errors"].append(f"Consolidation failed: {proc.stderr[:300]}")
-            results["consolidated"] = {
-                "games": len(updated_game_ids),
-                "stdout": proc.stdout[-300:],
-            }
-        except Exception as e:
-            results["errors"].append(f"Consolidated refresh failed: {e}")
-            logger.error(f"Consolidated refresh failed: {e}")
-
-    # Step 2: Use MLBHandicapper.handicap_date() to generate picks
-    try:
-        import logging
-        logger = logging.getLogger("earl.mlb_daily_prep")
-
-        today_str = datetime.now().strftime("%Y-%m-%d")
-        logger.info(f"Running MLBHandicapper for {today_str}...")
-
-        handicapper = MLBHandicapper(db)
-        picks = await handicapper.handicap_date(today_str, num_games=10)
-
-        results["predictions"] = {
-            "games_analyzed": len(picks),
-            "picks": [p.to_dict() for p in picks],
-        }
-        logger.info(f"Generated {len(picks)} picks for {today_str}")
-    except Exception as e:
-        import traceback
-        results["errors"].append(f"Predictions failed: {e}")
-        logger.error(f"MLB predictions failed: {e}\n{traceback.format_exc()}")
-
-    return {"status": "ok", "results": results}
-
-
 @router.post("/ingest/mlb/lines-and-picks")
 async def ingest_mlb_lines_and_picks(
     api_key: str = Query("", description="The Odds API key. Falls back to ODDS_API_KEY env var."),
@@ -1214,11 +821,8 @@ async def ingest_mlb_lines_and_picks(
     logger = logging.getLogger("earl.mlb_lines_and_picks")
 
     from app.ingestion.mlb_betting_lines import snapshot_mlb_opening_lines
-    from app.handicapping.mlb.data_loader import get_data_loader, build_features
     from app.handicapping.mlb.mlb_engine import (
-        _save_api_prediction,
-        _extract_feature_vector,
-        _load_model_for_year,
+        batch_predict_upcoming_games,
         CURRENT_YEAR,
     )
 
@@ -1255,8 +859,6 @@ async def ingest_mlb_lines_and_picks(
 
         # ── Step 3: Batch predictions ───────────────────────────────
         from sqlalchemy import text as sa_text
-        import pandas as pd
-        import numpy as np
 
         # 3a – Find all future-scheduled games to generate/refresh picks
         result = await db.execute(
@@ -1276,106 +878,22 @@ async def ingest_mlb_lines_and_picks(
         if not game_ids_needing_picks:
             results["predictions"] = {"picks_generated": 0, "note": "No future scheduled games with consolidated lines"}
         else:
-            # 3b – Load model pkl files once
-            ats_model = _load_model_for_year("ats", CURRENT_YEAR)
-            ou_model = _load_model_for_year("ou", CURRENT_YEAR)
-            logger.info(f"Models loaded for {CURRENT_YEAR} (ats={'loaded' if ats_model else 'none'}, ou={'loaded' if ou_model else 'none'})")
-
-            # 3c – Load ALL historic finished games + upcoming games, build features ONCE
-            dl = get_data_loader()
-            all_historic = dl.load_games(status="FINAL", include_upcoming=False)
-
-            # Batch-load all target games with one query
-            target_games = dl.load_games(status=None, include_upcoming=True, game_ids=game_ids_needing_picks)
-
-            if target_games.empty:
-                results["predictions"] = {"picks_generated": 0, "note": "No games found in DB"}
-            else:
-                combined = pd.concat([all_historic, target_games], ignore_index=True)
-                df = build_features(combined)
-                logger.info(f"Feature DF built: {len(df)} rows, {len(df.columns)} cols, "
-                           f"{len(game_ids_needing_picks)} target games")
-
-                # 3d – Get consolidated lines
-                from app.models.mlb.consolidated import MLBBettingLineConsolidated
-                from sqlalchemy import select as sa_select
-                rows_result = await db.execute(
-                    sa_select(MLBBettingLineConsolidated).where(
-                        MLBBettingLineConsolidated.game_id.in_(game_ids_needing_picks)
-                    )
-                )
-                line_rows = {r.game_id: r for r in rows_result.scalars().all()}
-
-                pick_results = []
-                for gid in game_ids_needing_picks:
-                    try:
-                        row = df[df["game_id"].astype(str) == str(gid)]
-                        if row.empty:
-                            logger.warning(f"Game {gid} not in feature set")
-                            pick_results.append({"game_id": gid, "error": "not_in_feature_set"})
-                            continue
-                        row_s = row.iloc[0]
-
-                        # Get spread / total from consolidated line
-                        line = line_rows.get(gid)
-                        spread = float(line.closing_spread) if line and line.closing_spread else (
-                            float(row_s.get("spread", row_s.get("h_line_runline", 1.5)))
-                            if pd.notna(row_s.get("spread")) else None
-                        )
-                        total = float(line.closing_ou) if line and line.closing_ou else (
-                            float(row_s.get("over_under", row_s.get("ou_line", 8.5)))
-                            if pd.notna(row_s.get("over_under")) else None
-                        )
-
-                        # Predict
-                        ats_feats = _extract_feature_vector(row_s, "ats")
-                        ou_feats = _extract_feature_vector(row_s, "ou")
-
-                        if ats_feats is not None and ats_model:
-                            pred_margin = float(ats_model.predict(ats_feats[np.newaxis, :])[0])
-                        else:
-                            pred_margin = 0.0
-
-                        if ou_feats is not None and ou_model:
-                            pred_total = float(ou_model.predict(ou_feats[np.newaxis, :])[0])
-                        else:
-                            pred_total = total or 8.5
-
-                        pred_home_covers = pred_margin > -(spread or 0) if spread else True
-                        pred_over = pred_total > (total or 8.5) if total else True
-                        pred_home_wins = pred_margin > 0
-
-                        # Save to DB
-                        await _save_api_prediction(
-                            db, row_s, CURRENT_YEAR,
-                            spread, total,
-                            pred_margin, pred_total,
-                            pred_home_covers, pred_over, pred_home_wins,
-                        )
-                        pick_results.append({
-                            "game_id": gid,
-                            "home": str(row_s.get("ha", "")),
-                            "away": str(row_s.get("aa", "")),
-                            "spread": spread,
-                            "total": total,
-                            "predicted_margin": round(pred_margin, 2),
-                            "predicted_total": round(pred_total, 2),
-                        })
-                    except Exception as exc:
-                        logger.warning(f"Prediction failed for game {gid}: {exc}")
-                        pick_results.append({"game_id": gid, "error": str(exc)[:200]})
-
-                await db.commit()
-                results["predictions"] = {
-                    "picks_generated": len([p for p in pick_results if "error" not in p]),
-                    "games_attempted": len(game_ids_needing_picks),
-                    "game_results": pick_results,
-                }
-                logger.info(
-                    f"Lines+picks: {lines_result.get('loaded', 0)} new lines, "
-                    f"{len(game_ids_needing_picks)} games, "
-                    f"{len([p for p in pick_results if 'error' not in p])} picks"
-                )
+            pick_results = await batch_predict_upcoming_games(
+                db=db,
+                game_ids=game_ids_needing_picks,
+                _logger=logger,
+                year=CURRENT_YEAR,
+            )
+            results["predictions"] = {
+                "picks_generated": len([p for p in pick_results if "error" not in p]),
+                "games_attempted": len(game_ids_needing_picks),
+                "game_results": pick_results,
+            }
+            logger.info(
+                f"Lines+picks: {lines_result.get('loaded', 0)} new lines, "
+                f"{len(game_ids_needing_picks)} games, "
+                f"{len([p for p in pick_results if 'error' not in p])} picks"
+            )
 
     except Exception as e:
         import traceback
