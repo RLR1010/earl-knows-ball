@@ -238,8 +238,8 @@ SELECT
     -- Starter ERA from pitcher_game_stats
     gse.home_starter_era                                    AS h_starter_era,
     gse.away_starter_era                                    AS a_starter_era,
-    gse.home_starter_name                                   AS h_starter_name,
-    gse.away_starter_name                                   AS a_starter_name,
+    COALESCE(gse.home_starter_name, g.home_pitcher_name)    AS h_starter_name,
+    COALESCE(gse.away_starter_name, g.away_pitcher_name)    AS a_starter_name,
     gse.home_starter_ip                                    AS h_starter_ip,
     gse.home_starter_er                                    AS h_starter_er,
     gse.away_starter_ip                                    AS a_starter_ip,
