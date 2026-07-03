@@ -458,7 +458,7 @@ async def backtest_season(
     if resume:
         try:
             r = await db.execute(
-                text("SELECT DISTINCT game_id FROM mlb.game_predictions WHERE source = 'api'")
+                text("SELECT DISTINCT game_id FROM mlb.game_predictions WHERE source IN ('api', 'backtest')")
             )
             existing_preds = {str(row[0]) for row in r.fetchall()}
             logger.info("  resume=True — %d existing predictions found", len(existing_preds))
@@ -844,16 +844,26 @@ def _compat_build_extra_features(df: pd.DataFrame) -> pd.DataFrame:
 
 
 if __name__ == "__main__":
-    import asyncio
+    import argparse, asyncio
     from app.database import get_db
+
+    parser = argparse.ArgumentParser(description="MLB backtest runner")
+    parser.add_argument("--years", nargs="*", default=["2025", "2026"],
+                        help="Year(s) to backtest (e.g. 2025 2026)")
+    parser.add_argument("--resume", action="store_true",
+                        help="Skip games that already have a prediction")
+    parser.add_argument("--num-games", type=int, default=None,
+                        help="Number of games to evaluate (default: all)")
+    args = parser.parse_args()
+    years = [int(y) for y in args.years]
 
     async def _run():
         async for db in get_db():
-            for year in (2025, 2026):
+            for year in years:
                 print(f"\n{'='*60}")
                 print(f"Backtesting {year}...")
                 print(f"{'='*60}")
-                result = await backtest_season(db, year, resume=True, num_games=10)
+                result = await backtest_season(db, year, resume=args.resume, num_games=args.num_games or 0)
                 print(f"{year} done: {result}")
             break
 

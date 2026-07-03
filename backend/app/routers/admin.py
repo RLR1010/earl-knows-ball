@@ -1393,7 +1393,7 @@ async def get_prediction_stats(
         FROM {schema}.game_predictions gp
         JOIN {schema}.games g ON g.id = gp.game_id
         JOIN {schema}.seasons s ON s.id = g.season_id
-        WHERE gp.source = 'api'
+        WHERE gp.source = 'backtest'
         GROUP BY s.year
         ORDER BY s.year
     """))
@@ -1425,7 +1425,7 @@ async def get_prediction_stats(
             FROM {schema}.game_predictions gp
             JOIN {schema}.games g ON g.id = gp.game_id
             JOIN {schema}.seasons s ON s.id = g.season_id
-            WHERE gp.source = 'api' AND s.year = {r.year}
+            WHERE gp.source = 'backtest' AND s.year = {r.year}
               AND gp.margin_conf IS NOT NULL
         """))
 
@@ -1622,7 +1622,7 @@ async def get_prediction_calibration(
         FROM {schema}.game_predictions gp
         JOIN {schema}.games g ON g.id = gp.game_id
         JOIN {schema}.seasons s ON s.id = g.season_id
-        WHERE gp.source = 'api'
+        WHERE gp.source = 'backtest'
           AND gp.margin_conf IS NOT NULL
     """))
 
@@ -1842,7 +1842,7 @@ async def get_prediction_ev_distribution(
         FROM {schema}.game_predictions gp
         JOIN {schema}.games g ON g.id = gp.game_id
         JOIN {schema}.seasons s ON s.id = g.season_id
-        WHERE gp.source = 'api'
+        WHERE gp.source = 'backtest'
           AND gp.margin_conf IS NOT NULL
     """))
 
@@ -4184,7 +4184,7 @@ async def get_prediction_stats(
         FROM {schema}.game_predictions gp
         JOIN {schema}.games g ON g.id = gp.game_id
         JOIN {schema}.seasons s ON s.id = g.season_id
-        WHERE gp.source = 'api'
+        WHERE gp.source = 'backtest'
         GROUP BY s.year
         ORDER BY s.year
     """))
@@ -4216,7 +4216,7 @@ async def get_prediction_stats(
             FROM {schema}.game_predictions gp
             JOIN {schema}.games g ON g.id = gp.game_id
             JOIN {schema}.seasons s ON s.id = g.season_id
-            WHERE gp.source = 'api' AND s.year = {r.year}
+            WHERE gp.source = 'backtest' AND s.year = {r.year}
               AND gp.margin_conf IS NOT NULL
         """))
 
@@ -4413,7 +4413,7 @@ async def get_prediction_calibration(
         FROM {schema}.game_predictions gp
         JOIN {schema}.games g ON g.id = gp.game_id
         JOIN {schema}.seasons s ON s.id = g.season_id
-        WHERE gp.source = 'api'
+        WHERE gp.source = 'backtest'
           AND gp.margin_conf IS NOT NULL
     """))
 
@@ -4633,7 +4633,7 @@ async def get_prediction_ev_distribution(
         FROM {schema}.game_predictions gp
         JOIN {schema}.games g ON g.id = gp.game_id
         JOIN {schema}.seasons s ON s.id = g.season_id
-        WHERE gp.source = 'api'
+        WHERE gp.source = 'backtest'
           AND gp.margin_conf IS NOT NULL
     """))
 
