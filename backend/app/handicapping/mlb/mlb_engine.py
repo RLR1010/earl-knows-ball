@@ -333,9 +333,14 @@ async def _save_api_prediction(
     ml_odds = home_ml_odds if ml_picked_home else away_ml_odds
 
     # Calibrate confidence against empirical win rate
-    rl_conf = calibrate(min(0.5 + abs(pred_margin + spread) * 0.4, 0.90) if spread else 0.5, "ats", "mlb")
-    ml_conf = calibrate(min(0.5 + abs(pred_margin) * 0.25, 0.92), "ml", "mlb")
-    ou_conf = calibrate(min(0.5 + abs(pred_total - total) * 0.25, 0.92) if total else 0.5, "ou", "mlb")
+    # Raw confidence heuristic
+    rl_conf_raw = min(0.5 + abs(pred_margin + spread) * 0.4, 0.90) if spread else 0.5
+    ml_conf_raw = min(0.5 + abs(pred_margin) * 0.25, 0.92)
+    ou_conf_raw = min(0.5 + abs(pred_total - total) * 0.25, 0.92) if total else 0.5
+    # Calibrated confidence
+    rl_conf = calibrate(rl_conf_raw, "ats", "mlb")
+    ml_conf = calibrate(ml_conf_raw, "ml", "mlb")
+    ou_conf = calibrate(ou_conf_raw, "ou", "mlb")
     margin_conf = rl_conf
 
     # EV at $100 stake
@@ -385,6 +390,9 @@ async def _save_api_prediction(
         ou_conf=round(ou_conf, 4),
         ml_conf=round(ml_conf, 4),
         margin_conf=round(margin_conf, 4),
+        rl_conf_raw=round(rl_conf_raw, 4),
+        ml_conf_raw=round(ml_conf_raw, 4),
+        ou_conf_raw=round(ou_conf_raw, 4),
         ats_ev=ats_ev,
         ou_ev=ou_ev,
         ml_ev=ml_ev,
@@ -741,9 +749,14 @@ async def _save_backtest_prediction(
 
     # Confidence heuristic (matches old MLBPickCard)
     # Calibrate confidence against empirical win rate
-    rl_conf = calibrate(min(0.5 + abs(pred_margin + spread) * 0.4, 0.90), "ats", "mlb")
-    ml_conf = calibrate(min(0.5 + abs(pred_margin) * 0.25, 0.92), "ml", "mlb")
-    ou_conf = calibrate(min(0.5 + abs(pred_total - total) * 0.25, 0.92), "ou", "mlb")
+    # Raw confidence heuristic
+    rl_conf_raw = min(0.5 + abs(pred_margin + spread) * 0.4, 0.90) if spread else 0.5
+    ml_conf_raw = min(0.5 + abs(pred_margin) * 0.25, 0.92)
+    ou_conf_raw = min(0.5 + abs(pred_total - total) * 0.25, 0.92) if total else 0.5
+    # Calibrated confidence
+    rl_conf = calibrate(rl_conf_raw, "ats", "mlb")
+    ml_conf = calibrate(ml_conf_raw, "ml", "mlb")
+    ou_conf = calibrate(ou_conf_raw, "ou", "mlb")
     margin_conf = rl_conf
     overall_conf = max(rl_conf, ou_conf, ml_conf)
 
@@ -797,6 +810,9 @@ async def _save_backtest_prediction(
         ou_conf=round(ou_conf, 4),
         ml_conf=round(ml_conf, 4),
         margin_conf=round(margin_conf, 4),
+        rl_conf_raw=round(rl_conf_raw, 4),
+        ml_conf_raw=round(ml_conf_raw, 4),
+        ou_conf_raw=round(ou_conf_raw, 4),
         ats_ev=ats_ev,
         ou_ev=ou_ev,
         ml_ev=ml_ev,

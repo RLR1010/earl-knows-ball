@@ -23,9 +23,12 @@ class MLBGamePrediction(Base):
 
     # Model confidence
     margin_conf = Column(Float, nullable=True)
-    rl_conf = Column(Float, nullable=True)
-    ml_conf = Column(Float, nullable=True)
-    ou_conf = Column(Float, nullable=True)
+    rl_conf = Column(Float, nullable=True, comment="Calibrated RL confidence")
+    ml_conf = Column(Float, nullable=True, comment="Calibrated ML confidence")
+    ou_conf = Column(Float, nullable=True, comment="Calibrated OU confidence")
+    rl_conf_raw = Column(Float, nullable=True, comment="Raw RL confidence heuristic")
+    ml_conf_raw = Column(Float, nullable=True, comment="Raw ML confidence heuristic")
+    ou_conf_raw = Column(Float, nullable=True, comment="Raw OU confidence heuristic")
 
     # Picks
     ou_pick = Column(String(20), nullable=True)         # "Over", "Under", "Push / No edge"
