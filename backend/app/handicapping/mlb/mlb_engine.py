@@ -838,10 +838,23 @@ def _safe_int(val, default: int = -110) -> int:
 
 
 def _compat_build_extra_features(df: pd.DataFrame) -> pd.DataFrame:
-    """No-op."""
-    return df
-
-def _compat_build_extra_features(df: pd.DataFrame) -> pd.DataFrame:
     """No-op: all feature engineering is in ``build_features()`` from
     ``data_loader``.  Kept for backward API compatibility."""
     return df
+
+
+if __name__ == "__main__":
+    import asyncio
+    from app.database import get_db
+
+    async def _run():
+        async for db in get_db():
+            for year in (2025, 2026):
+                print(f"\n{'='*60}")
+                print(f"Backtesting {year}...")
+                print(f"{'='*60}")
+                result = await backtest_season(db, year, resume=True, num_games=10)
+                print(f"{year} done: {result}")
+            break
+
+    asyncio.run(_run())
