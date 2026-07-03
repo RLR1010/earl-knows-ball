@@ -508,10 +508,10 @@ async def backtest_season(
         else:
             rl_l += 1
 
-        if pred_over == actual_over:
-            ou_w += 1
-        elif (home_score + away_score) == total:
+        if (home_score + away_score) == total:
             ou_p += 1
+        elif pred_over == actual_over:
+            ou_w += 1
         else:
             ou_l += 1
 
