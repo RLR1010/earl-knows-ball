@@ -1,383 +1,310 @@
+"""NBA odds consolidation — picks one sportsbook per game consistently.
+
+Rule:
+  - Prefer FanDuel if it has complete data (opening + closing spread, OU, ML).
+  - Otherwise use DraftKings if complete.
+  - If both complete with matching values, prefer FanDuel.
+  - If they disagree (different values), log a warning and use FanDuel.
+  - Fallback: whichever book has more data.
 """
-Consolidate all NBA betting line sources into one clean table.
 
-Per-column consolidation: for each game, the best available source provides each
-stat (closing OU, opening OU, spread, moneyline).
-
-NBA currently has fewer sources than MLB (no SBR or GitHub datasets), so the
-logic is simpler. Creates/refreshes nba.betting_lines_consolidated.
-
-Usage:
-    python3 -m app.ingestion.nba_odds_consolidated
-    python3 -m app.ingestion.nba_odds_consolidated --games 123,456
-"""
 import logging
-
 import pandas as pd
-from sqlalchemy import create_engine, text
+import numpy as np
+from sqlalchemy import create_engine, text as sa_text
+from datetime import datetime
 
-logger = logging.getLogger("earl.nba_odds_consolidated")
+logger = logging.getLogger(__name__)
 
-# ── Validation thresholds (NBA ranges) ──
-VALID_OU_MIN = 160.0
-VALID_OU_MAX = 280.0
-VALID_SPREAD_MIN = -20.0
-VALID_SPREAD_MAX = 20.0
-VALID_ML_MAX_ABS = 2000  # NBA moneylines can be extreme for mismatches
-
-import os
-SYNC_DB = os.environ.get("SYNC_DATABASE_URL", "postgresql://earl:earl_dev_pass@localhost:5432/earl_knows_football")
+SYNC_DATABASE_URL = "postgresql+psycopg2://earl:earl_dev_pass@localhost:5432/earl_knows_football"
+DROP_AND_REPLACE = True
 
 
-# ── Quality priority (lower = better) ──
-
-def closing_ou_quality(row):
-    """Lower = better for closing OU."""
-    s = row["source"]
-    if s == "the_odds_api_closing":
-        return 1   # Best: dedicated closing snapshot
-    elif s == "the_odds_api_current":
-        return 2   # Good: current real-time odds
-    elif s == "the_odds_api":
-        return 3   # Standard snapshot
-    else:
-        return 9
+def is_opening(val):
+    """Normalize the is_opening column to boolean."""
+    if isinstance(val, str):
+        return val.lower() in ("true", "t", "1", "yes")
+    if isinstance(val, bool):
+        return val
+    return False
 
 
-def opening_ou_quality(row):
-    """Lower = better for opening OU."""
-    s = row["source"]
-    if s == "the_odds_api_opening":
-        return 1   # Best: dedicated opening snapshot
-    elif s == "the_odds_api":
-        return 2   # Standard
-    elif s == "the_odds_api_current":
-        return 3   # Current snapshot, not ideal for opening
-    else:
-        return 9
+def run():
+    engine = create_engine(SYNC_DATABASE_URL)
 
-
-def spread_quality(row):
-    """Lower = better for spread."""
-    s = row["source"]
-    if s == "the_odds_api_closing":
-        return 1
-    elif s == "the_odds_api_current":
-        return 2
-    elif s == "the_odds_api":
-        return 3
-    elif s == "the_odds_api_opening":
-        return 4
-    else:
-        return 9
-
-
-def ml_quality(row):
-    """Lower = better for moneyline. Same priority as spread."""
-    return spread_quality(row)
-
-
-def consolidate(game_ids: list[int] | None = None):
-    """Build/refresh nba.betting_lines_consolidated.
-
-    When game_ids is provided, does incremental update for those games only.
-    When None, does a full rebuild of the entire consolidated table.
-    """
-    engine = create_engine(SYNC_DB, pool_size=2)
-
-    # ── 1. Load ALL lines with metadata ──
-    logger.info("Loading NBA betting line sources...")
-    source_filter = "'the_odds_api', 'the_odds_api_opening', 'the_odds_api_closing', 'the_odds_api_current'"
-
-    game_filter = ""
-    if game_ids:
-        ids_str = ",".join(str(gid) for gid in game_ids)
-        game_filter = f"AND bl.game_id IN ({ids_str})"
-        logger.info(f"Incremental consolidation for {len(game_ids)} games")
-    else:
-        logger.info("Full consolidation of all games")
-
-    df = pd.read_sql(f"""
+    # ── 1. Load raw data from nba.betting_lines ──
+    logger.info("Loading NBA betting lines...")
+    query = sa_text("""
         SELECT
             bl.game_id, bl.source, bl.sportsbook,
-            bl.over_under, bl.opening_total,
-            bl.opening_spread, bl.spread,
+            bl.spread, bl.spread_home_odds, bl.spread_away_odds,
+            bl.over_under, bl.over_odds, bl.under_odds,
             bl.home_moneyline, bl.away_moneyline,
-            bl.opening_home_moneyline, bl.opening_away_moneyline,
             bl.home_implied_probability, bl.away_implied_probability,
             bl.is_opening,
-            s.year,
-            g.home_score, g.away_score,
-            bl.recorded_at
+            g.date AS game_time, g.home_score, g.away_score,
+            ht.name AS home_team, at.name AS away_team,
+            s.year, g.venue
         FROM nba.betting_lines bl
         JOIN nba.games g ON g.id = bl.game_id
-        JOIN nba.seasons s ON s.id = g.season_id
-        WHERE bl.is_opening IN ('false', 'f', 'true', 't')
-          AND bl.source IN ({source_filter})
-          {game_filter}
-    """, engine)
-    logger.info(f"  Loaded {len(df)} lines from {df['source'].nunique()} sources")
-
-    if len(df) == 0:
-        logger.warning("No lines loaded — nothing to consolidate")
-        return 0
-
-    # ── 2. Validate each line ──
-    logger.info("Validating lines...")
-    valid_ou = df["over_under"].between(VALID_OU_MIN, VALID_OU_MAX) | df["over_under"].isna()
-    valid_open = df["opening_total"].between(VALID_OU_MIN, VALID_OU_MAX) | df["opening_total"].isna()
-    valid_spr = df["spread"].between(VALID_SPREAD_MIN, VALID_SPREAD_MAX) | df["spread"].isna()
-    valid_open_spr = df["opening_spread"].between(VALID_SPREAD_MIN, VALID_SPREAD_MAX) | df["opening_spread"].isna()
-    valid_ml_home = (df["home_moneyline"].fillna(0).abs() <= VALID_ML_MAX_ABS) | df["home_moneyline"].isna()
-    valid_ml_away = (df["away_moneyline"].fillna(0).abs() <= VALID_ML_MAX_ABS) | df["away_moneyline"].isna()
-    valid_open_ml = ((df["opening_home_moneyline"].fillna(0).abs() <= VALID_ML_MAX_ABS) | df["opening_home_moneyline"].isna())
-    valid_open_ml_a = ((df["opening_away_moneyline"].fillna(0).abs() <= VALID_ML_MAX_ABS) | df["opening_away_moneyline"].isna())
-
-    df["valid"] = valid_ou & valid_open & valid_spr & valid_open_spr & valid_ml_home & valid_ml_away & valid_open_ml & valid_open_ml_a
-    invalid = df[~df["valid"]]
-    df = df[df["valid"]].copy()
-    logger.info(f"  Valid: {len(df)}, Invalid: {len(invalid)}")
-
-    if len(invalid) > 0:
-        invalid_summary = invalid["source"].value_counts()
-        for src, cnt in invalid_summary.items():
-            logger.info(f"    {src}: {cnt} invalid")
-
-    # ── 3. Per-column consolidation ──
-    logger.info("Consolidating per column...")
-
-    # All games to consider
-    all_game_ids = pd.read_sql("""
-        SELECT g.id as game_id, g.date, s.year,
-               ht.abbreviation as home_team, at.abbreviation as away_team,
-               g.home_score, g.away_score, g.venue, g.status
-        FROM nba.games g
-        JOIN nba.seasons s ON s.id = g.season_id
         JOIN nba.teams ht ON ht.id = g.home_team_id
         JOIN nba.teams at ON at.id = g.away_team_id
-        ORDER BY s.year, g.date, g.id
-    """, engine)
-    all_game_ids["date"] = pd.to_datetime(all_game_ids["date"])
-    if all_game_ids["date"].dt.tz is None:
-        all_game_ids["date"] = all_game_ids["date"].dt.tz_localize("UTC")
+        JOIN nba.seasons s ON s.id = g.season_id
+        ORDER BY bl.game_id, bl.sportsbook, bl.is_opening
+    """)
 
-    # ── 3a. Closing O/U ──
-    logger.info("  Closing O/U...")
-    has_closing = df[df["over_under"].notna()].copy()
-    has_closing["quality"] = has_closing.apply(closing_ou_quality, axis=1)
-    best_closing_idx = has_closing.groupby("game_id")["quality"].idxmin()
-    best_closing = has_closing.loc[best_closing_idx, ["game_id", "over_under", "source", "sportsbook"]]
-    best_closing.columns = ["game_id", "over_under", "ou_source", "ou_sportsbook"]
+    df = pd.read_sql(query, engine)
+    logger.info(f"Loaded {len(df)} rows from nba.betting_lines")
 
-    # ── 3b. Opening O/U ──
-    logger.info("  Opening O/U...")
-    is_open_flag = df["is_opening"].str.lower().isin(["true", "t"])
-    opening_lu = df["opening_total"].copy()
-    # Fallback: if no dedicated opening_total but has opening flag, use over_under
-    opening_lu.loc[is_open_flag & opening_lu.isna()] = df.loc[is_open_flag & opening_lu.isna(), "over_under"]
-    has_opening = df[opening_lu.notna()].copy()
-    has_opening["_ot"] = opening_lu[has_opening.index]
-    if len(has_opening) > 0:
-        has_opening["quality"] = has_opening.apply(opening_ou_quality, axis=1)
-        best_opening_idx = has_opening.groupby("game_id")["quality"].idxmin()
-        best_opening = has_opening.loc[best_opening_idx, ["game_id", "_ot", "source", "sportsbook"]]
-        best_opening.columns = ["game_id", "opening_total", "ou_open_source", "ou_open_sportsbook"]
-    else:
-        best_opening = pd.DataFrame(columns=["game_id", "opening_total", "ou_open_source", "ou_open_sportsbook"])
+    if df.empty:
+        logger.warning("No data to consolidate")
+        return
 
-    # ── 3c. Closing Spread ──
-    logger.info("  Closing spread...")
-    has_spread = df[df["spread"].notna()].copy()
-    if len(has_spread) > 0:
-        has_spread["quality"] = has_spread.apply(spread_quality, axis=1)
-        best_spread_idx = has_spread.groupby("game_id")["quality"].idxmin()
-        best_spread = has_spread.loc[best_spread_idx, ["game_id", "spread", "source", "sportsbook"]]
-        best_spread.columns = ["game_id", "spread", "sp_source", "sp_sportsbook"]
-    else:
-        best_spread = pd.DataFrame(columns=["game_id", "spread", "sp_source", "sp_sportsbook"])
+    # Normalize is_opening
+    df["is_opening"] = df["is_opening"].apply(is_opening)
 
-    # ── 3d. Opening Spread ──
-    logger.info("  Opening spread...")
-    open_sp = df["opening_spread"].copy()
-    open_sp.loc[is_open_flag & open_sp.isna()] = df.loc[is_open_flag & open_sp.isna(), "spread"]
-    has_open_spread = df[open_sp.notna()].copy()
-    has_open_spread["_os"] = open_sp[has_open_spread.index]
-    if len(has_open_spread) > 0:
-        has_open_spread["quality"] = has_open_spread.apply(spread_quality, axis=1)
-        best_open_spread_idx = has_open_spread.groupby("game_id")["quality"].idxmin()
-        best_open_spread = has_open_spread.loc[best_open_spread_idx, ["game_id", "_os", "source", "sportsbook"]]
-        best_open_spread.columns = ["game_id", "opening_spread", "sp_open_source", "sp_open_sportsbook"]
-    else:
-        best_open_spread = pd.DataFrame(columns=["game_id", "opening_spread", "sp_open_source", "sp_open_sportsbook"])
+    # Separate opening & closing
+    opening = df[df["is_opening"] == True].copy()
+    closing = df[df["is_opening"] == False].copy()
+    logger.info(f"  Opening rows: {len(opening)}, Closing rows: {len(closing)}")
 
-    # ── 3e. Closing Moneyline ──
-    logger.info("  Moneyline...")
-    has_ml = df[df["home_moneyline"].notna()].copy()
-    if len(has_ml) > 0:
-        has_ml["quality"] = has_ml.apply(ml_quality, axis=1)
-        best_ml_idx = has_ml.groupby("game_id")["quality"].idxmin()
-        best_ml = has_ml.loc[best_ml_idx, [
-            "game_id", "home_moneyline", "away_moneyline",
-            "home_implied_probability", "away_implied_probability", "source", "sportsbook"
-        ]]
-        best_ml.columns = [
-            "game_id", "home_moneyline", "away_moneyline",
-            "home_implied_probability", "away_implied_probability",
-            "ml_source", "ml_sportsbook"
-        ]
-    else:
-        best_ml = pd.DataFrame(columns=["game_id", "home_moneyline", "away_moneyline",
-                                        "home_implied_probability", "away_implied_probability",
-                                        "ml_source", "ml_sportsbook"])
+    # Game metadata lookup
+    meta_cols = ["game_id", "year", "game_time", "home_team", "away_team",
+                  "home_score", "away_score", "venue"]
+    game_meta = df[meta_cols].drop_duplicates("game_id").set_index("game_id")
 
-    # ── 3f. Opening Moneyline ──
-    logger.info("  Opening moneyline...")
-    open_hl = df["opening_home_moneyline"].copy()
-    open_al = df["opening_away_moneyline"].copy()
-    open_hl.loc[is_open_flag & open_hl.isna()] = df.loc[is_open_flag & open_hl.isna(), "home_moneyline"]
-    open_al.loc[is_open_flag & open_al.isna()] = df.loc[is_open_flag & open_al.isna(), "away_moneyline"]
-    has_open_ml = df[open_hl.notna()].copy()
-    has_open_ml["_ohl"] = open_hl[has_open_ml.index]
-    has_open_ml["_oal"] = open_al[has_open_ml.index]
-    if len(has_open_ml) > 0:
-        has_open_ml["quality"] = has_open_ml.apply(ml_quality, axis=1)
-        best_open_ml_idx = has_open_ml.groupby("game_id")["quality"].idxmin()
-        best_open_ml = has_open_ml.loc[best_open_ml_idx, [
-            "game_id", "_ohl", "_oal", "source", "sportsbook"
-        ]]
-        best_open_ml.columns = [
-            "game_id", "opening_home_moneyline", "opening_away_moneyline",
-            "ml_open_source", "ml_open_sportsbook"
-        ]
-    else:
-        best_open_ml = pd.DataFrame(columns=["game_id", "opening_home_moneyline", "opening_away_moneyline", "ml_open_source", "ml_open_sportsbook"])
+    # ── 2. Per-game sportsbook selection ──
+    logger.info("Selecting best sportsbook per game...")
 
-    # ── 4. Merge all columns ──
-    logger.info("Merging per-column picks...")
-    result = all_game_ids.copy()
+    def _complete(row):
+        """Row has non-null spread AND over_under (i.e. is a full line set)."""
+        return not pd.isna(row.get("spread")) and not pd.isna(row.get("over_under"))
 
-    result = result.merge(best_closing, on="game_id", how="left")
-    result = result.merge(best_opening, on="game_id", how="left")
-    result = result.merge(best_spread, on="game_id", how="left")
-    result = result.merge(best_open_spread, on="game_id", how="left")
-    result = result.merge(best_ml, on="game_id", how="left")
-    result = result.merge(best_open_ml, on="game_id", how="left")
+    def _has_ml(row):
+        """Row has at least one moneyline."""
+        return not pd.isna(row.get("home_moneyline"))
 
-    # ── 5. Derived fields ──
-    home_score = result["home_score"].fillna(0).astype(int)
-    away_score = result["away_score"].fillna(0).astype(int)
-    result["actual_total"] = home_score + away_score
-    result["is_over"] = result["actual_total"] > result["over_under"]
-    result["is_under"] = result["actual_total"] < result["over_under"]
-    result["is_push"] = result["actual_total"] == result["over_under"]
-    result["ou_movement"] = result["over_under"] - result["opening_total"]
-    result["spread_movement"] = result["spread"] - result["opening_spread"]
+    results = []
+    fd_preferred = 0
+    dk_fallback = 0
+    disagreements = 0
 
-    # Game time categorization
-    result["hour_et"] = result["date"].dt.tz_convert("America/New_York").dt.hour
-    result["game_time"] = pd.cut(
-        result["hour_et"],
-        bins=[0, 14, 17, 24],
-        labels=["early", "afternoon", "night"],
-        right=False,
-    )
+    for gid in sorted(df["game_id"].unique()):
+        fd_o = opening[(opening["game_id"] == gid) & (opening["sportsbook"] == "fanduel")]
+        fd_c = closing[(closing["game_id"] == gid) & (closing["sportsbook"] == "fanduel")]
+        dk_o = opening[(opening["game_id"] == gid) & (opening["sportsbook"] == "draftkings")]
+        dk_c = closing[(closing["game_id"] == gid) & (closing["sportsbook"] == "draftkings")]
 
-    # ── 6. Validate: only keep games where we have verified OU (opening + closing) ──
-    result["has_verified_ou"] = result["over_under"].notna() & result["opening_total"].notna()
-    has_verified_lines = result["spread"].notna() | result["home_moneyline"].notna()
-    verified = result[result["has_verified_ou"] & has_verified_lines].copy()
-    missing_ou = result[~result["has_verified_ou"] & result["over_under"].notna()]
-    no_ou_at_all = result[result["over_under"].isna()]
+        fd_open_row = fd_o.iloc[0] if len(fd_o) > 0 else None
+        fd_close_row = fd_c.iloc[0] if len(fd_c) > 0 else None
+        dk_open_row = dk_o.iloc[0] if len(dk_o) > 0 else None
+        dk_close_row = dk_c.iloc[0] if len(dk_c) > 0 else None
 
-    logger.info(f"  Games with verified opening+closing OU + lines: {len(verified)}")
-    logger.info(f"  Games with closing only (dropped): {len(missing_ou)}")
-    logger.info(f"  Games with no OU at all: {len(no_ou_at_all)}")
+        # Completeness checks
+        fd_complete = (
+            fd_open_row is not None and fd_close_row is not None
+            and _complete(fd_open_row) and _complete(fd_close_row)
+        )
+        dk_complete = (
+            dk_open_row is not None and dk_close_row is not None
+            and _complete(dk_open_row) and _complete(dk_close_row)
+        )
 
-    # ── 7. Write to table ──
+        # ── Decision ──
+        if fd_complete and dk_complete:
+            # Both complete — prefer FD, log if values disagree
+            close_agree = (
+                fd_close_row["spread"] == dk_close_row["spread"]
+                and fd_close_row["over_under"] == dk_close_row["over_under"]
+            )
+            open_agree = (
+                fd_open_row["spread"] == dk_open_row["spread"]
+                and fd_open_row["over_under"] == dk_open_row["over_under"]
+            )
+            if not (close_agree and open_agree):
+                disagreements += 1
+                logger.debug(
+                    f"Game {gid}: FD & DK disagree — using FD "
+                    f"(FD sp={fd_close_row['spread']} ou={fd_close_row['over_under']} | "
+                    f"DK sp={dk_close_row['spread']} ou={dk_close_row['over_under']})"
+                )
+            chosen = "fanduel"
+            open_row, close_row = fd_open_row, fd_close_row
+            fd_preferred += 1
+
+        elif fd_complete:
+            chosen = "fanduel"
+            open_row, close_row = fd_open_row, fd_close_row
+            fd_preferred += 1
+
+        elif dk_complete:
+            chosen = "draftkings"
+            open_row, close_row = dk_open_row, dk_close_row
+            dk_fallback += 1
+
+        elif fd_open_row is not None or fd_close_row is not None or dk_open_row is not None or dk_close_row is not None:
+            # Incomplete — pick whichever has more data
+            fd_score = 0
+            if fd_open_row is not None:
+                fd_score += int(_complete(fd_open_row)) * 3 + int(_has_ml(fd_open_row)) * 1
+            if fd_close_row is not None:
+                fd_score += int(_complete(fd_close_row)) * 3 + int(_has_ml(fd_close_row)) * 1
+
+            dk_score = 0
+            if dk_open_row is not None:
+                dk_score += int(_complete(dk_open_row)) * 3 + int(_has_ml(dk_open_row)) * 1
+            if dk_close_row is not None:
+                dk_score += int(_complete(dk_close_row)) * 3 + int(_has_ml(dk_close_row)) * 1
+
+            chosen = "fanduel" if fd_score >= dk_score else "draftkings"
+            if chosen == "fanduel":
+                open_row = fd_open_row
+                close_row = fd_close_row
+                fd_preferred += 1
+            else:
+                open_row = dk_open_row
+                close_row = dk_close_row
+                dk_fallback += 1
+        else:
+            continue  # no data at all
+
+        # ── 3. Build consolidated row ──
+        meta = game_meta.loc[gid]
+        row = {
+            "game_id": gid,
+            "year": meta["year"],
+            "game_time": meta["game_time"],
+            "home_team": meta["home_team"],
+            "away_team": meta["away_team"],
+            "home_score": meta["home_score"],
+            "away_score": meta["away_score"],
+            "venue": meta["venue"],
+            "sportsbook": chosen,
+        }
+
+        # Helper: set a column if the source row exists and value is not null
+        def _set(db_col, val):
+            row[db_col] = val if val is not None and not pd.isna(val) else None
+
+        if close_row is not None:
+            _set("closing_spread", close_row["spread"])
+            _set("closing_ou", close_row["over_under"])
+            _set("closing_home_ml", close_row["home_moneyline"])
+            _set("closing_away_ml", close_row["away_moneyline"])
+            _set("closing_over_odds", close_row["over_odds"])
+            _set("closing_under_odds", close_row["under_odds"])
+            _set("closing_spread_home_odds", close_row["spread_home_odds"])
+            _set("closing_spread_away_odds", close_row["spread_away_odds"])
+            _set("closing_home_implied_probability", close_row["home_implied_probability"])
+            _set("closing_away_implied_probability", close_row["away_implied_probability"])
+
+        if open_row is not None:
+            _set("opening_spread", open_row["spread"])
+            _set("opening_ou", open_row["over_under"])
+            _set("opening_home_ml", open_row["home_moneyline"])
+            _set("opening_away_ml", open_row["away_moneyline"])
+            _set("opening_over_odds", open_row["over_odds"])
+            _set("opening_under_odds", open_row["under_odds"])
+            _set("opening_spread_home_odds", open_row["spread_home_odds"])
+            _set("opening_spread_away_odds", open_row["spread_away_odds"])
+            _set("opening_home_implied_probability", open_row["home_implied_probability"])
+            _set("opening_away_implied_probability", open_row["away_implied_probability"])
+
+        # Set sportsbook source columns (same book for all)
+        _set("closing_spread_sportsbook", chosen)
+        _set("closing_ou_sportsbook", chosen)
+        _set("closing_home_ml_sportsbook", chosen)
+        _set("closing_away_ml_sportsbook", chosen)
+        _set("opening_ou_sportsbook", chosen)
+        _set("opening_spread_sportsbook", chosen)
+        _set("opening_home_ml_sportsbook", chosen)
+        _set("opening_away_ml_sportsbook", chosen)
+        _set("closing_over_odds_sportsbook", chosen)
+        _set("closing_under_odds_sportsbook", chosen)
+        _set("closing_spread_home_odds_sportsbook", chosen)
+        _set("closing_spread_away_odds_sportsbook", chosen)
+        _set("opening_over_odds_sportsbook", chosen)
+        _set("opening_under_odds_sportsbook", chosen)
+        _set("opening_spread_home_odds_sportsbook", chosen)
+        _set("opening_spread_away_odds_sportsbook", chosen)
+
+        has_verified = row.get("closing_ou") is not None and row.get("opening_ou") is not None
+        row["has_verified_ou"] = has_verified
+
+        results.append(row)
+
+    logger.info(f"  FD preferred: {fd_preferred} games")
+    logger.info(f"  DK fallback:   {dk_fallback} games")
+    logger.info(f"  Disagreements logged: {disagreements}")
+
+    result = pd.DataFrame(results)
+    logger.info(f"Built consolidated dataset: {len(result)} games")
+
+    if result.empty:
+        logger.warning("No results to write")
+        return
+
+    # ── 4. Summary ──
+    verified = result[result["has_verified_ou"] == True]
+    missing_ou = result[result["closing_ou"].notna() & result["opening_ou"].isna()]
+    no_ou = result[result["closing_ou"].isna()]
+
+    logger.info(f"  Games with verified opening+closing OU: {len(verified)}")
+    logger.info(f"  Games with closing only (no opening OU): {len(missing_ou)}")
+    logger.info(f"  Games with no OU at all: {len(no_ou)}")
+
+    # ── 5. Write ──
     logger.info("Writing to nba.betting_lines_consolidated...")
 
-    cols = [
-        "game_id", "year", "date", "home_team", "away_team",
-        "home_score", "away_score", "actual_total", "venue", "game_time",
-        "over_under", "opening_total", "ou_movement",
-        "ou_source", "ou_sportsbook",
-        "ou_open_source", "ou_open_sportsbook",
-        "spread", "opening_spread", "spread_movement",
-        "sp_source", "sp_sportsbook", "sp_open_source", "sp_open_sportsbook",
-        "home_moneyline", "away_moneyline",
-        "opening_home_moneyline", "opening_away_moneyline",
-        "home_implied_probability", "away_implied_probability",
-        "ml_source", "ml_sportsbook",
-        "ml_open_source", "ml_open_sportsbook",
-        "is_over", "is_under", "is_push", "has_verified_ou",
+    db_cols = [
+        "game_id", "year", "game_time", "home_team", "away_team",
+        "home_score", "away_score", "venue",
+        "closing_spread", "closing_spread_sportsbook",
+        "closing_ou", "closing_ou_sportsbook",
+        "closing_home_ml", "closing_home_ml_sportsbook",
+        "closing_away_ml", "closing_away_ml_sportsbook",
+        "opening_ou", "opening_ou_sportsbook",
+        "opening_spread", "opening_spread_sportsbook",
+        "opening_home_ml", "opening_home_ml_sportsbook",
+        "opening_away_ml", "opening_away_ml_sportsbook",
+        "has_verified_ou",
+        "closing_over_odds", "closing_over_odds_sportsbook",
+        "closing_under_odds", "closing_under_odds_sportsbook",
+        "closing_spread_home_odds", "closing_spread_home_odds_sportsbook",
+        "closing_spread_away_odds", "closing_spread_away_odds_sportsbook",
+        "closing_home_implied_probability", "closing_away_implied_probability",
+        "opening_over_odds", "opening_over_odds_sportsbook",
+        "opening_under_odds", "opening_under_odds_sportsbook",
+        "opening_spread_home_odds", "opening_spread_home_odds_sportsbook",
+        "opening_spread_away_odds", "opening_spread_away_odds_sportsbook",
+        "opening_home_implied_probability", "opening_away_implied_probability",
     ]
 
-    if game_ids:
-        result = result[result["game_id"].isin(game_ids)].copy()
+    # Only keep columns that exist in the DataFrame
+    write_cols = [c for c in db_cols if c in result.columns]
+    insert_df = result[write_cols].copy()
 
-    insert_df = result[cols].copy()
-    insert_df["date"] = result["date"].dt.tz_convert(None)
+    # Set status = "final" for all rows
+    insert_df["status"] = "final"
 
-    with engine.begin() as conn:
-        if game_ids:
-            ids_str = ",".join(str(gid) for gid in game_ids)
-            conn.execute(text(f"DELETE FROM nba.betting_lines_consolidated WHERE game_id IN ({ids_str})"))
-            logger.info(f"  Deleted existing rows for {len(game_ids)} games")
+    if DROP_AND_REPLACE:
+        logger.info("  Dropping and replacing table contents...")
+        with engine.begin() as conn:
+            conn.execute(sa_text("TRUNCATE TABLE nba.betting_lines_consolidated"))
 
-        insert_df.to_sql(
+    # Write in batches to avoid OOM
+    batch_size = 500
+    for i in range(0, len(insert_df), batch_size):
+        batch = insert_df.iloc[i:i+batch_size]
+        batch.to_sql(
             "betting_lines_consolidated",
             engine,
             schema="nba",
-            if_exists="append" if game_ids else "replace",
+            if_exists="append",
             index=False,
             method="multi",
         )
+        logger.info(f"  Wrote batch {i//batch_size + 1}/{(len(insert_df)-1)//batch_size + 1} ({len(batch)} rows)")
 
-        if not game_ids:
-            conn.execute(text("DROP INDEX IF EXISTS idx_nba_consolidated_year"))
-            conn.execute(text("DROP INDEX IF EXISTS idx_nba_consolidated_verified"))
-            conn.execute(text("DROP INDEX IF EXISTS idx_nba_consolidated_game_time"))
-            conn.execute(text("CREATE INDEX idx_nba_consolidated_year ON nba.betting_lines_consolidated (year)"))
-            conn.execute(text("CREATE INDEX idx_nba_consolidated_verified ON nba.betting_lines_consolidated (has_verified_ou)"))
-            conn.execute(text("CREATE INDEX idx_nba_consolidated_game_time ON nba.betting_lines_consolidated (game_time)"))
-
-    logger.info(f"✅ nba.betting_lines_consolidated: {len(insert_df)} rows")
-
-    # ── 8. Summary ──
-    summary = pd.read_sql("""
-        SELECT
-            year,
-            count(*)::int as total_games,
-            sum((has_verified_ou)::int) as verified_ou,
-            sum((over_under IS NOT NULL AND opening_total IS NULL)::int) as closing_only,
-            sum((over_under IS NULL)::int) as no_ou,
-            round(avg(CASE WHEN has_verified_ou THEN over_under END)::numeric, 1) as avg_closing,
-            round(avg(CASE WHEN has_verified_ou THEN opening_total END)::numeric, 1) as avg_opening
-        FROM nba.betting_lines_consolidated
-        GROUP BY year
-        ORDER BY year
-    """, engine)
-
-    print()
-    print("=== VERIFIED (OPENING + CLOSING) COVERAGE BY YEAR ===")
-    print(summary.to_string(index=False))
-    print()
-
-    engine.dispose()
-    logger.info("Done!")
-    return len(verified)
-
-
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
-
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--games", type=str, help="Comma-separated game IDs to incrementally consolidate")
-    args = parser.parse_args()
-
-    if args.games:
-        game_ids = [int(g.strip()) for g in args.games.split(",") if g.strip()]
-        consolidate(game_ids=game_ids)
-    else:
-        consolidate()
+    logger.info(f"✅ Wrote {len(insert_df)} rows to nba.betting_lines_consolidated")
+    return result

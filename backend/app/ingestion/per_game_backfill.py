@@ -88,9 +88,9 @@ NBA_TEAM_MAP = {
 # Opening offset: how early to capture opening lines (hours before game)
 # Closing offset: how close to game (minutes before)
 SPORT_CONFIG = {
-    "mlb": {"api": "baseball_mlb", "map": MLB_TEAM_MAP, "open_hrs": 18, "close_min": 10},
-    "nfl": {"api": "americanfootball_nfl", "map": NFL_TEAM_MAP, "open_hrs": 72, "close_min": 10},
-    "nba": {"api": "basketball_nba", "map": NBA_TEAM_MAP, "open_hrs": 12, "close_min": 10},
+    "mlb": {"api": "baseball_mlb", "map": MLB_TEAM_MAP, "open_hrs": 18, "close_min": 10, "game_types": ["R"]},
+    "nfl": {"api": "americanfootball_nfl", "map": NFL_TEAM_MAP, "open_hrs": 72, "close_min": 10, "game_types": ["REG", "POST"]},
+    "nba": {"api": "basketball_nba", "map": NBA_TEAM_MAP, "open_hrs": 18, "close_min": 10, "game_types": ["REG", "POST"]},
 }
 
 import os as _os
@@ -136,15 +136,16 @@ async def run():
 
         # Get existing game IDs already stored (to skip)
         existing = {"opening": set(), "closing": set()}
-        for src_type, src_name in [("opening", "the_odds_api_opening"), ("closing", "the_odds_api_closing")]:
+        for src_type in ["opening", "closing"]:
             r = await db.execute(
-                sql_text(f"SELECT game_id FROM {args.sport}.betting_lines WHERE source = :src"),
-                {"src": src_name},
+                sql_text(f"SELECT game_id FROM {args.sport}.betting_lines WHERE is_opening = :is_open"),
+                {"is_open": src_type == "opening"},
             )
             existing[src_type] = {row.game_id for row in r.fetchall()}
 
         # Get all games for target seasons
         year_condition = ", ".join(str(y) for y in years)
+        game_type_list = ", ".join(f"'{t}'" for t in cfg["game_types"])
         sql = sql_text(f"""
             SELECT g.id, g.date, ht.abbreviation AS ht, at.abbreviation AS at
             FROM {args.sport}.games g
@@ -153,6 +154,7 @@ async def run():
             JOIN {args.sport}.teams at ON at.id = g.away_team_id
             WHERE s.year IN ({year_condition})
               AND g.date < NOW()
+              AND g.game_type IN ({game_type_list})
               AND (CAST(:start_date AS timestamp) IS NULL OR g.date >= CAST(:start_date AS timestamp))
               AND (CAST(:end_date AS timestamp) IS NULL OR g.date < CAST(:end_date AS timestamp) + interval '1 day')
             ORDER BY g.date
@@ -175,7 +177,7 @@ async def run():
     Session = async_sessionmaker(engine, expire_on_commit=False)
 
     insert_cols = [
-        "game_id", "source", "sportsbook",
+        "game_id", "sportsbook",
         "spread", "spread_home_odds", "spread_away_odds",
         "over_under", "over_odds", "under_odds",
         "home_moneyline", "away_moneyline",
@@ -186,7 +188,18 @@ async def run():
         INSERT INTO {args.sport}.betting_lines
         ({', '.join(insert_cols)})
         VALUES ({', '.join(f':{c}' for c in insert_cols)})
-        ON CONFLICT (game_id, source, sportsbook, is_opening) DO NOTHING
+        ON CONFLICT (game_id, sportsbook, is_opening) DO UPDATE SET
+            spread = COALESCE({args.sport}.betting_lines.spread, EXCLUDED.spread),
+            spread_home_odds = COALESCE({args.sport}.betting_lines.spread_home_odds, EXCLUDED.spread_home_odds),
+            spread_away_odds = COALESCE({args.sport}.betting_lines.spread_away_odds, EXCLUDED.spread_away_odds),
+            over_under = COALESCE({args.sport}.betting_lines.over_under, EXCLUDED.over_under),
+            over_odds = COALESCE({args.sport}.betting_lines.over_odds, EXCLUDED.over_odds),
+            under_odds = COALESCE({args.sport}.betting_lines.under_odds, EXCLUDED.under_odds),
+            home_moneyline = COALESCE({args.sport}.betting_lines.home_moneyline, EXCLUDED.home_moneyline),
+            away_moneyline = COALESCE({args.sport}.betting_lines.away_moneyline, EXCLUDED.away_moneyline),
+            home_implied_probability = COALESCE({args.sport}.betting_lines.home_implied_probability, EXCLUDED.home_implied_probability),
+            away_implied_probability = COALESCE({args.sport}.betting_lines.away_implied_probability, EXCLUDED.away_implied_probability),
+            api_last_update = GREATEST({args.sport}.betting_lines.api_last_update, EXCLUDED.api_last_update)
     """
 
     async with httpx.AsyncClient(timeout=30.0) as client:
@@ -200,13 +213,10 @@ async def run():
             if not game_list:
                 continue
 
-            source_name = f"the_odds_api_{snapshot_type}"
+
             offset_value = open_hrs if snapshot_type == "opening" else close_min
             label = f"{snapshot_type} ({offset_value}{'h' if offset_type == 'hours' else 'm'} before)"
             is_open = True if snapshot_type == "opening" else False
-            # MLB/NBA use varchar is_opening, NFL uses boolean
-            if args.sport in ('mlb', 'nba'):
-                is_open = 't' if snapshot_type == 'opening' else 'f'
 
             logger.info(f"\nProcessing {label}: {len(game_list)} games")
 
@@ -235,6 +245,7 @@ async def run():
                         stats["opening_calls"] += 1
 
                         if resp.status_code != 200:
+                            logger.debug(f"  Game {g.id} API status {resp.status_code} at T-{offset_value - step}h")
                             continue
 
                         events = resp.json().get("data", [])
@@ -247,16 +258,18 @@ async def run():
                                 break
 
                         if not matched_ev:
+                            logger.debug(f"  Game {g.id} ({g.ht} vs {g.at}) not in API response at T-{offset_value - step}h")
                             continue
 
                         # Extract per-sportsbook lines
                         # Only FanDuel and DraftKings — reliable run line data, ~100% coverage.
                         batch = []
                         fanduel_row = None
+                        dk_row = None
                         allowed_books = {'fanduel', 'draftkings'}
                         for bk in [b for b in matched_ev.get("bookmakers", []) if b.get("key", "").lower() in allowed_books]:
                             row = {
-                                "game_id": g.id, "source": source_name, "sportsbook": bk["key"],
+                                "game_id": g.id, "sportsbook": bk["key"],
                                 "spread": None, "spread_home_odds": None, "spread_away_odds": None,
                                 "over_under": None, "over_odds": None, "under_odds": None,
                                 "home_moneyline": None, "away_moneyline": None,
@@ -304,9 +317,11 @@ async def run():
                             ]):
                                 batch.append(row)
 
-                            # Track FanDuel completeness at this step
+                            # Track FanDuel & DraftKings completeness at this step
                             if bk["key"] == "fanduel":
                                 fanduel_row = row
+                            if bk["key"] == "draftkings":
+                                dk_row = row
 
                         # Save this step's snapshot
                         if batch:
@@ -315,7 +330,6 @@ async def run():
                                 await db.commit()
                             stats["opening_inserted"] += len(batch)
                         else:
-                            # Game found but no usable lines from any book; keep stepping
                             continue
 
                         # Check if FanDuel has all 3 markets
@@ -330,8 +344,16 @@ async def run():
                             else:
                                 logger.debug(f"  Opening partial for game {g.id} at T-{offset_value - step}h (step {step}): "
                                             f"FanDuel h2h={fd_has_h2h} spread={fd_has_spread} total={fd_has_total}")
-                        else:
-                            logger.debug(f"  Opening partial for game {g.id} at T-{offset_value - step}h (step {step}): FanDuel not present")
+                        if dk_row is not None:
+                            dk_has_h2h = dk_row["home_moneyline"] is not None or dk_row["away_moneyline"] is not None
+                            dk_has_spread = dk_row["spread"] is not None
+                            dk_has_total = dk_row["over_under"] is not None
+                            if dk_has_h2h and dk_has_spread and dk_has_total:
+                                fanduel_done = True
+                                logger.debug(f"  Opening complete for game {g.id} at T-{offset_value - step}h (step {step}): DK full")
+                                break
+                        if fanduel_row is None and dk_row is None:
+                            logger.debug(f"  Opening partial for game {g.id} at T-{offset_value - step}h (step {step}): FanDuel not present, DK not present")
 
                     if not fanduel_done:
                         stats["opening_nodata"] += 1
@@ -367,9 +389,10 @@ async def run():
                         continue
 
                     batch = []
-                    for bk in matched_ev.get("bookmakers", []):
+                    allowed_books = {'fanduel', 'draftkings'}
+                    for bk in [b for b in matched_ev.get("bookmakers", []) if b.get("key", "").lower() in allowed_books]:
                         row = {
-                            "game_id": g.id, "source": source_name, "sportsbook": bk["key"],
+                            "game_id": g.id, "sportsbook": bk["key"],
                             "spread": None, "spread_home_odds": None, "spread_away_odds": None,
                             "over_under": None, "over_odds": None, "under_odds": None,
                             "home_moneyline": None, "away_moneyline": None,

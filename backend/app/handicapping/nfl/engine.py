@@ -27,8 +27,6 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 
 from app.handicapping.nfl.data_loader import NFLDataLoader, get_data_loader, get_model_features
-from app.handicapping.nfl.nfl_xgb_model_ats import run_backtest as ats_backtest
-from app.handicapping.nfl.nfl_xgb_model_ou import run_backtest as ou_backtest
 
 logger = logging.getLogger(__name__)
 

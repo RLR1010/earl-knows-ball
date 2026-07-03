@@ -350,7 +350,7 @@ async def process_pitchers(conn, game: dict) -> int:
             gidp = stats.get("groundIntoDoublePlay", 0)
             inherited_runners = stats.get("inheritedRunners", 0)
             inherited_scored = stats.get("inheritedRunnersScored", 0)
-            is_starter = stats.get("isStartingPitcher", False) or stats.get("gameStarted", False)
+            is_starter = stats.get("gamesStarted", 0) > 0
             decision = stats.get("note", "")
 
             team_abbr = team_data.get("team", {}).get("abbreviation", "")
@@ -401,18 +401,17 @@ async def refresh_boxscores_for_recent_games(conn) -> dict:
         SELECT id, mlb_game_id
         FROM mlb.games
         WHERE status = 'FINAL'
-          AND date >= CURRENT_DATE - INTERVAL '2 days'
+          AND date >= CURRENT_DATE - INTERVAL '3 days'
+          AND date <= CURRENT_DATE + INTERVAL '1 day'
           AND (
               NOT EXISTS (SELECT 1 FROM mlb.batting_game_stats bgs WHERE bgs.game_id = mlb.games.id)
               OR NOT EXISTS (SELECT 1 FROM mlb.pitcher_game_stats pgs WHERE pgs.game_id = mlb.games.id)
+              OR NOT EXISTS (SELECT 1 FROM mlb.pitcher_game_stats pgs WHERE pgs.game_id = mlb.games.id AND pgs.is_starter = true)
           )
         ORDER BY date DESC
         LIMIT 50
     """)
     games = [dict(r) for r in rows]
-
-    if not games:
-        return {"batting_rows": 0, "pitching_rows": 0, "games_processed": 0}
 
     total_batting = 0
     total_pitching = 0
@@ -430,6 +429,7 @@ async def refresh_boxscores_for_recent_games(conn) -> dict:
         SELECT id, mlb_game_id
         FROM mlb.games
         WHERE date >= CURRENT_DATE - INTERVAL '2 days'
+          AND date <= CURRENT_DATE + INTERVAL '1 day'
         ORDER BY date DESC
         LIMIT 100
     """)
@@ -438,14 +438,42 @@ async def refresh_boxscores_for_recent_games(conn) -> dict:
         try:
             wth = fetch_game_weather(wg["mlb_game_id"])
             if wth:
-                temp = wth.get("temp")
+                temp_str = wth.get("temp", "")
                 condition = wth.get("condition")
-                wind = wth.get("wind")
+                wind_str = wth.get("wind", "")
+
+                # Parse temperature from string
+                try:
+                    temperature = int(temp_str) if temp_str else None
+                except (ValueError, TypeError):
+                    temperature = None
+
+                # Parse wind speed and direction from string like "5 mph, Out To CF"
+                wind_speed = None
+                wind_direction = None
+                if wind_str:
+                    try:
+                        wind_speed = int("".join(c for c in wind_str.split(",")[0] if c.isdigit() or c in ".-"))
+                    except (ValueError, IndexError):
+                        pass
+
+                    if "," in wind_str:
+                        wpart = wind_str.split(",", 1)[1].strip().lower()
+                        if "out" in wpart:
+                            wind_direction = "out"
+                        elif "in" in wpart:
+                            wind_direction = "in"
+                        if not wind_direction:
+                            if wpart.startswith("l") and "r" in wpart:
+                                wind_direction = "l_to_r"
+                            elif wpart.startswith("r") and "l" in wpart:
+                                wind_direction = "r_to_l"
+
                 await conn.execute("""
                     UPDATE mlb.games
-                    SET temp = $1, condition = $2, wind = $3
-                    WHERE id = $4
-                """, temp, condition, wind, wg["id"])
+                    SET temperature = $1, weather_condition = $2, wind_speed = $3, wind_direction = $4
+                    WHERE id = $5
+                """, temperature, condition, wind_speed, wind_direction, wg["id"])
                 weather_updated += 1
         except Exception as e:
             logger.warning(f"  Weather error for game {wg['id']}: {e}")

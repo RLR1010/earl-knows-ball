@@ -380,6 +380,18 @@ COMPUTED_FEATURES_CATALOG: Dict[str, str] = {
     "a_pitcher_k_bb_l20": "Away pitcher K/BB rate over last 20 appearances",
     "h_pitcher_home_team_l20": "Home pitcher ERA with this team (last 20)",
     "a_pitcher_home_team_l20": "Away pitcher ERA with this team (last 20)",
+    # ── Venue-specific & home-split ──
+    "a_pitcher_venue_era": "Away pitcher ERA at this venue (expanding mean, shift(1), since 2021)",
+    "h_pitcher_home_era": "Home pitcher ERA at home (expanding mean, shift(1), prev + current season)",
+    "a_team_venue_winpct": "Away team win pct at this venue (expanding mean, shift(1), prev + current season)",
+    # ── Pitcher day/night & rest ──
+    "h_pitcher_day_era": "Home pitcher ERA in day games (expanding mean, shift(1))",
+    "h_pitcher_night_era": "Home pitcher ERA in night games (expanding mean, shift(1))",
+    "a_pitcher_day_era": "Away pitcher ERA in day games (expanding mean, shift(1))",
+    "a_pitcher_night_era": "Away pitcher ERA in night games (expanding mean, shift(1))",
+    "h_pitcher_rest": "Home pitcher days since last start",
+    "a_pitcher_rest": "Away pitcher days since last start",
+    "a_pitcher_road_era": "Away pitcher ERA in road starts (expanding mean, shift(1))",
     # ── Bullpen ──
     "h_bullpen_era_l5": "Home bullpen ERA over last 5 appearances",
     "a_bullpen_era_l5": "Away bullpen ERA over last 5 appearances",
@@ -491,6 +503,16 @@ DISPLAY_NAMES: Dict[str, str] = {
     "a_pitcher_whip_l20": "Away Pitcher WHIP (L20)",
     "h_pitcher_kbb_rate_l20": "Home Pitcher K/BB (L20)",
     "a_pitcher_kbb_rate_l20": "Away Pitcher K/BB (L20)",
+    "a_pitcher_venue_era": "Away Pitcher Venue ERA",
+    "h_pitcher_home_era": "Home Pitcher Home ERA",
+    "a_team_venue_winpct": "Away Team Venue Win Pct",
+    "a_pitcher_road_era": "Away Pitcher Road ERA",
+    "h_pitcher_rest": "Home Pitcher Rest (Days)",
+    "a_pitcher_rest": "Away Pitcher Rest (Days)",
+    "h_pitcher_day_era": "Home Pitcher Day ERA",
+    "h_pitcher_night_era": "Home Pitcher Night ERA",
+    "a_pitcher_day_era": "Away Pitcher Day ERA",
+    "a_pitcher_night_era": "Away Pitcher Night ERA",
     "park_factor": "Park Factor",
     "total_avg_team_r10": "Team Avg Total (L10)",
     "combo_era_r10": "Combo ERA (L10)",
@@ -1418,6 +1440,131 @@ def build_features(df: pd.DataFrame, log_fn=None) -> pd.DataFrame:
             feats[f"{side}_pitcher_whip_l5"] = pd.Series(whips_l5, index=feats.index).fillna(0.0)
             feats[f"{side}_pitcher_kbb_l20"] = pd.Series(kbbs_l20, index=feats.index).fillna(0.0)
             feats[f"{side}_pitcher_kbb_l5"] = pd.Series(kbbs_l5, index=feats.index).fillna(0.0)
+
+    # ── 9c. Venue-specific & home-split pitcher/team features ──
+    log("  Computing venue-specific pitcher/team features...")
+
+    # 9ci. Away pitcher's ERA at this venue (expanding mean since 2021)
+    feats_21 = feats[feats["season_year"] >= 2021].copy()
+    if not feats_21.empty:
+        feats_21 = feats_21.sort_values(["a_starter_name", "venue_id", "game_date"])
+        _a_venue_era = (
+            feats_21.groupby(["a_starter_name", "venue_id"])["a_starter_era"]
+            .expanding()
+            .mean()
+            .shift(1)
+            .reset_index(level=[0, 1], drop=True)
+        )
+        feats_21["_a_venue_era"] = _a_venue_era
+
+        # Also compute pitcher's overall ERA (all venues) to use as fallback
+        _a_overall_era = (
+            feats_21.sort_values(["a_starter_name", "game_date"])
+            .groupby("a_starter_name")["a_starter_era"]
+            .expanding()
+            .mean()
+            .shift(1)
+            .reset_index(level=0, drop=True)
+        )
+        feats_21["_a_overall_era"] = _a_overall_era
+
+        feats = feats.merge(
+            feats_21[["game_id", "_a_venue_era", "_a_overall_era"]],
+            on="game_id", how="left"
+        )
+        # Fallback: pitcher's overall ERA when no venue-specific history exists
+        feats["a_pitcher_venue_era"] = feats["_a_venue_era"].fillna(feats["_a_overall_era"]).fillna(0.0)
+        feats = feats.drop(columns=["_a_venue_era", "_a_overall_era"])
+    else:
+        feats["a_pitcher_venue_era"] = 0.0
+
+    # 9cii. Home pitcher's ERA at home (expanding mean, all prior home starts)
+    feats = feats.sort_values(["h_starter_name", "game_date"])
+    feats["h_pitcher_home_era"] = (
+        feats.sort_values(["h_starter_name", "game_date"])
+        .groupby("h_starter_name")["h_starter_era"]
+        .expanding()
+        .mean()
+        .shift(1)
+        .reset_index(level=0, drop=True)
+        .fillna(0.0)
+    )
+
+    # 9ciii. Away team win % at this venue (expanding mean, prior visits)
+    feats["_a_venue_win"] = (feats["away_score"] > feats["home_score"]).astype(float)
+    feats["a_team_venue_winpct"] = (
+        feats.sort_values(["aa", "venue_id", "game_date"])
+        .groupby(["aa", "venue_id"])["_a_venue_win"]
+        .expanding()
+        .mean()
+        .shift(1)
+        .reset_index(level=[0, 1], drop=True)
+        .fillna(0.0)
+    )
+    feats = feats.drop(columns=["_a_venue_win"])
+
+    # ── 9civ. Pitcher day/night splits, rest, and road ERA ──
+    log("  Computing pitcher day/night, rest, and road ERA features...")
+
+    # Away pitcher road ERA (expanding mean across all road starts)
+    feats["a_pitcher_road_era"] = (
+        feats.sort_values(["a_starter_name", "game_date"])
+        .groupby("a_starter_name")["a_starter_era"]
+        .expanding()
+        .mean()
+        .shift(1)
+        .reset_index(level=0, drop=True)
+        .fillna(0.0)
+    )
+
+    # Pitcher rest (days since last start)
+    feats["h_pitcher_rest"] = (
+        feats.sort_values(["h_starter_name", "game_date"])
+        .groupby("h_starter_name")["game_date"]
+        .diff()
+        .dt.days
+        .fillna(7)
+    )
+    feats["a_pitcher_rest"] = (
+        feats.sort_values(["a_starter_name", "game_date"])
+        .groupby("a_starter_name")["game_date"]
+        .diff()
+        .dt.days
+        .fillna(7)
+    )
+
+    # Pitcher day/night ERA splits
+    # For each (pitcher, day_night) group: compute expanding ERA on day/night games
+    # separately, then forward-fill within pitcher so both values exist on every row
+    for side, pitcher_col, era_col in [
+        ("h", "h_starter_name", "h_starter_era"),
+        ("a", "a_starter_name", "a_starter_era"),
+    ]:
+        for dn_val in ("day", "night"):
+            dn_data = feats[feats["day_night"] == dn_val].copy()
+            if not dn_data.empty:
+                dn_data = dn_data.sort_values([pitcher_col, "game_date"])
+                tmp_col = f"_{side}_{dn_val}_era"
+                dn_data[tmp_col] = (
+                    dn_data.groupby(pitcher_col)[era_col]
+                    .expanding()
+                    .mean()
+                    .shift(1)
+                    .reset_index(level=0, drop=True)
+                )
+                feats = feats.merge(
+                    dn_data[["game_id", tmp_col]], on="game_id", how="left"
+                )
+                # Forward-fill within pitcher group so all rows carry both day and night ERA
+                feats[f"{side}_pitcher_{dn_val}_era"] = (
+                    feats.sort_values("game_date")
+                    .groupby(pitcher_col)[tmp_col]
+                    .ffill()
+                    .fillna(0.0)
+                )
+                feats = feats.drop(columns=[tmp_col])
+            else:
+                feats[f"{side}_pitcher_{dn_val}_era"] = 0.0
 
     # --- Bullpen / combo ERA features ---
     log("  Computing combo ERA features...")

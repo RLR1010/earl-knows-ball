@@ -21,6 +21,8 @@ interface GameInfo {
   away_team?: string;
   ha?: string;
   aa?: string;
+  home_abbr?: string;
+  away_abbr?: string;
   home_score?: number;
   away_score?: number;
   game_date?: string;
@@ -124,7 +126,7 @@ function FeatureRow({ feat }: { feat: FeatureItem }) {
 /* ── Main Page ────────────────────────────────────────────────────── */
 
 export default function DataLoaderPage() {
-  const [sport, setSport] = useState<"nfl" | "mlb">("nfl");
+  const [sport, setSport] = useState<"nfl" | "mlb" | "nba">("nfl");
   const [gameId, setGameId] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -230,9 +232,16 @@ export default function DataLoaderPage() {
                 MLB
               </button>
               <button
-                disabled
-                className="px-5 py-2 text-sm font-medium bg-white/5 text-gray-600 cursor-not-allowed border-l border-white/10"
-                title="NBA data loader not built yet"
+                onClick={() => {
+                  setSport("nba");
+                  setResult(null);
+                  setError(null);
+                }}
+                className={`px-5 py-2 text-sm font-medium transition ${
+                  sport === "nba"
+                    ? "bg-earl-600/30 text-earl-400"
+                    : "bg-white/5 text-gray-400 hover:text-white hover:bg-white/10"
+                }`}
               >
                 NBA
               </button>
@@ -314,13 +323,31 @@ export default function DataLoaderPage() {
                   )}
                 </div>
               )}
-              {!result.game_info.ha && result.game_info.home_team && (
+              {result.game_info.home_abbr && (
+                <div>
+                  <span className="text-gray-500 text-xs block">Home</span>
+                  <span className="text-white font-semibold">{result.game_info.home_abbr}</span>
+                  {result.game_info.home_team && (
+                    <span className="text-gray-500 text-xs block">{result.game_info.home_team}</span>
+                  )}
+                </div>
+              )}
+              {result.game_info.away_abbr && (
+                <div>
+                  <span className="text-gray-500 text-xs block">Away</span>
+                  <span className="text-white font-semibold">{result.game_info.away_abbr}</span>
+                  {result.game_info.away_team && (
+                    <span className="text-gray-500 text-xs block">{result.game_info.away_team}</span>
+                  )}
+                </div>
+              )}
+              {!result.game_info.home_abbr && !result.game_info.ha && result.game_info.home_team && (
                 <div>
                   <span className="text-gray-500 text-xs block">Home</span>
                   <span className="text-white">{result.game_info.home_team}</span>
                 </div>
               )}
-              {!result.game_info.aa && result.game_info.away_team && (
+              {!result.game_info.away_abbr && !result.game_info.aa && result.game_info.away_team && (
                 <div>
                   <span className="text-gray-500 text-xs block">Away</span>
                   <span className="text-white">{result.game_info.away_team}</span>
