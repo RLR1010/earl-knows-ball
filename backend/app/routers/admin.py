@@ -1390,7 +1390,15 @@ async def get_prediction_stats(
                COUNT(*) FILTER (WHERE gp.ml_result='Win') as ml_wins,
                COUNT(*) FILTER (WHERE gp.ml_result='Loss') as ml_losses,
                ROUND(COALESCE(SUM(gp.ml_profit) FILTER (WHERE gp.ml_result IS NOT NULL), 0))::int as ml_profit
-        FROM {schema}.game_predictions gp
+        FROM (
+            SELECT DISTINCT ON (gp_inner.game_id) gp_inner.*
+            FROM (
+            SELECT DISTINCT ON (gp_inner.game_id) gp_inner.*
+            FROM {schema}.game_predictions gp_inner
+            ORDER BY gp_inner.game_id, gp_inner.created_at DESC
+        ) gp_inner
+            ORDER BY gp_inner.game_id, gp_inner.created_at DESC
+        ) gp
         JOIN {schema}.games g ON g.id = gp.game_id
         JOIN {schema}.seasons s ON s.id = g.season_id
         GROUP BY s.year
@@ -1421,7 +1429,15 @@ async def get_prediction_stats(
                    {conf_cols},
                    gp.{rl_col} as ats_result, gp.ou_result, gp.ml_result,
                    gp.ats_profit, gp.ou_profit, gp.ml_profit
-            FROM {schema}.game_predictions gp
+            FROM (
+                SELECT DISTINCT ON (gp_inner.game_id) gp_inner.*
+                FROM (
+            SELECT DISTINCT ON (gp_inner.game_id) gp_inner.*
+            FROM {schema}.game_predictions gp_inner
+            ORDER BY gp_inner.game_id, gp_inner.created_at DESC
+        ) gp_inner
+                ORDER BY gp_inner.game_id, gp_inner.created_at DESC
+            ) gp
             JOIN {schema}.games g ON g.id = gp.game_id
             JOIN {schema}.seasons s ON s.id = g.season_id
             WHERE s.year = {r.year}
@@ -1618,7 +1634,11 @@ async def get_prediction_calibration(
             gp.{rl_col} as ats_result, gp.ou_result, gp.ml_result,
             gp.ats_profit, gp.ou_profit, gp.ml_profit,
             gp.ats_odds, gp.ou_odds, gp.ml_odds
-        FROM {schema}.game_predictions gp
+        FROM (
+            SELECT DISTINCT ON (gp_inner.game_id) gp_inner.*
+            FROM {schema}.game_predictions gp_inner
+            ORDER BY gp_inner.game_id, gp_inner.created_at DESC
+        ) gp
         JOIN {schema}.games g ON g.id = gp.game_id
         JOIN {schema}.seasons s ON s.id = g.season_id
           AND gp.margin_conf IS NOT NULL
@@ -1837,7 +1857,11 @@ async def get_prediction_ev_distribution(
             gp.{rl_col} as ats_result, gp.ou_result, gp.ml_result,
             gp.ats_profit, gp.ou_profit, gp.ml_profit,
             gp.ats_odds, gp.ou_odds, gp.ml_odds
-        FROM {schema}.game_predictions gp
+        FROM (
+            SELECT DISTINCT ON (gp_inner.game_id) gp_inner.*
+            FROM {schema}.game_predictions gp_inner
+            ORDER BY gp_inner.game_id, gp_inner.created_at DESC
+        ) gp
         JOIN {schema}.games g ON g.id = gp.game_id
         JOIN {schema}.seasons s ON s.id = g.season_id
           AND gp.margin_conf IS NOT NULL
@@ -4178,7 +4202,11 @@ async def get_prediction_stats(
                COUNT(*) FILTER (WHERE gp.ml_result='Win') as ml_wins,
                COUNT(*) FILTER (WHERE gp.ml_result='Loss') as ml_losses,
                ROUND(COALESCE(SUM(gp.ml_profit) FILTER (WHERE gp.ml_result IS NOT NULL), 0))::int as ml_profit
-        FROM {schema}.game_predictions gp
+        FROM (
+            SELECT DISTINCT ON (gp_inner.game_id) gp_inner.*
+            FROM {schema}.game_predictions gp_inner
+            ORDER BY gp_inner.game_id, gp_inner.created_at DESC
+        ) gp
         JOIN {schema}.games g ON g.id = gp.game_id
         JOIN {schema}.seasons s ON s.id = g.season_id
         GROUP BY s.year
@@ -4209,7 +4237,15 @@ async def get_prediction_stats(
                    {conf_cols},
                    gp.{rl_col} as ats_result, gp.ou_result, gp.ml_result,
                    gp.ats_profit, gp.ou_profit, gp.ml_profit
-            FROM {schema}.game_predictions gp
+            FROM (
+                SELECT DISTINCT ON (gp_inner.game_id) gp_inner.*
+                FROM (
+            SELECT DISTINCT ON (gp_inner.game_id) gp_inner.*
+            FROM {schema}.game_predictions gp_inner
+            ORDER BY gp_inner.game_id, gp_inner.created_at DESC
+        ) gp_inner
+                ORDER BY gp_inner.game_id, gp_inner.created_at DESC
+            ) gp
             JOIN {schema}.games g ON g.id = gp.game_id
             JOIN {schema}.seasons s ON s.id = g.season_id
             WHERE s.year = {r.year}
@@ -4406,7 +4442,11 @@ async def get_prediction_calibration(
             gp.{rl_col} as ats_result, gp.ou_result, gp.ml_result,
             gp.ats_profit, gp.ou_profit, gp.ml_profit,
             gp.ats_odds, gp.ou_odds, gp.ml_odds
-        FROM {schema}.game_predictions gp
+        FROM (
+            SELECT DISTINCT ON (gp_inner.game_id) gp_inner.*
+            FROM {schema}.game_predictions gp_inner
+            ORDER BY gp_inner.game_id, gp_inner.created_at DESC
+        ) gp
         JOIN {schema}.games g ON g.id = gp.game_id
         JOIN {schema}.seasons s ON s.id = g.season_id
           AND gp.margin_conf IS NOT NULL
@@ -4625,7 +4665,11 @@ async def get_prediction_ev_distribution(
             gp.{rl_col} as ats_result, gp.ou_result, gp.ml_result,
             gp.ats_profit, gp.ou_profit, gp.ml_profit,
             gp.ats_odds, gp.ou_odds, gp.ml_odds
-        FROM {schema}.game_predictions gp
+        FROM (
+            SELECT DISTINCT ON (gp_inner.game_id) gp_inner.*
+            FROM {schema}.game_predictions gp_inner
+            ORDER BY gp_inner.game_id, gp_inner.created_at DESC
+        ) gp
         JOIN {schema}.games g ON g.id = gp.game_id
         JOIN {schema}.seasons s ON s.id = g.season_id
           AND gp.margin_conf IS NOT NULL
