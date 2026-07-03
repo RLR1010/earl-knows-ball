@@ -332,10 +332,10 @@ async def _save_api_prediction(
     ou_odds = over_odds if ou_picked_over else under_odds
     ml_odds = home_ml_odds if ml_picked_home else away_ml_odds
 
-    # Confidence heuristic (matches old MLBPickCard)
-    rl_conf = min(0.5 + abs(pred_margin + spread) * 0.4, 0.90) if spread else 0.5
-    ml_conf = min(0.5 + abs(pred_margin) * 0.25, 0.92)
-    ou_conf = min(0.5 + abs(pred_total - total) * 0.25, 0.92) if total else 0.5
+    # Calibrate confidence against empirical win rate
+    rl_conf = calibrate(min(0.5 + abs(pred_margin + spread) * 0.4, 0.90) if spread else 0.5, "ats", "mlb")
+    ml_conf = calibrate(min(0.5 + abs(pred_margin) * 0.25, 0.92), "ml", "mlb")
+    ou_conf = calibrate(min(0.5 + abs(pred_total - total) * 0.25, 0.92) if total else 0.5, "ou", "mlb")
     margin_conf = rl_conf
 
     # EV at $100 stake
@@ -740,9 +740,10 @@ async def _save_backtest_prediction(
     ml_profit = _pl(ml_result, ml_odds)
 
     # Confidence heuristic (matches old MLBPickCard)
-    rl_conf = min(0.5 + abs(pred_margin + spread) * 0.4, 0.90)
-    ml_conf = min(0.5 + abs(pred_margin) * 0.25, 0.92)
-    ou_conf = min(0.5 + abs(pred_total - total) * 0.25, 0.92)
+    # Calibrate confidence against empirical win rate
+    rl_conf = calibrate(min(0.5 + abs(pred_margin + spread) * 0.4, 0.90), "ats", "mlb")
+    ml_conf = calibrate(min(0.5 + abs(pred_margin) * 0.25, 0.92), "ml", "mlb")
+    ou_conf = calibrate(min(0.5 + abs(pred_total - total) * 0.25, 0.92), "ou", "mlb")
     margin_conf = rl_conf
     overall_conf = max(rl_conf, ou_conf, ml_conf)
 
