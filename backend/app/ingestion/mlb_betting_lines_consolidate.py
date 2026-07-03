@@ -321,25 +321,6 @@ class GameCandidate:
 
 FETCH_GAMES_SQL = """
 WITH closing_data AS (
-    -- Historical per-sportsbook closing lines
-    SELECT
-        LOWER(bl.sportsbook) AS sportsbook,
-        bl.game_id,
-        bl.spread       AS closing_spread,
-        bl.over_under   AS closing_ou,
-        bl.home_moneyline  AS closing_home_ml,
-        bl.away_moneyline  AS closing_away_ml,
-        bl.spread_home_odds  AS closing_spread_home_odds,
-        bl.spread_away_odds  AS closing_spread_away_odds,
-        bl.over_odds   AS closing_over_odds,
-        bl.under_odds  AS closing_under_odds
-    FROM mlb.betting_lines bl
-    WHERE bl.source = 'the_odds_api_closing'
-      AND bl.spread IS NOT NULL
-      AND bl.over_under IS NOT NULL
-      AND bl.home_moneyline IS NOT NULL
-      AND bl.away_moneyline IS NOT NULL
-    UNION ALL
     -- Live current lines (is_opening='false' rows = latest snapshot)
     SELECT
         LOWER(bl.sportsbook) AS sportsbook,
@@ -353,8 +334,7 @@ WITH closing_data AS (
         bl.over_odds   AS closing_over_odds,
         bl.under_odds  AS closing_under_odds
     FROM mlb.betting_lines bl
-    WHERE bl.source = 'the_odds_api_current'
-      AND bl.is_opening = 'false'
+    WHERE bl.is_opening = 'false'
       AND bl.spread IS NOT NULL
       AND bl.over_under IS NOT NULL
       AND bl.home_moneyline IS NOT NULL
@@ -363,25 +343,6 @@ WITH closing_data AS (
       AND bl.over_odds IS NOT NULL
 ),
 opening_data AS (
-    -- Historical per-sportsbook opening lines
-    SELECT
-        LOWER(bl.sportsbook) AS sportsbook,
-        bl.game_id,
-        bl.spread       AS opening_spread,
-        bl.over_under   AS opening_ou,
-        bl.home_moneyline  AS opening_home_ml,
-        bl.away_moneyline  AS opening_away_ml,
-        bl.spread_home_odds  AS opening_spread_home_odds,
-        bl.spread_away_odds  AS opening_spread_away_odds,
-        bl.over_odds   AS opening_over_odds,
-        bl.under_odds  AS opening_under_odds
-    FROM mlb.betting_lines bl
-    WHERE bl.source = 'the_odds_api_opening'
-      AND bl.spread IS NOT NULL
-      AND bl.over_under IS NOT NULL
-      AND bl.home_moneyline IS NOT NULL
-      AND bl.away_moneyline IS NOT NULL
-    UNION ALL
     -- Live current opening lines (is_opening='true' rows)
     -- Opening lines may not have spread/OU odds (just h2h), that's OK
     SELECT
@@ -396,8 +357,7 @@ opening_data AS (
         bl.over_odds   AS opening_over_odds,
         bl.under_odds  AS opening_under_odds
     FROM mlb.betting_lines bl
-    WHERE bl.source = 'the_odds_api_current'
-      AND bl.is_opening = 'true'
+    WHERE bl.is_opening = 'true'
       AND bl.spread IS NOT NULL
       AND bl.over_under IS NOT NULL
       AND bl.home_moneyline IS NOT NULL
@@ -442,7 +402,7 @@ SELECT
     bl.over_odds   AS closing_over_odds,
     bl.under_odds  AS closing_under_odds
 FROM mlb.betting_lines bl
-WHERE bl.source IN ('the_odds_api_closing', 'the_odds_api_current')
+WHERE bl.is_opening = 'false'
   AND bl.spread IS NOT NULL
   AND bl.over_under IS NOT NULL
   AND bl.home_moneyline IS NOT NULL
