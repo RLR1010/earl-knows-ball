@@ -1425,7 +1425,7 @@ async def get_prediction_stats(
         else:
             conf_cols = f"gp.margin_conf as rl_conf, gp.margin_conf as ml_conf, gp.margin_conf as ou_conf"
         raw_rows = await db.execute(_sa_text(f"""
-            SELECT gp.margin_conf,
+            SELECT gp.rl_conf,
                    {conf_cols},
                    gp.{rl_col} as ats_result, gp.ou_result, gp.ml_result,
                    gp.ats_profit, gp.ou_profit, gp.ml_profit
@@ -1441,7 +1441,7 @@ async def get_prediction_stats(
             JOIN {schema}.games g ON g.id = gp.game_id
             JOIN {schema}.seasons s ON s.id = g.season_id
             WHERE s.year = {r.year}
-              AND gp.margin_conf IS NOT NULL
+              AND gp.rl_conf IS NOT NULL
         """))
 
         def _bucket(cf, model_type=None):
@@ -1452,7 +1452,7 @@ async def get_prediction_stats(
             if cf >= 0.60: return "Medium"
             return "Low"
 
-        all_raw = [(float(cr.margin_conf),
+        all_raw = [(float(cr.rl_conf),
                      float(cr.rl_conf) if cr.rl_conf is not None else 0.50,
                      float(cr.ml_conf) if cr.ml_conf is not None else 0.50,
                      float(cr.ou_conf) if cr.ou_conf is not None else 0.50,
@@ -1625,12 +1625,14 @@ async def get_prediction_calibration(
 
     if is_mlb:
         conf_cols = "gp.rl_conf, gp.ml_conf, gp.ou_conf"
+        conf_col = "gp.rl_conf"
     else:
         conf_cols = f"gp.margin_conf as rl_conf, gp.margin_conf as ml_conf, gp.margin_conf as ou_conf"
+        conf_col = "gp.margin_conf"
 
     rows = await db.execute(_sa_text(f"""
         SELECT
-            gp.margin_conf,
+            {conf_col},
             {conf_cols},
             gp.{rl_col} as ats_result, gp.ou_result, gp.ml_result,
             gp.ats_profit, gp.ou_profit, gp.ml_profit,
@@ -1642,7 +1644,7 @@ async def get_prediction_calibration(
         ) gp
         JOIN {schema}.games g ON g.id = gp.game_id
         JOIN {schema}.seasons s ON s.id = g.season_id
-          AND gp.margin_conf IS NOT NULL
+          AND {conf_col} IS NOT NULL
     """))
 
     # Bucket: 20 bins from 0.50 to 1.00 (step = 0.025)

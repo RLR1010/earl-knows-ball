@@ -31,6 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 # Local helpers
 from app.handicapping.mlb.data_loader import MLBDataLoader, build_features, get_data_loader, get_model_features
+from app.handicapping.calibrate_confidence import calibrate
 from app.models.mlb.consolidated import MLBBettingLineConsolidated
 
 # ── Cached pick-card feature names ──
@@ -332,14 +333,14 @@ async def _save_api_prediction(
     ml_odds = home_ml_odds if ml_picked_home else away_ml_odds
 
     # Calibrate confidence against empirical win rate
-    # Confidence heuristic (kept raw — calibration is handled by the Predictions page)
+    # Raw confidence (used by Predictions page)
     rl_conf = min(0.5 + abs(pred_margin + spread) * 0.4, 0.90) if spread else 0.5
     ml_conf = min(0.5 + abs(pred_margin) * 0.25, 0.92)
     ou_conf = min(0.5 + abs(pred_total - total) * 0.25, 0.92) if total else 0.5
-    margin_conf = rl_conf
-    rl_conf_raw = rl_conf
-    ml_conf_raw = ml_conf
-    ou_conf_raw = ou_conf
+    # Calibrated confidence (used for EV calculation)
+    rl_conf_cal = calibrate(rl_conf, "ats", "mlb")
+    ml_conf_cal = calibrate(ml_conf, "ml", "mlb")
+    ou_conf_cal = calibrate(ou_conf, "ou", "mlb")
 
     # EV at $100 stake
     def _ev(conf_: float, odds_: float) -> float:
@@ -387,10 +388,9 @@ async def _save_api_prediction(
         rl_conf=round(rl_conf, 4),
         ou_conf=round(ou_conf, 4),
         ml_conf=round(ml_conf, 4),
-        margin_conf=round(margin_conf, 4),
-        rl_conf_raw=round(rl_conf_raw, 4),
-        ml_conf_raw=round(ml_conf_raw, 4),
-        ou_conf_raw=round(ou_conf_raw, 4),
+        rl_conf_cal=round(rl_conf_cal, 4),
+        ml_conf_cal=round(ml_conf_cal, 4),
+        ou_conf_cal=round(ou_conf_cal, 4),
         ats_ev=ats_ev,
         ou_ev=ou_ev,
         ml_ev=ml_ev,
@@ -747,14 +747,14 @@ async def _save_backtest_prediction(
 
     # Confidence heuristic (matches old MLBPickCard)
     # Calibrate confidence against empirical win rate
-    # Confidence heuristic (kept raw — calibration is handled by the Predictions page)
+    # Raw confidence (used by Predictions page)
     rl_conf = min(0.5 + abs(pred_margin + spread) * 0.4, 0.90) if spread else 0.5
     ml_conf = min(0.5 + abs(pred_margin) * 0.25, 0.92)
     ou_conf = min(0.5 + abs(pred_total - total) * 0.25, 0.92) if total else 0.5
-    margin_conf = rl_conf
-    rl_conf_raw = rl_conf
-    ml_conf_raw = ml_conf
-    ou_conf_raw = ou_conf
+    # Calibrated confidence (used for EV calculation)
+    rl_conf_cal = calibrate(rl_conf, "ats", "mlb")
+    ml_conf_cal = calibrate(ml_conf, "ml", "mlb")
+    ou_conf_cal = calibrate(ou_conf, "ou", "mlb")
     overall_conf = max(rl_conf, ou_conf, ml_conf)
 
     # EV at $100 stake
@@ -806,10 +806,9 @@ async def _save_backtest_prediction(
         rl_conf=round(rl_conf, 4),
         ou_conf=round(ou_conf, 4),
         ml_conf=round(ml_conf, 4),
-        margin_conf=round(margin_conf, 4),
-        rl_conf_raw=round(rl_conf_raw, 4),
-        ml_conf_raw=round(ml_conf_raw, 4),
-        ou_conf_raw=round(ou_conf_raw, 4),
+        rl_conf_cal=round(rl_conf_cal, 4),
+        ml_conf_cal=round(ml_conf_cal, 4),
+        ou_conf_cal=round(ou_conf_cal, 4),
         ats_ev=ats_ev,
         ou_ev=ou_ev,
         ml_ev=ml_ev,

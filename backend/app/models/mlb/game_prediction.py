@@ -21,14 +21,14 @@ class MLBGamePrediction(Base):
     predicted_total = Column(Float, nullable=True)
     predicted_margin = Column(Float, nullable=True)
 
-    # Model confidence
-    margin_conf = Column(Float, nullable=True)
-    rl_conf = Column(Float, nullable=True, comment="Calibrated RL confidence")
-    ml_conf = Column(Float, nullable=True, comment="Calibrated ML confidence")
-    ou_conf = Column(Float, nullable=True, comment="Calibrated OU confidence")
-    rl_conf_raw = Column(Float, nullable=True, comment="Raw RL confidence heuristic")
-    ml_conf_raw = Column(Float, nullable=True, comment="Raw ML confidence heuristic")
-    ou_conf_raw = Column(Float, nullable=True, comment="Raw OU confidence heuristic")
+    # Model confidence (raw — used by Predictions page)
+    rl_conf = Column(Float, nullable=True, comment="Raw RL confidence heuristic")
+    ml_conf = Column(Float, nullable=True, comment="Raw ML confidence heuristic")
+    ou_conf = Column(Float, nullable=True, comment="Raw OU confidence heuristic")
+    # Calibrated confidence (used for EV calculation)
+    rl_conf_cal = Column(Float, nullable=True, comment="Calibrated RL confidence")
+    ml_conf_cal = Column(Float, nullable=True, comment="Calibrated ML confidence")
+    ou_conf_cal = Column(Float, nullable=True, comment="Calibrated OU confidence")
 
     # Picks
     ou_pick = Column(String(20), nullable=True)         # "Over", "Under", "Push / No edge"
