@@ -468,6 +468,7 @@ async def backtest_season(
     # ── 4. Evaluate every game, save prediction record ────────────
     rl_w = rl_l = rl_p = 0
     ou_w = ou_l = ou_p = 0
+    ml_w = ml_l = ml_p = 0
     saved = 0
 
     for _, row in df.iterrows():
@@ -514,6 +515,11 @@ async def backtest_season(
         else:
             ou_l += 1
 
+        if pred_home_wins == home_wins:
+            ml_w += 1
+        else:
+            ml_l += 1
+
         # ── Save predictions to game_predictions ──
         pick_card_feats = await _load_pick_card_feature_names(db)
         saved += await _save_backtest_prediction(
@@ -532,7 +538,7 @@ async def backtest_season(
     result = {
         "run_line": {"pct": rl_pct, "w": rl_w, "l": rl_l, "push": rl_p},
         "over_under": {"pct": ou_pct, "w": ou_w, "l": ou_l, "push": ou_p},
-        "moneyline": {"pct": 0.0, "w": 0, "l": 0, "push": 0},
+        "moneyline": {"pct": round(ml_w / (ml_w + ml_l) * 100, 2) if (ml_w + ml_l) else 0.0, "w": ml_w, "l": ml_l, "push": ml_p},
     }
     logger.info("  Saved %d predictions. Result: %s", saved, result)
     return result
