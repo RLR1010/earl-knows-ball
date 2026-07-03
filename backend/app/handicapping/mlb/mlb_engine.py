@@ -810,7 +810,7 @@ async def _save_backtest_prediction(
     from sqlalchemy import delete as sa_delete
     await db.execute(sa_delete(MLBGamePrediction).where(
         MLBGamePrediction.game_id == int(gid),
-        MLBGamePrediction.source == "backtest",
+        MLBGamePrediction.source.in_(["api", "backtest"]),
     ))
     await db.flush()
     db.add(gp)
