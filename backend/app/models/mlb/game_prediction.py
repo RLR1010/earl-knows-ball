@@ -65,6 +65,7 @@ class MLBGamePrediction(Base):
     away_stats_json = Column(Text, nullable=True, comment="JSON — MLBTeamStats.to_dict() for away team")
     situational_json = Column(Text, nullable=True, comment="JSON — MLBSituationalAnalyzer.to_dict()")
     splits_json = Column(Text, nullable=True, comment="JSON — MLBSplitAnalyzer.to_dict()")
+    features_json = Column(Text, nullable=True, comment="JSON — pick_card feature values at prediction time")
     created_at = Column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),

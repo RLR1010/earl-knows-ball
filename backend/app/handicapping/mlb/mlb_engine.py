@@ -33,6 +33,23 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.handicapping.mlb.data_loader import MLBDataLoader, build_features, get_data_loader, get_model_features
 from app.handicapping.calibrate_confidence import calibrate
 from app.models.mlb.consolidated import MLBBettingLineConsolidated
+
+# ── Cached pick-card feature names ──
+_PICK_CARD_FEATURES: Optional[set] = None
+
+async def _load_pick_card_feature_names(db) -> set:
+    """Lazy-load the set of feature names where pick_card = true."""
+    global _PICK_CARD_FEATURES
+    if _PICK_CARD_FEATURES is not None:
+        return _PICK_CARD_FEATURES
+    result = await db.execute(text("SELECT name FROM mlb.features WHERE pick_card = true"))
+    _PICK_CARD_FEATURES = set(r[0] for r in result.fetchall())
+    return _PICK_CARD_FEATURES
+
+
+def _extract_pick_card_features(row, feature_names: set) -> str:
+    """Return JSON string of pick_card feature values from a DataFrame row."""
+    return json.dumps({name: row.get(name) for name in feature_names if name in row.index or name in row}, default=str)
 from app.models.mlb.game_prediction import MLBGamePrediction
 
 logger = logging.getLogger("earl.mlb_handicapping")
@@ -243,6 +260,7 @@ async def batch_predict_upcoming_games(
             pred_over = pred_total > (total or 8.5) if total else True
             pred_home_wins = pred_margin > 0
 
+            pic_feats = await _load_pick_card_feature_names(db)  # lazy-cached
             await _save_api_prediction(
                 db=db,
                 row=row_s,
@@ -254,6 +272,7 @@ async def batch_predict_upcoming_games(
                 pred_home_covers=pred_home_covers,
                 pred_over=pred_over,
                 pred_home_wins=pred_home_wins,
+                pick_card_features=pic_feats,
             )
 
             pick_results.append(
@@ -284,6 +303,7 @@ async def _save_api_prediction(
     pred_home_covers: bool,
     pred_over: bool,
     pred_home_wins: bool,
+    pick_card_features: set | None = None,
 ) -> int:
     """Save a live (pre-game) prediction to ``mlb.game_predictions``.
 
@@ -375,6 +395,7 @@ async def _save_api_prediction(
         away_stats_json=json.dumps(_build_mlb_away_stats(dict(row))),
         situational_json=json.dumps(_build_mlb_situational(dict(row))),
         splits_json=json.dumps(_build_mlb_splits(dict(row))),
+        features_json=_extract_pick_card_features(row, pick_card_features) if pick_card_features else None,
         source="api",
         created_at=now,
     )
@@ -494,11 +515,13 @@ async def backtest_season(
             ou_l += 1
 
         # ── Save predictions to game_predictions ──
+        pick_card_feats = await _load_pick_card_feature_names(db)
         saved += await _save_backtest_prediction(
             db, row, year,
             home_score, away_score, spread, total,
             pred_margin, pred_total, pred_home_covers, pred_over, pred_home_wins,
             home_covers, actual_over, home_wins,
+            pick_card_features=pick_card_feats,
         )
 
     await db.commit()
@@ -652,6 +675,7 @@ async def _save_backtest_prediction(
     pred_margin: float, pred_total: float,
     pred_home_covers: bool, pred_over: bool, pred_home_wins: bool,
     home_covers: bool, actual_over: bool, home_wins: bool,
+    pick_card_features: set | None = None,
 ) -> int:
     """Save a single game\'s prediction to ``mlb.game_predictions``.
 
@@ -773,13 +797,14 @@ async def _save_backtest_prediction(
         away_stats_json=json.dumps(_build_mlb_away_stats(dict(row))),
         situational_json=json.dumps(_build_mlb_situational(dict(row))),
         splits_json=json.dumps(_build_mlb_splits(dict(row))),
-        source="api",
+        features_json=_extract_pick_card_features(row, pick_card_features) if pick_card_features else None,
+        source="backtest",
         created_at=now,
     )
     from sqlalchemy import delete as sa_delete
     await db.execute(sa_delete(MLBGamePrediction).where(
         MLBGamePrediction.game_id == int(gid),
-        MLBGamePrediction.source == "api",
+        MLBGamePrediction.source == "backtest",
     ))
     await db.flush()
     db.add(gp)

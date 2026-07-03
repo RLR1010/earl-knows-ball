@@ -5673,7 +5673,8 @@ async def data_loader_load_game(
 
         # Step 1: Find the game's season_id so we can load enough context
         # for rolling stats (need current + previous season)
-        raw_df = dl.load_games(game_ids=[game_id])
+        # Use include_upcoming so SCHEDULED/PREGAME games are findable
+        raw_df = dl.load_games(game_ids=[game_id], include_upcoming=True)
         if raw_df.empty:
             raise HTTPException(
                 status_code=404,
@@ -5688,13 +5689,13 @@ async def data_loader_load_game(
         # We need current + previous season so rolling stats compute correctly.
         if sport == "nfl":
             season_val = int(game_row["season_id"])
-            full_raw_df = dl.load_games(seasons=[season_val - 1, season_val])
+            full_raw_df = dl.load_games(seasons=[season_val - 1, season_val], include_upcoming=True)
         elif sport == "mlb":
             season_val = int(game_row["season_year"])
-            full_raw_df = dl.load_games(seasons=[season_val - 1, season_val])
+            full_raw_df = dl.load_games(seasons=[season_val - 1, season_val], include_upcoming=True)
         else:  # nba
             season_val = int(game_row["season_id"])
-            full_raw_df = dl.load_games(seasons=[season_val - 1, season_val])
+            full_raw_df = dl.load_games(seasons=[season_val - 1, season_val], include_upcoming=True)
 
         logger.info(
             "Data loader for %s game_id=%d — loaded %d game rows from seasons around %s",
@@ -5703,7 +5704,7 @@ async def data_loader_load_game(
 
         if full_raw_df.empty:
             # Fallback: just load the target season alone
-            full_raw_df = dl.load_games(seasons=[season_val])
+            full_raw_df = dl.load_games(seasons=[season_val], include_upcoming=True)
 
         # Step 3: Build features on the full context
         if sport == "nfl":
