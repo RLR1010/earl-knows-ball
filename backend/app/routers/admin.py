@@ -5722,6 +5722,8 @@ async def data_loader_load_game(
         if built_df.empty:
             # Edge case: build_features may have renamed game_id — try the index
             try:
+                import sys
+                print(f"[DEBUG] built_df.empty but full_built_df columns: {list(full_built_df.columns)}")
                 built_df = full_built_df.loc[[game_id]]
             except (KeyError, IndexError):
                 raise HTTPException(

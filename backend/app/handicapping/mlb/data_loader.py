@@ -240,6 +240,8 @@ SELECT
     gse.away_starter_era                                    AS a_starter_era,
     COALESCE(gse.home_starter_name, g.home_pitcher_name)    AS h_starter_name,
     COALESCE(gse.away_starter_name, g.away_pitcher_name)    AS a_starter_name,
+    gse.home_starter_name                                    AS raw_h_starter_name,
+    gse.away_starter_name                                    AS raw_a_starter_name,
     gse.home_starter_ip                                    AS h_starter_ip,
     gse.home_starter_er                                    AS h_starter_er,
     gse.away_starter_ip                                    AS a_starter_ip,
@@ -1457,7 +1459,7 @@ def build_features(df: pd.DataFrame, log_fn=None) -> pd.DataFrame:
         )
         feats_21["_a_venue_era"] = _a_venue_era
 
-        # Also compute pitcher's overall ERA (all venues) to use as fallback
+        # Compute pitcher's overall ERA (all venues) for fallback
         _a_overall_era = (
             feats_21.sort_values(["a_starter_name", "game_date"])
             .groupby("a_starter_name")["a_starter_era"]
@@ -1468,13 +1470,30 @@ def build_features(df: pd.DataFrame, log_fn=None) -> pd.DataFrame:
         )
         feats_21["_a_overall_era"] = _a_overall_era
 
+        # Count prior starts per pitcher+venue using RAW name (actual CTE starter,
+        # not COALESCE'd) so scheduled-but-DNP pitchers don't inflate the count
+        _venue_prior_cnt = (
+            feats_21.sort_values(["raw_a_starter_name", "venue_id", "game_date"])
+            .groupby(["raw_a_starter_name", "venue_id"])["a_starter_era"]
+            .expanding()
+            .count()
+            .shift(1)
+            .reset_index(level=[0, 1], drop=True)
+            .fillna(0)
+        )
+        feats_21["_venue_prior_cnt_raw"] = _venue_prior_cnt
+
         feats = feats.merge(
-            feats_21[["game_id", "_a_venue_era", "_a_overall_era"]],
+            feats_21[["game_id", "_a_venue_era", "_a_overall_era", "_venue_prior_cnt_raw"]],
             on="game_id", how="left"
         )
-        # Fallback: pitcher's overall ERA when no venue-specific history exists
+        # Map raw prior count: when raw_a_starter_name is NULL (SCHEDULED game
+        # or COALESCE-only match), treat count as 0 so venue ERA falls through
+        # to the overall ERA fallback.
+        feats["_venue_prior_cnt"] = feats["_venue_prior_cnt_raw"].fillna(0)
+        feats["_a_venue_era"] = feats["_a_venue_era"].where(feats["_venue_prior_cnt"] > 0)
         feats["a_pitcher_venue_era"] = feats["_a_venue_era"].fillna(feats["_a_overall_era"]).fillna(0.0)
-        feats = feats.drop(columns=["_a_venue_era", "_a_overall_era"])
+        feats = feats.drop(columns=["_a_venue_era", "_a_overall_era", "_venue_prior_cnt_raw", "_venue_prior_cnt"])
     else:
         feats["a_pitcher_venue_era"] = 0.0
 
