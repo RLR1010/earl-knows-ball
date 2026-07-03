@@ -1421,7 +1421,7 @@ async def get_prediction_stats(
         # Fetch per-model confidence columns for MLB, margin_conf for NFL/NBA
         is_mlb = sport == "mlb"
         if is_mlb:
-            conf_cols = "gp.rl_conf_raw, gp.ml_conf_raw, gp.ou_conf_raw"
+            conf_cols = "gp.rl_conf, gp.ml_conf, gp.ou_conf"
         else:
             conf_cols = f"gp.margin_conf as rl_conf, gp.margin_conf as ml_conf, gp.margin_conf as ou_conf"
         raw_rows = await db.execute(_sa_text(f"""
@@ -1453,9 +1453,9 @@ async def get_prediction_stats(
             return "Low"
 
         all_raw = [(float(cr.margin_conf),
-                     float(_calibrate(float(cr.rl_conf), "ats", "mlb") if cr.rl_conf is not None and _HAS_CAL else (cr.rl_conf or 0.50)),
-                     float(_calibrate(float(cr.ml_conf), "ml", "mlb") if cr.ml_conf is not None and _HAS_CAL else (cr.ml_conf or 0.50)),
-                     float(_calibrate(float(cr.ou_conf), "ou", "mlb") if cr.ou_conf is not None and _HAS_CAL else (cr.ou_conf or 0.50)),
+                     float(cr.rl_conf) if cr.rl_conf is not None else 0.50,
+                     float(cr.ml_conf) if cr.ml_conf is not None else 0.50,
+                     float(cr.ou_conf) if cr.ou_conf is not None else 0.50,
                      cr.ats_result, cr.ou_result, cr.ml_result,
                      cr.ats_profit or 0, cr.ou_profit or 0, cr.ml_profit or 0)
                     for cr in raw_rows.fetchall()]
@@ -1512,7 +1512,7 @@ async def get_prediction_stats(
         def _build_overall_breakdown():
             buckets = {}
             for row in all_raw:
-                mc = row[1]  # calibrated RL confidence from above
+                mc = row[0]  # margin_conf
                 ats_r, ou_r, ml_r = row[4], row[5], row[6]
                 ats_p, ou_p, ml_p = row[7], row[8], row[9]
                 bk = _bucket(mc, "overall")
