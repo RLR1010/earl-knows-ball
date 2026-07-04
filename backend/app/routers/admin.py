@@ -1711,7 +1711,7 @@ async def get_prediction_calibration(
     ml_cf_bins = _make_bins()
 
     for r in rows.fetchall():
-        mc = float(r.margin_conf) if r.margin_conf is not None else 0.50
+        mc = float(getattr(r, conf_main, 0.50)) if getattr(r, conf_main, None) is not None else 0.50
         rl_cf = float(r.rl_conf) if r.rl_conf is not None else mc
         ml_cf = float(r.ml_conf) if r.ml_conf is not None else mc
         ou_cf = float(r.ou_conf) if r.ou_conf is not None else mc
@@ -1900,7 +1900,7 @@ async def get_prediction_ev_distribution(
     }
 
     for r in rows.fetchall():
-        mc = float(r.margin_conf) if r.margin_conf is not None else 0.50
+        mc = float(getattr(r, conf_main, 0.50)) if getattr(r, conf_main, None) is not None else 0.50
         rl_cf = float(r.rl_conf) if r.rl_conf is not None else mc
         ml_cf = float(r.ml_conf) if r.ml_conf is not None else mc
         ou_cf = float(r.ou_conf) if r.ou_conf is not None else mc
@@ -4439,8 +4439,10 @@ async def get_prediction_calibration(
 
     if is_mlb:
         conf_cols = "gp.rl_conf, gp.ml_conf, gp.ou_conf"
+        conf_main = "rl_conf"
     else:
         conf_cols = f"gp.margin_conf as rl_conf, gp.margin_conf as ml_conf, gp.margin_conf as ou_conf"
+        conf_main = "margin_conf"
 
     rows = await db.execute(_sa_text(f"""
         SELECT
@@ -4523,7 +4525,7 @@ async def get_prediction_calibration(
     ml_cf_bins = _make_bins()
 
     for r in rows.fetchall():
-        mc = float(r.margin_conf) if r.margin_conf is not None else 0.50
+        mc = float(getattr(r, conf_main, 0.50)) if getattr(r, conf_main, None) is not None else 0.50
         rl_cf = float(r.rl_conf) if r.rl_conf is not None else mc
         ml_cf = float(r.ml_conf) if r.ml_conf is not None else mc
         ou_cf = float(r.ou_conf) if r.ou_conf is not None else mc
@@ -4652,10 +4654,12 @@ async def get_prediction_ev_distribution(
     if sport == "nfl":
         schema, use_ats, use_ml = "nfl", True, False
         conf_ats = "margin_conf"; conf_ml = "margin_conf"; conf_ou = "margin_conf"
+        conf_main = "margin_conf"
         rl_col = "margin_conf"
     elif sport == "nba":
         schema, use_ats, use_ml = "nba", True, True
         conf_ats = "rl_conf"; conf_ml = "ml_conf"; conf_ou = "ou_conf"
+        conf_main = "rl_conf"
         rl_col = "ats_result"
     else:
         schema, use_ats, use_ml = "mlb", True, True
@@ -4711,7 +4715,7 @@ async def get_prediction_ev_distribution(
     }
 
     for r in rows.fetchall():
-        mc = float(r.margin_conf) if r.margin_conf is not None else 0.50
+        mc = float(getattr(r, conf_main, 0.50)) if getattr(r, conf_main, None) is not None else 0.50
         rl_cf = float(r.rl_conf) if r.rl_conf is not None else mc
         ml_cf = float(r.ml_conf) if r.ml_conf is not None else mc
         ou_cf = float(r.ou_conf) if r.ou_conf is not None else mc
