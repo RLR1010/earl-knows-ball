@@ -1838,6 +1838,7 @@ async def get_prediction_ev_distribution(
 
     # Resolve sport config inlined
     if sport == "nfl":
+        conf_main = "margin_conf"
         schema, use_ats, use_ml = "nfl", True, False
         conf_ats = "margin_conf"; conf_ml = "margin_conf"; conf_ou = "margin_conf"
         rl_col = "margin_conf"
