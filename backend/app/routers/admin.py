@@ -1452,7 +1452,7 @@ async def get_prediction_stats(
             if cf >= 0.60: return "Medium"
             return "Low"
 
-        all_raw = [(float(cr.rl_conf),
+        all_raw = [(float(getattr(cr, 'margin_conf', getattr(cr, 'rl_conf', 0.50))),
                      float(cr.rl_conf) if cr.rl_conf is not None else 0.50,
                      float(cr.ml_conf) if cr.ml_conf is not None else 0.50,
                      float(cr.ou_conf) if cr.ou_conf is not None else 0.50,
@@ -1844,16 +1844,18 @@ async def get_prediction_ev_distribution(
     elif sport == "nba":
         schema, use_ats, use_ml = "nba", True, True
         conf_ats = "rl_conf"; conf_ml = "ml_conf"; conf_ou = "ou_conf"
+        conf_main = "rl_conf"
         rl_col = "ats_result"
     else:
         schema, use_ats, use_ml = "mlb", True, True
         conf_ats = "rl_conf"; conf_ml = "ml_conf"; conf_ou = "ou_conf"
+        conf_main = "rl_conf"
         rl_col = "run_line_result"
 
     # Step 1: Load raw picks with confidence + odds
     rows = await db.execute(_sa_text(f"""
         SELECT
-            gp.margin_conf,
+            gp.{conf_main},
             gp.{conf_ats} as rl_conf,
             gp.{conf_ou} as ou_conf,
             gp.{conf_ml} as ml_conf,
@@ -1867,7 +1869,7 @@ async def get_prediction_ev_distribution(
         ) gp
         JOIN {schema}.games g ON g.id = gp.game_id
         JOIN {schema}.seasons s ON s.id = g.season_id
-          AND gp.margin_conf IS NOT NULL
+          AND gp.{conf_main} IS NOT NULL
     """))
 
     # ── Calibration: bucket picks by confidence, get per-bin win rates ──
@@ -4233,10 +4235,12 @@ async def get_prediction_stats(
         is_mlb = sport == "mlb"
         if is_mlb:
             conf_cols = "gp.rl_conf, gp.ml_conf, gp.ou_conf"
+            conf_col = "gp.rl_conf"
         else:
             conf_cols = f"gp.margin_conf as rl_conf, gp.margin_conf as ml_conf, gp.margin_conf as ou_conf"
+            conf_col = "gp.margin_conf"
         raw_rows = await db.execute(_sa_text(f"""
-            SELECT gp.margin_conf,
+            SELECT {conf_col},
                    {conf_cols},
                    gp.{rl_col} as ats_result, gp.ou_result, gp.ml_result,
                    gp.ats_profit, gp.ou_profit, gp.ml_profit
@@ -4252,7 +4256,7 @@ async def get_prediction_stats(
             JOIN {schema}.games g ON g.id = gp.game_id
             JOIN {schema}.seasons s ON s.id = g.season_id
             WHERE s.year = {r.year}
-              AND gp.margin_conf IS NOT NULL
+              AND {conf_col} IS NOT NULL
         """))
 
         def _bucket(cf, model_type=None):
@@ -4263,7 +4267,7 @@ async def get_prediction_stats(
             if cf >= 0.60: return "Medium"
             return "Low"
 
-        all_raw = [(float(cr.margin_conf), float(cr.rl_conf) if cr.rl_conf is not None else 0.50,
+        all_raw = [(float(getattr(cr, 'margin_conf', getattr(cr, 'rl_conf', 0.50))), float(cr.rl_conf) if cr.rl_conf is not None else 0.50,
                      float(cr.ml_conf) if cr.ml_conf is not None else 0.50,
                      float(cr.ou_conf) if cr.ou_conf is not None else 0.50,
                      cr.ats_result, cr.ou_result, cr.ml_result,
@@ -4440,7 +4444,7 @@ async def get_prediction_calibration(
 
     rows = await db.execute(_sa_text(f"""
         SELECT
-            gp.margin_conf,
+            gp.{conf_main},
             {conf_cols},
             gp.{rl_col} as ats_result, gp.ou_result, gp.ml_result,
             gp.ats_profit, gp.ou_profit, gp.ml_profit,
@@ -4452,7 +4456,7 @@ async def get_prediction_calibration(
         ) gp
         JOIN {schema}.games g ON g.id = gp.game_id
         JOIN {schema}.seasons s ON s.id = g.season_id
-          AND gp.margin_conf IS NOT NULL
+          AND gp.{conf_main} IS NOT NULL
     """))
 
     # Bucket: 20 bins from 0.50 to 1.00 (step = 0.025)
@@ -4656,12 +4660,13 @@ async def get_prediction_ev_distribution(
     else:
         schema, use_ats, use_ml = "mlb", True, True
         conf_ats = "rl_conf"; conf_ml = "ml_conf"; conf_ou = "ou_conf"
+        conf_main = "rl_conf"
         rl_col = "run_line_result"
 
     # Step 1: Load raw picks with confidence + odds
     rows = await db.execute(_sa_text(f"""
         SELECT
-            gp.margin_conf,
+            gp.{conf_main},
             gp.{conf_ats} as rl_conf,
             gp.{conf_ou} as ou_conf,
             gp.{conf_ml} as ml_conf,
@@ -4675,7 +4680,7 @@ async def get_prediction_ev_distribution(
         ) gp
         JOIN {schema}.games g ON g.id = gp.game_id
         JOIN {schema}.seasons s ON s.id = g.season_id
-          AND gp.margin_conf IS NOT NULL
+          AND gp.{conf_main} IS NOT NULL
     """))
 
     # ── Calibration: bucket picks by confidence, get per-bin win rates ──
