@@ -347,9 +347,9 @@ async def _save_api_prediction(
         profit_if_win = 100.0 * _profit_per_100(odds_)
         return round((conf_ * profit_if_win) - ((1.0 - conf_) * 100.0), 2)
 
-    ats_ev = _ev(rl_conf, rl_odds) if rl_odds else 0.0
-    ou_ev = _ev(ou_conf, ou_odds) if ou_odds else 0.0
-    ml_ev = _ev(ml_conf, ml_odds) if ml_odds else 0.0
+    ats_ev = _ev(rl_conf_cal, rl_odds) if rl_odds else 0.0
+    ou_ev = _ev(ou_conf_cal, ou_odds) if ou_odds else 0.0
+    ml_ev = _ev(ml_conf_cal, ml_odds) if ml_odds else 0.0
 
     # Predicted score (inferred from margin + total)
     home_score_raw = (pred_total + pred_margin) / 2.0
@@ -762,9 +762,9 @@ async def _save_backtest_prediction(
         profit_if_win = 100.0 * _profit_per_100(odds_)
         return round((conf_ * profit_if_win) - ((1.0 - conf_) * 100.0), 2)
 
-    ats_ev = _ev(rl_conf, rl_odds)
-    ou_ev = _ev(ou_conf, ou_odds)
-    ml_ev = _ev(ml_conf, ml_odds)
+    ats_ev = _ev(rl_conf_cal, rl_odds)
+    ou_ev = _ev(ou_conf_cal, ou_odds)
+    ml_ev = _ev(ml_conf_cal, ml_odds)
 
     # Predicted score (inferred from margin + total)
     home_score_raw = (pred_total + pred_margin) / 2.0

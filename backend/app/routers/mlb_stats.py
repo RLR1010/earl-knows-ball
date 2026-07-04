@@ -1291,7 +1291,7 @@ async def mlb_game_boxscore(
                 "rl": round(_cal(pred.rl_conf or 0, "ats", sport="mlb"), 2),
                 "ou": round(_cal(pred.ou_conf or 0, "ou", sport="mlb"), 2),
                 "ml": round(_cal(pred.ml_conf or 0, "ml", sport="mlb"), 2),
-                "margin": round(_cal(pred.margin_conf or 0, "overall", sport="mlb"), 2),
+                "margin": round(_cal(pred.rl_conf or 0, "overall", sport="mlb"), 2),
                 "raw": {
                     "rl": round(pred.rl_conf or 0, 2),
                     "ou": round(pred.ou_conf or 0, 2),
