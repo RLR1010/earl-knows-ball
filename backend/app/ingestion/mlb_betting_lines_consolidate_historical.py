@@ -364,16 +364,16 @@ opening_data AS (
       AND bl.away_moneyline IS NOT NULL
 )
 SELECT
-    o.sportsbook,
-    o.game_id,
-    COALESCE(c.closing_spread, o.opening_spread) AS closing_spread,
-    COALESCE(c.closing_ou, o.opening_ou) AS closing_ou,
-    COALESCE(c.closing_home_ml, o.opening_home_ml) AS closing_home_ml,
-    COALESCE(c.closing_away_ml, o.opening_away_ml) AS closing_away_ml,
-    COALESCE(c.closing_spread_home_odds, o.opening_spread_home_odds) AS closing_spread_home_odds,
-    COALESCE(c.closing_spread_away_odds, o.opening_spread_away_odds) AS closing_spread_away_odds,
-    COALESCE(c.closing_over_odds, o.opening_over_odds) AS closing_over_odds,
-    COALESCE(c.closing_under_odds, o.opening_under_odds) AS closing_under_odds,
+    c.sportsbook,
+    c.game_id,
+    c.closing_spread,
+    c.closing_ou,
+    c.closing_home_ml,
+    c.closing_away_ml,
+    c.closing_spread_home_odds,
+    c.closing_spread_away_odds,
+    c.closing_over_odds,
+    c.closing_under_odds,
     o.opening_spread,
     o.opening_ou,
     o.opening_home_ml,
@@ -382,8 +382,8 @@ SELECT
     o.opening_spread_away_odds,
     o.opening_over_odds,
     o.opening_under_odds
-FROM opening_data o
-LEFT JOIN closing_data c ON c.game_id = o.game_id AND c.sportsbook = o.sportsbook
+FROM closing_data c
+INNER JOIN opening_data o ON c.game_id = o.game_id AND c.sportsbook = o.sportsbook
 ORDER BY c.game_id
 """
 

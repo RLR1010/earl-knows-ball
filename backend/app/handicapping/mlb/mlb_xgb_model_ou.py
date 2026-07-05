@@ -90,6 +90,12 @@ async def run_backtest(
     if missing:
         log(f"  Missing features: {missing}")
 
+    # Filter out games without betting lines — they can't be used for OU training
+    train_mask = train_feats["over_under"].notna()
+    test_mask = test_feats["over_under"].notna()
+    train_feats = train_feats[train_mask].copy()
+    test_feats = test_feats[test_mask].copy()
+
     X_train = train_feats[available].fillna(0).values
     y_train = train_feats["actual_total"].values
     X_test = test_feats[available].fillna(0).values
@@ -431,6 +437,10 @@ async def train_model(year: int, train_years: list[int]) -> xgb.XGBRegressor:
 
     train_feats = feats[feats["season_year"].isin(train_years)].copy()
     test_feats = feats[feats["season_year"] == year].copy()
+
+    # Filter out games without betting lines
+    train_mask = train_feats["over_under"].notna()
+    train_feats = train_feats[train_mask].copy()
 
     available = [c for c in _ensure_ou_features() if c in feats.columns]
 

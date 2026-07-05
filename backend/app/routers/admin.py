@@ -5771,16 +5771,22 @@ async def data_loader_load_game(
         # Step 4: Filter to just our target game
         built_df = full_built_df[full_built_df["game_id"] == game_id]
         if built_df.empty:
-            # Edge case: build_features may have renamed game_id — try the index
+            # Might be in the index rather than a column
             try:
-                import sys
-                print(f"[DEBUG] built_df.empty but full_built_df columns: {list(full_built_df.columns)}")
                 built_df = full_built_df.loc[[game_id]]
             except (KeyError, IndexError):
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"Game {game_id} disappeared after feature engineering",
-                )
+                pass
+        if built_df.empty:
+            missing_in_raw = game_id not in full_raw_df["game_id"].values
+            missing_in_built = game_id not in full_built_df["game_id"].values
+            detail_parts = [f"Game {game_id} disappeared after feature engineering"]
+            if missing_in_built:
+                detail_parts.append("— not found in built DataFrame")
+            if missing_in_raw:
+                detail_parts.append("— also not found in raw data")
+            if not missing_in_raw and missing_in_built:
+                detail_parts.append("— possibly filtered out due to missing betting data (no betting_lines_consolidated row)")
+            raise HTTPException(status_code=500, detail=" ".join(detail_parts))
 
         # Also filter raw_df to match
         raw_df = full_raw_df[full_raw_df["game_id"] == game_id]

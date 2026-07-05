@@ -140,6 +140,12 @@ async def run_backtest(
 
     present = [c for c in fcols if c in train_feats.columns]
 
+    # Filter out games without betting lines — they can't be used for ATS training
+    train_mask = train_feats["spread"].notna() & train_feats["home_moneyline"].notna()
+    test_mask = test_feats["spread"].notna() & test_feats["home_moneyline"].notna()
+    train_feats = train_feats[train_mask].copy()
+    test_feats = test_feats[test_mask].copy()
+
     log(f"  Train: {len(train_feats)} rows  Test: {len(test_feats)} rows")
 
     if len(train_feats) < 50 or len(test_feats) < 10:
@@ -242,7 +248,7 @@ async def run_backtest(
 async def run_all_years(
     hide_progress: bool = True,
     feature_sets: list[str] | None = None,
-    train_from: int = 2021,
+    train_from: int = 2022,
     test_until: int | None = None,
     skip_db: bool = False,
 ) -> list[dict]:
@@ -459,6 +465,10 @@ async def train_model(
     fcols = feature_set if feature_set is not None else _ensure_ats_features()
     present = [c for c in fcols if c in feats.columns]
 
+    # Filter out games without betting lines
+    train_mask = feats["spread"].notna() & feats["home_moneyline"].notna()
+    feats = feats[train_mask].copy()
+
     target = feats["actual_margin"].values
     X = feats[present].values
 
@@ -512,7 +522,7 @@ if __name__ == "__main__":
     parser.add_argument("--features", type=str, default="ats")
     parser.add_argument("--mode", type=str, default="one",
                         choices=["one", "all"])
-    parser.add_argument("--train-from", type=int, default=2021, help="First training year")
+    parser.add_argument("--train-from", type=int, default=2022, help="First training year")
     parser.add_argument("--test-until", type=int, default=None, help="Last test year (default: CURRENT_YEAR)")
     parser.add_argument("--skip-db", action="store_true", help="Skip saving to database")
     args = parser.parse_args()
