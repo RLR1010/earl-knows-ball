@@ -192,6 +192,25 @@ async def batch_predict_upcoming_games(
     import pandas as pd
     import numpy as np
 
+    # ── Guard: only predict for SCHEDULED, not-yet-started games ──
+    from sqlalchemy import text as _sa_t
+    valid = await db.execute(
+        _sa_t(
+            "SELECT id FROM mlb.games "
+            "WHERE id = ANY(:gids) AND status = 'SCHEDULED' AND date > NOW()"
+        ),
+        {"gids": list(game_ids)},
+    )
+    valid_ids = {row[0] for row in valid.fetchall()}
+    filtered = [gid for gid in game_ids if gid in valid_ids]
+    dropped = len(game_ids) - len(filtered)
+    if dropped:
+        _logger.warning(f"Dropped {dropped} game(s) from prediction — not SCHEDULED or already started")
+    game_ids = filtered
+    if not game_ids:
+        _logger.info("No games to predict after SCHEDULED/time filter")
+        return []
+
     ats_model = _load_model_for_year("ats", year)
     ou_model = _load_model_for_year("ou", year)
     _logger.info(
