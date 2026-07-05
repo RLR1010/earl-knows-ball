@@ -1221,14 +1221,36 @@ async def mlb_game_boxscore(
 
                 if pred.run_line_pick and sp is not None:
                     spr = float(sp)
-                    hm_fav = hm_ml is not None and am_ml is not None and hm_ml < am_ml
-                    signed_sp = -spr if hm_fav else spr
+                    # Parse pick string "{TEAM_ABB} {+/-VALUE}" to determine
+                    # whether the pick is on the home or away team
+                    pick_parts = pred.run_line_pick.split()
+                    if len(pick_parts) >= 2:
+                        try:
+                            pick_line_val = float(pick_parts[-1])
+                        except (ValueError, TypeError):
+                            pick_line_val = None
+                    else:
+                        pick_line_val = None
+                    # home_run_line = spr, away_run_line = -spr
+                    rl_pick_is_home = (
+                        pick_line_val is not None
+                        and abs(pick_line_val - spr) < 0.01
+                    )
+
                     if abs(actual_margin) < 0.5:
                         pred.run_line_result = "Push"
-                    elif (predicted_margin + signed_sp > 0) == (actual_margin + signed_sp > 0):
-                        pred.run_line_result = "Win"
                     else:
-                        pred.run_line_result = "Loss"
+                        home_covers = (actual_margin + spr) > 0
+                        predicted_home_covers = (predicted_margin + spr) > 0
+                        if rl_pick_is_home:
+                            pred.run_line_result = (
+                                "Win" if predicted_home_covers == home_covers else "Loss"
+                            )
+                        else:
+                            # Away covers when home doesn't cover
+                            pred.run_line_result = (
+                                "Win" if predicted_home_covers != home_covers else "Loss"
+                            )
                 if pred.ou_pick and vegas_ou is not None:
                     actual_total = db_home + db_away
                     if abs(actual_total - float(vegas_ou)) < 0.5:
@@ -1323,6 +1345,14 @@ async def mlb_game_boxscore(
             },
             "situational": situ_data.to_dict() if situ_data else None,
             "splits": split_data.to_dict() if split_data else None,
+            # Raw JSON columns from DB
+            "stats_json": {
+                "home_stats": json.loads(pred.home_stats_json) if pred.home_stats_json else None,
+                "away_stats": json.loads(pred.away_stats_json) if pred.away_stats_json else None,
+                "situational": json.loads(pred.situational_json) if pred.situational_json else None,
+                "splits": json.loads(pred.splits_json) if pred.splits_json else None,
+                "features": json.loads(pred.features_json) if pred.features_json else None,
+            },
         }
 
     # Extract live linescore info for display
@@ -1460,3 +1490,32 @@ async def mlb_injured_list(
     result = await db.execute(text(sql), params)
     rows = result.mappings().all()
     return [dict(r) for r in rows]
+
+
+@router.get("/mlb/feature-definitions")
+async def mlb_feature_definitions():
+    """Return all MLB model feature definitions with display names and descriptions.
+
+    These map feature slugs (used in features_json column of game_predictions)
+    to human-readable descriptions. The frontend uses them for popover tooltips
+    in the prediction stats modal.
+    """
+    from app.handicapping.mlb.data_loader import (
+        FEATURES_CATALOG,
+        COMPUTED_FEATURES_CATALOG,
+        DISPLAY_NAMES,
+    )
+
+    merged: dict[str, str] = {}
+    merged.update(FEATURES_CATALOG)
+    merged.update(COMPUTED_FEATURES_CATALOG)
+
+    features: list[dict] = []
+    for slug, description in sorted(merged.items()):
+        features.append({
+            "slug": slug,
+            "display_name": DISPLAY_NAMES.get(slug, slug.replace("_", " ").title()),
+            "description": description,
+        })
+
+    return features

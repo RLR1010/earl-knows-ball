@@ -70,11 +70,11 @@ PRIORITY_LIST = _flatten_tiers()
 
 # ── Reasonable value ranges ──
 # MLB runline: always +/- 1.5, but sometimes books quote funny numbers
-MAX_ABS_SPREAD = 15.0   # anything > 15 runs is garbage
-MIN_OU = 0.0
-MAX_OU = 30.0
-ML_ABS_MAX = 100000     # moneyline beyond ±100000 is clearly wrong
-ODDS_ABS_MAX = 100000   # same for spread/over-odds
+MAX_ABS_SPREAD = 3.0   # anything > 15 runs is garbage
+MIN_OU = 3.0
+MAX_OU = 15.0
+ML_ABS_MAX = 1000     # moneyline beyond ±100000 is clearly wrong
+ODDS_ABS_MAX = 1000   # same for spread/over-odds
 
 # ── Consensus: minimum sportsbooks needed to form a majority opinion ──
 MIN_CONSENSUS_SOURCES = 3
@@ -815,7 +815,7 @@ def run(rebuild_full=False, game_ids_filter=None, cursor=None, conn=None):
             # In incremental mode, only consider the specified game_ids
             missing_game_ids = game_ids_filter - paired_game_ids
         else:
-            cursor.execute("SELECT DISTINCT game_id FROM mlb.betting_lines WHERE source = 'the_odds_api_closing'")
+            cursor.execute("SELECT DISTINCT game_id FROM mlb.betting_lines WHERE is_opening = 'f'")
             all_closing_game_ids = {r[0] for r in cursor.fetchall()}
             missing_game_ids = all_closing_game_ids - paired_game_ids
 
@@ -847,21 +847,27 @@ def run(rebuild_full=False, game_ids_filter=None, cursor=None, conn=None):
             closing_only_selected = 0
             allowed_books = {'fanduel': True, 'draftkings': True}
             for game_id, candidates in closing_only_by_game.items():
-                # Filter to only FD/DK
-                fd_candidates = [c for c in candidates if c.sportsbook in allowed_books]
-                if not fd_candidates:
+                # Filter to only FD/DK, prioritize by PRIORITY_LIST order
+                filtered = [c for c in candidates if c.sportsbook in allowed_books]
+                if not filtered:
                     continue
-                consensus = build_consensus(fd_candidates)
-                for c in fd_candidates:
-                    if not c.has_closing_set():
+                consensus = build_consensus(filtered)
+                # Try FD first, then DK (per PRIORITY_LIST order)
+                for sb in PRIORITY_LIST:
+                    if sb not in allowed_books:
                         continue
-                    if not c.check_spread_reasonable():
-                        continue
-                    if not c.check_ml_spread_alignment():
-                        continue
-                    selected[game_id] = c
-                    closing_only_selected += 1
-                    break
+                    for c in filtered:
+                        if c.sportsbook != sb:
+                            continue
+                        if not c.has_closing_set():
+                            continue
+                        if not c.check_spread_reasonable():
+                            continue
+                        selected[game_id] = c
+                        closing_only_selected += 1
+                        break
+                    if game_id in selected:
+                        break
 
             logger.info(f"Closing-only fallback added {closing_only_selected} games")
 

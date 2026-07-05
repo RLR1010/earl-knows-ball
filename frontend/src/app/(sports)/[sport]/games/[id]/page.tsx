@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useParams, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { NBABoxScorePage } from "@/components/NBABoxScore";
+import MLBPickCardStatsModal from "@/components/MLBPickCardStatsModal";
 
 // ── Shared Types ─────────────────────────────────────────────
 
@@ -342,6 +343,7 @@ interface MLBBoxScoreResponse {
 function MLBClassicPage({ gameId }: { gameId: string | undefined }) {
   const [data, setData] = useState<MLBBoxScoreResponse | null>(null);
   const [loading, setLoading] = useState(true);
+  const [showStatsModal, setShowStatsModal] = useState(false);
 
   useEffect(() => {
     if (!gameId) return;
@@ -759,6 +761,16 @@ function MLBClassicPage({ gameId }: { gameId: string | undefined }) {
             </div>
           </div>
           )}
+          {/* View Full Stats Button */}
+          {pick_card.stats_json && (
+            <button
+              type="button"
+              onClick={() => setShowStatsModal(true)}
+              className="mt-3 w-full text-xs text-center py-2 rounded-lg border border-earl-700/50 text-earl-400 hover:bg-earl-800/30 hover:border-earl-600 transition-colors"
+            >
+              View All Prediction Stats
+            </button>
+          )}
         </div>
         )}
         </div>
@@ -837,6 +849,17 @@ function MLBClassicPage({ gameId }: { gameId: string | undefined }) {
             </tbody></table>
           </div>
         </div>
+      )}
+
+      {/* MLB Pick Card Stats Modal */}
+      {data?.pick_card?.stats_json && (
+        <MLBPickCardStatsModal
+          open={showStatsModal}
+          onClose={() => setShowStatsModal(false)}
+          homeTeam={data.game?.home_team ?? data.pick_card.home_team ?? "Home"}
+          awayTeam={data.game?.away_team ?? data.pick_card.away_team ?? "Away"}
+          statsJson={data.pick_card.stats_json}
+        />
       )}
 
       <div className="text-center"><Link href="/mlb/schedule" className="text-sm text-earl-400 hover:text-earl-300 transition">← Back to Schedule</Link></div>

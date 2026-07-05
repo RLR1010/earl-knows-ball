@@ -1781,12 +1781,17 @@ def build_features(df: pd.DataFrame, log_fn=None) -> pd.DataFrame:
     feats["actual_total"] = feats["home_score"] + feats["away_score"]
 
     # ── 13. Drop rows without betting data ──
-    # Games missing closing OU have no betting context for ATS/OU modeling.
+    # Games missing closing odds (OU or spread) have no betting context for ATS/OU modeling.
+    # The consolidated odds row is all-or-nothing, so check both OU and spread.
     before = len(feats)
-    feats = feats[feats["over_under"].notna() & (feats["over_under"] > 0)].copy()
+    feats = feats[
+        feats["over_under"].notna()
+        & (feats["over_under"] > 0)
+        & feats["spread"].notna()
+    ].copy()
     after = len(feats)
     if before != after:
-        log("  Dropped %d rows without valid closing OU (%d remaining)", before - after, after)
+        log("  Dropped %d rows without valid closing odds (%d remaining)", before - after, after)
 
     # ── 14. Fill NaNs ──
     float_cols = feats.select_dtypes(include=["float64", "float32"]).columns
