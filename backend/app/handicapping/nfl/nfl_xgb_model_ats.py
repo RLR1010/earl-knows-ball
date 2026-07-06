@@ -587,7 +587,7 @@ async def train_model(
             "test_year": test_year,
             "total_games": ats_total,
             "mae": float(ats_incorrect / max(ats_total, 1)),
-            "input_features": len(available),
+            "input_features": list(available),
             "feature_importance": fi_sorted,
             "model_params": {**params, "n_estimators": n_estimators},
             "duration_seconds": round(ty_elapsed, 2),

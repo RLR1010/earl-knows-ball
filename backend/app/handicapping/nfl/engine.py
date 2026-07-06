@@ -147,6 +147,26 @@ def _load_model_for_year(model_type: str, year: int) -> Optional[xgb.Booster]:
 
 _FEATURES_CACHE_ATS: Optional[List[str]] = None
 _FEATURES_CACHE_OU: Optional[List[str]] = None
+_PICK_CARD_FEATURES: Optional[List[str]] = None
+
+
+def _load_pick_card_feature_names() -> set:
+    """Return the set of feature names where pick_card = TRUE in nfl.features.
+
+    Cached module-level so the DB is hit only once per process.
+    """
+    global _PICK_CARD_FEATURES
+    if _PICK_CARD_FEATURES is not None:
+        return set(_PICK_CARD_FEATURES)
+    conn = psycopg2.connect(DB_DSN)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT name FROM nfl.features WHERE pick_card = TRUE")
+            names = [r[0] for r in cur.fetchall()]
+            _PICK_CARD_FEATURES = names
+            return set(names)
+    finally:
+        conn.close()
 
 
 def _get_features(model_type: str) -> List[str]:
@@ -253,7 +273,7 @@ async def backtest_season(
             if model is not None:
                 year_df = df[df["season_year"] == test_year].copy()
                 if year_df.empty:
-                    logger.warning("  No data for %%d ATS test", test_year)
+                    logger.warning("  No data for %d ATS test", test_year)
                     ats_results.append({"year": test_year, "error": "no data"})
                 else:
                     ats_res = _evaluate_year_model(year_df, model, "ats")
@@ -269,7 +289,7 @@ async def backtest_season(
             if model is not None:
                 year_df = df[df["season_year"] == test_year].copy()
                 if year_df.empty:
-                    logger.warning("  No data for %%d OU test", test_year)
+                    logger.warning("  No data for %d OU test", test_year)
                     ou_results.append({"year": test_year, "error": "no data"})
                 else:
                     ou_res = _evaluate_year_model(year_df, model, "ou")
@@ -282,7 +302,7 @@ async def backtest_season(
 
         if save_results:
             year_df = df[df["season_year"] == test_year]
-            logger.info("Saving %%d backtest predictions for %%s...", len(year_df), test_year)
+            logger.info("Saving %d backtest predictions for %s...", len(year_df), test_year)
             ats_model = _load_model_for_year("ats", test_year)
             ou_model = _load_model_for_year("ou", test_year)
             for idx, row in year_df.iterrows():
@@ -327,7 +347,7 @@ async def batch_predict_upcoming_games(
         try:
             df = dl.load_inference_data(game_ids=[gid])
             if df.empty:
-                logger.warning("No inference data for game %%s", gid)
+                logger.warning("No inference data for game %s", gid)
                 continue
             row = df.iloc[0]
 
@@ -422,7 +442,7 @@ async def batch_predict_upcoming_games(
 
             results.append(result)
         except Exception:
-            logger.exception("Error handicapping game %%s", gid)
+            logger.exception("Error handicapping game %s", gid)
     return results
 def _evaluate_year_model(year_df: pd.DataFrame, model: xgb.Booster, model_type: str) -> Dict[str, Any]:
     """Evaluate a single per-year model on a full season's games.
@@ -818,7 +838,7 @@ async def _save_backtest_prediction(
             await db.commit()
 
     except Exception:
-        logger.exception("_save_backtest_prediction failed for game %%s", game_id)
+        logger.exception("_save_backtest_prediction failed for game %s", game_id)
     finally:
         if engine:
             engine.dispose()

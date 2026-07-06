@@ -1,34 +1,27 @@
-from .team import Team
-from .player import Player
-from .season import Season
-from .game import Game
-from .player_weekly_stats import PlayerWeeklyStats
-from .betting_line import BettingLine
-from .dfs_salary import DfsSalary
-from .team_pace_stats import TeamPaceStats
-from .game_lines import GameLines
-from .injury import Injury
+from .nfl import *
 from .user import User
-from .article import Article
 from .chat_history import ChatHistory
-from .depth_chart import DepthChart, Transaction
+from .training_run import TrainingRun
+
+from .nba import *
+from .mlb import *
 
 __all__ = [
-    "Team",
-    "Player",
-    "Season",
-    "Game",
-    "PlayerWeeklyStats",
-    "BettingLine",
-    "DfsSalary",
-    "TeamPaceStats",
-    "GameLines",
-    "Injury",
-    "User",
-    "Article",
-    "ChatHistory",
-    "DepthChart",
-    "Transaction",
+    # NFL
+    "Team", "Player", "Season", "Game", "PlayerWeeklyStats",
+    "BettingLine", "DfsSalary", "TeamPaceStats", "GameLines",
+    "Injury", "Article", "DepthChart", "Transaction", "DepthChartArchive",
+    "NFLGamePrediction",
+    # Shared
+    "User", "ChatHistory", "TrainingRun",
+    # NBA
+    "NBATeam", "NBAPlayer", "NBAPlayerSeasonStats", "NBAPlayerGameStats",
+    "NBASeason", "NBAGame", "NBAGameStatus", "NBAArticle", "NBABettingLine",
+    "NBADfsSalary", "NBAGamePrediction",
+    # MLB
+    "MLBTeam", "MLBSeason", "MLBGames", "GameStatus", "MLBPlayer",
+    "MLBBattingStats", "MLBPitchingStats", "MLBArticle", "MLBBettingLine",
+    "MLBGamePrediction", "MLBLineup",
 ]
 
 # Note: articles table has embedded_at TIMESTAMP column

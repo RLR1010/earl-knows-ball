@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Team, Game, Season
-from app.models.game import GameStatus
+from app.models.nfl.game import GameStatus
 
 
 async def ingest_historical_games(session: AsyncSession) -> dict:

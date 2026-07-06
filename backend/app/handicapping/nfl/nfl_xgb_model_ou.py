@@ -568,7 +568,7 @@ async def train_model(
             "total_games": ou_total,
             "mae": round(float(train_mae), 4),
             "r2": round(float(train_r2), 4),
-            "input_features": len(available),
+            "input_features": list(available),
             "feature_importance": fi_sorted,
             "model_params": {**params, "n_estimators": n_estimators},
             "duration_seconds": round(ty_elapsed, 2),

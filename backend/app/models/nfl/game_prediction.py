@@ -8,6 +8,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import relationship
 from app.database import Base
+from app.models.nfl.game import Game
 from datetime import datetime, timezone
 
 
@@ -71,7 +72,7 @@ class NFLGamePrediction(Base):
     )
 
     # Relationships
-    game = relationship("NFLGame", backref="game_predictions")
+    game = relationship("Game", backref="game_predictions")
 
     __table_args__ = (
         UniqueConstraint("game_id", "source", name="uq_nfl_prediction_game_source"),

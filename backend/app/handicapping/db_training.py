@@ -278,11 +278,72 @@ def set_training_run_as_live(sport: str, run_id: int) -> Optional[dict]:
                     if not features:
                         fi = yr.get("feature_importance", [])
                         if isinstance(fi, list):
+                            fnames = []
                             for entry in fi:
                                 fname = entry.get("feature") if isinstance(entry, dict) else None
-                                if fname and isinstance(fname, str) and fname not in seen:
-                                    seen.add(fname)
-                                    features.append(fname)
+                                if fname and isinstance(fname, str):
+                                    fnames.append(fname)
+                            if fnames:
+                                for fname in fnames:
+                                    if fname not in seen:
+                                        seen.add(fname)
+                                        features.append(fname)
+
+                        # ── Fallback: input_features (new format — full list) ──
+                        # If input_features is a list of strings, use it directly.
+                        # (Replaces the old integer-count format that lost zero-importance features.)
+                        if not features:
+                            inp = yr.get("input_features", [])
+                            if isinstance(inp, list) and len(inp) > 0 and isinstance(inp[0], str):
+                                for fname in inp:
+                                    if fname not in seen:
+                                        seen.add(fname)
+                                        features.append(fname)
+
+                        # ── Last resort: load pkl to extract trained feature names ──
+                        # feature_importance may drop zero-importance features (e.g. temp, wind in OU).
+                        if not features:
+                            cur.execute(
+                                f"SELECT test_year, pkl_filename FROM {sport}.training_runs WHERE id = %s",
+                                (run_id,),
+                            )
+                            r2 = cur.fetchone()
+                            if r2 and r2["pkl_filename"]:
+                                pkl_str = r2["pkl_filename"]
+                                for pkl_part in [
+                                    s.strip() for s in pkl_str.split(",") if s.strip()
+                                ]:
+                                    for base_dir in [
+                                        f"data/models/{sport}",
+                                        f"/home/rich/.openclaw/workspace/earl-knows-football/data/models/{sport}",
+                                    ]:
+                                        pkl_path = f"{base_dir}/{pkl_part}"
+                                        if os.path.exists(pkl_path):
+                                            try:
+                                                import xgboost as xgb
+
+                                                bst = xgb.Booster()
+                                                bst.load_model(pkl_path)
+                                                fn = bst.feature_names
+                                                if fn:
+                                                    for fname in fn:
+                                                        if fname not in seen:
+                                                            seen.add(fname)
+                                                            features.append(fname)
+                                                    logger.info(
+                                                        "set_training_run_as_live: extracted %d features from pkl %s",
+                                                        len(features),
+                                                        pkl_part,
+                                                    )
+                                            except Exception as exc:
+                                                logger.warning(
+                                                    "set_training_run_as_live: pkl fallback failed for %s: %s",
+                                                    pkl_path,
+                                                    exc,
+                                                )
+                                            break
+                                    if features:
+                                        break
 
             # ── Update training_runs is_live ──
             cur.execute(

@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Team, Game, Season
-from app.models.game import GameStatus
+from app.models.nfl.game import GameStatus
 
 
 ESPN_TEAM_MAP = {
