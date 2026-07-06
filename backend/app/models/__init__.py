@@ -6,7 +6,6 @@ from .player_weekly_stats import PlayerWeeklyStats
 from .betting_line import BettingLine
 from .dfs_salary import DfsSalary
 from .team_pace_stats import TeamPaceStats
-from .game_prediction import GamePrediction
 from .game_lines import GameLines
 from .injury import Injury
 from .user import User
@@ -23,7 +22,6 @@ __all__ = [
     "BettingLine",
     "DfsSalary",
     "TeamPaceStats",
-    "GamePrediction",
     "GameLines",
     "Injury",
     "User",
