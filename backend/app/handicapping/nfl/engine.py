@@ -354,7 +354,7 @@ async def batch_predict_upcoming_games(
             home_str = _str_safe(row.get("home_abbr", row.get("home_team", "")))
             away_str = _str_safe(row.get("away_abbr", row.get("away_team", "")))
             spread = _float_safe(row.get("spread"))
-            over_under = _float_safe(row.get("over_under"))
+            over_under = _float_safe(row.get("closing_ou", row.get("over_under", 0)))
 
             # ATS prediction
             ats_proba = 0.5
@@ -629,7 +629,7 @@ async def _save_backtest_prediction(
         home_str = _str_safe(row.get("home_abbr", row.get("home_team", "")))
         away_str = _str_safe(row.get("away_abbr", row.get("away_team", "")))
         spread = _float_safe(row.get("closing_spread", row.get("spread", 0)))
-        over_under = _float_safe(row.get("closing_over_under", row.get("over_under", 0)))
+        over_under = _float_safe(row.get("closing_ou", row.get("over_under", 0)))
 
         # ── ATS prediction ─────────────────────────────────────────────────────
         ats_proba = 0.5
@@ -686,7 +686,7 @@ async def _save_backtest_prediction(
         ml_result = "Win" if (home_score > away_score and ml_pick == home_str) or (away_score > home_score and ml_pick == away_str) else "Loss"
 
         # ── Odds from row ──────────────────────────────────────────────────────
-        closing_ou = _float_safe(row.get("closing_over_under", over_under))
+        closing_ou = _float_safe(row.get("closing_ou", row.get("over_under", over_under)))
         home_ml = _float_safe(row.get("closing_home_ml"))
         away_ml = _float_safe(row.get("closing_away_ml"))
         spread_home_odds = _float_safe(row.get("closing_spread_home_odds"))
