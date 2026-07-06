@@ -9,7 +9,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings as app_settings
-from app.models.mlb import MLBBettingLine, MLBGames, MLBSeason
+from app.models.mlb import MLBBettingLine, MLBGames, MLBSeason, GameStatus
 from app.models.mlb.team import MLBTeam
 
 logger = logging.getLogger(__name__)
@@ -249,7 +249,7 @@ async def snapshot_mlb_opening_lines(
             gid = game.id
 
             # ── Only record betting lines for SCHEDULED games ──
-            if game.status != "SCHEDULED":
+            if game.status != GameStatus.SCHEDULED:
                 skipped.append(f"Game {away_abbr} @ {home_abbr} status={game.status}, skipping")
                 continue
 

@@ -47,9 +47,22 @@ async def _load_pick_card_feature_names(db) -> set:
     return _PICK_CARD_FEATURES
 
 
+import math
+
 def _extract_pick_card_features(row, feature_names: set) -> str:
-    """Return JSON string of pick_card feature values from a DataFrame row."""
-    return json.dumps({name: row.get(name) for name in feature_names if name in row.index or name in row}, default=str)
+    """Return JSON string of pick_card feature values from a DataFrame row.
+    Ensures NaN/Inf floats are converted to None to keep stored JSON valid.
+    """
+    def _sanitize(v):
+        if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+            return None
+        return v
+    features = {
+        name: _sanitize(row.get(name))
+        for name in feature_names
+        if name in row.index or name in row
+    }
+    return json.dumps(features, default=str)
 from app.models.mlb.game_prediction import MLBGamePrediction
 
 logger = logging.getLogger("earl.mlb_handicapping")

@@ -705,10 +705,10 @@ async def load_games_for_season(
                 venue_id=venue_id,
                 scheduled_innings=game.get("scheduledInnings", 9),
                 day_night=game.get("dayNight"),
-                home_wins=_safe_int(away_record.get("wins")),
-                home_losses=_safe_int(away_record.get("losses")),
-                away_wins=_safe_int(home_record.get("wins")),
-                away_losses=_safe_int(home_record.get("losses")),
+                home_wins=_safe_int(home_record.get("wins")),
+                home_losses=_safe_int(home_record.get("losses")),
+                away_wins=_safe_int(away_record.get("wins")),
+                away_losses=_safe_int(away_record.get("losses")),
                 temperature=_safe_int(temp_str),
                 wind_speed=wind_speed_val,
                 weather_condition=weather_data.get("condition"),
@@ -1288,6 +1288,26 @@ async def update_game_statuses(db: AsyncSession, days_back: int = 7, days_forwar
                         db_game.home_score = score_val
                         scores_updated += 1
                         changed = True
+
+        # ── Sync team records (wins/losses) from live API ──
+        teams_data = gd.get("teams", {})
+        away_record = teams_data.get("away", {}).get("leagueRecord", {})
+        home_record = teams_data.get("home", {}).get("leagueRecord", {})
+        if away_record and home_record:
+            aw = _safe_int(away_record.get("wins"))
+            al = _safe_int(away_record.get("losses"))
+            hw = _safe_int(home_record.get("wins"))
+            hl = _safe_int(home_record.get("losses"))
+            if aw is not None and al is not None:
+                if db_game.away_wins != aw or db_game.away_losses != al:
+                    db_game.away_wins = aw
+                    db_game.away_losses = al
+                    changed = True
+            if hw is not None and hl is not None:
+                if db_game.home_wins != hw or db_game.home_losses != hl:
+                    db_game.home_wins = hw
+                    db_game.home_losses = hl
+                    changed = True
 
         if changed:
             updated += 1

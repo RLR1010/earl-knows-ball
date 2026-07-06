@@ -12,6 +12,7 @@ from app.database import get_db, async_session
 from app.models.mlb import MLBPlayer, MLBBettingLine
 from app.handicapping.mlb.mlb_splits import MLBSplitAnalyzer
 from app.handicapping.mlb.mlb_situational import MLBSituationalAnalyzer
+import math
 
 router = APIRouter(prefix="/api")
 
@@ -1011,6 +1012,17 @@ async def mlb_games(
     return games_list
 
 
+def _sanitize_json(obj):
+    """Recursively replace NaN/Inf floats with None so JSON stays valid."""
+    if isinstance(obj, dict):
+        return {k: _sanitize_json(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize_json(v) for v in obj]
+    if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
+        return None
+    return obj
+
+
 @router.get("/mlb/games/{game_id}/boxscore")
 async def mlb_game_boxscore(
     game_id: int,
@@ -1340,18 +1352,18 @@ async def mlb_game_boxscore(
             } if lines else None,
             # Enriched handicapper stats
             "team_stats": {
-                "home": json.loads(pred.home_stats_json) if pred.home_stats_json else None,
-                "away": json.loads(pred.away_stats_json) if pred.away_stats_json else None,
+                "home": _sanitize_json(json.loads(pred.home_stats_json)) if pred.home_stats_json else None,
+                "away": _sanitize_json(json.loads(pred.away_stats_json)) if pred.away_stats_json else None,
             },
             "situational": situ_data.to_dict() if situ_data else None,
             "splits": split_data.to_dict() if split_data else None,
             # Raw JSON columns from DB
             "stats_json": {
-                "home_stats": json.loads(pred.home_stats_json) if pred.home_stats_json else None,
-                "away_stats": json.loads(pred.away_stats_json) if pred.away_stats_json else None,
-                "situational": json.loads(pred.situational_json) if pred.situational_json else None,
-                "splits": json.loads(pred.splits_json) if pred.splits_json else None,
-                "features": json.loads(pred.features_json) if pred.features_json else None,
+                "home_stats": _sanitize_json(json.loads(pred.home_stats_json)) if pred.home_stats_json else None,
+                "away_stats": _sanitize_json(json.loads(pred.away_stats_json)) if pred.away_stats_json else None,
+                "situational": _sanitize_json(json.loads(pred.situational_json)) if pred.situational_json else None,
+                "splits": _sanitize_json(json.loads(pred.splits_json)) if pred.splits_json else None,
+                "features": _sanitize_json(json.loads(pred.features_json)) if pred.features_json else None,
             },
         }
 
