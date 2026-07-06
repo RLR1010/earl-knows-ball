@@ -391,6 +391,8 @@ COMPUTED_FEATURES_CATALOG: Dict[str, str] = {
     "h_pitcher_night_era": "Home pitcher ERA in night games (expanding mean, shift(1))",
     "a_pitcher_day_era": "Away pitcher ERA in day games (expanding mean, shift(1))",
     "a_pitcher_night_era": "Away pitcher ERA in night games (expanding mean, shift(1))",
+    "h_pitcher_day_night_era": "Home pitcher ERA resolved by game time (day_era if day game, night_era if night game)",
+    "a_pitcher_day_night_era": "Away pitcher ERA resolved by game time (day_era if day game, night_era if night game)",
     "h_pitcher_rest": "Home pitcher days since last start",
     "a_pitcher_rest": "Away pitcher days since last start",
     "a_pitcher_road_era": "Away pitcher ERA in road starts (expanding mean, shift(1))",
@@ -402,6 +404,8 @@ COMPUTED_FEATURES_CATALOG: Dict[str, str] = {
     # ── Form ──
     "h_form_l10": "Home winning percentage last 10 games (exponential MA, shift(1))",
     "a_form_l10": "Away winning percentage last 10 games (exponential MA, shift(1))",
+    "h_pitcher_day_night_era": "Home pitcher ERA resolved by game time (day/night)",
+    "a_pitcher_day_night_era": "Away pitcher ERA resolved by game time (day/night)",
     # ── Park & environment ──
     "park_factor": "Estimated venue run multiplier based on rolling historical totals",
     "wind_calculated": "Wind effect: wd * wind_speed where wd=1 for out, -1 for in, 0 otherwise",
@@ -525,6 +529,8 @@ DISPLAY_NAMES: Dict[str, str] = {
     "a_bullpen_ip_l5": "Away Bullpen IP (L5)",
     "h_form_l10": "Home Form (L10)",
     "a_form_l10": "Away Form (L10)",
+    "h_pitcher_day_night_era": "Home Pitcher ERA (Day/Night)",
+    "a_pitcher_day_night_era": "Away Pitcher ERA (Day/Night)",
     "h_pitcher_era_l5": "Home Pitcher ERA (L5)",
     "a_pitcher_era_l5": "Away Pitcher ERA (L5)",
     "ou_movement": "OU Movement",
@@ -1584,6 +1590,37 @@ def build_features(df: pd.DataFrame, log_fn=None) -> pd.DataFrame:
                 feats = feats.drop(columns=[tmp_col])
             else:
                 feats[f"{side}_pitcher_{dn_val}_era"] = 0.0
+
+    # Pitcher day/night resolved ERA — pick the appropriate split based on game time
+    # If the game is a day game, use day_era; if night, use night_era.
+    # Fall back to the other split if one is missing.
+    log("  Computing pitcher day/night resolved ERA...")
+    game_hour_col = None
+    for col in ["game_time_et", "game_time", "start_time"]:
+        if col in feats.columns:
+            game_hour_col = col
+            break
+
+    for side in ["h", "a"]:
+        day_col = f"{side}_pitcher_day_era"
+        night_col = f"{side}_pitcher_night_era"
+        reg_col = f"{side}_pitcher_era_l20"
+        out_col = f"{side}_pitcher_day_night_era"
+
+        if game_hour_col is not None:
+            # Infer day/night from game hour ET
+            # Rough heuristic: games starting at/before 6pm ET are day games
+            game_hour = pd.to_datetime(feats[game_hour_col]).dt.hour
+            is_day = game_hour < 18
+            # Use the appropriate day/night split; fall back to pitcher's regular ERA
+            feats[out_col] = np.where(
+                is_day,
+                feats[day_col].fillna(feats[reg_col]).fillna(0.0),
+                feats[night_col].fillna(feats[reg_col]).fillna(0.0)
+            )
+        else:
+            # No game time column — use the pitcher's regular ERA
+            feats[out_col] = feats[reg_col].fillna(0.0)
 
     # --- Bullpen / combo ERA features ---
     log("  Computing combo ERA features...")

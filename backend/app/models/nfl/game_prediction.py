@@ -1,7 +1,7 @@
 """
-Stores NBA game predictions from the handicapping engine for tracking accuracy.
+Stores NFL game predictions from the handicapping engine for tracking accuracy.
 
-Mirrors MLBGamePrediction structure but adapted for NBA scoring (points not runs).
+Mirrors MLBGamePrediction structure but adapted for NFL scoring (points not runs).
 """
 from sqlalchemy import (
     Column, Integer, Float, String, Text, DateTime, ForeignKey, UniqueConstraint
@@ -11,11 +11,11 @@ from app.database import Base
 from datetime import datetime, timezone
 
 
-class NBAGamePrediction(Base):
+class NFLGamePrediction(Base):
     __tablename__ = "game_predictions"
 
     id = Column(Integer, primary_key=True)
-    game_id = Column(Integer, ForeignKey("nba.games.id"), nullable=False, index=True)
+    game_id = Column(Integer, ForeignKey("nfl.games.id"), nullable=False, index=True)
 
     # Model outputs
     predicted_home_score = Column(Float, nullable=True)
@@ -34,7 +34,7 @@ class NBAGamePrediction(Base):
 
     # Picks
     ou_pick = Column(String(20), nullable=True)          # "Over", "Under"
-    spread_pick = Column(String(100), nullable=True)     # e.g. "BOS -5.5"
+    spread_pick = Column(String(100), nullable=True)     # e.g. "CHI -3.5"
     ml_pick = Column(String(10), nullable=True)          # "home" or "away"
 
     # Actual results (filled in after game)
@@ -60,10 +60,10 @@ class NBAGamePrediction(Base):
     source = Column(String(50), nullable=True)  # "backtest" or "api"
 
     # Enriched metadata for display
-    home_stats_json = Column(Text, nullable=True, comment="JSON — NBATeamStats.to_dict() for home team")
-    away_stats_json = Column(Text, nullable=True, comment="JSON — NBATeamStats.to_dict() for away team")
-    situational_json = Column(Text, nullable=True, comment="JSON — NBASituationalAnalyzer.to_dict()")
-    splits_json = Column(Text, nullable=True, comment="JSON — NBASplitAnalyzer.to_dict()")
+    home_stats_json = Column(Text, nullable=True, comment="JSON — NFLTeamStats.to_dict() for home team")
+    away_stats_json = Column(Text, nullable=True, comment="JSON — NFLTeamStats.to_dict() for away team")
+    situational_json = Column(Text, nullable=True, comment="JSON — NFLSituationalAnalyzer.to_dict()")
+    splits_json = Column(Text, nullable=True, comment="JSON — NFLSplitAnalyzer.to_dict()")
     features_json = Column(Text, nullable=True, comment="JSON — pick_card feature values at prediction time")
     created_at = Column(
         DateTime(timezone=True),
@@ -71,12 +71,12 @@ class NBAGamePrediction(Base):
     )
 
     # Relationships
-    game = relationship("NBAGame", backref="game_predictions")
+    game = relationship("NFLGame", backref="game_predictions")
 
     __table_args__ = (
-        UniqueConstraint("game_id", "source", name="uq_nba_prediction_game_source"),
-        {"schema": "nba"},
+        UniqueConstraint("game_id", "source", name="uq_nfl_prediction_game_source"),
+        {"schema": "nfl"},
     )
 
     def __repr__(self):
-        return f"<NBAGamePrediction game={self.game_id} pred={self.predicted_home_score}-{self.predicted_away_score}>"
+        return f"<NFLGamePrediction game={self.game_id} pred={self.predicted_home_score}-{self.predicted_away_score}>"

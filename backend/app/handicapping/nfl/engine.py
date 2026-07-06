@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
 import pickle
 import time
@@ -47,6 +48,27 @@ NFL_SCHEMA = "nfl"
 ASYNC_DSN: str = DB_DSN.replace("postgresql://", "postgresql+asyncpg://")
 _async_engine = None
 _async_sessionmaker = None
+
+
+# ── Pick-card feature extraction ────────────────────────────────────────────────
+
+
+def _extract_pick_card_features(row, feature_names: set) -> str:
+    """Return JSON string of pick_card feature values from a DataFrame row.
+    Ensures NaN/Inf floats are converted to None to keep stored JSON valid.
+    """
+
+    def _sanitize(v):
+        if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+            return None
+        return v
+
+    features = {
+        name: _sanitize(row.get(name))
+        for name in feature_names
+        if name in row.index or name in row
+    }
+    return json.dumps(features, default=str)
 
 
 def _get_async_session() -> async_sessionmaker:
