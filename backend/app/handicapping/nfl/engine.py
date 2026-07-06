@@ -22,11 +22,13 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 import psycopg2
-import psycopg2.extras
 import xgboost as xgb
-from sqlalchemy import text
+from sqlalchemy import text, create_engine
+from sqlalchemy import delete as sa_delete
+from sqlalchemy.orm import sessionmaker
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 
+from app.models.nfl.game_prediction import NFLGamePrediction
 from app.handicapping.nfl.data_loader import NFLDataLoader, get_data_loader, get_model_features
 
 logger = logging.getLogger(__name__)
@@ -195,341 +197,233 @@ def _extract_feature_vector(
 # ── Main handicapper class ───────────────────────────────────────────────────────
 
 
-class NFLHandicapper:
-    """Handicap NFL games: predict ATS cover and over/under."""
+# ── Backtest season ──────────────────────────────────────────────────────────────
 
-    def __init__(self):
-        self.ats_model: Optional[xgb.Booster] = None
-        self.ou_model: Optional[xgb.Booster] = None
-        self.ats_model_year: Optional[int] = None
-        self.ou_model_year: Optional[int] = None
-        self._load_models()
 
-    def _load_models(self) -> None:
-        """Load ATS and OU models from the current (live) training runs.
+async def backtest_season(
+    years: Optional[List[int]] = None,
+    limit: Optional[int] = None,
+    save_results: bool = True,
+    db: AsyncSession = None,
+) -> Dict[str, Any]:
+    """Backtest NFL models over one or more seasons.
 
-        Delegates to ``_resolve_year_pkl_paths`` and ``_load_model_for_year``
-        so it stays consistent with the MLB engine pattern.
-        """
-        ats_paths = _resolve_year_pkl_paths("ats")
-        ou_paths = _resolve_year_pkl_paths("ou")
-        if ats_paths:
-            latest_ats_year = max(ats_paths)
-            self.ats_model = _load_model_for_year("ats", latest_ats_year)
-            self.ats_model_year = latest_ats_year
-            logger.info("Loaded ATS model for year %d", latest_ats_year)
-        if ou_paths:
-            latest_ou_year = max(ou_paths)
-            self.ou_model = _load_model_for_year("ou", latest_ou_year)
-            self.ou_model_year = latest_ou_year
-            logger.info("Loaded OU model for year %d", latest_ou_year)
+    Loads per-year pkl files from the live training run's ``pkl_filename``
+    (stored in ``nfl.training_runs WHERE is_live = 't'``).  No training is
+    performed.
 
-    def _ensure_models_for_year(self, year: int) -> None:
-        """Load per-year models if they exist and differ from current."""
-        ats_paths = _resolve_year_pkl_paths("ats")
-        ou_paths = _resolve_year_pkl_paths("ou")
-        if year in ats_paths and self.ats_model_year != year:
-            self.ats_model = _load_model_for_year("ats", year)
-            self.ats_model_year = year
-        if year in ou_paths and self.ou_model_year != year:
-            self.ou_model = _load_model_for_year("ou", year)
-            self.ou_model_year = year
+    Parameters
+    ----------
+    years : list of int, optional
+        Season years to test.  Defaults to all with pkl files available.
+    limit : int, optional
+        Max rows to load from the data loader (for quick tests).
+    save_results : bool
+        Whether to write per-game predictions to ``nfl.game_predictions``.
 
-    # ── Core handicap: single game ──────────────────────────────────────────────
+    Returns
+    -------
+    dict with ``ats_results``, ``ou_results``, ``test_years``.
+    """
+    ats_paths = _resolve_year_pkl_paths("ats")
+    ou_paths = _resolve_year_pkl_paths("ou")
 
-    async def handicap_game(
-        self,
-        game_id: int,
-        home_abbr: str,
-        away_abbr: str,
-        year: Optional[int] = None,
-        save_to_db: bool = True,
-        source: str = "api",
-    ) -> Dict[str, Any]:
-        """Produce a full handicap for a single game.
+    if not ats_paths and not ou_paths:
+        return {"error": "no live training run found with pkl files"}
 
-        Returns a dict with predicted scores, spreads, confidence,
-        picks, and handicapper info.
-        """
-        dl = get_data_loader()
-        df = dl.load_inference_data(game_ids=[game_id])
+    if years is None:
+        years = [y for y in [2024, 2025] if y in ats_paths or y in ou_paths]
 
-        if df.empty:
-            return {"error": f"no features for game {game_id}"}
+    logger.info("Backtest years (from pkl): %s", years)
 
-        row = df.iloc[0]
+    dl = get_data_loader()
+    df = dl.load_data(limit=limit)
+    if df.empty:
+        return {"error": "no data"}
 
-        # ATS prediction
-        ats_proba = 0.5
-        ats_features_used: List[str] = []
-        if self.ats_model:
-            feats, names = _extract_feature_vector(row, "ats")
-            ats_features_used = names
-            try:
-                dmat = xgb.DMatrix(feats, feature_names=names)
-                ats_proba = float(self.ats_model.predict(dmat)[0])
-            except Exception:
-                ats_proba = 0.5
+    df["total_points"] = df["home_score"] + df["away_score"]
+    df = df.sort_values(["season_year", "week"]).reset_index(drop=True)
 
-        # OU prediction
-        ou_pred_total = None
-        ou_features_used: List[str] = []
-        if self.ou_model:
-            feats_ou, names_ou = _extract_feature_vector(row, "ou")
-            ou_features_used = names_ou
-            try:
-                dmat_ou = xgb.DMatrix(feats_ou, feature_names=names_ou)
-                ou_pred_total = float(self.ou_model.predict(dmat_ou)[0])
-            except Exception:
-                ou_pred_total = None
+    ats_results: List[Dict[str, Any]] = []
+    ou_results: List[Dict[str, Any]] = []
 
-        # Extract game info
-        spread = float(row.get("closing_spread", 0) or 0)
-        closing_ou = float(row.get("closing_ou", 0) or 0)
-
-        # Pick determination
-        spread_pick: Optional[str] = None
-        if ats_proba > 0.5:
-            spread_pick = f"{home_abbr} {spread:+.1f}" if spread < 0 else f"{home_abbr} {-spread:+.1f}"
-        elif ats_proba < 0.5:
-            spread_pick = f"{away_abbr} {spread:+.1f}" if spread > 0 else f"{away_abbr} {-spread:+.1f}"
-
-        ou_pick: Optional[str] = None
-        if ou_pred_total is not None and closing_ou > 0:
-            ou_pick = "Over" if ou_pred_total > closing_ou else "Under"
-
-        ou_edge = None
-        if ou_pred_total is not None and closing_ou > 0:
-            ou_edge = abs(ou_pred_total - closing_ou)
-
-        # Build result
-        # Moneyline odds from data
-        home_ml = _float_safe(row.get("closing_home_ml"))
-        away_ml = _float_safe(row.get("closing_away_ml"))
-        spread_home_odds = _float_safe(row.get("closing_spread_home_odds"))
-        spread_away_odds = _float_safe(row.get("closing_spread_away_odds"))
-        over_odds = _float_safe(row.get("closing_over_odds"))
-        under_odds = _float_safe(row.get("closing_under_odds"))
-
-        # Moneyline pick (favorite from odds)
-        ml_pick_team = None
-        ml_prob = None
-        if home_ml is not None and away_ml is not None and home_ml != 0 and away_ml != 0:
-            home_implied = 1 / abs(home_ml) * 100 if home_ml < 0 else 100 / (home_ml + 100)
-            away_implied = 1 / abs(away_ml) * 100 if away_ml < 0 else 100 / (away_ml + 100)
-            total_implied = home_implied + away_implied
-            home_prob = home_implied / total_implied if total_implied > 0 else 0.5
-            ml_prob = home_prob
-            ml_pick_team = home_abbr if home_prob > 0.5 else away_abbr
-
-        result: Dict[str, Any] = {
-            "game_id": game_id,
-            "home_abbr": home_abbr,
-            "away_abbr": away_abbr,
-            "spread": spread,
-            "closing_ou": closing_ou,
-            "home_ml": home_ml,
-            "away_ml": away_ml,
-            "spread_home_odds": spread_home_odds,
-            "spread_away_odds": spread_away_odds,
-            "over_odds": over_odds,
-            "under_odds": under_odds,
-            "ats_prediction": round(ats_proba, 4),
-            "ats_edge": round(abs(ats_proba - 0.5) * 2, 4),
-            "ou_predicted_total": round(ou_pred_total, 2) if ou_pred_total else None,
-            "ou_edge": round(ou_edge, 2) if ou_edge else None,
-            "ou_pick": ou_pick,
-            "spread_pick": spread_pick,
-            "ml_pick": ml_pick_team,
-            "ml_edge": round(abs(ml_prob - 0.5) * 2, 4) if ml_prob else None,
-            "ats_features_used": ats_features_used,
-            "ou_features_used": ou_features_used,
-            "home_stats": _build_nfl_home_stats(row),
-            "away_stats": _build_nfl_away_stats(row),
-            "situational": _build_nfl_situational(row),
-            "splits": _build_nfl_splits(row),
-            "source": source,
-        }
-
-        # Save to DB
-        if save_to_db:
-            try:
-                await _save_api_prediction(result)
-            except Exception as e:
-                logger.warning("Failed to save prediction to DB: %s", e)
-
-        return result
-
-    # ── Handicap a set of games ────────────────────────────────────────────────
-
-    async def handicap_games(
-        self,
-        game_ids: List[int],
-        year: Optional[int] = None,
-        save_to_db: bool = True,
-        source: str = "api",
-    ) -> List[Dict[str, Any]]:
-        """Handicap multiple games in sequence."""
-        dl = get_data_loader()
-        df = dl.load_inference_data(game_ids=game_ids)
-
-        results: List[Dict[str, Any]] = []
-        for game_id in game_ids:
-            row_df = df[df["game_id"] == game_id] if "game_id" in df.columns else df
-            if row_df.empty:
-                results.append({"game_id": game_id, "error": "no features"})
-                continue
-
-            home_abbr = str(row_df.iloc[0].get("home_abbr", ""))
-            away_abbr = str(row_df.iloc[0].get("away_abbr", ""))
-
-            result = await self.handicap_game(
-                game_id=game_id,
-                home_abbr=home_abbr,
-                away_abbr=away_abbr,
-                year=year,
-                save_to_db=save_to_db,
-                source=source,
-            )
-            results.append(result)
-
-        return results
-
-    # ── Backtest ────────────────────────────────────────────────────────────────
-
-    async def backtest(
-        self,
-        years: Optional[List[int]] = None,
-        limit: Optional[int] = None,
-        save_results: bool = True,
-    ) -> Dict[str, Any]:
-        """Backtest NFL models over one or more seasons using pre-saved year-specific pkl files.
-
-        Loads per-year pkl paths from the live training run's ``pkl_filename``
-        (stored in ``nfl.training_runs WHERE is_live = 't'``).  No training is
-        performed.
-
-        Parameters
-        ----------
-        years : list of int, optional
-            Season years to test.  Defaults to all with pkl files available.
-        limit : int, optional
-            Max rows to load from the data loader (for quick tests).
-        save_results : bool
-            Whether to write per-game predictions to ``nfl.game_predictions``.
-
-        Returns
-        -------
-        dict with ``ats_results``, ``ou_results``, ``test_years``.
-        """
-        ats_paths = _resolve_year_pkl_paths("ats")
-        ou_paths = _resolve_year_pkl_paths("ou")
-
-        if not ats_paths and not ou_paths:
-            return {"error": "no live training run found with pkl files"}
-
-        if years is None:
-            # Default: 2024 and 2025 (must have pkl files)
-            years = [y for y in [2024, 2025] if y in ats_paths or y in ou_paths]
-
-        logger.info("Backtest years (from pkl): %s", years)
-
-        dl = get_data_loader()
-        df = dl.load_data(limit=limit)
-        if df.empty:
-            return {"error": "no data"}
-
-        df["total_points"] = df["home_score"] + df["away_score"]
-
-        # Data is already feature-engineered from load_data()
-        pass
-        df = df.sort_values(["season_year", "week"]).reset_index(drop=True)
-
-        ats_results: List[Dict[str, Any]] = []
-        ou_results: List[Dict[str, Any]] = []
-
-        for test_year in years:
-            # ── ATS evaluation for this year ──
-            if test_year in ats_paths:
-                model = _load_model_for_year("ats", test_year)
-                if model is not None:
-                    year_df = df[df["season_year"] == test_year].copy()
-                    if year_df.empty:
-                        logger.warning("  No data for %d ATS test", test_year)
-                        ats_results.append({"year": test_year, "error": "no data"})
-                    else:
-                        ats_res = _evaluate_year_model(year_df, model, "ats")
-                        ats_res["year"] = test_year
-                        ats_results.append(ats_res)
-                else:
-                    ats_results.append({"year": test_year, "error": "model load failed"})
-            else:
-                logger.info("  No ATS pkl for year %d, skipping", test_year)
-
-            # ── OU evaluation for this year ──
-            if test_year in ou_paths:
-                model = _load_model_for_year("ou", test_year)
-                if model is not None:
-                    year_df = df[df["season_year"] == test_year].copy()
-                    if year_df.empty:
-                        logger.warning("  No data for %d OU test", test_year)
-                        ou_results.append({"year": test_year, "error": "no data"})
-                    else:
-                        ou_res = _evaluate_year_model(year_df, model, "ou")
-                        ou_res["year"] = test_year
-                        ou_results.append(ou_res)
-                else:
-                    ou_results.append({"year": test_year, "error": "model load failed"})
-            else:
-                logger.info("  No OU pkl for year %d, skipping", test_year)
-
-        # Build per-game pick cards
-        if save_results:
-            for test_year in years:
+    for test_year in years:
+        if test_year in ats_paths:
+            model = _load_model_for_year("ats", test_year)
+            if model is not None:
                 year_df = df[df["season_year"] == test_year].copy()
                 if year_df.empty:
-                    continue
+                    logger.warning("  No data for %%d ATS test", test_year)
+                    ats_results.append({"year": test_year, "error": "no data"})
+                else:
+                    ats_res = _evaluate_year_model(year_df, model, "ats")
+                    ats_res["year"] = test_year
+                    ats_results.append(ats_res)
+            else:
+                ats_results.append({"year": test_year, "error": "model load failed"})
+        else:
+            ats_results.append({"year": test_year, "error": "no pkl path on disk"})
 
-                ats_model = _load_model_for_year("ats", test_year) if test_year in ats_paths else None
-                ou_model = _load_model_for_year("ou", test_year) if test_year in ou_paths else None
-                if ats_model is None and ou_model is None:
-                    continue
+        if test_year in ou_paths:
+            model = _load_model_for_year("ou", test_year)
+            if model is not None:
+                year_df = df[df["season_year"] == test_year].copy()
+                if year_df.empty:
+                    logger.warning("  No data for %%d OU test", test_year)
+                    ou_results.append({"year": test_year, "error": "no data"})
+                else:
+                    ou_res = _evaluate_year_model(year_df, model, "ou")
+                    ou_res["year"] = test_year
+                    ou_results.append(ou_res)
+            else:
+                ou_results.append({"year": test_year, "error": "model load failed"})
+        else:
+            ou_results.append({"year": test_year, "error": "no pkl path on disk"})
 
-                for idx, row in year_df.iterrows():
-                    game_key = (row["season_year"], row["week"], row["home_abbr"], row["away_abbr"])
+        if save_results:
+            year_df = df[df["season_year"] == test_year]
+            logger.info("Saving %%d backtest predictions for %%s...", len(year_df), test_year)
+            ats_model = _load_model_for_year("ats", test_year)
+            ou_model = _load_model_for_year("ou", test_year)
+            for idx, row in year_df.iterrows():
+                ats_feats = _get_features("ats") if ats_model is not None else None
+                ou_feats = _get_features("ou") if ou_model is not None else None
+                await _save_backtest_prediction(
+                    int(row.get("game_id", 0)), row,
+                    ats_model=ats_model,
+                    ou_model=ou_model,
+                    ats_features=ats_feats,
+                    ou_features=ou_feats,
+                    db=db,
+                )
 
-                    ats_proba = None
-                    ou_pred = None
-
-                    if ats_model is not None:
-                        feat_vals, feat_names = _extract_feature_vector(row, "ats")
-                        dmat = xgb.DMatrix(feat_vals, feature_names=feat_names)
-                        ats_proba = float(ats_model.predict(dmat)[0])
-
-                    if ou_model is not None:
-                        feat_vals, feat_names = _extract_feature_vector(row, "ou")
-                        dmat = xgb.DMatrix(feat_vals, feature_names=feat_names)
-                        ou_pred_db = float(ou_model.predict(dmat)[0])
-                        ou_pred = max(0, min(100, ou_pred_db))
-
-                    ats_feats = _get_features("ats") if ats_model is not None else None
-                    ou_feats = _get_features("ou") if ou_model is not None else None
-                    await _save_backtest_prediction(
-                        row.get("game_id", 0), row,
-                        ats_model=ats_model,
-                        ou_model=ou_model,
-                        ats_features=ats_feats,
-                        ou_features=ou_feats,
-                    )
-
-        return {
-            "ats_results": ats_results,
-            "ou_results": ou_results,
-            "n_years": len([r for r in ats_results if "error" not in r]) + len([r for r in ou_results if "error" not in r]),
-            "test_years": years,
-        }
+    return {
+        "ats_results": ats_results,
+        "ou_results": ou_results,
+        "n_years": len([r for r in ats_results if "error" not in r]) + len([r for r in ou_results if "error" not in r]),
+        "test_years": years,
+    }
 
 
+# ── Batch predict upcoming games ───────────────────────────────────────────────
+
+
+async def batch_predict_upcoming_games(
+    game_ids: List[int],
+    year: Optional[int] = None,
+    db: AsyncSession = None,
+) -> List[Dict[str, Any]]:
+    """Predict multiple upcoming NFL games — returns a list of pick-card dicts.
+    Matches the MLB ``batch_predict_upcoming_games`` pattern.
+    """
+    # Load model once for all games
+    year = year or CURRENT_NFL_YEAR
+    ats_model = _load_model_for_year("ats", year)
+    ou_model = _load_model_for_year("ou", year)
+    dl = get_data_loader()
+
+    results: List[Dict[str, Any]] = []
+    for gid in game_ids:
+        try:
+            df = dl.load_inference_data(game_ids=[gid])
+            if df.empty:
+                logger.warning("No inference data for game %%s", gid)
+                continue
+            row = df.iloc[0]
+
+            home_str = _str_safe(row.get("home_abbr", row.get("home_team", "")))
+            away_str = _str_safe(row.get("away_abbr", row.get("away_team", "")))
+            spread = _float_safe(row.get("spread"))
+            over_under = _float_safe(row.get("over_under"))
+
+            # ATS prediction
+            ats_proba = 0.5
+            if ats_model is not None:
+                feats, names = _extract_feature_vector(row, "ats")
+                if feats is not None:
+                    dmat = xgb.DMatrix(feats, feature_names=names)
+                    ats_proba = float(ats_model.predict(dmat)[0])
+
+            # OU prediction
+            ou_pred = None
+            if ou_model is not None:
+                feats, names = _extract_feature_vector(row, "ou")
+                if feats is not None:
+                    dmat = xgb.DMatrix(feats, feature_names=names)
+                    ou_pred = float(ou_model.predict(dmat)[0])
+
+            # Build pick card
+            margin_conf = round(max(ats_proba, 1 - ats_proba), 4)
+
+            spread_pick = None
+            if spread is not None:
+                if ats_proba > 0.5:
+                    spread_pick = "{home} {spread:.1f}".format(home=home_str, spread=spread)
+                else:
+                    spread_pick = "{away} {spread:.1f}".format(away=away_str, spread=abs(spread))
+
+            ou_pick = None
+            if ou_pred is not None and over_under is not None:
+                ou_pick = "Over" if ou_pred > over_under else "Under"
+
+            ml_pick = home_str if ats_proba > 0.5 else away_str
+
+            predicted_home, predicted_away = None, None
+            if ou_pred is not None and spread is not None:
+                pred_total = ou_pred
+                pred_margin = abs(spread) * (2 * ats_proba - 1) if spread != 0 else 0
+                if ats_proba > 0.5:
+                    predicted_home = round((pred_total + pred_margin) / 2)
+                    predicted_away = round((pred_total - pred_margin) / 2)
+                else:
+                    predicted_home = round((pred_total - pred_margin) / 2)
+                    predicted_away = round((pred_total + pred_margin) / 2)
+
+            result: Dict[str, Any] = {
+                "game_id": gid,
+                "home_team": home_str,
+                "away_team": away_str,
+                "spread": spread,
+                "predicted_home_score": predicted_home,
+                "predicted_away_score": predicted_away,
+                "margin_conf": margin_conf,
+                "ats_prediction": ats_proba,
+                "ou_predicted_total": round(ou_pred, 2) if ou_pred is not None else None,
+                "ou_pick": ou_pick,
+                "spread_pick": spread_pick,
+                "ml_pick": ml_pick,
+                "home_ml": _float_safe(row.get("home_ml")),
+                "away_ml": _float_safe(row.get("away_ml")),
+                "spread_home_odds": _float_safe(row.get("spread_home_odds")),
+                "spread_away_odds": _float_safe(row.get("spread_away_odds")),
+                "over_odds": _float_safe(row.get("over_odds")),
+                "under_odds": _float_safe(row.get("under_odds")),
+            }
+            # Enrich with handicapper info
+            result.update({
+                "home_stats": _build_nfl_home_stats(row),
+                "away_stats": _build_nfl_away_stats(row),
+                "situational": _build_nfl_situational(row),
+                "splits": _build_nfl_splits(row),
+                "home_abbr": home_str,
+                "away_abbr": away_str,
+            })
+            # Calibrated confidence
+            result["ats_conf_cal"] = round(abs(ats_proba - 0.5) * 2, 4)
+            result["ml_conf_cal"] = None
+            result["ou_conf_cal"] = None
+            # Features for pick-card
+            pc_feats = _load_pick_card_feature_names()
+            result["features"] = json.loads(_extract_pick_card_features(row, pc_feats))
+
+            # Save to DB if a session was provided (API pattern)
+            if db is not None:
+                await _save_api_prediction(result)
+
+            results.append(result)
+        except Exception:
+            logger.exception("Error handicapping game %%s", gid)
+    return results
 def _evaluate_year_model(year_df: pd.DataFrame, model: xgb.Booster, model_type: str) -> Dict[str, Any]:
     """Evaluate a single per-year model on a full season's games.
 
@@ -591,374 +485,343 @@ def _evaluate_year_model(year_df: pd.DataFrame, model: xgb.Booster, model_type: 
 
 
 async def _save_api_prediction(result: Dict[str, Any]) -> None:
-    """Save a single game prediction to ``nfl.game_predictions`` (async).
-
-    Mirrors the MLB engine pattern: writes moneyline pick, odds, EV, and stats.
-    """
+    """Save a single game prediction using the NFLGamePrediction ORM model."""
     game_id = result.get("game_id")
     if not game_id:
         return
 
-    now = datetime.now(timezone.utc)
-    source = result.get("source", "api")
-
-    predicted_total = result.get("ou_predicted_total")
-    ats_proba = result.get("ats_prediction", 0.5)
-    spread = result.get("spread", 0) or 0
-
-    pred_margin = 2 * spread * (ats_proba - 0.5) if spread != 0 else 0
-    pred_home_score = None
-    pred_away_score = None
-    if predicted_total is not None:
-        pred_home_score = max(0, round((predicted_total + pred_margin) / 2.0))
-        pred_away_score = max(0, round((predicted_total - pred_margin) / 2.0))
-
-    ou_pick = result.get("ou_pick")
-    spread_pick = result.get("spread_pick")
-    ml_pick = result.get("ml_pick")
-
-    # Map odds to the pick side
-    ats_odds_value = None
-    sp_pick = spread_pick or ""
-    home_abbr = result.get("home_abbr", "")
-    away_abbr = result.get("away_abbr", "")
-    if sp_pick:
-        pick_team = sp_pick.split(" ")[0]  # "BAL -6.0" -> "BAL"
-        if pick_team == home_abbr:
-            ats_odds_value = result.get("spread_home_odds")
-        elif pick_team == away_abbr:
-            ats_odds_value = result.get("spread_away_odds")
-
-    ou_odds_value = None
-    if ou_pick == "Over":
-        ou_odds_value = result.get("over_odds")
-    elif ou_pick == "Under":
-        ou_odds_value = result.get("under_odds")
-
-    ml_odds_value = None
-    if ml_pick == home_abbr:
-        ml_odds_value = result.get("home_ml")
-    elif ml_pick == away_abbr:
-        ml_odds_value = result.get("away_ml")
-
-    home_stats = result.get("home_stats")
-    away_stats = result.get("away_stats")
-    situational = result.get("situational")
-    splits = result.get("splits")
-
-    session_maker = _get_async_session()
-    async with session_maker() as session:
+    async with get_async_session() as session:
+        # Wipe any previous API prediction for this game
         await session.execute(
-            text(f"DELETE FROM {NFL_SCHEMA}.game_predictions WHERE game_id = :gid AND source = :src"),
-            {"gid": game_id, "src": source},
+            sa_delete(NFLGamePrediction).where(
+                NFLGamePrediction.game_id == game_id,
+                NFLGamePrediction.source == "api",
+            )
         )
 
-        insert_sql = text(f"""
-            INSERT INTO {NFL_SCHEMA}.game_predictions
-                (game_id, predicted_home_score, predicted_away_score,
-                 predicted_total, predicted_margin, margin_conf,
-                 ou_conf, ou_pick, spread_pick, ml_pick,
-                 ats_odds, ou_odds, ml_odds,
-                 ats_ev, ou_ev, ml_ev,
-                 home_stats_json, away_stats_json, situational_json, splits_json,
-                 source, created_at)
-            VALUES
-                (:gid, :phs, :pas, :pt, :pm, :mc,
-                 :oc, :op, :spick, :mlp,
-                 :ats_odds, :ou_odds, :ml_odds,
-                 :ats_ev, :ou_ev, :ml_ev,
-                 :hs, :aws, :sit, :spl, :src, :ca)
-            ON CONFLICT (game_id, source)
-            DO UPDATE SET
-                predicted_home_score = EXCLUDED.predicted_home_score,
-                predicted_away_score = EXCLUDED.predicted_away_score,
-                predicted_total = EXCLUDED.predicted_total,
-                predicted_margin = EXCLUDED.predicted_margin,
-                margin_conf = EXCLUDED.margin_conf,
-                ou_conf = EXCLUDED.ou_conf,
-                ou_pick = EXCLUDED.ou_pick,
-                spread_pick = EXCLUDED.spread_pick,
-                ml_pick = EXCLUDED.ml_pick,
-                ats_odds = EXCLUDED.ats_odds,
-                ou_odds = EXCLUDED.ou_odds,
-                ml_odds = EXCLUDED.ml_odds,
-                ats_ev = EXCLUDED.ats_ev,
-                ou_ev = EXCLUDED.ou_ev,
-                ml_ev = EXCLUDED.ml_ev,
-                home_stats_json = EXCLUDED.home_stats_json,
-                away_stats_json = EXCLUDED.away_stats_json,
-                situational_json = EXCLUDED.situational_json,
-                splits_json = EXCLUDED.splits_json,
-                created_at = EXCLUDED.created_at
-        """)
+        now = datetime.now(timezone.utc)
+        source = result.get("source", "api")
 
-        await session.execute(insert_sql, {
-            "gid": game_id,
-            "phs": pred_home_score,
-            "pas": pred_away_score,
-            "pt": predicted_total,
-            "pm": round(pred_margin, 2),
-            "mc": round(abs(ats_proba - 0.5) * 2, 4),
-            "oc": round(result.get("ou_edge", 0), 2),
-            "op": ou_pick,
-            "spick": spread_pick,
-            "mlp": ml_pick,
-            "ats_odds": round(ats_odds_value) if ats_odds_value else None,
-            "ou_odds": round(ou_odds_value) if ou_odds_value else None,
-            "ml_odds": round(ml_odds_value) if ml_odds_value else None,
-            "ats_ev": round(result.get("ats_edge", 0), 4),
-            "ou_ev": round(result.get("ou_edge", 0), 4),
-            "ml_ev": round(result.get("ml_edge", 0), 4),
-            "hs": json.dumps(home_stats) if home_stats else None,
-            "aws": json.dumps(away_stats) if away_stats else None,
-            "sit": json.dumps(situational) if situational else None,
-            "spl": json.dumps(splits) if splits else None,
-            "src": source,
-            "ca": now,
-        })
+        predicted_total = result.get("ou_predicted_total")
+        ats_proba = result.get("ats_prediction", 0.5)
+        spread = result.get("spread", 0) or 0
+
+        pred_margin = 2 * spread * (ats_proba - 0.5) if spread != 0 else 0
+        pred_home_score = None
+        pred_away_score = None
+        if predicted_total is not None:
+            pred_home_score = max(0, round((predicted_total + pred_margin) / 2.0))
+            pred_away_score = max(0, round((predicted_total - pred_margin) / 2.0))
+
+        ou_pick = result.get("ou_pick")
+        spread_pick = result.get("spread_pick")
+        ml_pick = result.get("ml_pick")
+
+        # Map odds to the pick side
+        ats_odds_value = None
+        sp_pick = spread_pick or ""
+        home_abbr = result.get("home_abbr") or result.get("home_team", "")
+        away_abbr = result.get("away_abbr") or result.get("away_team", "")
+        if sp_pick:
+            pick_team = sp_pick.split(" ")[0]
+            if pick_team == home_abbr:
+                ats_odds_value = result.get("spread_home_odds")
+            elif pick_team == away_abbr:
+                ats_odds_value = result.get("spread_away_odds")
+
+        ou_odds_value = None
+        if ou_pick == "Over":
+            ou_odds_value = result.get("over_odds")
+        elif ou_pick == "Under":
+            ou_odds_value = result.get("under_odds")
+
+        ml_odds_value = None
+        if ml_pick == home_abbr:
+            ml_odds_value = result.get("home_ml")
+        elif ml_pick == away_abbr:
+            ml_odds_value = result.get("away_ml")
+
+        # Handicapper info
+        home_stats = result.get("home_stats")
+        away_stats = result.get("away_stats")
+        situational = result.get("situational")
+        splits = result.get("splits")
+
+        features = result.get("features", {})
+
+        rec = NFLGamePrediction(
+            game_id=game_id,
+            predicted_home_score=pred_home_score,
+            predicted_away_score=pred_away_score,
+            predicted_total=predicted_total,
+            predicted_margin=pred_margin,
+            margin_conf=result.get("margin_conf"),
+            ou_conf=result.get("ou_conf"),
+            ou_pick=ou_pick,
+            spread_pick=spread_pick,
+            ml_pick=ml_pick,
+            ats_conf_cal=result.get("ats_conf_cal"),
+            ml_conf_cal=result.get("ml_conf_cal"),
+            ou_conf_cal=result.get("ou_conf_cal"),
+            ats_profit=result.get("ats_profit"),
+            ou_profit=result.get("ou_profit"),
+            ml_profit=result.get("ml_profit"),
+            ats_odds=round(ats_odds_value) if ats_odds_value else None,
+            ou_odds=round(ou_odds_value) if ou_odds_value else None,
+            ml_odds=round(ml_odds_value) if ml_odds_value else None,
+            home_stats_json=json.dumps(home_stats) if home_stats else None,
+            away_stats_json=json.dumps(away_stats) if away_stats else None,
+            situational_json=json.dumps(situational) if situational else None,
+            splits_json=json.dumps(splits) if splits else None,
+            features_json=json.dumps(features, default=str) if features else None,
+            source=source,
+            created_at=now,
+        )
+        session.add(rec)
         await session.commit()
-
-
-# ── Save backtest prediction ─────────────────────────────────────────────────────
-
-
 async def _save_backtest_prediction(
     game_id: int,
-    row: pd.Series,
-    ats_model: Optional[xgb.Booster] = None,
-    ou_model: Optional[xgb.Booster] = None,
-    ats_features: Optional[List[str]] = None,
-    ou_features: Optional[List[str]] = None,
+    row,
+    ats_model=None,
+    ou_model=None,
+    ats_features=None,
+    ou_features=None,
+    db: AsyncSession = None,
 ) -> None:
-    """Compute and save a prediction for a single game during backtest."""
-    # ATS
-    ats_proba = 0.5
-    if ats_model is not None and ats_features:
-        vals = []
-        for feat in ats_features:
-            v = row.get(feat, 0.0)
-            vals.append(float(v) if not (isinstance(v, float) and np.isnan(v)) else 0.0)
-        try:
-            dmat = xgb.DMatrix(np.array([vals], dtype=np.float32), feature_names=ats_features)
-            ats_proba = float(ats_model.predict(dmat)[0])
-        except Exception:
-            ats_proba = 0.5
+    """Save a single backtest prediction using the NFLGamePrediction ORM model.
 
-    # OU
-    ou_total = None
-    if ou_model is not None and ou_features:
-        vals = []
-        for feat in ou_features:
-            v = row.get(feat, 0.0)
-            vals.append(float(v) if not (isinstance(v, float) and np.isnan(v)) else 0.0)
-        try:
-            dmat = xgb.DMatrix(np.array([vals], dtype=np.float32), feature_names=ou_features)
-            ou_total = float(ou_model.predict(dmat)[0])
-        except Exception:
-            ou_total = None
+    Mirrors the MLB ``_save_backtest_prediction`` pattern.
+    Relies on ``row`` being a pd.Series / dict-like with the actual game outcome.
+    """
+    if not game_id:
+        return
 
-    spread = float(row.get("closing_spread", 0) or 0)
-    closing_ou = float(row.get("closing_ou", 0) or 0)
-    home_abbr = str(row.get("home_abbr", ""))
-    away_abbr = str(row.get("away_abbr", ""))
-    home_score = int(row.get("home_score", 0) or 0)
-    away_score = int(row.get("away_score", 0) or 0)
-
-    pred_margin = 2 * spread * (ats_proba - 0.5) if spread != 0 else 0
-    pred_home_score = None
-    pred_away_score = None
-    if ou_total is not None:
-        pred_home_score = max(0, round((ou_total + pred_margin) / 2.0))
-        pred_away_score = max(0, round((ou_total - pred_margin) / 2.0))
-
-    if ats_proba > 0.5:
-        sp_pick = f"{home_abbr} {spread:+.1f}" if spread < 0 else f"{home_abbr} {-spread:+.1f}"
-    elif ats_proba < 0.5:
-        sp_pick = f"{away_abbr} {spread:+.1f}" if spread > 0 else f"{away_abbr} {-spread:+.1f}"
+    engine = None
+    close_session = False
+    if db is None:
+        engine = create_engine(DB_DSN.replace("+asyncpg", ""))
+        sync_session = sessionmaker(bind=engine)
+        sync_sesh = sync_session()
     else:
-        sp_pick = None
+        sync_sesh = None
 
-    ou_pick = None
-    if ou_total is not None and closing_ou > 0:
-        ou_pick = "Over" if ou_total > closing_ou else "Under"
-
-    actual_total = home_score + away_score
-    actual_margin = home_score - away_score
-
-    ats_profit = 0.0
-    ats_result = None
-    if spread != 0:
-        covered = (home_score - away_score + spread) > 0
-        ats_result = "Win" if covered else "Loss"
-        if ats_result == "Win":
-            ats_profit = 100.0 if covered else -110.0
-        else:
-            ats_profit = -110.0
-
-    ou_profit = 0.0
-    ou_result = None
-    if closing_ou > 0:
-        ou_result = "Win" if actual_total > closing_ou else "Loss"
-        ou_profit = 100.0 if ou_result == "Win" else -110.0
-
-    # ── Moneyline ──────────────────────────────────────────────────────────────
-    home_ml = _float_safe(row.get("closing_home_ml"))
-    away_ml = _float_safe(row.get("closing_away_ml"))
-    ml_result = None
-    ml_profit = 0.0
-
-    if home_ml is not None and away_ml is not None and home_ml != 0 and away_ml != 0:
-        # Implied probabilities from odds (no-vig estimate)
-        home_implied = 1 / abs(home_ml) * 100 if home_ml < 0 else 100 / (home_ml + 100)
-        away_implied = 1 / abs(away_ml) * 100 if away_ml < 0 else 100 / (away_ml + 100)
-        total_implied = home_implied + away_implied
-        home_prob = home_implied / total_implied if total_implied > 0 else 0.5
-
-        # Pick the team with higher implied probability (the favorite)
-        if home_prob > 0.5:
-            ml_pick = home_abbr
-            pick_odds = home_ml
-            did_win = home_score > away_score
-            ml_edge = home_prob - 0.5
-        else:
-            ml_pick = away_abbr
-            pick_odds = away_ml
-            did_win = away_score > home_score
-            ml_edge = (1 - home_prob) - 0.5
-
-        ml_conf = abs(ml_edge) * 2
-        ml_result = "Win" if did_win else "Loss"
-        # Profit: +odds means profit on 100 stake; -odds means stake to win 100
-        if ml_result == "Win":
-            ml_profit = float(pick_odds) if pick_odds > 0 else 100.0
-        else:
-            ml_profit = -100.0 if pick_odds > 0 else -float(abs(pick_odds))
-    else:
-        ml_pick = None
-        ml_conf = None
-        ml_edge = 0.0
-
-    # ── Odds from row ──────────────────────────────────────────────────────────
-    spread_home_odds = _float_safe(row.get("closing_spread_home_odds"))
-    spread_away_odds = _float_safe(row.get("closing_spread_away_odds"))
-    over_odds = _float_safe(row.get("closing_over_odds"))
-    under_odds = _float_safe(row.get("closing_under_odds"))
-
-    # ── Map odds to pick side ───────────────────────────────────────────────────
-    ats_odds_value = None
-    if sp_pick:
-        pick_team = sp_pick.split(" ")[0]
-        if pick_team == home_abbr:
-            ats_odds_value = spread_home_odds
-        else:
-            ats_odds_value = spread_away_odds
-
-    ou_odds_value = None
-    if ou_pick == "Over":
-        ou_odds_value = over_odds
-    elif ou_pick == "Under":
-        ou_odds_value = under_odds
-
-    ml_odds_value = None
-    if ml_pick == home_abbr:
-        ml_odds_value = home_ml
-    elif ml_pick == away_abbr:
-        ml_odds_value = away_ml
-
-    # ── EV from edge * odds ─────────────────────────────────────────────────────
-    ats_ev = round(abs(ats_proba - 0.5) * 2, 4)
-    ou_ev = abs(ou_total - closing_ou) / closing_ou if ou_total and closing_ou else None
-    ml_ev = round(ml_edge * 2, 4) if ml_edge else None
-
-    home_stats = _build_nfl_home_stats(row)
-    away_stats = _build_nfl_away_stats(row)
-    situational = _build_nfl_situational(row)
-    splits = _build_nfl_splits(row)
-
-    conn = psycopg2.connect(DB_DSN)
     try:
-        with conn.cursor() as cur:
-            cur.execute(
-                f"""
-                INSERT INTO {NFL_SCHEMA}.game_predictions
-                    (game_id, predicted_home_score, predicted_away_score,
-                     predicted_total, predicted_margin, margin_conf,
-                     ou_conf, ou_pick, spread_pick, ml_pick,
-                     actual_home_score, actual_away_score, actual_total, actual_margin,
-                     ats_result, ou_result, ml_result,
-                     ats_profit, ou_profit, ml_profit,
-                     ats_odds, ou_odds, ml_odds,
-                     ats_ev, ou_ev, ml_ev,
-                     home_stats_json, away_stats_json, situational_json, splits_json,
-                     source, created_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (game_id, source)
-                DO UPDATE SET
-                    predicted_home_score = EXCLUDED.predicted_home_score,
-                    predicted_away_score = EXCLUDED.predicted_away_score,
-                    predicted_total = EXCLUDED.predicted_total,
-                    predicted_margin = EXCLUDED.predicted_margin,
-                    margin_conf = EXCLUDED.margin_conf,
-                    ou_conf = EXCLUDED.ou_conf,
-                    ou_pick = EXCLUDED.ou_pick,
-                    spread_pick = EXCLUDED.spread_pick,
-                    ml_pick = EXCLUDED.ml_pick,
-                    actual_home_score = EXCLUDED.actual_home_score,
-                    actual_away_score = EXCLUDED.actual_away_score,
-                    actual_total = EXCLUDED.actual_total,
-                    actual_margin = EXCLUDED.actual_margin,
-                    ats_result = EXCLUDED.ats_result,
-                    ou_result = EXCLUDED.ou_result,
-                    ml_result = EXCLUDED.ml_result,
-                    ats_profit = EXCLUDED.ats_profit,
-                    ou_profit = EXCLUDED.ou_profit,
-                    ml_profit = EXCLUDED.ml_profit,
-                    ats_odds = EXCLUDED.ats_odds,
-                    ou_odds = EXCLUDED.ou_odds,
-                    ml_odds = EXCLUDED.ml_odds,
-                    ats_ev = EXCLUDED.ats_ev,
-                    ou_ev = EXCLUDED.ou_ev,
-                    ml_ev = EXCLUDED.ml_ev,
-                    home_stats_json = EXCLUDED.home_stats_json,
-                    away_stats_json = EXCLUDED.away_stats_json,
-                    situational_json = EXCLUDED.situational_json,
-                    splits_json = EXCLUDED.splits_json,
-                    created_at = EXCLUDED.created_at
-                """,
-                (
-                    game_id, pred_home_score, pred_away_score,
-                    round(ou_total, 2) if ou_total else None,
-                    round(pred_margin, 2),
-                    round(abs(ats_proba - 0.5) * 2, 4),
-                    round(abs(ou_total - closing_ou), 2) if ou_total else None,
-                    ou_pick, sp_pick, ml_pick,
-                    home_score, away_score, actual_total, actual_margin,
-                    ats_result, ou_result, ml_result,
-                    ats_profit, ou_profit, ml_profit,
-                    round(ats_odds_value) if ats_odds_value else None,
-                    round(ou_odds_value) if ou_odds_value else None,
-                    round(ml_odds_value) if ml_odds_value else None,
-                    round(ats_ev, 4),
-                    round(ou_ev, 4) if ou_ev else None,
-                    round(ml_ev, 4) if ml_ev else None,
-                    json.dumps(home_stats) if home_stats else None,
-                    json.dumps(away_stats) if away_stats else None,
-                    json.dumps(situational) if situational else None,
-                    json.dumps(splits) if splits else None,
-                    "api", datetime.now(timezone.utc),
-                ),
+        home_str = _str_safe(row.get("home_abbr", row.get("home_team", "")))
+        away_str = _str_safe(row.get("away_abbr", row.get("away_team", "")))
+        spread = _float_safe(row.get("closing_spread", row.get("spread", 0)))
+        over_under = _float_safe(row.get("closing_over_under", row.get("over_under", 0)))
+
+        # ── ATS prediction ─────────────────────────────────────────────────────
+        ats_proba = 0.5
+        if ats_model is not None:
+            feats, names = _extract_feature_vector(row, "ats")
+            if feats is not None:
+                dmat = xgb.DMatrix(feats, feature_names=names)
+                ats_proba = float(ats_model.predict(dmat)[0])
+
+        # ── OU prediction ──────────────────────────────────────────────────────
+        ou_total = None
+        if ou_model is not None:
+            feats, names = _extract_feature_vector(row, "ou")
+            if feats is not None:
+                dmat = xgb.DMatrix(feats, feature_names=names)
+                ou_total = float(ou_model.predict(dmat)[0])
+
+        # ── Actuals ─────────────────────────────────────────────────────────────
+        home_score = _int_safe(row.get("home_score"))
+        away_score = _int_safe(row.get("away_score"))
+        actual_total = (home_score or 0) + (away_score or 0)
+        actual_margin = (home_score or 0) - (away_score or 0)
+
+        # ── Picks ───────────────────────────────────────────────────────────────
+        margin_conf = round(max(ats_proba, 1 - ats_proba), 4)
+        home_fav = spread < 0
+        if home_fav:
+            spread_pick = f"{home_str} {abs(spread):.1f}"
+        else:
+            spread_pick = f"{away_str} {abs(spread):.1f}"
+
+        if ats_proba > 0.5:
+            spread_pick = home_str  # predicted to cover
+        else:
+            spread_pick = away_str
+
+        ou_pick = None
+        if ou_total is not None and over_under is not None:
+            ou_pick = "Over" if ou_total > over_under else "Under"
+
+        ml_pick = home_str if ats_proba > 0.5 else away_str
+
+        # ── Results ─────────────────────────────────────────────────────────────
+        home_covered = (home_score - away_score) > spread if not home_fav else (home_score - away_score) < spread
+        ats_result = "Win" if home_covered == (ats_proba > 0.5) else "Loss"
+        ou_result = None
+        if actual_total > over_under:
+            ou_result = "Win" if ou_pick == "Over" else "Loss"
+        elif actual_total < over_under:
+            ou_result = "Win" if ou_pick == "Under" else "Loss"
+        else:
+            ou_result = "Push"
+
+        ml_result = "Win" if (home_score > away_score and ml_pick == home_str) or (away_score > home_score and ml_pick == away_str) else "Loss"
+
+        # ── Odds from row ──────────────────────────────────────────────────────
+        closing_ou = _float_safe(row.get("closing_over_under", over_under))
+        home_ml = _float_safe(row.get("closing_home_ml"))
+        away_ml = _float_safe(row.get("closing_away_ml"))
+        spread_home_odds = _float_safe(row.get("closing_spread_home_odds"))
+        spread_away_odds = _float_safe(row.get("closing_spread_away_odds"))
+        over_odds = _float_safe(row.get("closing_over_odds"))
+        under_odds = _float_safe(row.get("closing_under_odds"))
+
+        # ── Map odds to pick side ──────────────────────────────────────────────
+        sp_pick_str = spread_pick or ""
+        home_abbr = home_str
+        away_abbr = away_str
+
+        ats_odds_value = None
+        if sp_pick_str:
+            pt = sp_pick_str.split(" ")[0]
+            ats_odds_value = spread_home_odds if pt == home_abbr else spread_away_odds
+
+        ou_odds_value = None
+        if ou_pick == "Over":
+            ou_odds_value = over_odds
+        elif ou_pick == "Under":
+            ou_odds_value = under_odds
+
+        ml_odds_value = None
+        if ml_pick == home_abbr:
+            ml_odds_value = home_ml
+        elif ml_pick == away_abbr:
+            ml_odds_value = away_ml
+
+        # ── Profit ──────────────────────────────────────────────────────────────
+        ats_profit = None
+        if ats_odds_value and ats_result == "Win":
+            ats_profit = float(ats_odds_value) if ats_odds_value > 0 else 100.0
+        elif ats_result == "Loss":
+            ats_profit = -100.0 if ats_odds_value and ats_odds_value > 0 else -(abs(ats_odds_value or 100.0))
+
+        ou_profit = None
+        if ou_odds_value and ou_result == "Win":
+            ou_profit = float(ou_odds_value) if ou_odds_value > 0 else 100.0
+        elif ou_result == "Loss":
+            ou_profit = -100.0 if ou_odds_value and ou_odds_value > 0 else -(abs(ou_odds_value or 100.0))
+
+        ml_profit = None
+        if ml_odds_value and ml_result == "Win":
+            ml_profit = float(ml_odds_value) if ml_odds_value > 0 else 100.0
+        elif ml_result == "Loss":
+            ml_profit = -100.0 if ml_odds_value and ml_odds_value > 0 else -(abs(ml_odds_value or 100.0))
+
+        # ── Handicapper info ────────────────────────────────────────────────────
+        home_stats = _build_nfl_home_stats(row)
+        away_stats = _build_nfl_away_stats(row)
+        situational = _build_nfl_situational(row)
+        splits = _build_nfl_splits(row)
+
+        # Features JSON — use pick_card feature names for prediction-time values
+        pick_card_feats = _load_pick_card_feature_names()
+        features_json_str = _extract_pick_card_features(row, pick_card_feats)
+
+        # ── Save via ORM ────────────────────────────────────────────────────────
+        if sync_sesh is not None:
+            # Backtest called without db — use sync session from same DSN
+            sync_sesh.execute(
+                sa_delete(NFLGamePrediction).where(
+                    NFLGamePrediction.game_id == game_id,
+                    NFLGamePrediction.source == "backtest",
+                )
             )
-        conn.commit()
+            rec = NFLGamePrediction(
+                game_id=game_id,
+                predicted_home_score=_int_safe(home_score),  # use actual as placeholder
+                predicted_away_score=_int_safe(away_score),
+                predicted_total=ou_total,
+                predicted_margin=actual_margin,
+                margin_conf=margin_conf,
+                ou_conf=abs(ou_total - closing_ou) / closing_ou if ou_total and closing_ou else None,
+                ou_pick=ou_pick,
+                spread_pick=spread_pick,
+                ml_pick=ml_pick,
+                ats_conf_cal=abs(ats_proba - 0.5) * 2,
+                ml_conf_cal=abs(actual_margin) / (abs(spread) or 1) if spread else None,
+                ou_conf_cal=abs(actual_total - closing_ou) / (closing_ou or 1) if closing_ou else None,
+                actual_home_score=home_score,
+                actual_away_score=away_score,
+                actual_total=actual_total,
+                actual_margin=actual_margin,
+                ats_result=ats_result,
+                ou_result=ou_result,
+                ml_result=ml_result,
+                ats_odds=round(ats_odds_value) if ats_odds_value else None,
+                ou_odds=round(ou_odds_value) if ou_odds_value else None,
+                ml_odds=round(ml_odds_value) if ml_odds_value else None,
+                ats_profit=ats_profit,
+                ou_profit=ou_profit,
+                ml_profit=ml_profit,
+                home_stats_json=json.dumps(home_stats) if home_stats else None,
+                away_stats_json=json.dumps(away_stats) if away_stats else None,
+                situational_json=json.dumps(situational) if situational else None,
+                splits_json=json.dumps(splits) if splits else None,
+                features_json=features_json_str,
+                source="backtest",
+                created_at=datetime.now(timezone.utc),
+            )
+            sync_sesh.add(rec)
+            sync_sesh.commit()
+        else:
+            # With async session (used from backtest_season(db=...))
+            await db.execute(
+                sa_delete(NFLGamePrediction).where(
+                    NFLGamePrediction.game_id == game_id,
+                    NFLGamePrediction.source == "backtest",
+                )
+            )
+            rec = NFLGamePrediction(
+                game_id=game_id,
+                predicted_home_score=_int_safe(home_score),
+                predicted_away_score=_int_safe(away_score),
+                predicted_total=ou_total,
+                predicted_margin=actual_margin,
+                margin_conf=margin_conf,
+                ou_conf=abs(ou_total - closing_ou) / closing_ou if ou_total and closing_ou else None,
+                ou_pick=ou_pick,
+                spread_pick=spread_pick,
+                ml_pick=ml_pick,
+                ats_conf_cal=abs(ats_proba - 0.5) * 2,
+                ml_conf_cal=abs(actual_margin) / (abs(spread) or 1) if spread else None,
+                ou_conf_cal=abs(actual_total - closing_ou) / (closing_ou or 1) if closing_ou else None,
+                actual_home_score=home_score,
+                actual_away_score=away_score,
+                actual_total=actual_total,
+                actual_margin=actual_margin,
+                ats_result=ats_result,
+                ou_result=ou_result,
+                ml_result=ml_result,
+                ats_odds=round(ats_odds_value) if ats_odds_value else None,
+                ou_odds=round(ou_odds_value) if ou_odds_value else None,
+                ml_odds=round(ml_odds_value) if ml_odds_value else None,
+                ats_profit=ats_profit,
+                ou_profit=ou_profit,
+                ml_profit=ml_profit,
+                home_stats_json=json.dumps(home_stats) if home_stats else None,
+                away_stats_json=json.dumps(away_stats) if away_stats else None,
+                situational_json=json.dumps(situational) if situational else None,
+                splits_json=json.dumps(splits) if splits else None,
+                features_json=features_json_str,
+                source="backtest",
+                created_at=datetime.now(timezone.utc),
+            )
+            db.add(rec)
+            await db.commit()
+
+    except Exception:
+        logger.exception("_save_backtest_prediction failed for game %%s", game_id)
     finally:
-        conn.close()
-
-
-# ── Pick card builders ────────────────────────────────────────────────────────────
-
-
+        if engine:
+            engine.dispose()
 def _build_nfl_home_stats(row: pd.Series) -> Dict[str, Any]:
     """Build home team stats summary from a feature vector row."""
     return {
@@ -1053,6 +916,7 @@ def _str_safe(val: Any) -> str:
 
 
 # ── CLI / smoke test ─────────────────────────────────────────────────────────────
+
 if __name__ == "__main__":
     import sys
 
@@ -1065,8 +929,7 @@ if __name__ == "__main__":
     mode = sys.argv[1] if len(sys.argv) > 1 else "backtest"
 
     if mode == "backtest":
-        handicapper = NFLHandicapper()
-        results = asyncio.run(handicapper.backtest())
+        results = asyncio.run(backtest_season())
         print("\n=== NFL Backtest ===")
         if "ats_results" in results:
             print(f"ATS: {len(results['ats_results'])} years")
@@ -1088,9 +951,8 @@ if __name__ == "__main__":
             print("Usage: python engine.py handicap <game_id>")
             sys.exit(1)
         game_id = int(sys.argv[2])
-        handicapper = NFLHandicapper()
-        result = asyncio.run(handicapper.handicap_game(game_id, "", "", save_to_db=False))
-        print(json.dumps(result, indent=2, default=str))
+        result = asyncio.run(batch_predict_upcoming_games([game_id]))
+        print(json.dumps(result, indent=2, default=str) if result else "No prediction")
 
     else:
         print(f"Unknown mode: {mode}")
