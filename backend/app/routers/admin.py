@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
+import zoneinfo
 from fastapi import APIRouter, Depends, HTTPException, Header, Query, status
 
 logger = logging.getLogger(__name__)
@@ -5864,6 +5865,15 @@ async def data_loader_load_game(
             # NBA uses `date` column, not `game_date`
             if "date" in raw_row:
                 game_info["game_date"] = _clean_val(raw_row["date"])
+
+        # Convert game_date from UTC to US Eastern for display
+        if "game_date" in game_info and game_info["game_date"] is not None:
+            gd = game_info["game_date"]
+            if isinstance(gd, datetime):
+                if gd.tzinfo is None:
+                    gd = gd.replace(tzinfo=timezone.utc)
+                et = zoneinfo.ZoneInfo("America/New_York")
+                game_info["game_date"] = gd.astimezone(et).isoformat()
 
         return {
             "sport": sport_lower,

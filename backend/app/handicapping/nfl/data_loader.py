@@ -146,18 +146,30 @@ WITH game_lines AS (
     WHERE bl.closing_spread IS NOT NULL
       AND bl.closing_ou IS NOT NULL
 ),
+team_games AS (
+    SELECT id AS game_id, home_team_id AS team_id, date
+    FROM nfl.games WHERE status = 'FINAL'
+    UNION ALL
+    SELECT id AS game_id, away_team_id AS team_id, date
+    FROM nfl.games WHERE status = 'FINAL'
+),
+team_schedule AS (
+    SELECT game_id, team_id, date,
+        LAG(date) OVER (
+            PARTITION BY team_id ORDER BY date, game_id
+        ) AS last_game_date
+    FROM team_games
+),
 game_rest AS (
     SELECT
         g.id AS game_id,
-        g.date,
-        LAG(g.date) OVER (
-            PARTITION BY g.home_team_id ORDER BY g.date
-        ) AS home_last_game,
-        LAG(g.date) OVER (
-            PARTITION BY g.away_team_id ORDER BY g.date
-        ) AS away_last_game
+        hlg.last_game_date AS home_last_game,
+        alg.last_game_date AS away_last_game
     FROM nfl.games g
-    WHERE g.status = 'FINAL'
+    LEFT JOIN team_schedule hlg
+        ON hlg.game_id = g.id AND hlg.team_id = g.home_team_id
+    LEFT JOIN team_schedule alg
+        ON alg.game_id = g.id AND alg.team_id = g.away_team_id
 )
 SELECT
     g.id                                                   AS game_id,
