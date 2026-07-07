@@ -1024,7 +1024,7 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
     tg = tg.sort_values(["team_id", "date", "game_id"]).reset_index(drop=True)
 
     # ── Compute team-overall rolling stats on the long frame ────────────
-    for window in [5, 10]:
+    for window in [3, 5, 10]:
         tg[f"win_pct_r{window}"] = (
             tg.groupby("team_id")["won"]
             .transform(lambda s: s.shift(1).rolling(window, min_periods=1).mean())
@@ -1053,7 +1053,7 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
     # OU features
     if "ou_margin" in tg.columns:
         tg["cover_as_over"] = (tg["ou_margin"] > 0).astype(float)
-        for window in [5, 10]:
+        for window in [3, 5, 10]:
             tg[f"ou_over_pct_r{window}"] = (
                 tg.groupby("team_id")["cover_as_over"]
                 .transform(lambda s: s.shift(1).rolling(window, min_periods=1).mean())
@@ -1068,7 +1068,7 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
 
     # Embarrassed (lost by 14+)
     tg["embarrassed"] = (tg["margin"] <= -14).astype(float)
-    for window in [5, 10]:
+    for window in [3, 5, 10]:
         tg[f"embarrassed_pct_r{window}"] = (
             tg.groupby("team_id")["embarrassed"]
             .transform(lambda s: s.shift(1).rolling(window, min_periods=1).mean())
