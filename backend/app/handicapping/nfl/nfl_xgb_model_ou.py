@@ -127,6 +127,8 @@ def run_backtest(
     available = [c for c in feature_cols if c in train_feats.columns]
     if not available:
         return {"year": test_year, "error": "no feature columns available"}
+    # Remove columns that are entirely NaN (never computed by build_features)
+    available = [c for c in available if train_feats[c].notna().any()]
 
     train_feats = train_feats.dropna(subset=available)
     test_feats = test_feats.dropna(subset=available)
@@ -504,7 +506,13 @@ async def train_model(
             continue
 
         available = [c for c in feature_cols if c in df_train.columns]
+        # Remove columns that are entirely NaN (never computed by build_features)
+        available = [c for c in available if df_train[c].notna().any()]
         df_train = df_train.dropna(subset=available)
+
+        if df_train.empty:
+            logger.warning("No training data after NaN filtering for test_year=%d, skipping", test_year)
+            continue
 
         X = df_train[available].values
         y = df_train["total_points"].values
@@ -531,6 +539,7 @@ async def train_model(
 
         if not df_test.empty and len(df_test) > 0:
             available_test = [c for c in feature_cols if c in df_test.columns]
+            available_test = [c for c in available_test if df_test[c].notna().any()]
             df_test_clean = df_test.dropna(subset=available_test)
 
             if len(df_test_clean) > 0:

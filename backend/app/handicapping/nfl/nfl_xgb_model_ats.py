@@ -557,6 +557,8 @@ async def train_model(
 
         if not df_test.empty and len(df_test) > 0:
             available_test = [c for c in feature_cols if c in df_test.columns]
+            # Remove all-NaN columns
+            available_test = [c for c in available_test if df_test[c].notna().any()]
             df_test_clean = df_test.dropna(subset=available_test)
 
             if len(df_test_clean) > 0:

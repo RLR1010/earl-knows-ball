@@ -948,9 +948,11 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
         (df["away_score"] - df["home_score"] - df["closing_spread"]) > 0,
         float("nan")
     ).astype(float)
-    df["over_result"] = (
-        (df["home_score"] + df["away_score"]) > df["closing_ou"]
-    ).astype(float).where(df["closing_ou"].notna(), float("nan"))
+    df["over_result"] = np.where(
+        df["closing_ou"].notna() & df["home_score"].notna() & df["away_score"].notna(),
+        (df["home_score"] + df["away_score"]) > df["closing_ou"],
+        float("nan")
+    ).astype(float)
     df["home_score_margin"] = df["home_score"] - df["away_score"]
 
     # ── 2. Rest days ─────────────────────────────────────────────────────────
