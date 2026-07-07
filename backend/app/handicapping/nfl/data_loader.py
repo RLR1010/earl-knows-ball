@@ -970,245 +970,215 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
     df["sp_h_odds_mvmt"] = df["closing_spread_home_odds"] - df["opening_spread_home_odds"].fillna(0)
     df["sp_a_odds_mvmt"] = df["closing_spread_away_odds"] - df["opening_spread_away_odds"].fillna(0)
 
-    # ── 5. Rolling team stats (per season, per team) ────────────────────────
+    # ── 5. Rolling team stats (per team across ALL games, home & away) ───
     df = df.sort_values(["season_id", "week", "game_date"]).reset_index(drop=True)
 
-    for side, abbr_col in [("home", "home_abbr"), ("away", "away_abbr")]:
-        score_col = f"{side}_score"
-        opp_col = f"away_score" if side == "home" else f"home_score"
-        team_abbr = df[abbr_col]
+    # Compute ou_margin if missing (needed for OU rolling features)
+    if "ou_margin" not in df.columns:
+        df["ou_margin"] = (df["home_score"] + df["away_score"]) - df["closing_ou"]
 
-        # Points for / against (raw, per game — rolling 10)
-        pf = df.groupby(team_abbr)[score_col].transform(
-            lambda s: s.rolling(10, min_periods=1).mean()
+    # Build team-game pairs: each game appears twice (once per team)
+    _base = ["game_id", "game_date", "week", "season_id", "season_year",
+             "home_ats_cover", "ou_margin", "over_result",
+             "closing_spread", "closing_ou"]
+    for side, id_col, abbr_col, score_col, opp_col in [
+        ("home", "home_team_id", "home_abbr", "home_score", "away_score"),
+        ("away", "away_team_id", "away_abbr", "away_score", "home_score"),
+    ]:
+        cols = _base + [id_col, abbr_col, score_col, opp_col,
+                        ("away_abbr" if side == "home" else "home_abbr")]
+        rows = df[[c for c in cols if c in df.columns]].copy()
+        rows = rows.rename(columns={
+            id_col: "team_id",
+            abbr_col: "team_abbr",
+        })
+        # Rename opp abbreviation
+        opp_abbr_col = "away_abbr" if side == "home" else "home_abbr"
+        if opp_abbr_col in rows.columns:
+            rows = rows.rename(columns={opp_abbr_col: "opp_abbr"})
+        rows["position"] = side
+        rows["score"] = rows[score_col]
+        rows["opp_score"] = rows[opp_col]
+        rows["won"] = (rows[score_col] > rows[opp_col]).astype(float)
+        rows["margin"] = rows[score_col] - rows[opp_col]
+        rows["cover"] = (
+            rows["home_ats_cover"] if side == "home"
+            else (1 - rows["home_ats_cover"])
+        ).fillna(0.5)
+        rows = rows.rename(columns={"game_date": "date"})
+        if side == "home":
+            home_long = rows
+        else:
+            away_long = rows
+
+    tg = pd.concat([home_long, away_long], ignore_index=True)
+    tg = tg.sort_values(["team_id", "date", "game_id"]).reset_index(drop=True)
+
+    # ── Compute team-overall rolling stats on the long frame ────────────
+    for window in [5, 10]:
+        tg[f"win_pct_r{window}"] = (
+            tg.groupby("team_id")["won"]
+            .transform(lambda s: s.shift(1).rolling(window, min_periods=1).mean())
+            .fillna(0.5)
         )
-        pa = df.groupby(team_abbr)[opp_col].transform(
-            lambda s: s.rolling(10, min_periods=1).mean()
+        tg[f"margin_r{window}"] = (
+            tg.groupby("team_id")["margin"]
+            .transform(lambda s: s.shift(1).rolling(window, min_periods=1).mean())
+            .fillna(0.0)
         )
-        df[f"{side[0]}pf"] = pf.shift(1)  # shift so we don't peek at current game
-        df[f"{side[0]}pa"] = pa.shift(1)
-
-        # Win % last 5
-        df["_won"] = (df[score_col] > df[opp_col]).astype(float)
-        win_pct = df.groupby(team_abbr)["_won"].transform(
-            lambda s: s.rolling(5, min_periods=1).mean()
+        tg[f"cover_pct_r{window}"] = (
+            tg.groupby("team_id")["cover"]
+            .transform(lambda s: s.shift(1).rolling(window, min_periods=1).mean())
+            .fillna(0.5)
         )
-        df[f"{side}_win_pct_r5"] = win_pct.shift(1)
-        df.drop(columns=["_won"], inplace=True)
-
-        # Margin last 3 and last 10
-        df["_margin"] = df[score_col] - df[opp_col]
-        for w in (3, 10):
-            col = f"{side}_margin_r{w}"
-            df[col] = df.groupby(team_abbr)["_margin"].transform(
-                lambda s: s.rolling(w, min_periods=1).mean()
-            ).shift(1)
-
-        # Cover % last 5 (uses _margin, so keep it alive)
-        df["_cover"] = (df["_margin"].fillna(0) + df["closing_spread"].fillna(0)) > 0
-        if side == "away":
-            df["_cover"] = (df["_margin"].fillna(0) - df["closing_spread"].fillna(0)) < 0
-        df["_cover"] = df["_cover"].astype(float)
-        cover_pct = df.groupby(team_abbr)["_cover"].transform(
-            lambda s: s.rolling(5, min_periods=1).mean()
-        )
-        df[f"{side}_cover_pct_r5"] = cover_pct.shift(1)
-        df.drop(columns=["_cover"], inplace=True)
-
-        # Embarrassed flag: lost by 14+ in previous game
-        df["_emb"] = (df["_margin"].shift(1) < -14).astype(float)
-        df[f"{side}_embarrassed"] = df.groupby(team_abbr)["_emb"].transform(
-            lambda s: s.rolling(1, min_periods=1).mean()
-        )
-        df.drop(columns=["_emb", "_margin"], inplace=True)
-
-    # ── 6. Season ATS % ──────────────────────────────────────────────────────
-    for side in ("home", "away"):
-        abbr_col = f"{side}_abbr"
-        cover_col = f"{side}_ats_cover"
-        season_ats = df.groupby(["season_id", df[abbr_col]])[cover_col].transform(
-            lambda s: s.expanding().mean().shift(1)
-        )
-        df[f"{side}_season_ats_pct"] = season_ats
-
-    # ── 7. Travel distance ───────────────────────────────────────────────────
-    df["travel_miles"] = df.apply(
-        lambda row: haversine_miles(
-            *_location_cache.get(row["away_abbr"], (0, 0)),
-            *_location_cache.get(row["home_abbr"], (0, 0)),
-        ),
-        axis=1,
-    )
-
-    # ── 8. Dome / weather ────────────────────────────────────────────────────
-    df["is_dome"] = df["roof_type"].fillna("").isin(
-        ["Dome", "Retractable Roof", "dome", "retractable"]
-    ).astype(float)
-    df["temp"] = pd.to_numeric(df["temperature"], errors="coerce").fillna(70.0)
-    df["wind"] = pd.to_numeric(df["wind_speed"], errors="coerce").fillna(0.0)
-
-    # ── 9. Season avg points (league-wide) ───────────────────────────────────
-    season_avg = (
-        df.groupby("season_id")
-        .apply(
-            lambda grp: (
-                grp["home_score"].sum() + grp["away_score"].sum()
-            ) / (2 * len(grp))
-        )
-        .rename("season_avg_pts")
-    )
-    df["season_avg_pts"] = df["season_id"].map(season_avg)
-
-    # ── 10. Timezone diff ────────────────────────────────────────────────────
-    tz_map = {
-        "ARI": -7, "ATL": -5, "BAL": -5, "BUF": -5, "CAR": -5,
-        "CHI": -6, "CIN": -5, "CLE": -5, "DAL": -6, "DEN": -7,
-        "DET": -5, "GB": -6, "HOU": -6, "IND": -5, "JAX": -5,
-        "KC": -6, "LAC": -8, "LAR": -8, "LV": -8, "MIA": -5,
-        "MIN": -6, "NE": -5, "NO": -6, "NYG": -5, "NYJ": -5,
-        "PHI": -5, "PIT": -5, "SEA": -8, "SF": -8, "TB": -5,
-        "TEN": -6, "WAS": -5,
-    }
-    df["tz_diff"] = df.apply(
-        lambda row: tz_map.get(row["home_abbr"], -5) - tz_map.get(row["away_abbr"], -5),
-        axis=1,
-    )
-
-    # ── 11. Defensive stats (wide aliases from features list) ────────────────
-    # These are defensive PPG: opponent's PF = home PA, opponent's PA = home PF
-    # Already have hpf/hpa/apf/apa above.  Map the defensive aliases:
-    df["dpf"] = df["apf"]  # defensive PF ≈ what the defense allows? No — ambiguous.
-    df["dpa"] = df["hpa"]   # See MEMORY.md feature list for context.
-    # Actually "dpf" = defensive points for = opponent's scoring (what D gives up is PA)
-    # For the home team: dpf ≈ away team's PF (the D they face).
-    # We'll just alias for safety.
-
-    # ── 12. OU trend features ─────────────────────────────────────────────
-    # OU over% and margin from game results
-    df["total_actual"] = df.get("home_score", 0) + df.get("away_score", 0)
-    has_ou = df.get("opening_ou", pd.Series([float("nan")] * len(df))).notna()
-
-    df["home_ou_over_pct_r5"] = 0.0
-    df["away_ou_over_pct_r5"] = 0.0
-    df["home_ou_margin_r5"] = 0.0
-    df["away_ou_margin_r5"] = 0.0
-
-    if has_ou.any() and "over_result" in df.columns:
-        df["ou_margin"] = df["total_actual"] - df["opening_ou"]
-
-        for team, prefix in [("home_", "home"), ("away_", "away")]:
-            tc = f"{team}team_id"
-            if tc in df.columns:
-                df[f"{prefix}_ou_over_pct_r5"] = (
-                    df.groupby(tc)["over_result"]
-                    .transform(lambda s: s.shift(1).rolling(5, min_periods=1).mean())
-                    .fillna(0.5)
-                )
-                df[f"{prefix}_ou_margin_r5"] = (
-                    df.groupby(tc)["ou_margin"]
-                    .transform(lambda s: s.shift(1).rolling(5, min_periods=1).mean())
-                    .fillna(0.0)
-                )
-
-    # ── 13. Home/Away ATS splits ─────────────────────────────────────────
-    df["home_ats_home_pct_r5"] = 0.0
-    df["away_ats_away_pct_r5"] = 0.0
-
-    if "home_ats_cover" in df.columns:
-        for team, prefix in [("home_", "home"), ("away_", "away")]:
-            tc = f"{team}team_id"
-            if tc in df.columns:
-                df[f"{prefix}_ats_home_pct_r5"] = (
-                    df.groupby(tc)["home_ats_cover"]
-                    .transform(lambda s: s.shift(1).rolling(5, min_periods=1).mean())
-                    .fillna(0.5)
-                )
-        # home_ats_home_pct_r5 = home_ats_home_pct_r5 (already correct)
-        # For away ATS-away: team is the away team in this game
-        if "away_team_id" in df.columns and "home_ats_cover" in df.columns:
-            df["cover_as_away"] = 1 - df["home_ats_cover"]  # flip home cover to get away cover
-            df["away_ats_away_pct_r5"] = (
-                df.groupby("away_team_id")["cover_as_away"]
-                .transform(lambda s: s.shift(1).rolling(5, min_periods=1).mean())
-                .fillna(0.5)
+        if window == 10:
+            tg["pf"] = (
+                tg.groupby("team_id")["score"]
+                .transform(lambda s: s.shift(1).rolling(10, min_periods=1).mean())
+            )
+            tg["pa"] = (
+                tg.groupby("team_id")["opp_score"]
+                .transform(lambda s: s.shift(1).rolling(10, min_periods=1).mean())
             )
 
-    # ── 14. Streak features ──────────────────────────────────────────────
-    df["home_win_streak"] = 0
-    df["away_win_streak"] = 0
-    df["home_ats_streak"] = 0
-    df["away_ats_streak"] = 0
+    # OU features
+    if "ou_margin" in tg.columns:
+        tg["cover_as_over"] = (tg["ou_margin"] > 0).astype(float)
+        for window in [5, 10]:
+            tg[f"ou_over_pct_r{window}"] = (
+                tg.groupby("team_id")["cover_as_over"]
+                .transform(lambda s: s.shift(1).rolling(window, min_periods=1).mean())
+                .fillna(0.5)
+            )
+            tg[f"ou_margin_r{window}"] = (
+                tg.groupby("team_id")["ou_margin"]
+                .transform(lambda s: s.shift(1).rolling(window, min_periods=1).mean())
+                .fillna(0.0)
+            )
+        tg["ou_as_over_pct_r10"] = tg["ou_over_pct_r10"]
 
-    if "home_score_margin" in df.columns:
-        for team, prefix in [("home_", "home"), ("away_", "away")]:
-            tc = f"{team}team_id"
-            if tc in df.columns:
-                df[f"{prefix}_win_streak"] = (
-                    df.groupby(tc)["home_score_margin"]
-                    .transform(
-                        lambda s: (
-                            s.shift(1)
-                            .rolling(5, min_periods=1)
-                            .apply(
-                                lambda x: _compute_streak(x.values)
-                                if len(x) > 0
-                                else 0
-                            )
-                        )
-                    )
-                    .fillna(0)
-                    .astype(int)
-                )
+    # Embarrassed (lost by 14+)
+    tg["embarrassed"] = (tg["margin"] <= -14).astype(float)
+    for window in [5, 10]:
+        tg[f"embarrassed_pct_r{window}"] = (
+            tg.groupby("team_id")["embarrassed"]
+            .transform(lambda s: s.shift(1).rolling(window, min_periods=1).mean())
+            .fillna(0.0)
+        )
 
-    if "home_ats_cover" in df.columns:
-        for team, prefix in [("home_", "home"), ("away_", "away")]:
-            tc = f"{team}team_id"
-            if tc in df.columns:
-                df[f"{prefix}_ats_streak"] = (
-                    df.groupby(tc)["home_ats_cover"]
-                    .transform(
-                        lambda s: (
-                            s.shift(1)
-                            .rolling(5, min_periods=1)
-                            .apply(
-                                lambda x: _compute_streak(x.values)
-                                if len(x) > 0
-                                else 0
-                            )
-                        )
-                    )
-                    .fillna(0)
-                    .astype(int)
-                )
+    # Season-long ATS (expanding within each team+season)
+    tg["season_ats"] = (
+        tg.groupby(["team_id", "season_id"])["cover"]
+        .transform(lambda s: s.shift(1).expanding().mean())
+        .fillna(0.5)
+    )
+    # Season wins
+    tg["season_wins"] = (
+        tg.groupby(["team_id", "season_id"])["won"]
+        .transform(lambda s: s.shift(1).expanding().sum())
+        .fillna(0)
+    )
 
-    # ── 15. Weighted (decayed) margin ────────────────────────────────────
-    df["home_weighted_margin_r5"] = 0.0
-    df["away_weighted_margin_r5"] = 0.0
+    # Home/away ATS splits — position-specific (kept for situational data)
+    homes = tg[tg.position == "home"].copy()
+    homes["ats_cover_pct_r5"] = (
+        homes.groupby("team_id")["cover"]
+        .transform(lambda s: s.shift(1).rolling(5, min_periods=1).mean())
+        .fillna(0.5)
+    )
+    aways = tg[tg.position == "away"].copy()
+    aways["ats_cover_pct_r5"] = (
+        aways.groupby("team_id")["cover"]
+        .transform(lambda s: s.shift(1).rolling(5, min_periods=1).mean())
+        .fillna(0.5)
+    )
 
-    if "home_score_margin" in df.columns:
-        decay_weights = np.array([0.0625, 0.125, 0.25, 0.5, 1.0])
-        decay_weights = decay_weights / decay_weights.sum()
+    # Streaks
+    def _compute_streak(arr):
+        if len(arr) == 0:
+            return 0
+        streak = 0
+        for v in reversed(arr):
+            if v > 0:
+                streak += 1
+            else:
+                break
+        return streak
 
-        def _weighted_avg(series):
-            vals = series.values
-            if len(vals) == 0:
-                return 0.0
-            w = decay_weights[-len(vals) :]
-            return float(np.average(vals, weights=w))
+    for stat_name, stat_col in [("win", "won"), ("ats", "cover")]:
+        tg[f"{stat_name}_streak"] = (
+            tg.groupby("team_id")[stat_col]
+            .transform(
+                lambda s: s.shift(1)
+                .rolling(5, min_periods=1)
+                .apply(lambda x: _compute_streak(x.values) if len(x) > 0 else 0)
+            )
+        ).fillna(0).astype(int)
 
-        for team, prefix in [("home_", "home"), ("away_", "away")]:
-            tc = f"{team}team_id"
-            if tc in df.columns:
-                df[f"{prefix}_weighted_margin_r5"] = (
-                    df.groupby(tc)["home_score_margin"]
-                    .transform(
-                        lambda s: s.shift(1)
-                        .rolling(5, min_periods=1)
-                        .apply(_weighted_avg)
-                    )
-                    .fillna(0.0)
-                )
+    # Weighted (decayed) margin
+    decay_weights = np.array([0.0625, 0.125, 0.25, 0.5, 1.0])
+    decay_weights = decay_weights / decay_weights.sum()
 
+    def _weighted_avg(series):
+        vals = series.values
+        if len(vals) == 0:
+            return 0.0
+        w = decay_weights[-len(vals):]
+        return float(np.average(vals, weights=w))
+
+    tg["weighted_margin_r5"] = (
+        tg.groupby("team_id")["margin"]
+        .transform(
+            lambda s: s.shift(1)
+            .rolling(5, min_periods=1)
+            .apply(_weighted_avg)
+        )
+    ).fillna(0.0)
+
+    # ── Join team-overall stats back into wide DataFrame ──────────────────
+    home_stats = tg[tg["position"] == "home"].set_index("game_id")
+    away_stats = tg[tg["position"] == "away"].set_index("game_id")
+
+    tg_cols = {
+        "win_pct_r5", "win_pct_r10",
+        "margin_r5", "margin_r10",
+        "cover_pct_r5", "cover_pct_r10",
+        "pf", "pa",
+        "ou_over_pct_r5", "ou_over_pct_r10",
+        "ou_margin_r5", "ou_margin_r10",
+        "embarrassed_pct_r5", "embarrassed_pct_r10",
+        "season_ats", "season_wins",
+        "ou_as_over_pct_r10",
+        "win_streak", "ats_streak",
+        "weighted_margin_r5",
+        "ats_cover_pct_r5",
+    }
+    existing = {c for c in tg_cols if c in home_stats.columns}
+
+    for col in existing:
+        df[f"home_{col}"] = df["game_id"].map(home_stats[col])
+        df[f"away_{col}"] = df["game_id"].map(away_stats[col])
+
+    # Populate PF/PA with legacy names for backward compat
+    if "pf" in existing:
+        df["hpf"] = df["home_pf"]
+        df["apf"] = df["away_pf"]
+    if "pa" in existing:
+        df["hpa"] = df["home_pa"]
+        df["apa"] = df["away_pa"]
+
+    # Implied scoring features
+    if "hpf" in df.columns and "apf" in df.columns:
+        df["hpf_vs_aimp"] = df["hpf"] - df["aimp"]
+        df["apf_vs_himp"] = df["apf"] - df["himp"]
+        df["hhpa_vs_imp"] = df["hpf"] - df["aimp"]
+        df["aapa_vs_imp"] = df["apf"] - df["himp"]
+
+    # Home/away ATS split features from position-specific computation
+    _homes_ats = homes.set_index("game_id")["ats_cover_pct_r5"]
+    _aways_ats = aways.set_index("game_id")["ats_cover_pct_r5"]
+    df["home_ats_home_pct_r5"] = df["game_id"].map(_homes_ats).fillna(0.5)
+    df["away_ats_away_pct_r5"] = df["game_id"].map(_aways_ats).fillna(0.5)
     # ── 16. Division & primetime flags ───────────────────────────────────
     if "home_div" in df.columns and "away_div" in df.columns:
         df["is_division_game"] = (
