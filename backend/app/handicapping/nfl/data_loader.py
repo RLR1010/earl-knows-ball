@@ -935,12 +935,19 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
 
     # ── 1. Outcome targets ───────────────────────────────────────────────────
     home_won = df["home_score"] > df["away_score"]
-    df["home_ats_cover"] = (
-        (df["home_score"] - df["away_score"] + df["closing_spread"]) > 0
-    ).astype(float).where(home_won.notna(), float("nan"))
-    df["away_ats_cover"] = (
-        (df["away_score"] - df["home_score"] - df["closing_spread"]) > 0
-    ).astype(float).where(home_won.notna(), float("nan"))
+    # closing_spread can be NaN for seasons without betting data;
+    # must use np.where to avoid pandas NaN > 0 → False bug
+    _has_line = df["closing_spread"].notna()
+    df["home_ats_cover"] = np.where(
+        _has_line & home_won.notna(),
+        (df["home_score"] - df["away_score"] + df["closing_spread"]) > 0,
+        float("nan")
+    ).astype(float)
+    df["away_ats_cover"] = np.where(
+        _has_line & home_won.notna(),
+        (df["away_score"] - df["home_score"] - df["closing_spread"]) > 0,
+        float("nan")
+    ).astype(float)
     df["over_result"] = (
         (df["home_score"] + df["away_score"]) > df["closing_ou"]
     ).astype(float).where(df["closing_ou"].notna(), float("nan"))

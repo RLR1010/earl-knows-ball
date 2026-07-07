@@ -523,7 +523,13 @@ async def train_model(
             continue
 
         available = [c for c in feature_cols if c in df_train.columns]
+        # Remove columns that are entirely NaN (never computed)
+        available = [c for c in available if df_train[c].notna().any()]
         df_train = df_train.dropna(subset=available)
+
+        if df_train.empty:
+            logger.warning("No training data after NaN filtering for test_year=%d, skipping", test_year)
+            continue
 
         X_train = df_train[available].values
         y_train = df_train[target].values
