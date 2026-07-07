@@ -53,7 +53,6 @@ def save_training_run(
     results_json: Optional[dict | list],
     pkl_filename: str,
     algorithm: str = "xgboost",
-    description: str = "",
     test_year: Optional[int] = None,
     train_years: Optional[list[int]] = None,
 ) -> str:
@@ -84,8 +83,8 @@ def save_training_run(
             cur.execute(
                 f'INSERT INTO {sport}.training_runs '
                 f'(training_id, model_type, trained_at, results_json, is_current, '
-                f' pkl_filename, algorithm, description, test_year, train_years) '
-                f'VALUES (%s, %s, %s, %s, TRUE, %s, %s, %s, %s, %s)',
+                f' pkl_filename, algorithm, test_year, train_years) '
+                f'VALUES (%s, %s, %s, %s, TRUE, %s, %s, %s, %s)',
                 (
                     training_id,
                     model_type,
@@ -93,7 +92,6 @@ def save_training_run(
                     psycopg2.extras.Json(results_json, dumps=lambda x: json.dumps(x, default=str)) if results_json else None,
                     pkl_filename,
                     algorithm,
-                    description,
                     test_year,
                     train_years_str,
                 )

@@ -19,6 +19,34 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 import psycopg2
+
+
+def _compute_streak(values: np.ndarray) -> int:
+    """Compute the current streak from a sliding window of values.
+
+    Positive values = winning streak, negative values = losing streak.
+    Streak continues until sign changes or we hit a zero/push.
+    """
+    if len(values) == 0:
+        return 0
+    vals = np.asarray(values)
+    streak = 0
+    for v in reversed(vals):
+        if pd.isna(v):
+            break
+        if v > 0:
+            if streak >= 0:
+                streak += 1
+            else:
+                break
+        elif v < 0:
+            if streak <= 0:
+                streak -= 1
+            else:
+                break
+        else:
+            break
+    return streak
 import psycopg2.extras
 from math import asin, cos, radians, sin, sqrt
 
@@ -247,6 +275,47 @@ COMPUTED_FEATURES_CATALOG: Dict[str, str] = {
     "away_implied_pts": "Away team implied points from closing spread + OU",
     "home_rest_days": "Home team rest days since last game",
     "away_rest_days": "Away team rest days since last game",
+
+    # ── New features (added 2026-07-06) ──────────────────────────────────
+    "is_division_game": "Division matchup flag",
+    "is_primetime": "Primetime game flag",
+    "venue_elevation_ft": "Stadium elevation (ft)",
+    "home_ou_over_pct_r5": "Home OU Over% L5",
+    "away_ou_over_pct_r5": "Away OU Over% L5",
+    "home_ou_margin_r5": "Home OU Margin L5",
+    "away_ou_margin_r5": "Away OU Margin L5",
+    "home_ats_home_pct_r5": "Home ATS-Home% L5",
+    "away_ats_away_pct_r5": "Away ATS-Away% L5",
+    "home_win_streak": "Home Win Streak",
+    "away_win_streak": "Away Win Streak",
+    "home_ats_streak": "Home ATS Streak",
+    "away_ats_streak": "Away ATS Streak",
+    "home_weighted_margin_r5": "Home Wt'd Margin L5",
+    "away_weighted_margin_r5": "Away Wt'd Margin L5",
+    "home_off_ypg": "Home Off YPG",
+    "away_off_ypg": "Away Off YPG",
+    "home_def_ypg": "Home Def YPG",
+    "away_def_ypg": "Away Def YPG",
+    "home_ypp": "Home YPP",
+    "away_ypp": "Away YPP",
+    "home_def_ypp": "Home Def YPP",
+    "away_def_ypp": "Away Def YPP",
+    "home_pass_ypg": "Home Pass YPG",
+    "away_pass_ypg": "Away Pass YPG",
+    "home_rush_ypg": "Home Rush YPG",
+    "away_rush_ypg": "Away Rush YPG",
+    "home_pass_ypa": "Home Pass YPA",
+    "away_pass_ypa": "Away Pass YPA",
+    "home_rush_ypa": "Home Rush YPA",
+    "away_rush_ypa": "Away Rush YPA",
+    "home_turnover_diff_r5": "Home TO Diff L5",
+    "away_turnover_diff_r5": "Away TO Diff L5",
+    "home_def_pass_ypg": "Home Def Pass YPG",
+    "away_def_pass_ypg": "Away Def Pass YPG",
+    "home_def_rush_ypg": "Home Def Rush YPG",
+    "away_def_rush_ypg": "Away Def Rush YPG",
+    "home_injury_weight": "Home Injury Weight",
+    "away_injury_weight": "Away Injury Weight",
 }
 
 # Human-readable short labels for every feature (matches nfl.features.display_name)
@@ -300,6 +369,47 @@ DISPLAY_NAMES: Dict[str, str] = {
     "away_implied_pts": "Away Imp Pts",
     "home_rest_days": "Home Rest",
     "away_rest_days": "Away Rest",
+
+    # ── New features (added 2026-07-06) ─────────────────────────────────────
+    "is_division_game": "Division",
+    "is_primetime": "Primetime",
+    "venue_elevation_ft": "Elevation",
+    "home_ou_over_pct_r5": "OU Over% L5 H",
+    "away_ou_over_pct_r5": "OU Over% L5 A",
+    "home_ou_margin_r5": "OU Margin L5 H",
+    "away_ou_margin_r5": "OU Margin L5 A",
+    "home_ats_home_pct_r5": "ATS@Home L5",
+    "away_ats_away_pct_r5": "ATS@Away L5",
+    "home_win_streak": "Win Str H",
+    "away_win_streak": "Win Str A",
+    "home_ats_streak": "ATS Str H",
+    "away_ats_streak": "ATS Str A",
+    "home_weighted_margin_r5": "Wt Margin H",
+    "away_weighted_margin_r5": "Wt Margin A",
+    "home_off_ypg": "Off YPG H",
+    "away_off_ypg": "Off YPG A",
+    "home_def_ypg": "Def YPG H",
+    "away_def_ypg": "Def YPG A",
+    "home_ypp": "YPP H",
+    "away_ypp": "YPP A",
+    "home_def_ypp": "Def YPP H",
+    "away_def_ypp": "Def YPP A",
+    "home_pass_ypg": "Pass YPG H",
+    "away_pass_ypg": "Pass YPG A",
+    "home_rush_ypg": "Rush YPG H",
+    "away_rush_ypg": "Rush YPG A",
+    "home_pass_ypa": "Pass YPA H",
+    "away_pass_ypa": "Pass YPA A",
+    "home_rush_ypa": "Rush YPA H",
+    "away_rush_ypa": "Rush YPA A",
+    "home_turnover_diff_r5": "TO Dff H",
+    "away_turnover_diff_r5": "TO Dff A",
+    "home_def_pass_ypg": "D-Pass YPG H",
+    "away_def_pass_ypg": "D-Pass YPG A",
+    "home_def_rush_ypg": "D-Rush YPG H",
+    "away_def_rush_ypg": "D-Rush YPG A",
+    "home_injury_weight": "Inj Wt H",
+    "away_injury_weight": "Inj Wt A",
 }
 
 
@@ -579,9 +689,35 @@ class NFLDataLoader:
             logger.warning("No games returned — returning empty DataFrame")
             return df
 
-        # 2. Run feature engineering
+        # 2. Load team stats from nfl.game_stats (real NFL stats 2016-present)
+        team_stats = None
+        try:
+            from .team_stats import compute_team_game_aggregates
+
+            ts_df = compute_team_game_aggregates(self.engine)
+            if not ts_df.empty:
+                # Keep columns needed for merge (season+week+team_abbr to match GAME_QUERY)
+                team_stats = ts_df[
+                    ["season", "week", "team_abbr", "opp_abbr",
+                     "off_ypg", "ypp", "pass_ypg", "rush_ypg",
+                     "pass_ypa", "rush_ypa", "turnover_diff",
+                     "def_ypg", "def_ypp",
+                     "def_pass_ypg", "def_rush_ypg"]
+                ].copy()
+                logger.info(
+                    "Loaded %d team-game stat rows from nfl.game_stats (%d-%d)",
+                    len(team_stats),
+                    int(team_stats["season"].min()),
+                    int(team_stats["season"].max()),
+                )
+        except ImportError:
+            logger.debug("team_stats module not available — skipping")
+        except Exception as exc:
+            logger.warning("Failed to load team stats: %s", exc)
+
+        # 3. Run feature engineering
         fn = build_features_fn if build_features_fn is not None else build_features
-        df = fn(df, **build_kwargs)
+        df = fn(df, team_stats=team_stats, **build_kwargs)
 
         # 3. Determine output columns
         if feature_names is None:
@@ -934,6 +1070,303 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
     # Actually "dpf" = defensive points for = opponent's scoring (what D gives up is PA)
     # For the home team: dpf ≈ away team's PF (the D they face).
     # We'll just alias for safety.
+
+    # ── 12. OU trend features ─────────────────────────────────────────────
+    # OU over% and margin from game results
+    df["total_actual"] = df.get("home_score", 0) + df.get("away_score", 0)
+    has_ou = df.get("opening_ou", pd.Series([float("nan")] * len(df))).notna()
+
+    df["home_ou_over_pct_r5"] = 0.0
+    df["away_ou_over_pct_r5"] = 0.0
+    df["home_ou_margin_r5"] = 0.0
+    df["away_ou_margin_r5"] = 0.0
+
+    if has_ou.any() and "over_result" in df.columns:
+        df["ou_margin"] = df["total_actual"] - df["opening_ou"]
+
+        for team, prefix in [("home_", "home"), ("away_", "away")]:
+            tc = f"{team}team_id"
+            if tc in df.columns:
+                df[f"{prefix}_ou_over_pct_r5"] = (
+                    df.groupby(tc)["over_result"]
+                    .transform(lambda s: s.shift(1).rolling(5, min_periods=1).mean())
+                    .fillna(0.5)
+                )
+                df[f"{prefix}_ou_margin_r5"] = (
+                    df.groupby(tc)["ou_margin"]
+                    .transform(lambda s: s.shift(1).rolling(5, min_periods=1).mean())
+                    .fillna(0.0)
+                )
+
+    # ── 13. Home/Away ATS splits ─────────────────────────────────────────
+    df["home_ats_home_pct_r5"] = 0.0
+    df["away_ats_away_pct_r5"] = 0.0
+
+    if "home_ats_cover" in df.columns:
+        for team, prefix in [("home_", "home"), ("away_", "away")]:
+            tc = f"{team}team_id"
+            if tc in df.columns:
+                df[f"{prefix}_ats_home_pct_r5"] = (
+                    df.groupby(tc)["home_ats_cover"]
+                    .transform(lambda s: s.shift(1).rolling(5, min_periods=1).mean())
+                    .fillna(0.5)
+                )
+        # home_ats_home_pct_r5 = home_ats_home_pct_r5 (already correct)
+        # For away ATS-away: team is the away team in this game
+        if "away_team_id" in df.columns and "home_ats_cover" in df.columns:
+            df["cover_as_away"] = 1 - df["home_ats_cover"]  # flip home cover to get away cover
+            df["away_ats_away_pct_r5"] = (
+                df.groupby("away_team_id")["cover_as_away"]
+                .transform(lambda s: s.shift(1).rolling(5, min_periods=1).mean())
+                .fillna(0.5)
+            )
+
+    # ── 14. Streak features ──────────────────────────────────────────────
+    df["home_win_streak"] = 0
+    df["away_win_streak"] = 0
+    df["home_ats_streak"] = 0
+    df["away_ats_streak"] = 0
+
+    if "home_score_margin" in df.columns:
+        for team, prefix in [("home_", "home"), ("away_", "away")]:
+            tc = f"{team}team_id"
+            if tc in df.columns:
+                df[f"{prefix}_win_streak"] = (
+                    df.groupby(tc)["home_score_margin"]
+                    .transform(
+                        lambda s: (
+                            s.shift(1)
+                            .rolling(5, min_periods=1)
+                            .apply(
+                                lambda x: _compute_streak(x.values)
+                                if len(x) > 0
+                                else 0
+                            )
+                        )
+                    )
+                    .fillna(0)
+                    .astype(int)
+                )
+
+    if "home_ats_cover" in df.columns:
+        for team, prefix in [("home_", "home"), ("away_", "away")]:
+            tc = f"{team}team_id"
+            if tc in df.columns:
+                df[f"{prefix}_ats_streak"] = (
+                    df.groupby(tc)["home_ats_cover"]
+                    .transform(
+                        lambda s: (
+                            s.shift(1)
+                            .rolling(5, min_periods=1)
+                            .apply(
+                                lambda x: _compute_streak(x.values)
+                                if len(x) > 0
+                                else 0
+                            )
+                        )
+                    )
+                    .fillna(0)
+                    .astype(int)
+                )
+
+    # ── 15. Weighted (decayed) margin ────────────────────────────────────
+    df["home_weighted_margin_r5"] = 0.0
+    df["away_weighted_margin_r5"] = 0.0
+
+    if "home_score_margin" in df.columns:
+        decay_weights = np.array([0.0625, 0.125, 0.25, 0.5, 1.0])
+        decay_weights = decay_weights / decay_weights.sum()
+
+        def _weighted_avg(series):
+            vals = series.values
+            if len(vals) == 0:
+                return 0.0
+            w = decay_weights[-len(vals) :]
+            return float(np.average(vals, weights=w))
+
+        for team, prefix in [("home_", "home"), ("away_", "away")]:
+            tc = f"{team}team_id"
+            if tc in df.columns:
+                df[f"{prefix}_weighted_margin_r5"] = (
+                    df.groupby(tc)["home_score_margin"]
+                    .transform(
+                        lambda s: s.shift(1)
+                        .rolling(5, min_periods=1)
+                        .apply(_weighted_avg)
+                    )
+                    .fillna(0.0)
+                )
+
+    # ── 16. Division & primetime flags ───────────────────────────────────
+    if "home_div" in df.columns and "away_div" in df.columns:
+        df["is_division_game"] = (
+            (df["home_div"] == df["away_div"]).astype(float)
+        )
+    else:
+        df["is_division_game"] = 0.0
+
+    date_col = "game_date" if "game_date" in df.columns else "date"
+    if date_col in df.columns:
+        try:
+            df["game_hour"] = pd.to_datetime(df[date_col]).dt.hour
+            df["is_primetime"] = (
+                df["game_hour"].isin([20, 21, 22, 23]).astype(float)
+            )
+        except Exception:
+            df["is_primetime"] = 0.0
+    else:
+        df["is_primetime"] = 0.0
+
+    # ── 17. Venue elevation ──────────────────────────────────────────────
+    # Known NFL stadium elevations (ft) — Denver is the big altitude edge
+    _venue_elev = {
+        "DEN": 5280, "ARI": 1086, "LV": 2010, "WAS": 200, "PIT": 819,
+        "PHI": 55, "BAL": 143, "BUF": 584, "SEA": 377, "ATL": 1050,
+        "KC": 807, "CIN": 541, "DAL": 600, "HOU": 96, "GB": 640,
+        "MIN": 870, "CAR": 653, "JAX": 16, "TEN": 504, "NE": 116,
+        "MIA": 7, "CLE": 591, "NO": 6, "CHI": 610, "TB": 50,
+        "IND": 712, "SF": 10, "DET": 636, "LA": 305,
+    }
+    if "home_abbr" in df.columns:
+        df["venue_elevation_ft"] = (
+            df["home_abbr"].map(_venue_elev).fillna(0.0)
+        )
+    else:
+        df["venue_elevation_ft"] = 0.0
+
+    # ── 18. Injury weight ────────────────────────────────────────────────
+    # Placeholder — populated by engine for live predictions
+    df["home_injury_weight"] = 0.0
+    df["away_injury_weight"] = 0.0
+
+    # ── 19. Team stats from nfl.game_stats (real data 2016-present) ──┐
+    team_stats = kwargs.get("team_stats")
+    if team_stats is not None and not team_stats.empty:
+        _ts = team_stats
+        logger.info(
+            "Merging team stats for %d rows (need season_year + week columns)",
+            len(df),
+        )
+
+        # Determine season column name (GAME_QUERY uses "season_year")
+        season_col = "season_year" if "season_year" in df.columns else "season"
+
+        # Rename _ts.season to match season_col so left_on/right_on names are
+        # identical — avoids accumulating duplicate season/season_x/season_y
+        # columns across multiple sequential merges.
+        if season_col != "season" and "season" in _ts.columns:
+            _ts = _ts.rename(columns={"season": season_col})
+
+        # ── Home team offensive stats ──
+        home_off = _ts.rename(columns={
+            "team_abbr": "home_abbr",
+            "off_ypg": "home_off_ypg",
+            "ypp": "home_ypp",
+            "pass_ypg": "home_pass_ypg",
+            "rush_ypg": "home_rush_ypg",
+            "pass_ypa": "home_pass_ypa",
+            "rush_ypa": "home_rush_ypa",
+            "turnover_diff": "home_turnover_diff_r5",
+        })
+        df = df.merge(
+            home_off[[season_col, "week", "home_abbr",
+                      "home_off_ypg", "home_ypp", "home_pass_ypg",
+                      "home_rush_ypg", "home_pass_ypa", "home_rush_ypa",
+                      "home_turnover_diff_r5"]],
+            left_on=[season_col, "week", "home_abbr"],
+            right_on=[season_col, "week", "home_abbr"],
+            how="left",
+        )
+
+        # ── Away team offensive stats ──
+        away_off = _ts.rename(columns={
+            "team_abbr": "away_abbr",
+            "off_ypg": "away_off_ypg",
+            "ypp": "away_ypp",
+            "pass_ypg": "away_pass_ypg",
+            "rush_ypg": "away_rush_ypg",
+            "pass_ypa": "away_pass_ypa",
+            "rush_ypa": "away_rush_ypa",
+            "turnover_diff": "away_turnover_diff_r5",
+        })
+        df = df.merge(
+            away_off[[season_col, "week", "away_abbr",
+                      "away_off_ypg", "away_ypp", "away_pass_ypg",
+                      "away_rush_ypg", "away_pass_ypa", "away_rush_ypa",
+                      "away_turnover_diff_r5"]],
+            left_on=[season_col, "week", "away_abbr"],
+            right_on=[season_col, "week", "away_abbr"],
+            how="left",
+        )
+
+        # ── Home team defensive stats ──
+        # Home team's defense = what the OPPONENT's offense produced
+        home_def = _ts.rename(columns={
+            "team_abbr": "away_abbr",  # opponent's team
+            "def_ypg": "home_def_ypg",
+            "def_ypp": "home_def_ypp",
+            "def_pass_ypg": "home_def_pass_ypg",
+            "def_rush_ypg": "home_def_rush_ypg",
+        })
+        df = df.merge(
+            home_def[[season_col, "week", "away_abbr",
+                      "home_def_ypg", "home_def_ypp",
+                      "home_def_pass_ypg", "home_def_rush_ypg"]],
+            left_on=[season_col, "week", "away_abbr"],
+            right_on=[season_col, "week", "away_abbr"],
+            how="left",
+        )
+
+        # ── Away team defensive stats ──
+        away_def = _ts.rename(columns={
+            "team_abbr": "home_abbr",  # opponent's team
+            "def_ypg": "away_def_ypg",
+            "def_ypp": "away_def_ypp",
+            "def_pass_ypg": "away_def_pass_ypg",
+            "def_rush_ypg": "away_def_rush_ypg",
+        })
+        df = df.merge(
+            away_def[[season_col, "week", "home_abbr",
+                      "away_def_ypg", "away_def_ypp",
+                      "away_def_pass_ypg", "away_def_rush_ypg"]],
+            left_on=[season_col, "week", "home_abbr"],
+            right_on=[season_col, "week", "home_abbr"],
+            how="left",
+        )
+
+        # ── Fill NAs for games without game_stats data ──
+        stat_suffixes = [
+            "off_ypg", "ypp", "pass_ypg", "rush_ypg",
+            "pass_ypa", "rush_ypa", "turnover_diff_r5",
+            "def_ypg", "def_ypp",
+            "def_pass_ypg", "def_rush_ypg",
+        ]
+        for prefix in ["home", "away"]:
+            for suffix in stat_suffixes:
+                col = f"{prefix}_{suffix}"
+                if col in df.columns:
+                    df[col] = df[col].fillna(0.0)
+
+        logger.info(
+            "Team stats merged: home_off_ypg non-null count = %d",
+            int(df["home_off_ypg"].notna().sum()),
+        )
+
+    else:
+        # No team_stats available — use zeros as safe defaults
+        for prefix in ["home", "away"]:
+            for suffix in [
+                "off_ypg", "ypp", "pass_ypg", "rush_ypg",
+                "pass_ypa", "rush_ypa", "turnover_diff_r5",
+                "def_ypg", "def_ypp",
+            ]:
+                df[f"{prefix}_{suffix}"] = 0.0
+
+        # Drop temporary merge columns
+        for c in ["season", "week"]:
+            if c in df.columns and "_x" not in str(c):
+                # season/week might exist from GAME_QUERY — don't drop
+                pass
 
     logger.info(
         "build_features complete: %d rows, %d features",

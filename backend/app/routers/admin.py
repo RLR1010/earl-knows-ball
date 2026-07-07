@@ -5760,7 +5760,11 @@ async def data_loader_load_game(
         # Step 3: Build features on the full context
         if sport == "nfl":
             from app.handicapping.nfl.data_loader import build_features as nfl_build_features
-            full_built_df = nfl_build_features(full_raw_df)
+            from app.handicapping.nfl.team_stats import compute_team_game_aggregates
+            from sqlalchemy import create_engine as _create_engine
+            _sync_engine = _create_engine(db_url)
+            _ts_df = compute_team_game_aggregates(_sync_engine, window=5)
+            full_built_df = nfl_build_features(full_raw_df, team_stats=_ts_df)
         elif sport == "mlb":
             from app.handicapping.mlb.data_loader import build_features as mlb_build_features
             full_built_df = mlb_build_features(full_raw_df)

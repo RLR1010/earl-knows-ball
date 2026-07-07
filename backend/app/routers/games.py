@@ -140,31 +140,20 @@ async def list_games(
     result = await db.execute(query)
     games = result.unique().scalars().all()
 
-    # Bulk fetch the best betting line for all games
-    # Priority: nflverse (closing) > sbr_closing > the_odds_api > the_odds_api_opening > sbr_opening
+    # Bulk fetch consolidated betting lines (one row per game)
     if games:
         game_ids = [g.id for g in games]
         sql = text("""
-            SELECT DISTINCT ON (bl.game_id)
-                bl.game_id, bl.spread, bl.over_under
-            FROM nfl.betting_lines bl
-            WHERE bl.game_id = ANY(:game_ids)
-            ORDER BY bl.game_id,
-                CASE bl.source
-                    WHEN 'nflverse' THEN 1
-                    WHEN 'sbr_closing' THEN 2
-                    WHEN 'the_odds_api' THEN 3
-                    WHEN 'the_odds_api_opening' THEN 4
-                    ELSE 5
-                END,
-                bl.recorded_at DESC
+            SELECT game_id, closing_spread, closing_ou
+            FROM nfl.betting_lines_consolidated
+            WHERE game_id = ANY(:game_ids)
         """)
         line_result = await db.execute(sql, {"game_ids": game_ids})
         latest_lines = {}
         for row in line_result:
             latest_lines[row.game_id] = {
-                "spread": float(row.spread) if row.spread is not None else None,
-                "over_under": float(row.over_under) if row.over_under is not None else None,
+                "spread": float(row.closing_spread) if row.closing_spread is not None else None,
+                "over_under": float(row.closing_ou) if row.closing_ou is not None else None,
             }
     else:
         latest_lines = {}

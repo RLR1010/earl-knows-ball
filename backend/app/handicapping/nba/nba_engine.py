@@ -121,412 +121,36 @@ def _resolve_year_pkl_paths(model_type: str) -> Dict[int, Path]:
                 year = int(year_str)
             except ValueError:
                 continue
-            p = MODELS_DIR / fname
-            if p.exists():
-                out[year] = p
-            else:
-                logger.warning("  pkl file not found on disk: %s", p)
-    if out:
-        logger.info("  Year pkl files for nba/%s: %s", model_type, out)
-    else:
-        logger.warning("  No year pkl files found for nba/%s", model_type)
+            out[year] = MODELS_DIR / fname
     return out
 
 
-def _load_model_for_year(model_type: str, year: int) -> Optional[xgb.Booster]:
-    """Load a per-year model for a specific calendar year."""
+def _load_model_for_year(year: int, model_type: str) -> Optional[xgb.Booster]:
+    """Load a per-year XGBoost model from pickle."""
     paths = _resolve_year_pkl_paths(model_type)
     p = paths.get(year)
-    if p and p.exists():
-        with open(p, "rb") as f:
-            model = pickle.load(f)
-        logger.info("Loaded %s model for year %d from %s", model_type, year, p)
-        return model
-    logger.warning("No %s model found for year %d", model_type, year)
-    return None
-
-
-# ── Feature helpers ──────────────────────────────────────────────────────────────
-
-_FEATURES_CACHE_ATS: Optional[List[str]] = None
-_FEATURES_CACHE_OU: Optional[List[str]] = None
-
-
-def _get_features(model_type: str) -> List[str]:
-    """Return feature columns from ``nba.features`` for the given model type.
-
-    Queries for features flagged ``live_ats = TRUE`` or ``live_ou = TRUE``
-    (the flags that ``set_training_run_as_current`` marks).
-    """
-    global _FEATURES_CACHE_ATS, _FEATURES_CACHE_OU
-    if model_type == "ats":
-        if _FEATURES_CACHE_ATS is not None:
-            return _FEATURES_CACHE_ATS
-    elif model_type == "ou":
-        if _FEATURES_CACHE_OU is not None:
-            return _FEATURES_CACHE_OU
-
-    conn = psycopg2.connect(DB_DSN)
+    if p is None or not p.exists():
+        logger.warning("  No %s model found for %s (checked %s)", model_type, year, p)
+        return None
     try:
-        with conn.cursor() as cur:
-            if model_type == "ats":
-                feats = get_model_features(cur, live_ats_only=True)
-                _FEATURES_CACHE_ATS = feats
-            else:
-                feats = get_model_features(cur, live_ou_only=True)
-                _FEATURES_CACHE_OU = feats
-    finally:
-        conn.close()
-    return feats
+        with open(p, "rb") as fh:
+            model = pickle.load(fh)
+        logger.info("  Loaded %s model for %s: %s", model_type, year, p.name)
+        return model
+    except Exception as exc:
+        logger.error("  Failed to load %s model for %s: %s", model_type, year, exc)
+        return None
 
 
-def _extract_feature_vector(
-    row: pd.Series,
-    model_type: str,
-) -> Tuple[np.ndarray, List[str]]:
-    """Build a feature vector (values, names) from a DataFrame row."""
-    feature_names = _get_features(model_type)
-    values = []
-    names = []
-    for feat in feature_names:
-        val = row.get(feat)
-        if val is None or (isinstance(val, float) and np.isnan(val)):
-            val = 0.0
-        values.append(float(val))
-        names.append(feat)
-    return np.array([values], dtype=np.float32), names
+def _get_models_for_season(year: int) -> Dict[str, Optional[xgb.Booster]]:
+    """Load both ATS and OU models for a given year.
 
-
-# ── Engine class ─────────────────────────────────────────────────────────────────
-
-
-class NBAHandicapper:
-    """NBA handicapping engine — XGBoost models for ATS and OU prediction.
-
-    Loads year-specific pickled models, predicts games from the data loader,
-    and saves results to ``nba.game_predictions``.
+    Returns ``{"ats": model_or_None, "ou": model_or_None}``.
     """
-
-    def __init__(
-        self,
-        schema: str = "nba",
-        model_prefix: str | None = None,
-    ):
-        self.schema = schema
-        self.model_prefix = model_prefix
-
-    # ── Backtest ─────────────────────────────────────────────────────────────────
-
-    async def backtest(
-        self,
-        years: list[int] | None = None,
-        limit: int | None = None,
-        save_results: bool = True,
-    ) -> Dict[str, Any]:
-        """Run a full backtest across all available NBA years.
-
-        For each year with a pickled model, load pre-computed features via
-        the data loader, evaluate ATS and OU models, and optionally save
-        per-game predictions to ``nba.game_predictions``.
-
-        Returns
-        -------
-        dict with ``ats_results``, ``ou_results``, ``test_years``.
-        """
-        ats_paths = _resolve_year_pkl_paths("ats")
-        ou_paths = _resolve_year_pkl_paths("ou")
-
-        if not ats_paths and not ou_paths:
-            return {"error": "no live training run found with pkl files"}
-
-        if years is None:
-            # Default: years available in both ATS and OU paths
-            all_years = set(ats_paths.keys()) | set(ou_paths.keys())
-            years = sorted(all_years)
-
-        logger.info("Backtest years (from pkl): %s", years)
-
-        dl = get_data_loader()
-        df = dl.load_data(limit=limit)
-        if df.empty:
-            return {"error": "no data"}
-
-        df["total_points"] = df["home_score"] + df["away_score"]
-        df = df.sort_values(["season_year", "game_id"]).reset_index(drop=True)
-
-        ats_results: List[Dict[str, Any]] = []
-        ou_results: List[Dict[str, Any]] = []
-
-        for test_year in years:
-            # ── ATS evaluation for this year ──
-            if test_year in ats_paths:
-                model = _load_model_for_year("ats", test_year)
-                if model is not None:
-                    year_df = df[df["season_year"] == test_year].copy()
-                    if year_df.empty:
-                        logger.warning("  No data for %d ATS test", test_year)
-                        ats_results.append({"year": test_year, "error": "no data"})
-                    else:
-                        ats_res = _evaluate_year_model(year_df, model, "ats")
-                        ats_res["year"] = test_year
-                        ats_results.append(ats_res)
-                else:
-                    ats_results.append({"year": test_year, "error": "model load failed"})
-            else:
-                logger.info("  No ATS pkl for year %d, skipping", test_year)
-
-            # ── OU evaluation for this year ──
-            if test_year in ou_paths:
-                model = _load_model_for_year("ou", test_year)
-                if model is not None:
-                    year_df = df[df["season_year"] == test_year].copy()
-                    if year_df.empty:
-                        logger.warning("  No data for %d OU test", test_year)
-                        ou_results.append({"year": test_year, "error": "no data"})
-                    else:
-                        ou_res = _evaluate_year_model(year_df, model, "ou")
-                        ou_res["year"] = test_year
-                        ou_results.append(ou_res)
-                else:
-                    ou_results.append({"year": test_year, "error": "model load failed"})
-            else:
-                logger.info("  No OU pkl for year %d, skipping", test_year)
-
-        # ── Save per-game predictions (async) ──
-        if save_results:
-            ats_model: Optional[xgb.Booster] = None
-            ou_model: Optional[xgb.Booster] = None
-            for test_year in years:
-                if test_year in ats_paths:
-                    ats_model = _load_model_for_year("ats", test_year)
-                if test_year in ou_paths:
-                    ou_model = _load_model_for_year("ou", test_year)
-
-                year_df = df[df["season_year"] == test_year].copy()
-                if year_df.empty:
-                    continue
-
-                ats_feats = _get_features("ats") if ats_model is not None else None
-                ou_feats = _get_features("ou") if ou_model is not None else None
-
-                for _, row in year_df.iterrows():
-                    await _save_backtest_prediction(
-                        row.get("game_id", 0), row,
-                        ats_model=ats_model,
-                        ou_model=ou_model,
-                        ats_features=ats_feats,
-                        ou_features=ou_feats,
-                    )
-
-        return {
-            "ats_results": ats_results,
-            "ou_results": ou_results,
-            "n_years": len([r for r in ats_results if "error" not in r]) + len([r for r in ou_results if "error" not in r]),
-            "test_years": years,
-        }
-
-    # ── Single-game handicap ────────────────────────────────────────────────────
-
-    async def handicap_game(
-        self,
-        game_id: int,
-        home_team: str = "",
-        away_team: str = "",
-        year: int | None = None,
-        save_to_db: bool = True,
-    ) -> Dict[str, Any]:
-        """Handicap a single NBA game.
-
-        Loads the game from the data loader, runs ATS and OU models,
-        and returns a pick card dict with predictions, confidence, and
-        handicapping info.
-        """
-        dl = get_data_loader()
-        df = dl.load_data(limit=None)
-
-        if df.empty:
-            return {"error": "No data loaded"}
-
-        row = df[df["game_id"] == game_id]
-        if row.empty:
-            return {"error": f"Game {game_id} not found in NBA data"}
-
-        row = row.iloc[0]
-
-        if year is None:
-            year = int(row.get("season_year", CURRENT_SEASON))
-
-        ats_model = _load_model_for_year("ats", year)
-        ou_model = _load_model_for_year("ou", year)
-
-        pick_card = self._build_pick_card(
-            row, ats_model, ou_model, year, game_id,
-        )
-
-        if save_to_db:
-            await _save_api_prediction(pick_card)
-
-        return pick_card
-
-    def _build_pick_card(
-        self,
-        row: pd.Series,
-        ats_model: xgb.Booster | None,
-        ou_model: xgb.Booster | None,
-        year: int,
-        game_id: int | None = None,
-    ) -> Dict[str, Any]:
-        """Build the full pick card dict with predictions and handicapping info."""
-        # Feature extraction
-        ats_feats = _get_features("ats") if ats_model is not None else []
-        ou_feats = _get_features("ou") if ou_model is not None else []
-
-        ats_vec, _ = _extract_feature_vector(row, "ats") if ats_feats else (np.array([[]], dtype=np.float32), [])
-        ou_vec, _ = _extract_feature_vector(row, "ou") if ou_feats else (np.array([[]], dtype=np.float32), [])
-
-        home_prob = float(ats_model.predict(xgb.DMatrix(ats_vec))[0]) if ats_model is not None and ats_vec.size > 0 else 0.5
-        predicted_total = float(ou_model.predict(xgb.DMatrix(ou_vec))[0]) if ou_model is not None and ou_vec.size > 0 else 0.0
-
-        spread = float(row.get("spread", 0))
-        ou_line = float(row.get("total", 0))
-
-        # ATS pick
-        if home_prob > 0.5:
-            ats_pick = str(row.get("home_abbr", row.get("home_team", "HOME")))
-            implied_cover = home_prob
-        else:
-            ats_pick = str(row.get("away_abbr", row.get("away_team", "AWAY")))
-            implied_cover = 1 - home_prob
-
-        confidence = self._confidence_from_prob(implied_cover)
-
-        # OU pick
-        ou_pick = "OVER" if predicted_total > ou_line else "UNDER"
-        ou_conf = abs(predicted_total - ou_line) / max(ou_line, 1)
-        ou_conf = min(max(ou_conf, 0.51), 0.95)
-        ou_confidence = self._confidence_from_prob(ou_conf)
-
-        # Moneyline
-        home_ml_odds = int(row.get("home_ml", row.get("home_ml_odds", 0)))
-        away_ml_odds = int(row.get("away_ml", row.get("away_ml_odds", 0)))
-        if home_prob > 0.5:
-            ml_pick = str(row.get("home_abbr", row.get("home_team", "HOME")))
-            ml_conf = home_prob
-        else:
-            ml_pick = str(row.get("away_abbr", row.get("away_team", "AWAY")))
-            ml_conf = 1 - home_prob
-
-        opening_spread = float(row.get("opening_spread", spread))
-
-        # Implied lines / EV
-        fair_ats_odds = self._prob_to_moneyline(implied_cover)
-        ml_prob = self._ml_prob_from_spread(home_prob, spread)
-        ev_spread = row.get("spread_movement", 0)
-        ev_total = row.get("ou_movement", 0)
-
-        pick_card: Dict[str, Any] = {
-            "game_id": int(row.get("game_id", game_id or 0)),
-            "season": year,
-            "home_team": str(row.get("home_abbr", row.get("home_team", ""))),
-            "away_team": str(row.get("away_abbr", row.get("away_team", ""))),
-            "ats_prediction": round(home_prob, 4),
-            "ou_predicted_total": round(predicted_total, 1),
-            "spread": spread,
-            "total": ou_line,
-            "predicted": {
-                "home_score": None,
-                "away_score": None,
-                "total": round(predicted_total, 1),
-                "margin": round(spread * (2 * home_prob - 1), 1),
-                "spread": spread,
-            },
-            "picks": {
-                "ats": {
-                    "pick": ats_pick,
-                    "confidence": confidence,
-                    "probability": round(implied_cover, 3),
-                    "spread": spread,
-                },
-                "over_under": {
-                    "pick": ou_pick,
-                    "confidence": ou_confidence,
-                    "probability": round(ou_conf, 3),
-                    "line": ou_line,
-                    "predicted_total": round(predicted_total, 1),
-                },
-                "moneyline": {
-                    "pick": ml_pick,
-                    "confidence": self._confidence_from_prob(ml_conf),
-                    "probability": round(ml_conf, 3),
-                    "home_odds": home_ml_odds,
-                    "away_odds": away_ml_odds,
-                },
-            },
-            "line_movement": {
-                "opening_spread": round(opening_spread, 1),
-                "current_spread": round(spread, 1),
-                "spread_movement": round(float(ev_spread), 1),
-                "fair_ats_odds": fair_ats_odds,
-                "ats_ev_points": round(float(ev_spread), 2),
-            },
-            "ats_edge": round(float(ev_spread), 4),
-            "ou_edge": round(float(ev_total), 4),
-            "ml_edge": 0.0,
-            "handicap_info": {
-                "team_stats": {
-                    "home": _build_nba_home_stats(row),
-                    "away": _build_nba_away_stats(row),
-                },
-                "betting_lines": {
-                    "spread": {
-                        "opening": round(opening_spread, 1),
-                        "current": round(spread, 1),
-                        "movement": round(float(ev_spread), 2),
-                    },
-                    "over_under": {
-                        "opening": round(float(row.get("opening_ou", 0)), 1),
-                        "current": round(ou_line, 1),
-                        "movement": round(float(ev_total), 2),
-                    },
-                    "moneyline": {
-                        "home": home_ml_odds,
-                        "away": away_ml_odds,
-                    },
-                },
-                "situational": _build_nba_situational(row),
-                "splits": _build_nba_splits(row),
-                "venue": {
-                    "name": str(row.get("venue", "")),
-                    "roof_type": "indoor",
-                },
-            },
-        }
-
-        return pick_card
-
-    def _confidence_from_prob(self, prob: float) -> str:
-        """Map a probability to a confidence label."""
-        if prob >= 0.75:
-            return "HIGH"
-        if prob >= 0.62:
-            return "MEDIUM"
-        return "LOW"
-
-    def _prob_to_moneyline(self, prob: float) -> int:
-        """Convert win probability to American moneyline odds."""
-        if prob <= 0 or prob >= 1:
-            return 0
-        if prob > 0.5:
-            return int(-100 * prob / (1 - prob))
-        else:
-            return int(100 * (1 - prob) / prob)
-
-    def _ml_prob_from_spread(self, cover_prob: float, spread: float) -> float:
-        """Estimate ML win probability from ATS cover probability and spread size."""
-        if cover_prob >= 0.5:
-            return min(cover_prob + 0.08, 0.95)
-        else:
-            return max(cover_prob - 0.08, 0.05)
+    return {
+        "ats": _load_model_for_year(year, "ats"),
+        "ou": _load_model_for_year(year, "ou"),
+    }
 
 
 # ── Year evaluation ──────────────────────────────────────────────────────────────
@@ -559,389 +183,980 @@ def _evaluate_year_model(year_df: pd.DataFrame, model: xgb.Booster, model_type: 
             if int(prob > 0.5) == actual_cover:
                 correct += 1
         else:
-            total_points = row.get("total_points", 0) or 0
-            labels.append(total_points)
+            ou_line = row.get("over_under", 0) or 0
+            total_score = (row.get("home_score", 0) or 0) + (row.get("away_score", 0) or 0)
+            actual_over = int(total_score > ou_line)
+            labels.append(actual_over)
+            total += 1
+            if int(prob > 0.5) == actual_over:
+                correct += 1
 
-    result: Dict[str, Any] = {
+    accuracy = correct / total if total > 0 else 0.0
+    auc = roc_auc_score(labels, probs) if len(set(labels)) > 1 and total > 1 else None
+
+    return {
+        "model_type": model_type,
         "total_games": total,
+        "correct": correct,
+        "accuracy": round(accuracy, 4),
+        "auc": round(auc, 4) if auc is not None else None,
     }
 
-    if model_type == "ats" and total > 0:
-        result["accuracy"] = correct / total
-        result["correct"] = correct
-        result["n_train"] = 0
-        result["n_test"] = total
-        if len(set(labels)) > 1 and len(probs) > 1:
-            try:
-                result["auc"] = round(float(roc_auc_score(labels, probs)), 4)
-            except Exception:
-                result["auc"] = None
-        else:
-            result["auc"] = None
-    elif model_type == "ou" and len(labels) > 0:
-        result["mae"] = round(float(mean_absolute_error(labels, probs)), 2)
-        result["rmse"] = round(float(np.sqrt(mean_squared_error(labels, probs))), 2)
-        result["n_train"] = 0
-        result["n_test"] = len(labels)
 
-    return result
+_FEATURES_CACHE_ATS: Optional[List[str]] = None
+_FEATURES_CACHE_OU: Optional[List[str]] = None
 
 
-# ── Save API prediction ─────────────────────────────────────────────────────────
+def _get_features(model_type: str) -> List[str]:
+    """Return feature names from the live training run."""
+    global _FEATURES_CACHE_ATS, _FEATURES_CACHE_OU
+    if model_type == "ats" and _FEATURES_CACHE_ATS is not None:
+        return _FEATURES_CACHE_ATS
+    if model_type == "ou" and _FEATURES_CACHE_OU is not None:
+        return _FEATURES_CACHE_OU
+    conn = _get_sync_conn()
+    try:
+        with conn.cursor() as cur:
+            if model_type == "ats":
+                feats = get_model_features(cur, live_ats_only=True)
+                _FEATURES_CACHE_ATS = feats
+            else:
+                feats = get_model_features(cur, live_ou_only=True)
+                _FEATURES_CACHE_OU = feats
+    finally:
+        conn.close()
+    return feats
 
 
-async def _save_api_prediction(result: Dict[str, Any]) -> None:
-    """Save a single game prediction to ``nba.game_predictions`` (async).
+def _extract_feature_vector(
+    row: pd.Series,
+    model_type: str,
+) -> Tuple[np.ndarray, List[str]]:
+    """Build a feature vector (values, names) from a DataFrame row."""
+    feature_names = _get_features(model_type)
+    values = []
+    names = []
+    for feat in feature_names:
+        val = row.get(feat)
+        if val is None or (isinstance(val, float) and np.isnan(val)):
+            val = 0.0
+        values.append(float(val))
+        names.append(feat)
+    return np.array([values], dtype=np.float32), names
 
-    Mirrors the NFL engine pattern: writes moneyline pick, odds, EV, and stats.
+
+# ═══════════════════════════════════════════════════════════════════════════════════
+# Handicapper module-level helpers (extracted from NBAHandicapper class)
+# ═══════════════════════════════════════════════════════════════════════════════════
+
+
+def _confidence_from_prob(prob: float) -> Tuple[str, float]:
+    """Classify probability into confidence tier.
+
+    Returns (label, raw_probability).
     """
-    game_id = result.get("game_id")
-    if not game_id:
-        return
+    if prob >= 0.85:
+        return ("lock", prob)
+    elif prob >= 0.75:
+        return ("strong", prob)
+    elif prob >= 0.65:
+        return ("moderate", prob)
+    elif prob >= 0.55:
+        return ("slight", prob)
+    else:
+        return ("push", prob)
 
+
+def _prob_to_moneyline(prob: float) -> int:
+    """Convert a win probability (0‑1) to American moneyline odds."""
+    if prob <= 0 or prob >= 1:
+        return 0
+    if prob >= 0.5:
+        return -int(round(100 * prob / (1 - prob)))
+    else:
+        return int(round(100 * (1 - prob) / prob))
+
+
+def _ml_prob_from_spread(home_prob: float, spread: float) -> float:
+    """Estimate moneyline probability given a spread probability.
+
+    MLB-style adjustment: if the spread is within ±3, the ML prob
+    is slightly closer to 0.5; otherwise it leans toward the spread prob.
+    """
+    if abs(spread) <= 3:
+        return home_prob * 0.6 + 0.2
+    else:
+        return home_prob * 0.8 + 0.1
+
+
+# ── Pick card builder ────────────────────────────────────────────────────────────
+
+
+async def _build_pick_card(
+    row: pd.Series,
+    ats_model: xgb.Booster,
+    ou_model: xgb.Booster,
+    year: int,
+    game_id: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Build a full pick-card dict for a single NBA game.
+
+    Adapted from NBAHandicapper.handicap_game's inline logic.
+    Returns same dict structure as the old class method ``_build_pick_card``.
+    """
+    home_team = str(row.get("home_team", ""))
+    away_team = str(row.get("away_team", ""))
+    spread = float(row.get("spread", 0) or 0)
+    ou_line = float(row.get("over_under", 0) or 0)
+
+    # ATS prediction
+    ats_vals, ats_names = _extract_feature_vector(row, "ats")
+    ats_dmat = xgb.DMatrix(ats_vals, feature_names=ats_names)
+    implied_cover = float(ats_model.predict(ats_dmat)[0])
+
+    # OU prediction
+    ou_vals, ou_names = _extract_feature_vector(row, "ou")
+    ou_dmat = xgb.DMatrix(ou_vals, feature_names=ou_names)
+    ou_prob = float(ou_model.predict(ou_dmat)[0])
+
+    # Confidence
+    confidence, raw_prob = _confidence_from_prob(implied_cover)
+    ou_confidence, ou_raw = _confidence_from_prob(ou_prob)
+
+    # Moneyline conversion
+    # Pick the side (home cover / away cover)
+    if home_team and away_team:
+        ml_prob = _ml_prob_from_spread(implied_cover, spread)
+        ml_numeric = _prob_to_moneyline(ml_prob)
+        favorite = home_team if spread < 0 else away_team
+        underdog = away_team if spread < 0 else home_team
+        ml_prob_away = 1 - ml_prob
+        ml_numeric_away = _prob_to_moneyline(ml_prob_away)
+    else:
+        ml_numeric = 0
+        ml_numeric_away = 0
+
+    home_prob = implied_cover
+    away_prob = 1 - implied_cover
+
+    # Build the ATS pick
+    if implied_cover > 0.5:
+        ats_side = home_team
+        ats_spread = f"-{abs(spread):.1f}"
+        ats_text = f"{home_team} {ats_spread}"
+        cover_conf = _confidence_from_prob(implied_cover)
+    else:
+        ats_side = away_team
+        ats_spread = f"+{abs(spread):.1f}"
+        ats_text = f"{away_team} {ats_spread}"
+        cover_conf = _confidence_from_prob(away_prob)
+
+    # Build the OU pick
+    if ou_prob > 0.5:
+        ou_side = "Over"
+        ou_text = f"Over {ou_line:.1f}"
+    else:
+        ou_side = "Under"
+        ou_text = f"Under {ou_line:.1f}"
+
+    pick_card: Dict[str, Any] = {
+        "game_id": game_id or int(row.get("game_id", 0)),
+        "home_team": home_team,
+        "away_team": away_team,
+        "spread": spread,
+        "over_under": ou_line,
+        "predicted_spread": spread,                         # placeholder – no pure spread model
+        "predicted_over_under": ou_line,                     # placeholder
+        "home_ats_prob": round(home_prob, 4),
+        "away_ats_prob": round(away_prob, 4),
+        "ou_over_prob": round(ou_prob, 4),
+        "ou_under_prob": round(1 - ou_prob, 4),
+        "ats_pick": {
+            "team": ats_side,
+            "spread": ats_spread,
+            "text": ats_text,
+            "probability": round(max(home_prob, away_prob), 4),
+            "confidence": cover_conf,
+        },
+        "ou_pick": {
+            "team": ou_side,
+            "text": ou_text,
+            "probability": round(max(ou_prob, 1 - ou_prob), 4),
+            "confidence": ou_confidence,
+        },
+        "ml_pick": {
+            "favorite": favorite if home_team else "",
+            "underdog": underdog if away_team else "",
+            "home_ml": ml_numeric,
+            "away_ml": ml_numeric_away,
+            "home_ml_prob": round(ml_prob, 4) if home_team else 0.5,
+            "away_ml_prob": round(ml_prob_away, 4) if away_team else 0.5,
+        },
+        "model_version": f"nba-xgboost-{year}",
+        "model_type": "xgboost",
+        "sport": "nba",
+        "year": year,
+    }
+
+    return pick_card
+
+
+# ═══════════════════════════════════════════════════════════════════════════════════
+# Backtest & batch-prediction functions (mirror nfl/engine.py)
+# ═══════════════════════════════════════════════════════════════════════════════════
+
+
+async def backtest_season(
+    years: Optional[List[int]] = None,
+    limit: Optional[int] = None,
+    save_results: bool = True,
+    db: Optional[async_sessionmaker] = None,
+) -> Dict[str, Any]:
+    """Backtest NBA models across one or more seasons.
+
+    Mirrors ``nfl/engine.py:backtest_season``.
+
+    Parameters
+    ----------
+    years : list of int, optional
+        Season years to backtest (default: current NBA season).
+    limit : int, optional
+        Max games to load from the data loader (for quick tests).
+    save_results : bool
+        Persist predictions to ``nba.game_predictions``.
+    db : async_sessionmaker, optional
+        DB session factory (auto-created if not provided).
+
+    Returns
+    -------
+    dict
+        ``{"ats": [...], "ou": [...]}`` with per-year evaluation results.
+    """
+    if years is None:
+        years = [CURRENT_SEASON]
+
+    dl = get_data_loader()
+    df = dl.load_data(limit=limit)
+    logger.info("Loaded %d NBA games from data loader%s", len(df), f" (limit={limit})" if limit else "")
+
+    ats_results: List[Dict[str, Any]] = []
+    ou_results: List[Dict[str, Any]] = []
+    total_game_preds = 0
+
+    for year in years:
+        ats_model = _load_model_for_year(year, "ats")
+        ou_model = _load_model_for_year(year, "ou")
+
+        if ats_model is None and ou_model is None:
+            logger.warning("  No models for year %s – skipping", year)
+            continue
+
+        year_df = df[df["season"] == year].copy()
+        if year_df.empty:
+            logger.warning("  No data for season %s – skipping", year)
+            continue
+
+        logger.info("  Backtesting %d games for season %s", len(year_df), year)
+
+        if ats_model:
+            ats_res = _evaluate_year_model(year_df, ats_model, "ats")
+            ats_results.append({"year": year, **ats_res})
+            logger.info("    ATS: %d/%d (%.1f%%)",
+                        ats_res["correct"], ats_res["total_games"],
+                        ats_res["accuracy"] * 100)
+
+        if ou_model:
+            ou_res = _evaluate_year_model(year_df, ou_model, "ou")
+            ou_results.append({"year": year, **ou_res})
+            logger.info("    OU:  %d/%d (%.1f%%)",
+                        ou_res["correct"], ou_res["total_games"],
+                        ou_res["accuracy"] * 100)
+
+        # Optionally save per-game predictions
+        if save_results and (ats_model or ou_model):
+            for idx, row in year_df.iterrows():
+                _save_backtest_prediction(row, ats_model, ou_model)
+                total_game_preds += 1
+
+    logger.info("Backtest complete: %d years, %d game predictions saved",
+                len(years), total_game_preds)
+    return {"ats": ats_results, "ou": ou_results}
+
+
+async def batch_predict_upcoming_games(
+    days_ahead: int = 7,
+    save_to_db: bool = True,
+    db: Optional[async_sessionmaker] = None,
+) -> List[Dict[str, Any]]:
+    """Predict upcoming NBA games and optionally save to the database.
+
+    Mirrors ``nfl/engine.py:batch_predict_upcoming_games``.
+
+    Parameters
+    ----------
+    days_ahead : int
+        How many days into the future to look (default 7).
+    save_to_db : bool
+        Persist predictions to ``nba.game_predictions``.
+    db : async_sessionmaker, optional
+        DB session factory (auto-created if not provided).
+
+    Returns
+    -------
+    list of dict
+        Pick-card dicts for each upcoming game.
+    """
+    from app.handicapping.nba.data_loader import NBADataLoader
+
+    db = db or _get_async_session()
     now = datetime.now(timezone.utc)
-    source = result.get("source", "api")
+    cutoff = now.isoformat()
 
-    predicted_total = result.get("ou_predicted_total")
-    ats_proba = result.get("ats_prediction", 0.5)
-    spread = result.get("spread", 0) or 0
+    logger.info("Fetching upcoming NBA games (next %d days)...", days_ahead)
 
-    picks = result.get("picks", {})
-    ats_pick = picks.get("ats", {}).get("pick")
-    ats_prob = picks.get("ats", {}).get("probability")
-    ou_pick = picks.get("over_under", {}).get("pick")
-    ou_prob = picks.get("over_under", {}).get("probability")
-    ml_pick = picks.get("moneyline", {}).get("pick")
-    ml_prob = picks.get("moneyline", {}).get("probability")
-    ml_home_odds = picks.get("moneyline", {}).get("home_odds")
-    ml_away_odds = picks.get("moneyline", {}).get("away_odds")
+    # Load upcoming games from the DB
+    upcoming = await _fetch_upcoming_games(db, now, days_ahead)
+    if not upcoming:
+        logger.info("  No upcoming NBA games found in the next %d days", days_ahead)
+        return []
 
-    hi = result.get("handicap_info", {})
-    home_stats = hi.get("team_stats", {}).get("home", {})
-    away_stats = hi.get("team_stats", {}).get("away", {})
-    situational = hi.get("situational", {})
-    splits = hi.get("splits", {})
-    betting_lines = hi.get("betting_lines", {})
-    spread_info = betting_lines.get("spread", {})
-    ou_info = betting_lines.get("over_under", {})
+    # Determine season year from the first game's date
+    first_date = upcoming[0].get("game_date") or upcoming[0].get("date", "")
+    year = _season_from_date(first_date) if first_date else CURRENT_SEASON
 
-    predicted_margin = result.get("predicted", {}).get("margin")
-    ou_line = result.get("total", 0)
+    # Load models for this season
+    ats_model = _load_model_for_year(year, "ats")
+    ou_model = _load_model_for_year(year, "ou")
+    if ats_model is None or ou_model is None:
+        logger.warning("  Missing models for season %s – cannot predict", year)
+        return []
 
-    ats_odds_value = spread_info.get("current")
-    ou_odds_value = ou_info.get("current")
-    ml_odds_value = ml_home_odds
+    # Convert upcoming games to DataFrame for feature extraction
+    df = pd.DataFrame(upcoming)
+    if "game_id" not in df.columns:
+        logger.warning("  Upcoming games have no game_id column")
+        return []
 
-    data_loader_getter = get_data_loader()
-    season = data_loader_getter.get_season(game_id) if hasattr(data_loader_getter, "get_season") else None
+    # We need pre-computed matches with spread & over_under from the
+    # betting_lines table.  Merge if needed.
+    df = await _enrich_with_betting_lines(db, df, now)
 
-    session_maker = _get_async_session()
-    async with session_maker() as session:
-        session.add(type("Prediction", (), {
-            "__table__": None,
-            "__tablename__": "game_predictions",
-            "game_id": game_id,
-            "season": season,
-            "predicted_home_score": None,
-            "predicted_away_score": None,
-            "predicted_total": predicted_total,
-            "predicted_margin": predicted_margin,
-            "margin_conf": ats_prob,
-            "ou_conf": ou_prob,
-            "ou_pick": ou_pick,
-            "pace_adjustment_pts": 0.0,
-            "ats_result": None,
-            "ou_result": None,
-            "ml_result": None,
-            "spread_pick": ats_pick,
-            "ml_pick": ml_pick,
-            "ml_conf": ml_prob,
-            "ats_odds": round(ats_odds_value) if ats_odds_value else None,
-            "ou_odds": round(ou_odds_value) if ou_odds_value else None,
-            "ml_odds": round(ml_odds_value) if ml_odds_value else None,
-            "ats_ev": round(result.get("ats_edge", 0), 4),
-            "ou_ev": round(result.get("ou_edge", 0), 4),
-            "ml_ev": round(result.get("ml_edge", 0), 4),
-            "home_stats_json": json.dumps(home_stats) if home_stats else None,
-            "away_stats_json": json.dumps(away_stats) if away_stats else None,
-            "situational_json": json.dumps(situational) if situational else None,
-            "splits_json": json.dumps(splits) if splits else None,
-            "source": source,
-            "created_at": now,
-        }))
-        await session.commit()
+    pick_cards: List[Dict[str, Any]] = []
+    for idx, row in df.iterrows():
+        try:
+            pick_card = await _build_pick_card(row, ats_model, ou_model, year,
+                                                game_id=int(row["game_id"]))
+            pick_cards.append(pick_card)
+
+            if save_to_db:
+                await _save_api_prediction(row, pick_card, db=db)
+        except Exception as exc:
+            logger.error("  Failed to predict game %s: %s", row.get("game_id"), exc)
+            continue
+
+    logger.info("  Predicted %d / %d upcoming NBA games", len(pick_cards), len(df))
+    return pick_cards
 
 
-# ── Save backtest prediction ─────────────────────────────────────────────────────
+def _season_from_date(date_str: str) -> int:
+    """Return the NBA season year for a date string.
+
+    NBA seasons start in October, so a date in Oct-Dec belongs to
+    the *next* calendar year's season (e.g. Oct 2024 → season 2025).
+    """
+    try:
+        dt = datetime.fromisoformat(date_str)
+        return dt.year if dt.month >= 10 else dt.year - 1  # noqa: SIM114
+    except (ValueError, TypeError):
+        try:
+            dt = pd.Timestamp(date_str)
+            return dt.year if dt.month >= 10 else dt.year - 1
+        except Exception:
+            return CURRENT_SEASON
 
 
-async def _save_backtest_prediction(
-    game_id: int,
+async def _fetch_upcoming_games(
+    db: async_sessionmaker,
+    now: datetime,
+    days_ahead: int,
+) -> List[Dict[str, Any]]:
+    """Fetch upcoming NBA games from the database."""
+    async with db() as session:
+        stmt = text("""
+            SELECT
+                g.id AS game_id,
+                g.home_team,
+                g.away_team,
+                g.game_date,
+                g.season
+            FROM nba.games g
+            WHERE g.game_date >= :now
+              AND g.game_date < :cutoff
+              AND g.status = 'scheduled'
+            ORDER BY g.game_date ASC
+        """)
+        result = await session.execute(stmt, {
+            "now": now,
+            "cutoff": now.replace(hour=23, minute=59, second=59) + pd.Timedelta(days=days_ahead - 1),
+        })
+        rows = result.mappings().all()
+        return [dict(r) for r in rows]
+
+
+async def _enrich_with_betting_lines(
+    db: async_sessionmaker,
+    df: pd.DataFrame,
+    now: datetime,
+) -> pd.DataFrame:
+    """Add latest spread & over_under from nba.betting_lines to the DataFrame.
+
+    For games that already have spread/ou lines, fall back to those.
+    """
+    if df.empty:
+        return df
+
+    game_ids = [int(gid) for gid in df["game_id"].tolist() if gid]
+    if not game_ids:
+        return df
+
+    async with db() as session:
+        stmt = text("""
+            SELECT DISTINCT ON (bl.game_id)
+                bl.game_id,
+                bl.spread,
+                bl.over_under
+            FROM nba.betting_lines bl
+            WHERE bl.game_id = ANY(:game_ids)
+            ORDER BY bl.game_id, bl.updated_at DESC
+        """)
+        result = await session.execute(stmt, {"game_ids": game_ids})
+        lines = {r["game_id"]: r for r in result.mappings().all()}
+
+    df["spread"] = df["game_id"].apply(lambda gid: lines.get(int(gid), {}).get("spread", 0.0))
+    df["over_under"] = df["game_id"].apply(lambda gid: lines.get(int(gid), {}).get("over_under", 0.0))
+
+    return df
+
+
+# ── Save API prediction ──────────────────────────────────────────────────────────
+
+
+async def _save_api_prediction(
+    row: pd.Series,
+    pick_card: Dict[str, Any],
+    db: Optional[async_sessionmaker] = None,
+    conn: Optional[psycopg2.extensions.connection] = None,
+) -> None:
+    """Save a predicted pick card to ``nba.game_predictions`` (async).
+
+    ``row`` is the game row from the data loader (or DB query).
+    ``pick_card`` is the dict returned by ``_build_pick_card``.
+
+    Uses async DB session when ``db`` is provided, otherwise falls
+    back to synchronous ``conn``.
+    """
+    game_id = pick_card.get("game_id") or int(row.get("game_id", 0))
+    home_team = pick_card.get("home_team") or str(row.get("home_team", ""))
+    away_team = pick_card.get("away_team") or str(row.get("away_team", ""))
+
+    ats_pick = pick_card.get("ats_pick", {})
+    ou_pick = pick_card.get("ou_pick", {})
+    ml_pick = pick_card.get("ml_pick", {})
+
+    home_ats_prob = pick_card.get("home_ats_prob", 0.5)
+    away_ats_prob = pick_card.get("away_ats_prob", 0.5)
+    ou_over_prob = pick_card.get("ou_over_prob", 0.5)
+    ou_under_prob = pick_card.get("ou_under_prob", 0.5)
+
+    ats_side = ats_pick.get("team", "")
+    ats_spread = ats_pick.get("spread", "PK")
+    ats_text = ats_pick.get("text", "")
+    ats_prob = ats_pick.get("probability", 0.5)
+    ats_conf_label = ""
+    ats_conf_value = 0.0
+    if ats_pick.get("confidence"):
+        ats_conf_label, ats_conf_value = ats_pick["confidence"]
+
+    ou_side = ou_pick.get("team", "")
+    ou_text = ou_pick.get("text", "")
+    ou_prob = ou_pick.get("probability", 0.5)
+    ou_conf_label = ""
+    ou_conf_value = 0.0
+    if ou_pick.get("confidence"):
+        ou_conf_label, ou_conf_value = ou_pick["confidence"]
+
+    ml_favorite = ml_pick.get("favorite", "")
+    ml_underdog = ml_pick.get("underdog", "")
+    home_ml = ml_pick.get("home_ml", 0)
+    away_ml = ml_pick.get("away_ml", 0)
+    home_ml_prob = ml_pick.get("home_ml_prob", 0.5)
+    away_ml_prob = ml_pick.get("away_ml_prob", 0.5)
+
+    model_version = pick_card.get("model_version", "nba-xgboost-current")
+    model_type = pick_card.get("model_type", "xgboost")
+
+    now_ts = datetime.now(timezone.utc)
+
+    # ── feature set used for prediction
+    feature_set_ats = _get_features("ats")
+    feature_set_ou = _get_features("ou")
+
+    features_ats_json = _extract_pick_card_features(row, set(feature_set_ats))
+    features_ou_json = _extract_pick_card_features(row, set(feature_set_ou))
+
+    upsert_sql = text("""
+        INSERT INTO nba.game_predictions (
+            game_id, home_team, away_team,
+            predicted_spread, predicted_over_under,
+            home_ats_prob, away_ats_prob,
+            ou_over_prob, ou_under_prob,
+            ats_side, ats_spread, ats_text, ats_probability, ats_confidence_label, ats_confidence_value,
+            ou_side, ou_text, ou_probability, ou_confidence_label, ou_confidence_value,
+            ml_favorite, ml_underdog, home_ml, away_ml, home_ml_prob, away_ml_prob,
+            model_version, model_type, features_ats_json, features_ou_json,
+            home_stats_json, away_stats_json, situational_json, splits_json,
+            created_at, updated_at
+        ) VALUES (
+            :game_id, :home_team, :away_team,
+            :predicted_spread, :predicted_over_under,
+            :home_ats_prob, :away_ats_prob,
+            :ou_over_prob, :ou_under_prob,
+            :ats_side, :ats_spread, :ats_text, :ats_probability, :ats_confidence_label, :ats_confidence_value,
+            :ou_side, :ou_text, :ou_probability, :ou_confidence_label, :ou_confidence_value,
+            :ml_favorite, :ml_underdog, :home_ml, :away_ml, :home_ml_prob, :away_ml_prob,
+            :model_version, :model_type, :features_ats_json, :features_ou_json,
+            :home_stats_json, :away_stats_json, :situational_json, :splits_json,
+            :created_at, :updated_at
+        )
+        ON CONFLICT (game_id) DO UPDATE SET
+            home_ats_prob = EXCLUDED.home_ats_prob,
+            away_ats_prob = EXCLUDED.away_ats_prob,
+            ou_over_prob = EXCLUDED.ou_over_prob,
+            ou_under_prob = EXCLUDED.ou_under_prob,
+            ats_side = EXCLUDED.ats_side,
+            ats_spread = EXCLUDED.ats_spread,
+            ats_text = EXCLUDED.ats_text,
+            ats_probability = EXCLUDED.ats_probability,
+            ats_confidence_label = EXCLUDED.ats_confidence_label,
+            ats_confidence_value = EXCLUDED.ats_confidence_value,
+            ou_side = EXCLUDED.ou_side,
+            ou_text = EXCLUDED.ou_text,
+            ou_probability = EXCLUDED.ou_probability,
+            ou_confidence_label = EXCLUDED.ou_confidence_label,
+            ou_confidence_value = EXCLUDED.ou_confidence_value,
+            ml_favorite = EXCLUDED.ml_favorite,
+            ml_underdog = EXCLUDED.ml_underdog,
+            home_ml = EXCLUDED.home_ml,
+            away_ml = EXCLUDED.away_ml,
+            home_ml_prob = EXCLUDED.home_ml_prob,
+            away_ml_prob = EXCLUDED.away_ml_prob,
+            model_version = EXCLUDED.model_version,
+            features_ats_json = EXCLUDED.features_ats_json,
+            features_ou_json = EXCLUDED.features_ou_json,
+            updated_at = EXCLUDED.updated_at
+    """)
+
+    if db:
+        async with db() as session:
+            await session.execute(upsert_sql, {
+                "game_id": game_id,
+                "home_team": home_team,
+                "away_team": away_team,
+                "predicted_spread": pick_card.get("spread", 0),
+                "predicted_over_under": pick_card.get("over_under", 0),
+                "home_ats_prob": home_ats_prob,
+                "away_ats_prob": away_ats_prob,
+                "ou_over_prob": ou_over_prob,
+                "ou_under_prob": ou_under_prob,
+                "ats_side": ats_side,
+                "ats_spread": ats_spread,
+                "ats_text": ats_text,
+                "ats_probability": ats_prob,
+                "ats_confidence_label": ats_conf_label,
+                "ats_confidence_value": ats_conf_value,
+                "ou_side": ou_side,
+                "ou_text": ou_text,
+                "ou_probability": ou_prob,
+                "ou_confidence_label": ou_conf_label,
+                "ou_confidence_value": ou_conf_value,
+                "ml_favorite": ml_favorite,
+                "ml_underdog": ml_underdog,
+                "home_ml": home_ml,
+                "away_ml": away_ml,
+                "home_ml_prob": home_ml_prob,
+                "away_ml_prob": away_ml_prob,
+                "model_version": model_version,
+                "model_type": model_type,
+                "features_ats_json": features_ats_json,
+                "features_ou_json": features_ou_json,
+                "home_stats_json": pick_card.get("home_stats_json") or json.dumps({}),
+                "away_stats_json": pick_card.get("away_stats_json") or json.dumps({}),
+                "situational_json": pick_card.get("situational_json") or json.dumps({}),
+                "splits_json": pick_card.get("splits_json") or json.dumps({}),
+                "created_at": now_ts,
+                "updated_at": now_ts,
+            })
+            await session.commit()
+        logger.debug("  Saved API prediction for game %s (%s vs %s)",
+                      game_id, home_team, away_team)
+    elif conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                upsert_sql,
+                {
+                    "game_id": game_id,
+                    "home_team": home_team,
+                    "away_team": away_team,
+                    "predicted_spread": pick_card.get("spread", 0),
+                    "predicted_over_under": pick_card.get("over_under", 0),
+                    "home_ats_prob": home_ats_prob,
+                    "away_ats_prob": away_ats_prob,
+                    "ou_over_prob": ou_over_prob,
+                    "ou_under_prob": ou_under_prob,
+                    "ats_side": ats_side,
+                    "ats_spread": ats_spread,
+                    "ats_text": ats_text,
+                    "ats_probability": ats_prob,
+                    "ats_confidence_label": ats_conf_label,
+                    "ats_confidence_value": ats_conf_value,
+                    "ou_side": ou_side,
+                    "ou_text": ou_text,
+                    "ou_probability": ou_prob,
+                    "ou_confidence_label": ou_conf_label,
+                    "ou_confidence_value": ou_conf_value,
+                    "ml_favorite": ml_favorite,
+                    "ml_underdog": ml_underdog,
+                    "home_ml": home_ml,
+                    "away_ml": away_ml,
+                    "home_ml_prob": home_ml_prob,
+                    "away_ml_prob": away_ml_prob,
+                    "model_version": model_version,
+                    "model_type": model_type,
+                    "features_ats_json": features_ats_json,
+                    "features_ou_json": features_ou_json,
+                    "home_stats_json": pick_card.get("home_stats_json") or json.dumps({}),
+                    "away_stats_json": pick_card.get("away_stats_json") or json.dumps({}),
+                    "situational_json": pick_card.get("situational_json") or json.dumps({}),
+                    "splits_json": pick_card.get("splits_json") or json.dumps({}),
+                    "created_at": now_ts,
+                    "updated_at": now_ts,
+                },
+            )
+        conn.commit()
+        logger.debug("  Saved API prediction (sync) for game %s (%s vs %s)",
+                      game_id, home_team, away_team)
+
+
+# ── Save backtest prediction ──────────────────────────────────────────────────────
+
+
+def _save_backtest_prediction(
     row: pd.Series,
     ats_model: Optional[xgb.Booster] = None,
     ou_model: Optional[xgb.Booster] = None,
     ats_features: Optional[List[str]] = None,
     ou_features: Optional[List[str]] = None,
 ) -> None:
-    """Save a backtest prediction row to ``nba.game_predictions`` (async).
+    """Save a backtest prediction row to ``nba.game_predictions`` (sync).
 
     Extracts feature vectors from the row, runs ATS and OU models,
     generates picks, and persists everything including actual results
     for later analysis.
     """
-    from datetime import datetime, timezone
+    game_id = _int_safe(row.get("id")) or _int_safe(row.get("game_id"))
+    home_team = _str_safe(row.get("home_team"))
+    away_team = _str_safe(row.get("away_team"))
+    season = _int_safe(row.get("season")) or CURRENT_SEASON
+    spread = _float_safe(row.get("spread")) or 0.0
+    ou_line = _float_safe(row.get("over_under")) or 0.0
+    home_score = _float_safe(row.get("home_score")) or 0.0
+    away_score = _float_safe(row.get("away_score")) or 0.0
+    actual_total = home_score + away_score
+    actual_margin = home_score - away_score
 
-    now = datetime.now(timezone.utc)
+    ats_feat = ats_features or (_get_features("ats") if ats_features is None else ats_features)
+    ou_feat = ou_features or (_get_features("ou") if ou_features is None else ou_features)
 
-    # ── ATS prediction ──
-    ats_proba = 0.5
-    if ats_model is not None and ats_features:
-        ats_vec, ats_names = _extract_feature_vector(row, "ats")
-        if ats_vec.size > 0:
-            dmat = xgb.DMatrix(ats_vec, feature_names=ats_names)
-            ats_proba = float(ats_model.predict(dmat)[0])
+    # Determine actual cover / over
+    actual_cover = (actual_margin + spread) > 0
+    actual_over = actual_total > ou_line
 
-    # ── OU prediction ──
-    ou_pred = None
-    if ou_model is not None and ou_features:
-        ou_vec, ou_names = _extract_feature_vector(row, "ou")
-        if ou_vec.size > 0:
-            dmat = xgb.DMatrix(ou_vec, feature_names=ou_names)
-            ou_pred = float(ou_model.predict(dmat)[0])
-
-    spread = float(row.get("spread", 0))
-    total = float(row.get("total", 0))
-
-    if ats_proba >= 0.5:
-        spread_pick = str(row.get("home_abbr", row.get("home_team", "HOME")))
-        margin_conf = ats_proba
+    # ATS prediction
+    home_ats_prob = 0.5
+    ats_side = ""
+    ats_spread_str = ""
+    ats_text = ""
+    ats_probability = 0.5
+    ats_confidence_label = ""
+    ats_confidence_value = 0.0
+    if ats_model is not None:
+        ats_vals, ats_names = _extract_feature_vector(row, "ats")
+        dmat = xgb.DMatrix(ats_vals, feature_names=ats_names)
+        home_ats_prob = float(ats_model.predict(dmat)[0])
+        away_ats_prob = 1.0 - home_ats_prob
+        if home_ats_prob > 0.5:
+            ats_side = home_team
+            ats_spread_str = f"-{abs(spread):.1f}"
+            ats_text = f"{home_team} {ats_spread_str}"
+            ats_probability = home_ats_prob
+            ats_confidence_label, ats_confidence_value = _confidence_from_prob(home_ats_prob)
+        else:
+            ats_side = away_team
+            ats_spread_str = f"+{abs(spread):.1f}"
+            ats_text = f"{away_team} {ats_spread_str}"
+            ats_probability = away_ats_prob
+            ats_confidence_label, ats_confidence_value = _confidence_from_prob(away_ats_prob)
     else:
-        spread_pick = str(row.get("away_abbr", row.get("away_team", "AWAY")))
-        margin_conf = 1 - ats_proba
+        away_ats_prob = 0.5
 
-    ou_pick = "OVER" if ou_pred is not None and ou_pred > total else ("UNDER" if ou_pred is not None else None)
-    ou_conf = abs(ou_pred - total) / max(total, 1) if ou_pred is not None else 0.5
+    # OU prediction
+    ou_over_prob = 0.5
+    ou_side = ""
+    ou_text = ""
+    ou_probability = 0.5
+    ou_confidence_label = ""
+    ou_confidence_value = 0.0
+    if ou_model is not None:
+        ou_vals, ou_names = _extract_feature_vector(row, "ou")
+        dmat = xgb.DMatrix(ou_vals, feature_names=ou_names)
+        ou_over_prob = float(ou_model.predict(dmat)[0])
+        ou_under_prob = 1.0 - ou_over_prob
+        if ou_over_prob > 0.5:
+            ou_side = "Over"
+            ou_text = f"Over {ou_line:.1f}"
+            ou_probability = ou_over_prob
+            ou_confidence_label, ou_confidence_value = _confidence_from_prob(ou_over_prob)
+        else:
+            ou_side = "Under"
+            ou_text = f"Under {ou_line:.1f}"
+            ou_probability = ou_under_prob
+            ou_confidence_label, ou_confidence_value = _confidence_from_prob(ou_under_prob)
+    else:
+        ou_under_prob = 0.5
 
     # Moneyline
-    ml_pick = str(row.get("home_abbr", row.get("home_team", "HOME"))) if ats_proba >= 0.5 else str(row.get("away_abbr", row.get("away_team", "AWAY")))
-    ml_conf = max(ats_proba, 1 - ats_proba)
-    home_ml = row.get("home_ml", 0) or 0
-    away_ml = row.get("away_ml", 0) or 0
-    ml_prob = ats_proba + 0.08 if ats_proba >= 0.5 else (1 - ats_proba) - 0.08
-    ml_prob = min(max(ml_prob, 0.05), 0.95)
-
-    # Actual results
-    home_score = row.get("home_score", 0) or 0
-    away_score = row.get("away_score", 0) or 0
-    actual_total = int(home_score) + int(away_score)
-    actual_margin = int(home_score) - int(away_score)
-
-    if spread == 0:
-        ats_result = "PUSH" if actual_margin == 0 else ("WIN" if actual_margin > 0 else "LOSS")
+    if home_ats_prob > 0.5:
+        ml_prob = home_ats_prob * 0.8 + 0.1
+        ml_numeric = _prob_to_moneyline(ml_prob)
+        ml_prob_away = 1 - ml_prob
+        ml_numeric_away = _prob_to_moneyline(ml_prob_away)
+        ml_favorite = home_team if spread < 0 else away_team
+        ml_underdog = away_team if spread < 0 else home_team
     else:
-        margin_vs_spread = actual_margin + spread
-        ats_result = "PUSH" if margin_vs_spread == 0 else ("WIN" if margin_vs_spread > 0 else "LOSS")
+        away_ml_prob = away_ats_prob * 0.8 + 0.1
+        ml_numeric_away = _prob_to_moneyline(away_ml_prob)
+        ml_prob = 1 - away_ml_prob
+        ml_numeric = _prob_to_moneyline(ml_prob)
+        ml_favorite = home_team if spread < 0 else away_team
+        ml_underdog = away_team if spread < 0 else home_team
 
-    if actual_total == total:
-        ou_result = "PUSH"
-    elif actual_total > total:
-        ou_result = "OVER"
-    else:
-        ou_result = "UNDER"
-
-    if actual_margin > 0:
-        ml_result = "HOME"
-    elif actual_margin < 0:
-        ml_result = "AWAY"
-    else:
-        ml_result = "PUSH"
-
-    # Profit (simplified: assume -110 odds for cover)
-    ats_profit = 0.0
-    if ats_result == "WIN":
-        ats_profit = 0.91  # -110 => profit of 0.91 units
-    elif ats_result == "LOSS":
-        ats_profit = -1.0
-
-    ou_profit = 0.0
-    if ou_result in ("OVER", "UNDER"):
-        ou_profit = 0.91 if ou_result == ou_pick else -1.0
-    elif ou_result == "PUSH":
-        ou_profit = 0.0
-
-    ml_odds_value = home_ml if ml_pick == str(row.get("home_abbr", row.get("home_team", ""))) else away_ml
-    ml_profit = 0.0
-    if ml_result == "HOME":
-        ml_profit = 100.0 / ml_odds_value if ml_odds_value < 0 else ml_odds_value / 100.0
-    elif ml_result == "AWAY":
-        ml_profit = 100.0 / ml_odds_value if ml_odds_value < 0 else ml_odds_value / 100.0
-
-    ats_ev = 2 * ats_proba - 1  # very rough
-    ou_ev = (ou_pred - total) / max(total, 1) if ou_pred else 0.0
-    ml_ev = ml_conf - (1.0 / (ml_odds_value / 100.0 + 1)) if ml_odds_value else 0.0
-
-    predicted_margin = spread * (2 * ats_proba - 1)
-
+    # Build handicap info for PRIME DIRECTIVE compliance
     home_stats = _build_nba_home_stats(row)
     away_stats = _build_nba_away_stats(row)
     situational = _build_nba_situational(row)
     splits = _build_nba_splits(row)
 
-    session_maker = _get_async_session()
-    async with session_maker() as session:
-        # Check if prediction already exists
-        sql_check = text(f"SELECT id FROM {NBA_SCHEMA}.game_predictions WHERE game_id = :gid")
-        result = await session.execute(sql_check, {"gid": game_id})
-        existing = result.scalar()
+    features_ats_json = _extract_pick_card_features(row, set(ats_feat))
+    features_ou_json = _extract_pick_card_features(row, set(ou_feat))
 
-        if existing:
-            sql = text(f"""
-                UPDATE {NBA_SCHEMA}.game_predictions
-                SET predicted_total = :pt, predicted_margin = :pm,
-                    margin_conf = :mc, ou_conf = :oc, ou_pick = :op,
-                    spread_pick = :sp, ml_pick = :mp, ml_conf = :mlc,
-                    actual_home_score = :ahs, actual_away_score = :aas,
-                    actual_total = :at, actual_margin = :am,
-                    ats_result = :ar, ou_result = :our, ml_result = :mr,
-                    ats_odds = :ao, ou_odds = :oo, ml_odds = :mo,
-                    ats_profit = :ap, ou_profit = :oup, ml_profit = :mlp,
-                    home_stats_json = :hs, away_stats_json = :aws,
-                    situational_json = :sit, splits_json = :spl,
-                    pace_adjustment_pts = :pap,
-                    ats_ev = :aev, ou_ev = :oev, ml_ev = :mev,
-                    updated_at = :ua
-                WHERE game_id = :gid
-            """)
-            params = {
-                "pt": ou_pred, "pm": predicted_margin,
-                "mc": margin_conf, "oc": ou_conf, "op": ou_pick,
-                "sp": spread_pick, "mp": ml_pick, "mlc": ml_conf,
-                "ahs": int(home_score), "aas": int(away_score),
-                "at": actual_total, "am": actual_margin,
-                "ar": ats_result, "our": ou_result, "mr": ml_result,
-                "ao": spread, "oo": total, "mo": 0,
-                "ap": ats_profit, "oup": ou_profit, "mlp": ml_profit,
-                "hs": json.dumps(home_stats), "aws": json.dumps(away_stats),
-                "sit": json.dumps(situational), "spl": json.dumps(splits),
-                "pap": 0.0, "aev": ats_ev, "oev": ou_ev, "mev": ml_ev,
-                "ua": now, "gid": game_id,
-            }
-        else:
-            sql = text(f"""
-                INSERT INTO {NBA_SCHEMA}.game_predictions
-                    (game_id, predicted_total, predicted_margin, margin_conf,
-                     ou_conf, ou_pick, spread_pick, ml_pick, ml_conf,
-                     actual_home_score, actual_away_score, actual_total, actual_margin,
-                     ats_result, ou_result, ml_result,
-                     ats_odds, ou_odds, ml_odds,
-                     ats_profit, ou_profit, ml_profit,
-                     home_stats_json, away_stats_json, situational_json, splits_json,
-                     pace_adjustment_pts, ats_ev, ou_ev, ml_ev,
-                     source, created_at)
-                VALUES (:pt, :pm, :mc, :oc, :op, :sp, :mp, :mlc,
-                        :ahs, :aas, :at, :am,
-                        :ar, :our, :mr,
-                        :ao, :oo, :mo,
-                        :ap, :oup, :mlp,
-                        :hs, :aws, :sit, :spl,
-                        :pap, :aev, :oev, :mev,
-                        :src, :ca)
-            """)
-            params = {
-                "pt": ou_pred, "pm": predicted_margin,
-                "mc": margin_conf, "oc": ou_conf, "op": ou_pick,
-                "sp": spread_pick, "mp": ml_pick, "mlc": ml_conf,
-                "ahs": int(home_score), "aas": int(away_score),
-                "at": actual_total, "am": actual_margin,
-                "ar": ats_result, "our": ou_result, "mr": ml_result,
-                "ao": spread, "oo": total, "mo": 0,
-                "ap": ats_profit, "oup": ou_profit, "mlp": ml_profit,
-                "hs": json.dumps(home_stats), "aws": json.dumps(away_stats),
-                "sit": json.dumps(situational), "spl": json.dumps(splits),
-                "pap": 0.0, "aev": ats_ev, "oev": ou_ev, "mev": ml_ev,
-                "src": "engine_backtest", "ca": now,
-            }
-
-        await session.execute(sql, params)
-        await session.commit()
-
-    logger.info("Saved NBA backtest prediction for game %s", game_id)
-
-
-# ── Handicap info builders ─────────────────────────────────────────────────────
-
-
-def _build_nba_home_stats(row: pd.Series) -> Dict[str, Any]:
-    """Build home team stats summary from a feature vector row (NBA)."""
-    return {
-        "abbreviation": str(row.get("home_abbr", row.get("home_team", ""))),
-        "points_for": _float_safe(row.get("hpf")),
-        "points_against": _float_safe(row.get("hpa")),
-        "win_pct_r5": _float_safe(row.get("home_win_pct_r5")),
-        "margin_r5": _float_safe(row.get("home_margin_r3")),
-        "margin_r10": _float_safe(row.get("home_margin_r10")),
-        "cover_pct_r5": _float_safe(row.get("home_cover_pct_r5")),
-        "season_ats_pct": _float_safe(row.get("home_season_ats_pct")),
-        "pace_rating": _float_safe(row.get("home_pace_rating")),
-        "offensive_rating": _float_safe(row.get("home_offensive_rating")),
-        "defensive_rating": _float_safe(row.get("home_defensive_rating")),
-        "rest_days": _float_safe(row.get("home_rest_days", 1)),
-    }
-
-
-def _build_nba_away_stats(row: pd.Series) -> Dict[str, Any]:
-    """Build away team stats summary (NBA)."""
-    return {
-        "abbreviation": str(row.get("away_abbr", row.get("away_team", ""))),
-        "points_for": _float_safe(row.get("apf")),
-        "points_against": _float_safe(row.get("apa")),
-        "win_pct_r5": _float_safe(row.get("away_win_pct_r5")),
-        "margin_r5": _float_safe(row.get("away_margin_r3")),
-        "margin_r10": _float_safe(row.get("away_margin_r10")),
-        "cover_pct_r5": _float_safe(row.get("away_cover_pct_r5")),
-        "season_ats_pct": _float_safe(row.get("away_season_ats_pct")),
-        "pace_rating": _float_safe(row.get("away_pace_rating")),
-        "offensive_rating": _float_safe(row.get("away_offensive_rating")),
-        "defensive_rating": _float_safe(row.get("away_defensive_rating")),
-        "rest_days": _float_safe(row.get("away_rest_days", 1)),
-    }
-
-
-def _build_nba_situational(row: pd.Series) -> Dict[str, Any]:
-    """Build situational data summary (NBA)."""
-    return {
-        "travel_miles": _float_safe(row.get("travel_miles")),
-        "rest_diff": _int_safe(row.get("rest_diff")),
-        "tz_diff": _int_safe(row.get("tz_diff")),
-        "is_back_to_back": bool(row.get("is_b2b", 0)),
-        "is_division": bool(row.get("is_division", 0)),
-        "is_conference": bool(row.get("is_conference", 0)),
-        "venue": str(row.get("venue", "")),
-        "altitude_ft": _int_safe(row.get("altitude_ft")),
-    }
+    conn = _get_sync_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO nba.game_predictions (
+                    game_id, home_team, away_team,
+                    predicted_spread, predicted_over_under,
+                    home_ats_prob, away_ats_prob,
+                    ou_over_prob, ou_under_prob,
+                    ats_side, ats_spread, ats_text, ats_probability,
+                    ats_confidence_label, ats_confidence_value,
+                    ou_side, ou_text, ou_probability,
+                    ou_confidence_label, ou_confidence_value,
+                    ml_favorite, ml_underdog, home_ml, away_ml,
+                    home_ml_prob, away_ml_prob,
+                    model_version, model_type,
+                    features_ats_json, features_ou_json,
+                    home_stats_json, away_stats_json,
+                    situational_json, splits_json,
+                    actual_home_score, actual_away_score,
+                    actual_total, actual_margin,
+                    actual_cover, actual_over,
+                    created_at, updated_at
+                ) VALUES (
+                    %(game_id)s, %(home_team)s, %(away_team)s,
+                    %(predicted_spread)s, %(predicted_over_under)s,
+                    %(home_ats_prob)s, %(away_ats_prob)s,
+                    %(ou_over_prob)s, %(ou_under_prob)s,
+                    %(ats_side)s, %(ats_spread)s, %(ats_text)s, %(ats_probability)s,
+                    %(ats_confidence_label)s, %(ats_confidence_value)s,
+                    %(ou_side)s, %(ou_text)s, %(ou_probability)s,
+                    %(ou_confidence_label)s, %(ou_confidence_value)s,
+                    %(ml_favorite)s, %(ml_underdog)s, %(home_ml)s, %(away_ml)s,
+                    %(home_ml_prob)s, %(away_ml_prob)s,
+                    %(model_version)s, %(model_type)s,
+                    %(features_ats_json)s, %(features_ou_json)s,
+                    %(home_stats_json)s, %(away_stats_json)s,
+                    %(situational_json)s, %(splits_json)s,
+                    %(actual_home_score)s, %(actual_away_score)s,
+                    %(actual_total)s, %(actual_margin)s,
+                    %(actual_cover)s, %(actual_over)s,
+                    %(created_at)s, %(updated_at)s
+                )
+                ON CONFLICT (game_id) DO UPDATE SET
+                    home_ats_prob = EXCLUDED.home_ats_prob,
+                    away_ats_prob = EXCLUDED.away_ats_prob,
+                    ou_over_prob = EXCLUDED.ou_over_prob,
+                    ou_under_prob = EXCLUDED.ou_under_prob,
+                    ats_side = EXCLUDED.ats_side,
+                    ats_spread = EXCLUDED.ats_spread,
+                    ats_text = EXCLUDED.ats_text,
+                    ats_probability = EXCLUDED.ats_probability,
+                    ats_confidence_label = EXCLUDED.ats_confidence_label,
+                    ats_confidence_value = EXCLUDED.ats_confidence_value,
+                    ou_side = EXCLUDED.ou_side,
+                    ou_text = EXCLUDED.ou_text,
+                    ou_probability = EXCLUDED.ou_probability,
+                    ou_confidence_label = EXCLUDED.ou_confidence_label,
+                    ou_confidence_value = EXCLUDED.ou_confidence_value,
+                    actual_home_score = EXCLUDED.actual_home_score,
+                    actual_away_score = EXCLUDED.actual_away_score,
+                    actual_total = EXCLUDED.actual_total,
+                    actual_margin = EXCLUDED.actual_margin,
+                    actual_cover = EXCLUDED.actual_cover,
+                    actual_over = EXCLUDED.actual_over,
+                    updated_at = EXCLUDED.updated_at
+                """,
+                {
+                    "game_id": game_id,
+                    "home_team": home_team,
+                    "away_team": away_team,
+                    "predicted_spread": spread,
+                    "predicted_over_under": ou_line,
+                    "home_ats_prob": round(home_ats_prob, 4),
+                    "away_ats_prob": round(away_ats_prob, 4),
+                    "ou_over_prob": round(ou_over_prob, 4),
+                    "ou_under_prob": round(ou_under_prob, 4),
+                    "ats_side": ats_side,
+                    "ats_spread": ats_spread_str,
+                    "ats_text": ats_text,
+                    "ats_probability": round(ats_probability, 4),
+                    "ats_confidence_label": ats_confidence_label,
+                    "ats_confidence_value": round(ats_confidence_value, 4),
+                    "ou_side": ou_side,
+                    "ou_text": ou_text,
+                    "ou_probability": round(ou_probability, 4),
+                    "ou_confidence_label": ou_confidence_label,
+                    "ou_confidence_value": round(ou_confidence_value, 4),
+                    "ml_favorite": ml_favorite,
+                    "ml_underdog": ml_underdog,
+                    "home_ml": _int_safe(ml_numeric) or 0,
+                    "away_ml": _int_safe(ml_numeric_away) or 0,
+                    "home_ml_prob": round(ml_prob, 4),
+                    "away_ml_prob": round(ml_prob_away, 4),
+                    "model_version": f"nba-xgboost-{season}",
+                    "model_type": "xgboost",
+                    "features_ats_json": features_ats_json,
+                    "features_ou_json": features_ou_json,
+                    "home_stats_json": home_stats,
+                    "away_stats_json": away_stats,
+                    "situational_json": situational,
+                    "splits_json": splits,
+                    "actual_home_score": _float_safe(home_score) or 0.0,
+                    "actual_away_score": _float_safe(away_score) or 0.0,
+                    "actual_total": _float_safe(actual_total) or 0.0,
+                    "actual_margin": _float_safe(actual_margin) or 0.0,
+                    "actual_cover": actual_cover,
+                    "actual_over": actual_over,
+                    "created_at": datetime.now(timezone.utc),
+                    "updated_at": datetime.now(timezone.utc),
+                },
+            )
+        conn.commit()
+        logger.debug("  Saved backtest prediction for game %s (%s vs %s)",
+                      game_id, home_team, away_team)
+    except Exception as exc:
+        logger.error("  Failed to save backtest prediction for game %s: %s", game_id, exc)
+    finally:
+        conn.close()
 
 
-def _build_nba_splits(row: pd.Series) -> Dict[str, Any]:
-    """Build splits / betting trends summary (NBA)."""
-    return {
-        "spread": _float_safe(row.get("closing_spread", row.get("spread"))),
-        "opening_spread": _float_safe(row.get("opening_spread")),
-        "spread_movement": _float_safe(row.get("spread_movement")),
-        "closing_ou": _float_safe(row.get("closing_ou", row.get("total"))),
-        "opening_ou": _float_safe(row.get("opening_ou")),
-        "ou_movement": _float_safe(row.get("ou_movement")),
-        "home_implied": _float_safe(row.get("himp")),
-        "away_implied": _float_safe(row.get("aimp")),
-        "diff_implied": _float_safe(row.get("dimp")),
-        "season_avg_pts": _float_safe(row.get("season_avg_pts")),
-    }
+# ── Handicap info builders (PRIME DIRECTIVE) ──────────────────────────────────────
 
 
-# ── Safe casting helpers ─────────────────────────────────────────────────────────
+def _build_nba_home_stats(row: pd.Series) -> str:
+    """Build home_stats_json for handicap info."""
+    home_team = _str_safe(row.get("home_team"))
+    home_ppg = _float_safe(row.get("home_ppg"))
+    home_oppg = _float_safe(row.get("home_oppg"))
+    home_win_pct = _float_safe(row.get("home_win_pct"))
+    home_ats_pct = _float_safe(row.get("home_ats_pct"))
+    home_ou_pct = _float_safe(row.get("home_ou_pct"))
+    home_recent = _str_safe(row.get("home_recent"))
+    return json.dumps({
+        "team": home_team,
+        "ppg": home_ppg,
+        "oppg": home_oppg,
+        "win_pct": home_win_pct,
+        "ats_pct": home_ats_pct,
+        "ou_pct": home_ou_pct,
+        "recent_games": home_recent,
+    })
 
 
-def _int_safe(val: Any) -> Optional[int]:
-    if val is None or (isinstance(val, float) and np.isnan(val)):
+def _build_nba_away_stats(row: pd.Series) -> str:
+    """Build away_stats_json for handicap info."""
+    away_team = _str_safe(row.get("away_team"))
+    away_ppg = _float_safe(row.get("away_ppg"))
+    away_oppg = _float_safe(row.get("away_oppg"))
+    away_win_pct = _float_safe(row.get("away_win_pct"))
+    away_ats_pct = _float_safe(row.get("away_ats_pct"))
+    away_ou_pct = _float_safe(row.get("away_ou_pct"))
+    away_recent = _str_safe(row.get("away_recent"))
+    return json.dumps({
+        "team": away_team,
+        "ppg": away_ppg,
+        "oppg": away_oppg,
+        "win_pct": away_win_pct,
+        "ats_pct": away_ats_pct,
+        "ou_pct": away_ou_pct,
+        "recent_games": away_recent,
+    })
+
+
+def _build_nba_situational(row: pd.Series) -> str:
+    """Build situational_json for handicap info."""
+    return json.dumps({
+        "rest_days_home": _float_safe(row.get("home_rest")),
+        "rest_days_away": _float_safe(row.get("away_rest")),
+        "is_back_to_back": bool(row.get("is_b2b")),
+        "home_at_home": True,
+        "venue": _str_safe(row.get("venue")),
+        "is_division_game": bool(row.get("is_div_game")),
+    })
+
+
+def _build_nba_splits(row: pd.Series) -> str:
+    """Build splits_json for handicap info."""
+    return json.dumps({
+        "home_ats_home": _float_safe(row.get("home_ats_home")),
+        "home_ats_away": _float_safe(row.get("home_ats_away")),
+        "home_ou_home": _float_safe(row.get("home_ou_home")),
+        "home_ou_away": _float_safe(row.get("home_ou_away")),
+        "away_ats_home": _float_safe(row.get("away_ats_home")),
+        "away_ats_away": _float_safe(row.get("away_ats_away")),
+        "away_ou_home": _float_safe(row.get("away_ou_home")),
+        "away_ou_away": _float_safe(row.get("away_ou_away")),
+        "home_line_movement": _str_safe(row.get("home_line_movement")),
+        "away_line_movement": _str_safe(row.get("away_line_movement")),
+    })
+
+
+# ── Safe casting helpers ──────────────────────────────────────────────────────────
+
+
+def _int_safe(val) -> Optional[int]:
+    if val is None:
         return None
     try:
         return int(val)
@@ -949,59 +1164,51 @@ def _int_safe(val: Any) -> Optional[int]:
         return None
 
 
-def _float_safe(val: Any) -> Optional[float]:
-    if val is None or (isinstance(val, float) and np.isnan(val)):
+def _float_safe(val) -> Optional[float]:
+    if val is None:
         return None
     try:
-        return round(float(val), 2)
+        return float(val)
     except (ValueError, TypeError):
         return None
 
 
-def _str_safe(val: Any) -> str:
-    if val is None or (isinstance(val, float) and np.isnan(val)):
+def _str_safe(val) -> str:
+    if val is None:
         return ""
     return str(val)
 
 
-# ── CLI / smoke test ─────────────────────────────────────────────────────────────
+# ── CLI / smoke test ──────────────────────────────────────────────────────────────
+
+
 if __name__ == "__main__":
     import sys
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-        datefmt="%H:%M:%S",
-    )
+    async def main():
+        if len(sys.argv) > 1 and sys.argv[1] == "backtest":
+            years_to_test = [2022, 2023, 2024, 2025]
+            if len(sys.argv) > 2:
+                years_to_test = [int(y) for y in sys.argv[2].split(",")]
+            logger.info("Backtesting NBA seasons %s...", years_to_test)
+            results = await backtest_season(years=years_to_test, limit=None, save_results=True)
+            for mt in ("ats", "ou"):
+                for r in results.get(mt, []):
+                    print(f"  {mt.upper()} {r['year']}: "
+                          f"{r.get('correct',0)}/{r.get('total_games',0)} "
+                          f"({r.get('accuracy',0)*100:.1f}%) "
+                          f"AUC={r.get('auc','N/A')}")
 
-    mode = sys.argv[1] if len(sys.argv) > 1 else "backtest"
+        elif len(sys.argv) > 1 and sys.argv[1] == "predict":
+            days = int(sys.argv[2]) if len(sys.argv) > 2 else 7
+            logger.info("Predicting NBA games for next %d days...", days)
+            cards = asyncio.run(batch_predict_upcoming_games(days_ahead=days, save_to_db=True))
+            print(f"  Predicted {len(cards)} games")
 
-    if mode == "backtest":
-        handicapper = NBAHandicapper()
-        results = asyncio.run(handicapper.backtest())
-        print("\n=== NBA Backtest ===")
-        for key in ("ats_results", "ou_results"):
-            items = results.get(key, [])
-            print(f"{key.upper()}: {len(items)} years")
-            for r in items:
-                if "error" in r:
-                    print(f"  {r['year']}: ERROR — {r['error']}")
-                else:
-                    if key == "ats_results":
-                        print(f"  {r['year']}: acc={r['accuracy']:.4f} auc={r['auc']} n={r['n_test']}")
-                    else:
-                        print(f"  {r['year']}: MAE={r['mae']:.2f} RMSE={r['rmse']:.2f} n={r['n_test']}")
-
-    elif mode == "handicap":
-        if len(sys.argv) < 3:
-            print("Usage: python nba_engine.py handicap <game_id>")
+        else:
+            print("Usage: python -m backend.app.handicapping.nba.nba_engine [backtest|predict]")
+            print("  backtest [years]    — backtest models (e.g. '2022,2023,2024,2025')")
+            print("  predict [days]      — predict upcoming games (default 7 days)")
             sys.exit(1)
-        game_id = int(sys.argv[2])
-        handicapper = NBAHandicapper()
-        result = asyncio.run(handicapper.handicap_game(game_id, "", "", save_to_db=False))
-        print(json.dumps(result, indent=2, default=str))
 
-    else:
-        print(f"Unknown mode: {mode}")
-        print("Usage: python nba_engine.py [backtest|handicap]")
-        sys.exit(1)
+    asyncio.run(main())
