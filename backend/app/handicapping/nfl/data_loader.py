@@ -1190,7 +1190,13 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
     date_col = "game_date" if "game_date" in df.columns else "date"
     if date_col in df.columns:
         try:
-            df["game_hour"] = pd.to_datetime(df[date_col]).dt.hour
+            # Convert game_date to US Eastern to determine primetime
+            _dt = pd.to_datetime(df[date_col])
+            if _dt.dt.tz is not None:
+                _et = _dt.dt.tz_convert("America/New_York")
+            else:
+                _et = _dt.dt.tz_localize("UTC").dt.tz_convert("America/New_York")
+            df["game_hour"] = _et.dt.hour
             df["is_primetime"] = (
                 df["game_hour"].isin([20, 21, 22, 23]).astype(float)
             )
