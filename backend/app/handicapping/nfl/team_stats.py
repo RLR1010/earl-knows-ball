@@ -63,6 +63,8 @@ def compute_team_game_aggregates(
             takeaways            AS takeaways,
             turnover_diff        AS turnover_diff,
             def_yards_allowed    AS def_ypg,
+            def_pass_yards       AS def_pass_ypg,
+            def_rush_yards       AS def_rush_ypg,
             (SELECT sub.yards_per_play
              FROM nfl.game_stats sub
              WHERE sub.season = gs.season
@@ -119,7 +121,17 @@ def compute_team_game_aggregates(
                 PARTITION BY team_abbr
                 ORDER BY season, week
                 ROWS BETWEEN {window} PRECEDING AND 1 PRECEDING
-            ) AS def_ypp_r{window}
+            ) AS def_ypp_r{window},
+            AVG(def_pass_ypg) OVER (
+                PARTITION BY team_abbr
+                ORDER BY season, week
+                ROWS BETWEEN {window} PRECEDING AND 1 PRECEDING
+            ) AS def_pass_ypg_r{window},
+            AVG(def_rush_ypg) OVER (
+                PARTITION BY team_abbr
+                ORDER BY season, week
+                ROWS BETWEEN {window} PRECEDING AND 1 PRECEDING
+            ) AS def_rush_ypg_r{window}
         FROM team_base
     )
     SELECT
@@ -137,9 +149,8 @@ def compute_team_game_aggregates(
         COALESCE(turnover_diff_r{window}, 0) AS turnover_diff,
         COALESCE(def_ypg_r{window}, 0) AS def_ypg,
         COALESCE(def_ypp_r{window}, 0) AS def_ypp,
-        -- These are filled in from the opponent side post-query
-        0 AS def_pass_ypg,
-        0 AS def_rush_ypg
+        COALESCE(def_pass_ypg_r{window}, 0) AS def_pass_ypg,
+        COALESCE(def_rush_ypg_r{window}, 0) AS def_rush_ypg
     FROM team_rolling
     ORDER BY season, week, team_abbr
     """
@@ -147,25 +158,7 @@ def compute_team_game_aggregates(
 
     # Compute defensive pass/rush splits from opponent stats
     if not df.empty:
-        # Self-join: for each row, find opponent's offensive stats in same game
-        opp_pass = df[["season", "week", "team_abbr", "pass_ypg"]].rename(
-            columns={"team_abbr": "opp_abbr", "pass_ypg": "def_pass_ypg"}
-        )
-        opp_rush = df[["season", "week", "team_abbr", "rush_ypg"]].rename(
-            columns={"team_abbr": "opp_abbr", "rush_ypg": "def_rush_ypg"}
-        )
-        df = df.merge(opp_pass, on=["season", "week", "opp_abbr"], how="left")
-        df = df.merge(opp_rush, on=["season", "week", "opp_abbr"], how="left")
 
-        # Drop placeholder zeros
-        df.drop(columns=["def_pass_ypg_x", "def_rush_ypg_x"], inplace=True, errors="ignore")
-        df.rename(
-            columns={
-                "def_pass_ypg_y": "def_pass_ypg",
-                "def_rush_ypg_y": "def_rush_ypg",
-            },
-            inplace=True,
-        )
 
         logger.info(
             "Team stats loaded: %d rows, seasons %d-%d",

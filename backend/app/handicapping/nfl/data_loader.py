@@ -1282,37 +1282,37 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
         )
 
         # ── Home team defensive stats ──
-        # Home team's defense = what the OPPONENT's offense produced
+        # Home team's defense = the home team's own def_ypg (yards allowed)
         home_def = _ts.rename(columns={
-            "team_abbr": "away_abbr",  # opponent's team
+            "team_abbr": "home_abbr",
             "def_ypg": "home_def_ypg",
             "def_ypp": "home_def_ypp",
             "def_pass_ypg": "home_def_pass_ypg",
             "def_rush_ypg": "home_def_rush_ypg",
         })
         df = df.merge(
-            home_def[[season_col, "week", "away_abbr",
+            home_def[[season_col, "week", "home_abbr",
                       "home_def_ypg", "home_def_ypp",
                       "home_def_pass_ypg", "home_def_rush_ypg"]],
-            left_on=[season_col, "week", "away_abbr"],
-            right_on=[season_col, "week", "away_abbr"],
+            left_on=[season_col, "week", "home_abbr"],
+            right_on=[season_col, "week", "home_abbr"],
             how="left",
         )
 
         # ── Away team defensive stats ──
         away_def = _ts.rename(columns={
-            "team_abbr": "home_abbr",  # opponent's team
+            "team_abbr": "away_abbr",
             "def_ypg": "away_def_ypg",
             "def_ypp": "away_def_ypp",
             "def_pass_ypg": "away_def_pass_ypg",
             "def_rush_ypg": "away_def_rush_ypg",
         })
         df = df.merge(
-            away_def[[season_col, "week", "home_abbr",
+            away_def[[season_col, "week", "away_abbr",
                       "away_def_ypg", "away_def_ypp",
                       "away_def_pass_ypg", "away_def_rush_ypg"]],
-            left_on=[season_col, "week", "home_abbr"],
-            right_on=[season_col, "week", "home_abbr"],
+            left_on=[season_col, "week", "away_abbr"],
+            right_on=[season_col, "week", "away_abbr"],
             how="left",
         )
 
