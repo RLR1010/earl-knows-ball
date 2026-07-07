@@ -5736,27 +5736,38 @@ async def data_loader_load_game(
         game_row = raw_df.iloc[0]
 
         # The `seasons` parameter semantics differ by sport:
-        #   NFL, NBA: internal DB season_id (e.g. 229, 230)
+        #   NFL, NBA: internal DB season_id (e.g. 1, 2)
         #   MLB: calendar year (e.g. 2025, 2026)
         # We need current + previous season so rolling stats compute correctly.
-        if sport == "nfl":
-            season_val = int(game_row["season_id"])
-            full_raw_df = dl.load_games(seasons=[season_val - 1, season_val], include_upcoming=True)
-        elif sport == "mlb":
+        # NOTE: season ID's are NOT sequential (2025=id:1, 2024=id:2), so we
+        # look up the previous season by year, not by subtracting from the ID.
+        if sport in ("nfl", "nba"):
+            from sqlalchemy import create_engine as _ce, text as _sql_text
+            season_id = int(game_row["season_id"])
+            _tmp_engine = _ce(db_url)
+            with _tmp_engine.connect() as _conn:
+                _prev_row = _conn.execute(_sql_text(
+                    f"SELECT id FROM {sport}.seasons "
+                    f"WHERE year = (SELECT year FROM {sport}.seasons WHERE id = :cur) - 1"
+                ), {"cur": season_id}).fetchone()
+            _tmp_engine.dispose()
+            prev_id = _prev_row[0] if _prev_row else season_id
+            full_raw_df = dl.load_games(seasons=[prev_id, season_id], include_upcoming=True)
+            logger.info(
+                "Data loader for %s game_id=%d — loaded %d game rows "
+                "from seasons [%d, %d]",
+                sport, game_id, len(full_raw_df), prev_id, season_id,
+            )
+        else:  # mlb - uses calendar year, sequential IDs
             season_val = int(game_row["season_year"])
             full_raw_df = dl.load_games(seasons=[season_val - 1, season_val], include_upcoming=True)
-        else:  # nba
-            season_val = int(game_row["season_id"])
-            full_raw_df = dl.load_games(seasons=[season_val - 1, season_val], include_upcoming=True)
-
-        logger.info(
-            "Data loader for %s game_id=%d — loaded %d game rows from seasons around %s",
-            sport, game_id, len(full_raw_df), season_val,
-        )
-
-        if full_raw_df.empty:
-            # Fallback: just load the target season alone
-            full_raw_df = dl.load_games(seasons=[season_val], include_upcoming=True)
+            logger.info(
+                "Data loader for %s game_id=%d — loaded %d game rows "
+                "from seasons [%d, %d]",
+                sport, game_id, len(full_raw_df), season_val - 1, season_val,
+            )
+            if full_raw_df.empty:
+                full_raw_df = dl.load_games(seasons=[season_val], include_upcoming=True)
 
         # Step 3: Build features on the full context
         if sport == "nfl":
