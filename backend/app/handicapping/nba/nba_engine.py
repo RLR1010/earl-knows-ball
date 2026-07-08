@@ -539,10 +539,6 @@ async def batch_predict_upcoming_games(
         logger.warning("  Upcoming games have no game_id column")
         return []
 
-    # We need pre-computed matches with spread & over_under from the
-    # betting_lines table.  Merge if needed.
-    df = await _enrich_with_betting_lines(db, df, now)
-
     pick_cards: List[Dict[str, Any]] = []
     for idx, row in df.iterrows():
         try:
@@ -603,41 +599,6 @@ async def _fetch_upcoming_games(
         })
         rows = result.mappings().all()
         return [dict(r) for r in rows]
-
-
-async def _enrich_with_betting_lines(
-    db: async_sessionmaker,
-    df: pd.DataFrame,
-    now: datetime,
-) -> pd.DataFrame:
-    """Add latest spread & over_under from nba.betting_lines to the DataFrame.
-
-    For games that already have spread/ou lines, fall back to those.
-    """
-    if df.empty:
-        return df
-
-    game_ids = [int(gid) for gid in df["game_id"].tolist() if gid]
-    if not game_ids:
-        return df
-
-    async with db() as session:
-        stmt = text("""
-            SELECT DISTINCT ON (bl.game_id)
-                bl.game_id,
-                bl.spread,
-                bl.over_under
-            FROM nba.betting_lines bl
-            WHERE bl.game_id = ANY(:game_ids)
-            ORDER BY bl.game_id, bl.updated_at DESC
-        """)
-        result = await session.execute(stmt, {"game_ids": game_ids})
-        lines = {r["game_id"]: r for r in result.mappings().all()}
-
-    df["spread"] = df["game_id"].apply(lambda gid: lines.get(int(gid), {}).get("spread", 0.0))
-    df["over_under"] = df["game_id"].apply(lambda gid: lines.get(int(gid), {}).get("over_under", 0.0))
-
-    return df
 
 
 # ── Save API prediction ──────────────────────────────────────────────────────────
