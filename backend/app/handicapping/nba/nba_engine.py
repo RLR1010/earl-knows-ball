@@ -843,7 +843,9 @@ def _save_backtest_prediction(
     spread_str = _str_safe(row.get("spread"))
     over_under = row.get("over_under", "")
 
-    mb_dsn = os.environ.get("DATABASE_URL", "")
+    from app.core.config import settings
+
+    mb_dsn = settings.database_url
     sync_dsn = mb_dsn.replace("+asyncpg", "").replace("postgresql+asyncpg://", "postgresql://")
 
     spread_val = _float_safe(spread_str)
@@ -969,7 +971,9 @@ def _save_backtest_prediction(
             session.commit()
         logger.debug("  Saved backtest prediction for game %%s (%%s vs %%s)", game_id, home_team, away_team)
     except Exception as exc:
+        import traceback as _tb
         logger.error("  Failed to save backtest prediction for game %%s: %%s", game_id, exc)
+        _tb.print_exc()
 
 # ── Handicap info builders (PRIME DIRECTIVE) ──────────────────────────────────────
 
