@@ -134,6 +134,28 @@ team_games AS (
         g.status,
         g.game_type,
         g.attendance,
+        g.home_field_goals_made,
+        g.home_field_goals_attempted,
+        g.home_three_points_made,
+        g.home_three_points_attempted,
+        g.home_free_throws_made,
+        g.home_free_throws_attempted,
+        g.home_rebounds,
+        g.home_assists,
+        g.home_steals,
+        g.home_blocks,
+        g.home_fouls,
+        g.away_field_goals_made,
+        g.away_field_goals_attempted,
+        g.away_three_points_made,
+        g.away_three_points_attempted,
+        g.away_free_throws_made,
+        g.away_free_throws_attempted,
+        g.away_rebounds,
+        g.away_assists,
+        g.away_steals,
+        g.away_blocks,
+        g.away_fouls,
         ht.abbreviation                                                         AS home_abbr,
         ht.name                                                                 AS home_team_name,
         CONCAT(ht.name, ' ', ht.abbreviation)                                   AS home_team,
@@ -240,6 +262,61 @@ COMPUTED_FEATURES_CATALOG: Dict[str, str] = {
     "a_ats_wins_10": "Away team ATS wins in last 10 games",
     "h_ats_margin_10": "Home team avg ATS cover margin last 10 games",
     "a_ats_margin_10": "Away team avg ATS cover margin last 10 games",
+
+    # ── Rolling ORTG, DRTG, Net Rating, Pace ─────────────────────────–
+    "h_ortg_r5": "Home team offensive rating rolling 5",
+    "a_ortg_r5": "Away team offensive rating rolling 5",
+    "h_ortg_r10": "Home team offensive rating rolling 10",
+    "a_ortg_r10": "Away team offensive rating rolling 10",
+    "h_ortg_r20": "Home team offensive rating rolling 20",
+    "a_ortg_r20": "Away team offensive rating rolling 20",
+    "h_drtg_r5": "Home team defensive rating rolling 5",
+    "a_drtg_r5": "Away team defensive rating rolling 5",
+    "h_drtg_r10": "Home team defensive rating rolling 10",
+    "a_drtg_r10": "Away team defensive rating rolling 10",
+    "h_drtg_r20": "Home team defensive rating rolling 20",
+    "a_drtg_r20": "Away team defensive rating rolling 20",
+    "h_net_rtg_r5": "Home team net rating rolling 5",
+    "a_net_rtg_r5": "Away team net rating rolling 5",
+    "h_net_rtg_r10": "Home team net rating rolling 10",
+    "a_net_rtg_r10": "Away team net rating rolling 10",
+    "h_net_rtg_r20": "Home team net rating rolling 20",
+    "a_net_rtg_r20": "Away team net rating rolling 20",
+    "h_pace_r5": "Home team pace (possessions) rolling 5",
+    "a_pace_r5": "Away team pace (possessions) rolling 5",
+    "h_pace_r10": "Home team pace (possessions) rolling 10",
+    "a_pace_r10": "Away team pace (possessions) rolling 10",
+    "h_pace_r20": "Home team pace (possessions) rolling 20",
+    "a_pace_r20": "Away team pace (possessions) rolling 20",
+    "net_rtg_diff_5": "Net rating differential (home - away) rolling 5",
+    "net_rtg_diff_10": "Net rating differential (home - away) rolling 10",
+    "pace_diff_5": "Pace differential (home - away) rolling 5",
+
+    # ── Rolling per-possession stats (TOV rate excluded — TOV data NULL in DB) ──
+    "h_ft_rate_r5": "Home team free throw rate (FTA/FGA) rolling 5",
+    "a_ft_rate_r5": "Away team free throw rate (FTA/FGA) rolling 5",
+    "h_ft_rate_r10": "Home team free throw rate (FTA/FGA) rolling 10",
+    "a_ft_rate_r10": "Away team free throw rate (FTA/FGA) rolling 10",
+    "h_ft_rate_r20": "Home team free throw rate (FTA/FGA) rolling 20",
+    "a_ft_rate_r20": "Away team free throw rate (FTA/FGA) rolling 20",
+    "h_efg_r5": "Home team effective FG% rolling 5",
+    "a_efg_r5": "Away team effective FG% rolling 5",
+    "h_efg_r10": "Home team effective FG% rolling 10",
+    "a_efg_r10": "Away team effective FG% rolling 10",
+    "h_efg_r20": "Home team effective FG% rolling 20",
+    "a_efg_r20": "Away team effective FG% rolling 20",
+    "h_threep_rate_r5": "Home team 3PA rate (3PA/FGA) rolling 5",
+    "a_threep_rate_r5": "Away team 3PA rate (3PA/FGA) rolling 5",
+    "h_threep_rate_r10": "Home team 3PA rate (3PA/FGA) rolling 10",
+    "a_threep_rate_r10": "Away team 3PA rate (3PA/FGA) rolling 10",
+    "h_threep_rate_r20": "Home team 3PA rate (3PA/FGA) rolling 20",
+    "a_threep_rate_r20": "Away team 3PA rate (3PA/FGA) rolling 20",
+    "h_ast_ratio_r5": "Home team assist ratio (AST/FGM) rolling 5",
+    "a_ast_ratio_r5": "Away team assist ratio (AST/FGM) rolling 5",
+    "h_ast_ratio_r10": "Home team assist ratio (AST/FGM) rolling 10",
+    "a_ast_ratio_r10": "Away team assist ratio (AST/FGM) rolling 10",
+    "h_ast_ratio_r20": "Home team assist ratio (AST/FGM) rolling 20",
+    "a_ast_ratio_r20": "Away team assist ratio (AST/FGM) rolling 20",
 }
 
 DISPLAY_NAMES: Dict[str, str] = {
@@ -307,6 +384,61 @@ DISPLAY_NAMES: Dict[str, str] = {
     "a_ats_wins_10": "Away ATS Wins L10",
     "h_ats_margin_10": "Home ATS Margin L10",
     "a_ats_margin_10": "Away ATS Margin L10",
+
+    # ── Rolling ORTG, DRTG, Net Rating, Pace ───────────────────────────
+    "h_ortg_r5": "Home ORTG L5",
+    "a_ortg_r5": "Away ORTG L5",
+    "h_ortg_r10": "Home ORTG L10",
+    "a_ortg_r10": "Away ORTG L10",
+    "h_ortg_r20": "Home ORTG L20",
+    "a_ortg_r20": "Away ORTG L20",
+    "h_drtg_r5": "Home DRTG L5",
+    "a_drtg_r5": "Away DRTG L5",
+    "h_drtg_r10": "Home DRTG L10",
+    "a_drtg_r10": "Away DRTG L10",
+    "h_drtg_r20": "Home DRTG L20",
+    "a_drtg_r20": "Away DRTG L20",
+    "h_net_rtg_r5": "Home Net Rtg L5",
+    "a_net_rtg_r5": "Away Net Rtg L5",
+    "h_net_rtg_r10": "Home Net Rtg L10",
+    "a_net_rtg_r10": "Away Net Rtg L10",
+    "h_net_rtg_r20": "Home Net Rtg L20",
+    "a_net_rtg_r20": "Away Net Rtg L20",
+    "h_pace_r5": "Home Pace L5",
+    "a_pace_r5": "Away Pace L5",
+    "h_pace_r10": "Home Pace L10",
+    "a_pace_r10": "Away Pace L10",
+    "h_pace_r20": "Home Pace L20",
+    "a_pace_r20": "Away Pace L20",
+    "net_rtg_diff_5": "Net Rtg Diff L5",
+    "net_rtg_diff_10": "Net Rtg Diff L10",
+    "pace_diff_5": "Pace Diff L5",
+
+    # ── Rolling per-possession stats ───────────────────────────────────
+    "h_ft_rate_r5": "Home FTr L5",
+    "a_ft_rate_r5": "Away FTr L5",
+    "h_ft_rate_r10": "Home FTr L10",
+    "a_ft_rate_r10": "Away FTr L10",
+    "h_ft_rate_r20": "Home FTr L20",
+    "a_ft_rate_r20": "Away FTr L20",
+    "h_efg_r5": "Home eFG% L5",
+    "a_efg_r5": "Away eFG% L5",
+    "h_efg_r10": "Home eFG% L10",
+    "a_efg_r10": "Away eFG% L10",
+    "h_efg_r20": "Home eFG% L20",
+    "a_efg_r20": "Away eFG% L20",
+    "h_threep_rate_r5": "Home 3PA% L5",
+    "a_threep_rate_r5": "Away 3PA% L5",
+    "h_threep_rate_r10": "Home 3PA% L10",
+    "a_threep_rate_r10": "Away 3PA% L10",
+    "h_threep_rate_r20": "Home 3PA% L20",
+    "a_threep_rate_r20": "Away 3PA% L20",
+    "h_ast_ratio_r5": "Home AST/FGM L5",
+    "a_ast_ratio_r5": "Away AST/FGM L5",
+    "h_ast_ratio_r10": "Home AST/FGM L10",
+    "a_ast_ratio_r10": "Away AST/FGM L10",
+    "h_ast_ratio_r20": "Home AST/FGM L20",
+    "a_ast_ratio_r20": "Away AST/FGM L20",
 }
 
 
@@ -663,6 +795,23 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
         "away_score": "score_against",
         "spread": "spread",
         "home_moneyline": "moneyline",
+        # ── Box score for ORTG/DRTG/Pace ──────────────────────────────
+        "home_field_goals_made": "fgm",
+        "home_field_goals_attempted": "fga",
+        "home_three_points_made": "fgm3",
+        "home_three_points_attempted": "fga3",
+        "home_free_throws_made": "ftm",
+        "home_free_throws_attempted": "fta",
+        "home_rebounds": "reb",
+        "home_assists": "ast",
+        "home_steals": "stl",
+        "home_blocks": "blk",
+        "home_fouls": "pf",
+        # ── Opponent box score (for DRTG) ─────────────────────────────
+        "away_field_goals_made": "opp_fgm",
+        "away_field_goals_attempted": "opp_fga",
+        "away_free_throws_attempted": "opp_fta",
+        "away_rebounds": "opp_reb",
     }
     away_cols = {
         "game_id": "game_id",
@@ -676,6 +825,23 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
         "home_score": "score_against",
         "spread": "spread",
         "away_moneyline": "moneyline",
+        # ── Box score for ORTG/DRTG/Pace ──────────────────────────────
+        "away_field_goals_made": "fgm",
+        "away_field_goals_attempted": "fga",
+        "away_three_points_made": "fgm3",
+        "away_three_points_attempted": "fga3",
+        "away_free_throws_made": "ftm",
+        "away_free_throws_attempted": "fta",
+        "away_rebounds": "reb",
+        "away_assists": "ast",
+        "away_steals": "stl",
+        "away_blocks": "blk",
+        "away_fouls": "pf",
+        # ── Opponent box score (for DRTG) ─────────────────────────────
+        "home_field_goals_made": "opp_fgm",
+        "home_field_goals_attempted": "opp_fga",
+        "home_free_throws_attempted": "opp_fta",
+        "home_rebounds": "opp_reb",
     }
 
     home_half = df[list(home_cols.keys())].rename(columns=home_cols).copy()
@@ -700,6 +866,41 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
 
     # Keep a date-ordered per-team index for rolling computations
     team_games.sort_values(["team_id", "date"], inplace=True)
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    #  0. Per-game ORTG, DRTG, Pace (from box score)
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    # Estimate offensive rebounds from total rebounds (league avg OReb% ≈ 24.5%)
+    _OREB_EST = 0.245
+    team_games["oreb_est"] = team_games["reb"] * _OREB_EST
+    team_games["opp_oreb_est"] = team_games["opp_reb"] * _OREB_EST
+
+    # Possessions = FGA - OREB + TOV + 0.44 × FTA
+    # NOTE: TOV is NULL in DB, so we omit it. This inflates possession count
+    #       (by ~13-14/game) but relative ORTG comparisons remain valid.
+    team_games["poss"] = (
+        team_games["fga"] - team_games["oreb_est"] + 0.44 * team_games["fta"]
+    )
+    team_games["opp_poss"] = (
+        team_games["opp_fga"] - team_games["opp_oreb_est"] + 0.44 * team_games["opp_fta"]
+    )
+
+    # ORTG = points per 100 own possessions
+    team_games["ortg"] = team_games["score_for"] / team_games["poss"].clip(lower=1) * 100
+    # DRTG = points allowed per 100 opponent possessions
+    team_games["drtg"] = team_games["score_against"] / team_games["opp_poss"].clip(lower=1) * 100
+    # Net Rating = ORTG - DRTG
+    team_games["net_rtg"] = team_games["ortg"] - team_games["drtg"]
+    # Pace = average of both teams' possessions (approximates possessions per game)
+    team_games["pace"] = (team_games["poss"] + team_games["opp_poss"]) / 2
+
+    # ── Per-possession stats (only those computable from available box score data) ──
+    # NOTE: TOV, steals, blocks, fouls are all NULL in the DB, so tov_rate is excluded
+    team_games["ft_rate"] = team_games["fta"] / team_games["fga"].clip(lower=1)
+    team_games["efg"] = (team_games["fgm"] + 0.5 * team_games["fgm3"]) / team_games["fga"].clip(lower=1)
+    team_games["threep_rate"] = team_games["fga3"] / team_games["fga"].clip(lower=1)
+    team_games["ast_ratio"] = team_games["ast"] / team_games["fgm"].clip(lower=1)
 
     # ═══════════════════════════════════════════════════════════════════════════
     #  1. Opponent-adjusted scoring
@@ -746,6 +947,57 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
                 team_games.groupby("team_abbr")[col]
                 .transform(lambda s: s.shift(1).rolling(window, min_periods=1).mean())
             )
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    #  1b. Rolling ORTG, DRTG, Net Rating, Pace (from Section 0 per-game)
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    nba_adv_metrics = ["ortg", "drtg", "net_rtg", "pace"]
+    nba_per_poss = ["ft_rate", "efg", "threep_rate", "ast_ratio"]
+
+    for window in (5, 10, 20):
+        for metric in nba_adv_metrics + nba_per_poss:
+            rolling_col = f"{metric}_r{window}"
+            team_games[rolling_col] = (
+                team_games.groupby("team_abbr")[metric]
+                .transform(lambda s: s.shift(1).rolling(window, min_periods=1).mean())
+            )
+
+        # Compute rolling differences: ortg_diff = h_ortg - a_ortg
+        h_ortg_r = f"h_ortg_r{window}"
+        a_ortg_r = f"a_ortg_r{window}"
+        h_drtg_r = f"h_drtg_r{window}"
+        a_drtg_r = f"a_drtg_r{window}"
+        team_games[h_ortg_r] = np.where(team_games["is_home"] == 1, team_games[f"ortg_r{window}"], np.nan)
+        team_games[a_ortg_r] = np.where(team_games["is_home"] == 0, team_games[f"ortg_r{window}"], np.nan)
+        team_games[h_drtg_r] = np.where(team_games["is_home"] == 1, team_games[f"drtg_r{window}"], np.nan)
+        team_games[a_drtg_r] = np.where(team_games["is_home"] == 0, team_games[f"drtg_r{window}"], np.nan)
+
+        for col in [h_ortg_r, a_ortg_r, h_drtg_r, a_drtg_r]:
+            team_games[col] = (
+                team_games.groupby("team_abbr")[col]
+                .transform(lambda s: s.ffill())
+            )
+
+    # ── Carry to main df ────────────────────────────────────────────
+    for metric in nba_adv_metrics + nba_per_poss:
+        for window in (5, 10, 20):
+            rolling_col = f"{metric}_r{window}"
+            df[f"h_{rolling_col}"] = team_games.loc[
+                team_games["is_home"] == 1, rolling_col
+            ].values
+            df[f"a_{rolling_col}"] = team_games.loc[
+                team_games["is_home"] == 0, rolling_col
+            ].values
+
+        # Also carry current-game non-rolling values for reference
+        df[f"h_{metric}"] = team_games.loc[team_games["is_home"] == 1, metric].values
+        df[f"a_{metric}"] = team_games.loc[team_games["is_home"] == 0, metric].values
+
+    # ── Net Rating differential ─────────────────────────────────────
+    df["net_rtg_diff_5"] = df["h_net_rtg_r5"] - df["a_net_rtg_r5"]
+    df["net_rtg_diff_10"] = df["h_net_rtg_r10"] - df["a_net_rtg_r10"]
+    df["pace_diff_5"] = df["h_pace_r5"] - df["a_pace_r5"]
 
     # ═══════════════════════════════════════════════════════════════════════════
     #  2. Rest days & back-to-back
