@@ -442,6 +442,15 @@ async def backtest_season(
     df = dl.load_data(limit=limit)
     logger.info("Loaded %d NBA games from data loader%s", len(df), f" (limit={limit})" if limit else "")
 
+    # Keep enough history for rolling-feature computation (at least one
+    # year prior to the earliest test year, matching nfl/engine.py)
+    min_data_year = min(years) - 1
+    df = df[df["season_year"] >= min_data_year].copy()
+    logger.info(
+        "Filtered to season_year >= %d — %d games remaining (for rolling stats)",
+        min_data_year, len(df),
+    )
+
     ats_results: List[Dict[str, Any]] = []
     ou_results: List[Dict[str, Any]] = []
     total_game_preds = 0
@@ -454,7 +463,7 @@ async def backtest_season(
             logger.warning("  No models for year %s – skipping", year)
             continue
 
-        year_df = df[df["season"] == year].copy()
+        year_df = df[df["season_year"] == year].copy()
         if year_df.empty:
             logger.warning("  No data for season %s – skipping", year)
             continue
