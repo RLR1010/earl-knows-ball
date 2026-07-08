@@ -1077,10 +1077,11 @@ if __name__ == "__main__":
 
     async def main():
         if len(sys.argv) > 1 and sys.argv[1] == "backtest":
-            years_to_test = [2022, 2023, 2024, 2025]
             if len(sys.argv) > 2:
                 years_to_test = [int(y) for y in sys.argv[2].split(",")]
-            logger.info("Backtesting NBA seasons %s...", years_to_test)
+            else:
+                years_to_test = None  # use function default ([2024, 2025])
+            logger.info("Backtesting NBA seasons %s...", years_to_test or [2024, 2025])
             results = await backtest_season(years=years_to_test, limit=None, save_results=True)
             for mt in ("ats", "ou"):
                 for r in results.get(mt, []):
