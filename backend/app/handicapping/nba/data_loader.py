@@ -218,6 +218,28 @@ COMPUTED_FEATURES_CATALOG: Dict[str, str] = {
     "home_ats_cover": "Home team covered the spread (1=yes, 0=no)",
     "away_ats_cover": "Away team covered the spread (1=yes, 0=no)",
     "over_result": "Game went over the total (1=yes, 0=no)",
+
+    # ── Enhanced fatigue ──────────────────────────────────────────────
+    "h_three_in_four": "Home team has 3+ games in 4 nights",
+    "a_three_in_four": "Away team has 3+ games in 4 nights",
+    "h_four_in_five": "Home team has 4+ games in 5 nights",
+    "a_four_in_five": "Away team has 4+ games in 5 nights",
+    "h_five_in_eight": "Home team has 5+ games in 8 nights",
+    "a_five_in_eight": "Away team has 5+ games in 8 nights",
+
+    # ── OU rolling records (mirrors ATS pattern) ──────────────────────
+    "h_ou_wins_5": "Home team over wins in last 5 games",
+    "a_ou_wins_5": "Away team over wins in last 5 games",
+    "h_ou_wins_10": "Home team over wins in last 10 games",
+    "a_ou_wins_10": "Away team over wins in last 10 games",
+    "h_ou_margin_5": "Home team avg OU margin (pts above/below) last 5",
+    "a_ou_margin_5": "Away team avg OU margin (pts above/below) last 5",
+
+    # ── Extended ATS windows ───────────────────────────────────────────
+    "h_ats_wins_10": "Home team ATS wins in last 10 games",
+    "a_ats_wins_10": "Away team ATS wins in last 10 games",
+    "h_ats_margin_10": "Home team avg ATS cover margin last 10 games",
+    "a_ats_margin_10": "Away team avg ATS cover margin last 10 games",
 }
 
 DISPLAY_NAMES: Dict[str, str] = {
@@ -263,6 +285,28 @@ DISPLAY_NAMES: Dict[str, str] = {
     "home_ats_cover": "Home team covered the spread (1=yes, 0=no)",
     "away_ats_cover": "Away team covered the spread (1=yes, 0=no)",
     "over_result": "Game went over the total (1=yes, 0=no)",
+
+    # ── Enhanced fatigue ──────────────────────────────────────────────
+    "h_three_in_four": "Home 3-in-4",
+    "a_three_in_four": "Away 3-in-4",
+    "h_four_in_five": "Home 4-in-5",
+    "a_four_in_five": "Away 4-in-5",
+    "h_five_in_eight": "Home 5-in-8",
+    "a_five_in_eight": "Away 5-in-8",
+
+    # ── OU rolling records ────────────────────────────────────────────
+    "h_ou_wins_5": "Home Over Wins L5",
+    "a_ou_wins_5": "Away Over Wins L5",
+    "h_ou_wins_10": "Home Over Wins L10",
+    "a_ou_wins_10": "Away Over Wins L10",
+    "h_ou_margin_5": "Home OU Margin L5",
+    "a_ou_margin_5": "Away OU Margin L5",
+
+    # ── Extended ATS windows ───────────────────────────────────────────
+    "h_ats_wins_10": "Home ATS Wins L10",
+    "a_ats_wins_10": "Away ATS Wins L10",
+    "h_ats_margin_10": "Home ATS Margin L10",
+    "a_ats_margin_10": "Away ATS Margin L10",
 }
 
 
@@ -721,6 +765,30 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
     df["rest_diff"] = df["rest_h"] - df["rest_a"]
     df["rest_diff"] = df["rest_diff"].fillna(0)
 
+    # ── Enhanced fatigue: 3-in-4, 4-in-5, 5-in-8 ────────────────────
+    # Rolling date windows require DatetimeIndex; build index per team group
+    def _schedule_density_values(grp, window_days: int, threshold: int):
+        """
+        For a team's sorted games, check if current game has >= threshold games
+        within the last window_days (counting current). Returns bool array.
+        """
+        srt = grp.set_index("date").sort_index()
+        cnt = srt.index.to_series().rolling(f"{window_days}D", min_periods=1).count()
+        return (cnt >= threshold).astype(int).values
+
+    for team_abbr, grp in team_games.sort_values("date").groupby("team_abbr", sort=False):
+        idx = grp.index
+        team_games.loc[idx, "three_in_four"] = _schedule_density_values(grp, 4, 3)
+        team_games.loc[idx, "four_in_five"] = _schedule_density_values(grp, 5, 4)
+        team_games.loc[idx, "five_in_eight"] = _schedule_density_values(grp, 8, 5)
+
+    df["h_three_in_four"] = team_games.loc[team_games["is_home"] == 1, "three_in_four"].values
+    df["a_three_in_four"] = team_games.loc[team_games["is_home"] == 0, "three_in_four"].values
+    df["h_four_in_five"] = team_games.loc[team_games["is_home"] == 1, "four_in_five"].values
+    df["a_four_in_five"] = team_games.loc[team_games["is_home"] == 0, "four_in_five"].values
+    df["h_five_in_eight"] = team_games.loc[team_games["is_home"] == 1, "five_in_eight"].values
+    df["a_five_in_eight"] = team_games.loc[team_games["is_home"] == 0, "five_in_eight"].values
+
     # ═══════════════════════════════════════════════════════════════════════════
     #  3. Travel miles (haversine)
     # ═══════════════════════════════════════════════════════════════════════════
@@ -852,6 +920,38 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
     df["over_result"] = (
         (df["home_score"] + df["away_score"]) > df["closing_ou"]
     ).astype(float)
+
+    # ── OU rolling records (over wins + margin, mirrors ATS pattern) ───
+    df["ou_total"] = df["home_score"] + df["away_score"]
+    df["ou_margin"] = df["ou_total"] - df["closing_ou"]
+
+    for team_prefix, abbr_col in [("h_", "home_abbr"), ("a_", "away_abbr")]:
+        df[f"{team_prefix}ou_wins_5"] = (
+            df.groupby(abbr_col)["over_result"]
+            .transform(lambda s: s.shift(1).rolling(5, min_periods=0).sum())
+        )
+        df[f"{team_prefix}ou_wins_10"] = (
+            df.groupby(abbr_col)["over_result"]
+            .transform(lambda s: s.shift(1).rolling(10, min_periods=0).sum())
+        )
+        df[f"{team_prefix}ou_margin_5"] = (
+            df.groupby(abbr_col)["ou_margin"]
+            .transform(lambda s: s.shift(1).rolling(5, min_periods=0).mean())
+        )
+
+    # ── Extended ATS windows (10-game) ─────────────────────────────────
+    for team_prefix, abbr_col, cover_col, margin_col in [
+        ("h_", "home_abbr", "home_ats_cover", "home_ats_margin"),
+        ("a_", "away_abbr", "away_ats_cover", "away_ats_margin"),
+    ]:
+        df[f"{team_prefix}ats_wins_10"] = (
+            df.groupby(abbr_col)[cover_col]
+            .transform(lambda s: s.shift(1).rolling(10, min_periods=0).sum())
+        )
+        df[f"{team_prefix}ats_margin_10"] = (
+            df.groupby(abbr_col)[margin_col]
+            .transform(lambda s: s.shift(1).rolling(10, min_periods=0).mean())
+        )
 
     # ═══════════════════════════════════════════════════════════════════════════
     #  6. Fill NaN / clean up
