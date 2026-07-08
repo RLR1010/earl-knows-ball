@@ -435,7 +435,8 @@ async def backtest_season(
         ``{"ats": [...], "ou": [...]}`` with per-year evaluation results.
     """
     if years is None:
-        years = [CURRENT_SEASON]
+        # Test on 2024 and 2025 by default (matching nfl/engine.py)
+        years = [2024, 2025]
 
     dl = get_data_loader()
     df = dl.load_data(limit=limit)
