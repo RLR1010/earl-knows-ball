@@ -293,13 +293,13 @@ async def nba_games(
     SELECT g.id, g.nba_game_id, g.date, g.game_type, g.home_score, g.away_score,
            g.status::text, g.venue, g.attendance,
            ht.abbreviation AS home_team, at.abbreviation AS away_team,
-           bl.spread, bl.over_under,
-           bl.home_moneyline, bl.away_moneyline
+           blc.closing_spread AS spread, blc.closing_ou AS over_under,
+           blc.closing_home_ml AS home_moneyline, blc.closing_away_ml AS away_moneyline
     FROM nba.games g
     JOIN nba.teams ht ON ht.id = g.home_team_id
     JOIN nba.teams at ON at.id = g.away_team_id
     JOIN nba.seasons s ON s.id = g.season_id
-    LEFT JOIN nba.betting_lines bl ON bl.game_id = g.id AND bl.is_opening = 'false' AND bl.source = 'the_odds_api_current'
+    LEFT JOIN nba.betting_lines_consolidated blc ON blc.game_id = g.id
     WHERE {where_clause}
     ORDER BY g.date ASC
     """

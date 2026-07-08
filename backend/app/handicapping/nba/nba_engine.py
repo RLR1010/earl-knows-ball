@@ -24,8 +24,10 @@ import pandas as pd
 import psycopg2
 import psycopg2.extras
 import xgboost as xgb
-from sqlalchemy import text
+from sqlalchemy import text, delete as sa_delete
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
+
+from app.models.nba.game_prediction import NBAGamePrediction
 from sklearn.metrics import roc_auc_score, mean_absolute_error, mean_squared_error
 
 from app.handicapping.nba.data_loader import NBADataLoader, get_data_loader, get_model_features
@@ -645,441 +647,358 @@ async def _save_api_prediction(
     row: pd.Series,
     pick_card: Dict[str, Any],
     db: Optional[async_sessionmaker] = None,
-    conn: Optional[psycopg2.extensions.connection] = None,
 ) -> None:
-    """Save a predicted pick card to ``nba.game_predictions`` (async).
+    """Save a predicted pick card using the NBAGamePrediction ORM model.
 
     ``row`` is the game row from the data loader (or DB query).
     ``pick_card`` is the dict returned by ``_build_pick_card``.
 
-    Uses async DB session when ``db`` is provided, otherwise falls
-    back to synchronous ``conn``.
+    Uses the async DB session when ``db`` is provided, otherwise
+    creates one via ``_get_async_session()``.
     """
-    game_id = pick_card.get("game_id") or int(row.get("game_id", 0))
-    home_team = pick_card.get("home_team") or str(row.get("home_team", ""))
-    away_team = pick_card.get("away_team") or str(row.get("away_team", ""))
+    import uuid as _uuid_mod
 
+    game_id = pick_card.get("game_id") or row.get("game_id")
+    if not game_id:
+        logger.warning("No game_id in pick_card or row \u2014 skipping save")
+        return
+
+    now = datetime.now(timezone.utc)
+    source = pick_card.get("model_version", "api")
+
+    # Normalise game_id to a UUID if it looks numeric
+    if isinstance(game_id, (int, str)):
+        try:
+            game_id = _uuid_mod.UUID(str(game_id))
+        except (ValueError, _uuid_mod.ValueError, AttributeError):
+            try:
+                game_id = _uuid_mod.UUID(int=int(game_id))
+            except (ValueError, TypeError):
+                pass  # leave as-is
+
+    # \u2500\u2500 Extract nested ATS / OU / ML picks \u2500\u2500
     ats_pick = pick_card.get("ats_pick", {})
     ou_pick = pick_card.get("ou_pick", {})
     ml_pick = pick_card.get("ml_pick", {})
 
-    home_ats_prob = pick_card.get("home_ats_prob", 0.5)
-    away_ats_prob = pick_card.get("away_ats_prob", 0.5)
-    ou_over_prob = pick_card.get("ou_over_prob", 0.5)
-    ou_under_prob = pick_card.get("ou_under_prob", 0.5)
+    spread_pick = ats_pick.get("team", "") or pick_card.get("ats_side", "")
+    ou_pick_side = ou_pick.get("team", "") or pick_card.get("ou_side", "")
+    ml_pick_side = ml_pick.get("favorite", "") or pick_card.get("ml_favorite", "")
 
-    ats_side = ats_pick.get("team", "")
-    ats_spread = ats_pick.get("spread", "PK")
-    ats_text = ats_pick.get("text", "")
-    ats_prob = ats_pick.get("probability", 0.5)
-    ats_conf_label = ""
-    ats_conf_value = 0.0
+    # \u2500\u2500 Confidence / probability values \u2500\u2500
+    margin_conf = None
     if ats_pick.get("confidence"):
-        ats_conf_label, ats_conf_value = ats_pick["confidence"]
+        _, margin_conf = ats_pick["confidence"]
+    margin_conf = margin_conf or ats_pick.get("probability") or pick_card.get("ats_probability")
 
-    ou_side = ou_pick.get("team", "")
-    ou_text = ou_pick.get("text", "")
-    ou_prob = ou_pick.get("probability", 0.5)
-    ou_conf_label = ""
-    ou_conf_value = 0.0
+    ou_conf = None
     if ou_pick.get("confidence"):
-        ou_conf_label, ou_conf_value = ou_pick["confidence"]
+        _, ou_conf = ou_pick["confidence"]
+    ou_conf = ou_conf or ou_pick.get("probability") or pick_card.get("ou_probability")
 
-    ml_favorite = ml_pick.get("favorite", "")
-    ml_underdog = ml_pick.get("underdog", "")
-    home_ml = ml_pick.get("home_ml", 0)
-    away_ml = ml_pick.get("away_ml", 0)
-    home_ml_prob = ml_pick.get("home_ml_prob", 0.5)
-    away_ml_prob = ml_pick.get("away_ml_prob", 0.5)
+    ml_conf = ml_pick.get("home_ml_prob") or pick_card.get("ml_probability") or pick_card.get("home_ml_prob")
 
-    model_version = pick_card.get("model_version", "nba-xgboost-current")
-    model_type = pick_card.get("model_type", "xgboost")
+    # \u2500\u2500 Line / spread / odds values \u2500\u2500
+    ats_spread_str = ats_pick.get("spread", "") or pick_card.get("ats_spread", "")
+    ats_odds = None
+    if isinstance(ats_spread_str, (int, float)):
+        ats_odds = float(ats_spread_str)
+    elif isinstance(ats_spread_str, str):
+        try:
+            ats_odds = float(ats_spread_str)
+        except (ValueError, TypeError):
+            pass
 
-    now_ts = datetime.now(timezone.utc)
+    ou_odds = pick_card.get("over_under") or pick_card.get("ou_line")
+    ml_odds = ml_pick.get("home_ml") or pick_card.get("home_ml")
 
-    # ── feature set used for prediction
-    feature_set_ats = _get_features("ats")
-    feature_set_ou = _get_features("ou")
+    # \u2500\u2500 Predicted scores \u2500\u2500
+    predicted_total = pick_card.get("predicted_over_under") or pick_card.get("ou_predicted_total")
+    predicted_margin = pick_card.get("predicted_spread") or pick_card.get("spread", 0)
 
-    features_ats_json = _extract_pick_card_features(row, set(feature_set_ats))
-    features_ou_json = _extract_pick_card_features(row, set(feature_set_ou))
+    pred_home_score = None
+    pred_away_score = None
+    if predicted_total is not None and predicted_margin is not None:
+        pred_home_score = max(0.0, round((float(predicted_total) + float(predicted_margin)) / 2.0, 1))
+        pred_away_score = max(0.0, round((float(predicted_total) - float(predicted_margin)) / 2.0, 1))
 
-    upsert_sql = text("""
-        INSERT INTO nba.game_predictions (
-            game_id, home_team, away_team,
-            predicted_spread, predicted_over_under,
-            home_ats_prob, away_ats_prob,
-            ou_over_prob, ou_under_prob,
-            ats_side, ats_spread, ats_text, ats_probability, ats_confidence_label, ats_confidence_value,
-            ou_side, ou_text, ou_probability, ou_confidence_label, ou_confidence_value,
-            ml_favorite, ml_underdog, home_ml, away_ml, home_ml_prob, away_ml_prob,
-            model_version, model_type, features_ats_json, features_ou_json,
-            home_stats_json, away_stats_json, situational_json, splits_json,
-            created_at, updated_at
-        ) VALUES (
-            :game_id, :home_team, :away_team,
-            :predicted_spread, :predicted_over_under,
-            :home_ats_prob, :away_ats_prob,
-            :ou_over_prob, :ou_under_prob,
-            :ats_side, :ats_spread, :ats_text, :ats_probability, :ats_confidence_label, :ats_confidence_value,
-            :ou_side, :ou_text, :ou_probability, :ou_confidence_label, :ou_confidence_value,
-            :ml_favorite, :ml_underdog, :home_ml, :away_ml, :home_ml_prob, :away_ml_prob,
-            :model_version, :model_type, :features_ats_json, :features_ou_json,
-            :home_stats_json, :away_stats_json, :situational_json, :splits_json,
-            :created_at, :updated_at
-        )
-        ON CONFLICT (game_id) DO UPDATE SET
-            home_ats_prob = EXCLUDED.home_ats_prob,
-            away_ats_prob = EXCLUDED.away_ats_prob,
-            ou_over_prob = EXCLUDED.ou_over_prob,
-            ou_under_prob = EXCLUDED.ou_under_prob,
-            ats_side = EXCLUDED.ats_side,
-            ats_spread = EXCLUDED.ats_spread,
-            ats_text = EXCLUDED.ats_text,
-            ats_probability = EXCLUDED.ats_probability,
-            ats_confidence_label = EXCLUDED.ats_confidence_label,
-            ats_confidence_value = EXCLUDED.ats_confidence_value,
-            ou_side = EXCLUDED.ou_side,
-            ou_text = EXCLUDED.ou_text,
-            ou_probability = EXCLUDED.ou_probability,
-            ou_confidence_label = EXCLUDED.ou_confidence_label,
-            ou_confidence_value = EXCLUDED.ou_confidence_value,
-            ml_favorite = EXCLUDED.ml_favorite,
-            ml_underdog = EXCLUDED.ml_underdog,
-            home_ml = EXCLUDED.home_ml,
-            away_ml = EXCLUDED.away_ml,
-            home_ml_prob = EXCLUDED.home_ml_prob,
-            away_ml_prob = EXCLUDED.away_ml_prob,
-            model_version = EXCLUDED.model_version,
-            features_ats_json = EXCLUDED.features_ats_json,
-            features_ou_json = EXCLUDED.features_ou_json,
-            updated_at = EXCLUDED.updated_at
-    """)
+    # \u2500\u2500 Feature JSON \u2500\u2500
+    features_ats_json = pick_card.get("features_ats_json")
+    if not features_ats_json:
+        ats_feats = _get_features("ats")
+        features_ats_json = _extract_pick_card_features(row, set(ats_feats))
+    features_ou_json = pick_card.get("features_ou_json")
+    if not features_ou_json:
+        ou_feats = _get_features("ou")
+        features_ou_json = _extract_pick_card_features(row, set(ou_feats))
 
-    if db:
-        async with db() as session:
-            await session.execute(upsert_sql, {
-                "game_id": game_id,
-                "home_team": home_team,
-                "away_team": away_team,
-                "predicted_spread": pick_card.get("spread", 0),
-                "predicted_over_under": pick_card.get("over_under", 0),
-                "home_ats_prob": home_ats_prob,
-                "away_ats_prob": away_ats_prob,
-                "ou_over_prob": ou_over_prob,
-                "ou_under_prob": ou_under_prob,
-                "ats_side": ats_side,
-                "ats_spread": ats_spread,
-                "ats_text": ats_text,
-                "ats_probability": ats_prob,
-                "ats_confidence_label": ats_conf_label,
-                "ats_confidence_value": ats_conf_value,
-                "ou_side": ou_side,
-                "ou_text": ou_text,
-                "ou_probability": ou_prob,
-                "ou_confidence_label": ou_conf_label,
-                "ou_confidence_value": ou_conf_value,
-                "ml_favorite": ml_favorite,
-                "ml_underdog": ml_underdog,
-                "home_ml": home_ml,
-                "away_ml": away_ml,
-                "home_ml_prob": home_ml_prob,
-                "away_ml_prob": away_ml_prob,
-                "model_version": model_version,
-                "model_type": model_type,
-                "features_ats_json": features_ats_json,
-                "features_ou_json": features_ou_json,
-                "home_stats_json": pick_card.get("home_stats_json") or json.dumps({}),
-                "away_stats_json": pick_card.get("away_stats_json") or json.dumps({}),
-                "situational_json": pick_card.get("situational_json") or json.dumps({}),
-                "splits_json": pick_card.get("splits_json") or json.dumps({}),
-                "created_at": now_ts,
-                "updated_at": now_ts,
-            })
-            await session.commit()
-        logger.debug("  Saved API prediction for game %s (%s vs %s)",
-                      game_id, home_team, away_team)
-    elif conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                upsert_sql,
-                {
-                    "game_id": game_id,
-                    "home_team": home_team,
-                    "away_team": away_team,
-                    "predicted_spread": pick_card.get("spread", 0),
-                    "predicted_over_under": pick_card.get("over_under", 0),
-                    "home_ats_prob": home_ats_prob,
-                    "away_ats_prob": away_ats_prob,
-                    "ou_over_prob": ou_over_prob,
-                    "ou_under_prob": ou_under_prob,
-                    "ats_side": ats_side,
-                    "ats_spread": ats_spread,
-                    "ats_text": ats_text,
-                    "ats_probability": ats_prob,
-                    "ats_confidence_label": ats_conf_label,
-                    "ats_confidence_value": ats_conf_value,
-                    "ou_side": ou_side,
-                    "ou_text": ou_text,
-                    "ou_probability": ou_prob,
-                    "ou_confidence_label": ou_conf_label,
-                    "ou_confidence_value": ou_conf_value,
-                    "ml_favorite": ml_favorite,
-                    "ml_underdog": ml_underdog,
-                    "home_ml": home_ml,
-                    "away_ml": away_ml,
-                    "home_ml_prob": home_ml_prob,
-                    "away_ml_prob": away_ml_prob,
-                    "model_version": model_version,
-                    "model_type": model_type,
-                    "features_ats_json": features_ats_json,
-                    "features_ou_json": features_ou_json,
-                    "home_stats_json": pick_card.get("home_stats_json") or json.dumps({}),
-                    "away_stats_json": pick_card.get("away_stats_json") or json.dumps({}),
-                    "situational_json": pick_card.get("situational_json") or json.dumps({}),
-                    "splits_json": pick_card.get("splits_json") or json.dumps({}),
-                    "created_at": now_ts,
-                    "updated_at": now_ts,
-                },
-            )
-        conn.commit()
-        logger.debug("  Saved API prediction (sync) for game %s (%s vs %s)",
-                      game_id, home_team, away_team)
+    features_dict = {}
+    if features_ats_json:
+        features_dict["ats"] = features_ats_json if isinstance(features_ats_json, dict) else json.loads(features_ats_json)
+    if features_ou_json:
+        features_dict["ou"] = features_ou_json if isinstance(features_ou_json, dict) else json.loads(features_ou_json)
+    features_json_str = json.dumps(features_dict, default=str) if features_dict else None
 
+    # \u2500\u2500 Handicapper info \u2500\u2500
+    def _load_or_dumps(val: Any) -> Optional[str]:
+        if val is None:
+            return None
+        if isinstance(val, str):
+            return val
+        return json.dumps(val, default=str)
 
-# ── Save backtest prediction ──────────────────────────────────────────────────────
+    home_stats_json = _load_or_dumps(pick_card.get("home_stats_json") or pick_card.get("home_stats") or {})
+    away_stats_json = _load_or_dumps(pick_card.get("away_stats_json") or pick_card.get("away_stats") or {})
+    situational_json = _load_or_dumps(pick_card.get("situational_json") or pick_card.get("situational") or {})
+    splits_json = _load_or_dumps(pick_card.get("splits_json") or pick_card.get("splits") or {})
+
+    # \u2500\u2500 Calibrated confidences (if available) \u2500\u2500
+    ats_conf_cal = pick_card.get("ats_conf_cal")
+    ou_conf_cal = pick_card.get("ou_conf_cal")
+    ml_conf_cal = pick_card.get("ml_conf_cal")
+
+    _f = lambda v: round(float(v), 4) if v is not None else None
+
+    # \u2500\u2500 Assemble ORM record \u2500\u2500
+    rec = NBAGamePrediction(
+        game_id=game_id,
+        predicted_home_score=_f(pred_home_score),
+        predicted_away_score=_f(pred_away_score),
+        predicted_total=_f(predicted_total),
+        predicted_margin=_f(predicted_margin),
+        margin_conf=_f(margin_conf),
+        ml_conf=_f(ml_conf),
+        ou_conf=_f(ou_conf),
+        ats_conf_cal=_f(ats_conf_cal),
+        ml_conf_cal=_f(ml_conf_cal),
+        ou_conf_cal=_f(ou_conf_cal),
+        ou_pick=str(ou_pick_side) if ou_pick_side else None,
+        spread_pick=str(spread_pick) if spread_pick else None,
+        ml_pick=str(ml_pick_side) if ml_pick_side else None,
+        ats_odds=_f(ats_odds),
+        ou_odds=_f(ou_odds),
+        ml_odds=_f(ml_odds),
+        home_stats_json=home_stats_json,
+        away_stats_json=away_stats_json,
+        situational_json=situational_json,
+        splits_json=splits_json,
+        features_json=features_json_str,
+        source=source,
+        created_at=now,
+    )
+
+    try:
+        if db is not None:
+            async with db() as session:
+                await session.execute(
+                    sa_delete(NBAGamePrediction).where(
+                        NBAGamePrediction.game_id == game_id,
+                        NBAGamePrediction.source == source,
+                    )
+                )
+                session.add(rec)
+                await session.commit()
+        else:
+            async with _get_async_session() as session:
+                await session.execute(
+                    sa_delete(NBAGamePrediction).where(
+                        NBAGamePrediction.game_id == game_id,
+                        NBAGamePrediction.source == source,
+                    )
+                )
+                session.add(rec)
+                await session.commit()
+        logger.debug("Saved API prediction for game %%s (source=%%s)", game_id, source)
+    except Exception as exc:
+        logger.error("Failed to save API prediction for game %%s: %%s", game_id, exc)
 
 
 def _save_backtest_prediction(
     row: pd.Series,
     ats_model: Optional[xgb.Booster] = None,
     ou_model: Optional[xgb.Booster] = None,
-    ats_features: Optional[List[str]] = None,
-    ou_features: Optional[List[str]] = None,
 ) -> None:
-    """Save a backtest prediction row to ``nba.game_predictions`` (sync).
+    """Save a backtest prediction using the NBAGamePrediction ORM model.
 
-    Extracts feature vectors from the row, runs ATS and OU models,
-    generates picks, and persists everything including actual results
-    for later analysis.
+    This is a synchronous function (backtest runs without async).
     """
-    game_id = _int_safe(row.get("id")) or _int_safe(row.get("game_id"))
-    home_team = _str_safe(row.get("home_team"))
-    away_team = _str_safe(row.get("away_team"))
-    season = _int_safe(row.get("season")) or CURRENT_SEASON
-    spread = _float_safe(row.get("spread")) or 0.0
-    ou_line = _float_safe(row.get("over_under")) or 0.0
-    home_score = _float_safe(row.get("home_score")) or 0.0
-    away_score = _float_safe(row.get("away_score")) or 0.0
-    actual_total = home_score + away_score
-    actual_margin = home_score - away_score
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session as SyncSession
 
-    ats_feat = ats_features or (_get_features("ats") if ats_features is None else ats_features)
-    ou_feat = ou_features or (_get_features("ou") if ou_features is None else ou_features)
-
-    # Determine actual cover / over
-    actual_cover = (actual_margin + spread) > 0
-    actual_over = actual_total > ou_line
-
-    # ATS prediction
-    home_ats_prob = 0.5
-    ats_side = ""
-    ats_spread_str = ""
-    ats_text = ""
+    # ── Run ATS model ──
     ats_probability = 0.5
+    ats_side = ""
     ats_confidence_label = ""
     ats_confidence_value = 0.0
     if ats_model is not None:
-        ats_vals, ats_names = _extract_feature_vector(row, "ats")
-        dmat = xgb.DMatrix(ats_vals, feature_names=ats_names)
-        home_ats_prob = float(ats_model.predict(dmat)[0])
-        away_ats_prob = 1.0 - home_ats_prob
-        if home_ats_prob > 0.5:
-            ats_side = home_team
-            ats_spread_str = f"-{abs(spread):.1f}"
-            ats_text = f"{home_team} {ats_spread_str}"
-            ats_probability = home_ats_prob
-            ats_confidence_label, ats_confidence_value = _confidence_from_prob(home_ats_prob)
-        else:
-            ats_side = away_team
-            ats_spread_str = f"+{abs(spread):.1f}"
-            ats_text = f"{away_team} {ats_spread_str}"
-            ats_probability = away_ats_prob
-            ats_confidence_label, ats_confidence_value = _confidence_from_prob(away_ats_prob)
-    else:
-        away_ats_prob = 0.5
+        try:
+            ats_feats = _get_features("ats")
+            if all(f in row.index for f in ats_feats):
+                X_ats = row[ats_feats].values.reshape(1, -1)
+                d_ats = xgb.DMatrix(X_ats)
+                ats_probability = float(ats_model.predict(d_ats)[0])
+                ats_side = row.get("home_team", "") if ats_probability > 0.5 else row.get("away_team", "")
+                ats_confidence_label = _get_confidence_label(ats_probability)
+                ats_confidence_value = _get_confidence_value(ats_probability)
+        except Exception as exc:
+            logger.debug("  ATS model error: %s", exc)
 
-    # OU prediction
-    ou_over_prob = 0.5
-    ou_side = ""
-    ou_text = ""
+    # ── Run OU model ──
     ou_probability = 0.5
+    ou_side = ""
     ou_confidence_label = ""
     ou_confidence_value = 0.0
     if ou_model is not None:
-        ou_vals, ou_names = _extract_feature_vector(row, "ou")
-        dmat = xgb.DMatrix(ou_vals, feature_names=ou_names)
-        ou_over_prob = float(ou_model.predict(dmat)[0])
-        ou_under_prob = 1.0 - ou_over_prob
-        if ou_over_prob > 0.5:
-            ou_side = "Over"
-            ou_text = f"Over {ou_line:.1f}"
-            ou_probability = ou_over_prob
-            ou_confidence_label, ou_confidence_value = _confidence_from_prob(ou_over_prob)
+        try:
+            ou_feats = _get_features("ou")
+            if all(f in row.index for f in ou_feats):
+                X_ou = row[ou_feats].values.reshape(1, -1)
+                d_ou = xgb.DMatrix(X_ou)
+                ou_probability = float(ou_model.predict(d_ou)[0])
+                ou_side = "Over" if ou_probability > 0.5 else "Under"
+                ou_confidence_label = _get_confidence_label(ou_probability)
+                ou_confidence_value = _get_confidence_value(ou_probability)
+        except Exception as exc:
+            logger.debug("  OU model error: %s", exc)
+
+    # ── Extract row values ──
+    game_id = row.get("game_id")
+    if not game_id:
+        logger.warning("No game_id in row — skipping backtest save")
+        return
+
+    home_team = _str_safe(row.get("home_team"))
+    away_team = _str_safe(row.get("away_team"))
+    spread_str = _str_safe(row.get("spread"))
+    over_under = row.get("over_under", "")
+
+    mb_dsn = os.environ.get("DATABASE_URL", "")
+    sync_dsn = mb_dsn.replace("+asyncpg", "").replace("postgresql+asyncpg://", "postgresql://")
+
+    spread_val = _float_safe(spread_str)
+    over_under_val = _float_safe(over_under)
+
+    # ── Compute predicted scores ──
+    spread_for_margin = _float_safe(spread_str) or 0.0
+    predicted_margin = spread_for_margin
+    predicted_total = over_under_val
+
+    pred_home_score = None
+    pred_away_score = None
+    if predicted_total is not None and predicted_margin is not None:
+        pred_home_score = max(0.0, round((predicted_total + predicted_margin) / 2.0, 1))
+        pred_away_score = max(0.0, round((predicted_total - predicted_margin) / 2.0, 1))
+
+    # ── Determine picks ──
+    spread_pick = ats_side
+    ou_pick_side = ou_side
+
+    ml_favorite = _str_safe(row.get("favorite", ""))
+    home_ml = _float_safe(row.get("home_ml")) or 0
+    away_ml = _float_safe(row.get("away_ml")) or 0
+    ml_pick_side = ml_favorite
+
+    # ── Actual game results ──
+    act_home_score = _float_safe(row.get("home_score")) or 0.0
+    act_away_score = _float_safe(row.get("away_score")) or 0.0
+    act_total = act_home_score + act_away_score
+    act_margin = act_home_score - act_away_score
+
+    # ── ATS / OU results ──
+    ats_result = None
+    ou_result = None
+    if spread_val is not None and spread_val != 0:
+        home_spread_pick = (row.get("home_team", "") == ats_side)
+        effective_margin = act_margin + spread_val if home_spread_pick else act_margin - spread_val
+        if effective_margin > 0:
+            ats_result = "win"
+        elif effective_margin == 0:
+            ats_result = "push"
         else:
-            ou_side = "Under"
-            ou_text = f"Under {ou_line:.1f}"
-            ou_probability = ou_under_prob
-            ou_confidence_label, ou_confidence_value = _confidence_from_prob(ou_under_prob)
-    else:
-        ou_under_prob = 0.5
+            ats_result = "loss"
+    if over_under_val is not None:
+        if act_total > over_under_val:
+            ou_result = "over" if ou_side == "Over" else "under"
+        elif act_total < over_under_val:
+            ou_result = "under" if ou_side == "Over" else "over"
+        else:
+            ou_result = "push"
 
-    # Moneyline
-    if home_ats_prob > 0.5:
-        ml_prob = home_ats_prob * 0.8 + 0.1
-        ml_numeric = _prob_to_moneyline(ml_prob)
-        ml_prob_away = 1 - ml_prob
-        ml_numeric_away = _prob_to_moneyline(ml_prob_away)
-        ml_favorite = home_team if spread < 0 else away_team
-        ml_underdog = away_team if spread < 0 else home_team
-    else:
-        away_ml_prob = away_ats_prob * 0.8 + 0.1
-        ml_numeric_away = _prob_to_moneyline(away_ml_prob)
-        ml_prob = 1 - away_ml_prob
-        ml_numeric = _prob_to_moneyline(ml_prob)
-        ml_favorite = home_team if spread < 0 else away_team
-        ml_underdog = away_team if spread < 0 else home_team
+    # ── Profit / Loss ──
+    ats_profit = 1.0 if ats_result == "win" else (-1.1 if ats_result == "loss" else 0.0)
+    ou_profit = 1.0 if ou_result == "over" else (-1.1 if ou_result == "under" else 0.0)
+    ml_profit = 0.0
+    ml_result = None
 
-    # Build handicap info for PRIME DIRECTIVE compliance
-    home_stats = _build_nba_home_stats(row)
-    away_stats = _build_nba_away_stats(row)
-    situational = _build_nba_situational(row)
-    splits = _build_nba_splits(row)
+    # ── Handicapper info ──
+    home_stats_json = _build_nba_home_stats(row)
+    away_stats_json = _build_nba_away_stats(row)
+    situational_json = _build_nba_situational(row)
+    splits_json = _build_nba_splits(row)
 
-    features_ats_json = _extract_pick_card_features(row, set(ats_feat))
-    features_ou_json = _extract_pick_card_features(row, set(ou_feat))
+    # ── Features ──
+    features_dict = {}
+    ats_feats = _get_features("ats")
+    if all(f in row.index for f in ats_feats):
+        features_dict["ats"] = {f: _float_safe(row[f]) for f in ats_feats}
+    ou_feats = _get_features("ou")
+    if all(f in row.index for f in ou_feats):
+        features_dict["ou"] = {f: _float_safe(row[f]) for f in ou_feats}
+    features_json_str = json.dumps(features_dict, default=str) if features_dict else None
 
-    conn = _get_sync_conn()
+    now = datetime.now(timezone.utc)
+
+    _f = lambda v: round(float(v), 4) if v is not None else None
+
+    # ── Build ORM record ──
+    rec = NBAGamePrediction(
+        game_id=game_id,
+        predicted_home_score=_f(pred_home_score),
+        predicted_away_score=_f(pred_away_score),
+        predicted_total=_f(predicted_total),
+        predicted_margin=_f(predicted_margin),
+        margin_conf=_f(ats_probability),
+        ml_conf=None,
+        ou_conf=_f(ou_probability),
+        ou_pick=str(ou_pick_side) if ou_pick_side else None,
+        spread_pick=str(spread_pick) if spread_pick else None,
+        ml_pick=str(ml_pick_side) if ml_pick_side else None,
+        actual_home_score=_f(act_home_score),
+        actual_away_score=_f(act_away_score),
+        actual_total=_f(act_total),
+        actual_margin=_f(act_margin),
+        ats_result=ats_result,
+        ou_result=ou_result,
+        ml_result=ml_result,
+        ats_odds=_f(spread_val),
+        ou_odds=_f(over_under_val),
+        ml_odds=_f(home_ml),
+        ats_profit=_f(ats_profit),
+        ou_profit=_f(ou_profit),
+        ml_profit=_f(ml_profit),
+        home_stats_json=home_stats_json,
+        away_stats_json=away_stats_json,
+        situational_json=situational_json,
+        splits_json=splits_json,
+        features_json=features_json_str,
+        source="backtest",
+        created_at=now,
+    )
+
     try:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO nba.game_predictions (
-                    game_id, home_team, away_team,
-                    predicted_spread, predicted_over_under,
-                    home_ats_prob, away_ats_prob,
-                    ou_over_prob, ou_under_prob,
-                    ats_side, ats_spread, ats_text, ats_probability,
-                    ats_confidence_label, ats_confidence_value,
-                    ou_side, ou_text, ou_probability,
-                    ou_confidence_label, ou_confidence_value,
-                    ml_favorite, ml_underdog, home_ml, away_ml,
-                    home_ml_prob, away_ml_prob,
-                    model_version, model_type,
-                    features_ats_json, features_ou_json,
-                    home_stats_json, away_stats_json,
-                    situational_json, splits_json,
-                    actual_home_score, actual_away_score,
-                    actual_total, actual_margin,
-                    actual_cover, actual_over,
-                    created_at, updated_at
-                ) VALUES (
-                    %(game_id)s, %(home_team)s, %(away_team)s,
-                    %(predicted_spread)s, %(predicted_over_under)s,
-                    %(home_ats_prob)s, %(away_ats_prob)s,
-                    %(ou_over_prob)s, %(ou_under_prob)s,
-                    %(ats_side)s, %(ats_spread)s, %(ats_text)s, %(ats_probability)s,
-                    %(ats_confidence_label)s, %(ats_confidence_value)s,
-                    %(ou_side)s, %(ou_text)s, %(ou_probability)s,
-                    %(ou_confidence_label)s, %(ou_confidence_value)s,
-                    %(ml_favorite)s, %(ml_underdog)s, %(home_ml)s, %(away_ml)s,
-                    %(home_ml_prob)s, %(away_ml_prob)s,
-                    %(model_version)s, %(model_type)s,
-                    %(features_ats_json)s, %(features_ou_json)s,
-                    %(home_stats_json)s, %(away_stats_json)s,
-                    %(situational_json)s, %(splits_json)s,
-                    %(actual_home_score)s, %(actual_away_score)s,
-                    %(actual_total)s, %(actual_margin)s,
-                    %(actual_cover)s, %(actual_over)s,
-                    %(created_at)s, %(updated_at)s
+        engine = create_engine(sync_dsn) if sync_dsn else create_engine("postgresql://localhost:5432/earl_knows_football")
+        with SyncSession(engine) as session:
+            session.execute(
+                sa_delete(NBAGamePrediction).where(
+                    NBAGamePrediction.game_id == game_id,
+                    NBAGamePrediction.source == "backtest",
                 )
-                ON CONFLICT (game_id) DO UPDATE SET
-                    home_ats_prob = EXCLUDED.home_ats_prob,
-                    away_ats_prob = EXCLUDED.away_ats_prob,
-                    ou_over_prob = EXCLUDED.ou_over_prob,
-                    ou_under_prob = EXCLUDED.ou_under_prob,
-                    ats_side = EXCLUDED.ats_side,
-                    ats_spread = EXCLUDED.ats_spread,
-                    ats_text = EXCLUDED.ats_text,
-                    ats_probability = EXCLUDED.ats_probability,
-                    ats_confidence_label = EXCLUDED.ats_confidence_label,
-                    ats_confidence_value = EXCLUDED.ats_confidence_value,
-                    ou_side = EXCLUDED.ou_side,
-                    ou_text = EXCLUDED.ou_text,
-                    ou_probability = EXCLUDED.ou_probability,
-                    ou_confidence_label = EXCLUDED.ou_confidence_label,
-                    ou_confidence_value = EXCLUDED.ou_confidence_value,
-                    actual_home_score = EXCLUDED.actual_home_score,
-                    actual_away_score = EXCLUDED.actual_away_score,
-                    actual_total = EXCLUDED.actual_total,
-                    actual_margin = EXCLUDED.actual_margin,
-                    actual_cover = EXCLUDED.actual_cover,
-                    actual_over = EXCLUDED.actual_over,
-                    updated_at = EXCLUDED.updated_at
-                """,
-                {
-                    "game_id": game_id,
-                    "home_team": home_team,
-                    "away_team": away_team,
-                    "predicted_spread": spread,
-                    "predicted_over_under": ou_line,
-                    "home_ats_prob": round(home_ats_prob, 4),
-                    "away_ats_prob": round(away_ats_prob, 4),
-                    "ou_over_prob": round(ou_over_prob, 4),
-                    "ou_under_prob": round(ou_under_prob, 4),
-                    "ats_side": ats_side,
-                    "ats_spread": ats_spread_str,
-                    "ats_text": ats_text,
-                    "ats_probability": round(ats_probability, 4),
-                    "ats_confidence_label": ats_confidence_label,
-                    "ats_confidence_value": round(ats_confidence_value, 4),
-                    "ou_side": ou_side,
-                    "ou_text": ou_text,
-                    "ou_probability": round(ou_probability, 4),
-                    "ou_confidence_label": ou_confidence_label,
-                    "ou_confidence_value": round(ou_confidence_value, 4),
-                    "ml_favorite": ml_favorite,
-                    "ml_underdog": ml_underdog,
-                    "home_ml": _int_safe(ml_numeric) or 0,
-                    "away_ml": _int_safe(ml_numeric_away) or 0,
-                    "home_ml_prob": round(ml_prob, 4),
-                    "away_ml_prob": round(ml_prob_away, 4),
-                    "model_version": f"nba-xgboost-{season}",
-                    "model_type": "xgboost",
-                    "features_ats_json": features_ats_json,
-                    "features_ou_json": features_ou_json,
-                    "home_stats_json": home_stats,
-                    "away_stats_json": away_stats,
-                    "situational_json": situational,
-                    "splits_json": splits,
-                    "actual_home_score": _float_safe(home_score) or 0.0,
-                    "actual_away_score": _float_safe(away_score) or 0.0,
-                    "actual_total": _float_safe(actual_total) or 0.0,
-                    "actual_margin": _float_safe(actual_margin) or 0.0,
-                    "actual_cover": actual_cover,
-                    "actual_over": actual_over,
-                    "created_at": datetime.now(timezone.utc),
-                    "updated_at": datetime.now(timezone.utc),
-                },
             )
-        conn.commit()
-        logger.debug("  Saved backtest prediction for game %s (%s vs %s)",
-                      game_id, home_team, away_team)
+            session.add(rec)
+            session.commit()
+        logger.debug("  Saved backtest prediction for game %%s (%%s vs %%s)", game_id, home_team, away_team)
     except Exception as exc:
-        logger.error("  Failed to save backtest prediction for game %s: %s", game_id, exc)
-    finally:
-        conn.close()
-
+        logger.error("  Failed to save backtest prediction for game %%s: %%s", game_id, exc)
 
 # ── Handicap info builders (PRIME DIRECTIVE) ──────────────────────────────────────
 

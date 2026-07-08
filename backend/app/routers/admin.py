@@ -791,6 +791,108 @@ _MLB_ML_CATEGORIES = {
 }
 
 
+# ── NFL ATS Model Feature Descriptions ──
+_ATS_DESCRIPTIONS = {
+    "__desc__": "Spread-optimized model. Features: opponent-adjusted scoring, implied market (OU-based), spread movement, short-term form (5G win%, 3G margin, cover streak, bounce-back), long-term identity (10G margin, season YTD ATS%), dome. No raw spread — captures market dynamics, scoring differentials, streaks, and season identity.",
+    "hpf": "Home team opponent-adjusted PPG (weighted by opponent strength)",
+    "hpa": "Home team opponent-adjusted PPG allowed",
+    "apf": "Away team opponent-adjusted PPG",
+    "apa": "Away team opponent-adjusted PPG allowed",
+    "dpf": "Points scored differential (offense - defense)",
+    "dpa": "Points allowed differential (opponent-adjusted)",
+    "himp": "Home team implied scoring from over/under line",
+    "aimp": "Away team implied scoring from over/under line",
+    "dimp": "Home-away implied scoring difference (market edge)",
+    "spread_movement": "Point spread movement from open to close",
+    "home_win_pct_r5": "Home team win rate in last 5 games (recent form)",
+    "away_win_pct_r5": "Away team win rate in last 5 games (recent form)",
+    "home_margin_r3": "Home team avg margin in last 3 games (blowout vs squeak)",
+    "away_margin_r3": "Away team avg margin in last 3 games",
+    "home_cover_pct_r5": "Home team ATS cover rate last 5 games (ATS hot/cold streak)",
+    "away_cover_pct_r5": "Away team ATS cover rate last 5 games",
+    "home_embarrassed": "Binary: 1 if home team lost by 14+ in most recent game (bounce-back spot)",
+    "away_embarrassed": "Binary: 1 if away team lost by 14+ in most recent game",
+    "home_season_ats_pct": "Home team cumulative season-to-date ATS cover rate (season identity)",
+    "away_season_ats_pct": "Away team cumulative season-to-date ATS cover rate",
+    "home_margin_r10": "Home team avg margin in last 10 games (half-season identity)",
+    "away_margin_r10": "Away team avg margin in last 10 games",
+    "travel_miles": "Away team travel distance in miles (haversine from stadium coordinates)",
+    "is_dome": "Binary: 1 if game is in a domed stadium",
+}
+_ATS_CATEGORIES = {
+    "Opponent-Adjusted Scoring": ["hpf", "hpa", "apf", "apa", "dpf", "dpa"],
+    "Market Features": ["himp", "aimp", "dimp", "spread_movement"],
+    "Short-Term Form": ["home_win_pct_r5", "away_win_pct_r5", "home_margin_r3", "away_margin_r3", "home_cover_pct_r5", "away_cover_pct_r5", "home_embarrassed", "away_embarrassed"],
+    "Long-Term Identity": ["home_margin_r10", "away_margin_r10", "home_season_ats_pct", "away_season_ats_pct"],
+    "Situational": ["travel_miles", "is_dome"],
+}
+
+# ── NFL OU Model Feature Descriptions ──
+_OU_DESCRIPTIONS = {
+    "__desc__": "Total-optimized model. Predicts combined points using market anchors (opening_ou, spread, ou_movement), opponent-adjusted scoring diffs, form (win%, margins r3/r10), and situational factors.",
+    "dpf": "Points scored differential (offense - defense, opponent-adjusted)",
+    "dpa": "Points allowed differential (opponent-adjusted)",
+    "himp": "Home team implied scoring from OU line",
+    "aimp": "Away team implied scoring from OU line",
+    "dimp": "Implied scoring difference",
+    "opening_ou": "Opening over/under line (pre-market anchor)",
+    "spread": "Point spread (cross-market anchor)",
+    "ou_movement": "OU movement from open to close (late-market shift)",
+    "home_win_pct_r5": "Home team win rate last 5 games",
+    "away_win_pct_r5": "Away team win rate last 5 games",
+    "home_margin_r3": "Home team avg margin last 3 games",
+    "away_margin_r3": "Away team avg margin last 3 games",
+    "home_margin_r10": "Home team avg margin last 10 games (half-season identity)",
+    "away_margin_r10": "Away team avg margin last 10 games",
+    "rest_diff": "Rest days advantage (home - away)",
+    "travel_miles": "Away team travel distance",
+    "tz_diff": "Time zone difference",
+    "is_short": "Short week flag (Thu/Fri/Sat)",
+    "is_dome": "Dome stadium flag",
+    "temp": "Temperature (F) at kickoff",
+    "wind": "Wind speed (mph) at kickoff",
+}
+_OU_CATEGORIES = {
+    "Opponent-Adjusted Scoring": ["dpf", "dpa"],
+    "Market Features": ["himp", "aimp", "dimp", "opening_ou", "spread", "ou_movement"],
+    "Form & Identity": ["home_win_pct_r5", "away_win_pct_r5", "home_margin_r3", "away_margin_r3", "home_margin_r10", "away_margin_r10"],
+    "Rest & Travel": ["rest_diff", "travel_miles", "tz_diff"],
+    "Situational": ["is_short", "is_dome", "temp", "wind"],
+}
+
+# ── NBA Model Feature Descriptions ──
+_NBA_ATS_DESCRIPTIONS = {
+    "__desc__": "NBA ATS model. Rolling form streaks (ATS margin/wins, straight-up wins), implied market scoring, and betting lines. Features from season-level rolling windows.",
+    "h_ats_margin_5": "Home team avg ATS cover margin last 5 games",
+    "a_ats_margin_5": "Away team avg ATS cover margin last 5 games",
+    "h_ats_wins_5": "Home team ATS wins in last 5 games (count 0-5)",
+    "a_ats_wins_5": "Away team ATS wins in last 5 games (count 0-5)",
+    "h_implied": "Home team implied scoring from OU line",
+    "a_implied": "Away team implied scoring from OU line",
+    "h_wins_5": "Home team straight-up wins in last 5 games",
+    "h_wins_10": "Home team straight-up wins in last 10 games",
+    "a_wins_5": "Away team straight-up wins in last 5 games",
+    "a_wins_10": "Away team straight-up wins in last 10 games",
+}
+_NBA_ATS_CATEGORIES = {
+    "Form & Streaks": ["h_ats_wins_5", "a_ats_wins_5", "h_ats_margin_5", "a_ats_margin_5",
+                       "h_wins_5", "h_wins_10", "a_wins_5", "a_wins_10"],
+    "Market Features": ["h_implied", "a_implied"],
+}
+_NBA_OU_DESCRIPTIONS = {
+    "__desc__": "NBA OU model. Projects total points using straight-up win streaks, implied market scoring, and betting lines.",
+    "h_implied": "Home team implied scoring from OU line",
+    "a_implied": "Away team implied scoring from OU line",
+    "h_wins_5": "Home team straight-up wins in last 5 games",
+    "h_wins_10": "Home team straight-up wins in last 10 games",
+    "a_wins_5": "Away team straight-up wins in last 5 games",
+    "a_wins_10": "Away team straight-up wins in last 10 games",
+}
+_NBA_OU_CATEGORIES = {
+    "Form & Identity": ["h_wins_5", "h_wins_10", "a_wins_5", "a_wins_10"],
+    "Market Features": ["h_implied", "a_implied"],
+}
+
 class ModelFeatureOut(BaseModel):
     name: str
     description: str
@@ -1304,7 +1406,7 @@ async def get_model_detail_from_run(
     if sport == "nfl":
         variant = _build_nfl_model_variant(results, variant_name, model_type)
     else:
-        variant = _build_generic_model_variant(results, variant_name, model_type)
+        variant = _build_generic_model_variant(results, variant_name, model_type, sport=sport)
 
     if not variant:
         return {"error": "Could not build model variant from this run's data"}
@@ -1335,18 +1437,28 @@ def _build_nfl_model_variant(results, name, model_type):
     )
 
 
-def _build_generic_model_variant(results, name, model_type):
+def _build_generic_model_variant(results, name, model_type, sport="mlb"):
     """Build an MLB/NBA model variant from raw result data."""
-    _descriptions_map = {
-        "ats": _MLB_ATS_DESCRIPTIONS,
-        "ou": _MLB_OU_DESCRIPTIONS,
-        "ml": _MLB_ML_DESCRIPTIONS,
-    }
-    _categories_map = {
-        "ats": _MLB_ATS_CATEGORIES,
-        "ou": _MLB_OU_CATEGORIES,
-        "ml": _MLB_ML_CATEGORIES,
-    }
+    if sport == "nba":
+        _descriptions_map = {
+            "ats": _NBA_ATS_DESCRIPTIONS,
+            "ou": _NBA_OU_DESCRIPTIONS,
+        }
+        _categories_map = {
+            "ats": _NBA_ATS_CATEGORIES,
+            "ou": _NBA_OU_CATEGORIES,
+        }
+    else:
+        _descriptions_map = {
+            "ats": _MLB_ATS_DESCRIPTIONS,
+            "ou": _MLB_OU_DESCRIPTIONS,
+            "ml": _MLB_ML_DESCRIPTIONS,
+        }
+        _categories_map = {
+            "ats": _MLB_ATS_CATEGORIES,
+            "ou": _MLB_OU_CATEGORIES,
+            "ml": _MLB_ML_CATEGORIES,
+        }
     return _build_mlb_model_variant(
         name,
         results,
@@ -1840,7 +1952,7 @@ async def get_prediction_ev_distribution(
     # Resolve sport config inlined
     if sport == "nfl":
         conf_main = "margin_conf"
-        schema, use_ats, use_ml = "nfl", True, False
+        schema, use_ats, use_ml = "nfl", True, True
         conf_ats = "margin_conf"; conf_ml = "margin_conf"; conf_ou = "margin_conf"
         rl_col = "margin_conf"
     elif sport == "nba":
@@ -2417,19 +2529,7 @@ def _build_model_variant(name, results_file, feature_descriptions, feature_categ
             category=cat_lookup.get(feat_name, "Other"),
         ))
 
-    # Fill in any defined features not in results at zero importance
-    defined_feats = set()
-    for feats_list in feature_categories_def.values():
-        defined_feats.update(feats_list)
-    existing = set(f.name for f in features)
-    for fn in sorted(defined_feats):
-        if fn not in existing:
-            features.append(ModelFeatureOut(
-                name=fn,
-                description=feature_descriptions.get(fn, fn),
-                importance=0,
-                category=cat_lookup.get(fn, "Other"),
-            ))
+
 
     fi_plot = [{"name": f.name, "importance": f.importance} for f in features[:15]]
 
@@ -2510,76 +2610,8 @@ def _get_nfl_model_detail() -> SportModelDetailOut:
     """
     import os
 
-    # ── ATS Model ──
-    _ATS_DESCRIPTIONS = {
-        "__desc__": "Spread-optimized model. Features: opponent-adjusted scoring, implied market (OU-based), spread movement, short-term form (5G win%, 3G margin, cover streak, bounce-back), long-term identity (10G margin, season YTD ATS%), dome. No raw spread — captures market dynamics, scoring differentials, streaks, and season identity.",
-        "hpf": "Home team opponent-adjusted PPG (weighted by opponent strength)",
-        "hpa": "Home team opponent-adjusted PPG allowed",
-        "apf": "Away team opponent-adjusted PPG",
-        "apa": "Away team opponent-adjusted PPG allowed",
-        "dpf": "Points scored differential (offense - defense)",
-        "dpa": "Points allowed differential (opponent-adjusted)",
-        "himp": "Home team implied scoring from over/under line",
-        "aimp": "Away team implied scoring from over/under line",
-        "dimp": "Home-away implied scoring difference (market edge)",
-        "spread_movement": "Point spread movement from open to close",
-        "home_win_pct_r5": "Home team win rate in last 5 games (recent form)",
-        "away_win_pct_r5": "Away team win rate in last 5 games (recent form)",
-        "home_margin_r3": "Home team avg margin in last 3 games (blowout vs squeak)",
-        "away_margin_r3": "Away team avg margin in last 3 games",
-        "home_cover_pct_r5": "Home team ATS cover rate last 5 games (ATS hot/cold streak)",
-        "away_cover_pct_r5": "Away team ATS cover rate last 5 games",
-        "home_embarrassed": "Binary: 1 if home team lost by 14+ in most recent game (bounce-back spot)",
-        "away_embarrassed": "Binary: 1 if away team lost by 14+ in most recent game",
-        "home_season_ats_pct": "Home team cumulative season-to-date ATS cover rate (season identity)",
-        "away_season_ats_pct": "Away team cumulative season-to-date ATS cover rate",
-        "home_margin_r10": "Home team avg margin in last 10 games (half-season identity)",
-        "away_margin_r10": "Away team avg margin in last 10 games",
-        "travel_miles": "Away team travel distance in miles (haversine from stadium coordinates)",
-        "is_dome": "Binary: 1 if game is in a domed stadium",
-    }
-    _ATS_CATEGORIES = {
-        "Opponent-Adjusted Scoring": ["hpf", "hpa", "apf", "apa", "dpf", "dpa"],
-        "Market Features": ["himp", "aimp", "dimp", "spread_movement"],
-        "Short-Term Form": ["home_win_pct_r5", "away_win_pct_r5", "home_margin_r3", "away_margin_r3", "home_cover_pct_r5", "away_cover_pct_r5", "home_embarrassed", "away_embarrassed"],
-        "Long-Term Identity": ["home_margin_r10", "away_margin_r10", "home_season_ats_pct", "away_season_ats_pct"],
-        "Situational": ["travel_miles", "is_dome"],
-    }
-
     ats_variant = _build_model_variant("ATS", "ats_backtest_results.json", _ATS_DESCRIPTIONS, _ATS_CATEGORIES,
                                         sport="nfl", model_type="ats")
-
-    # ── OU Model ──
-    _OU_DESCRIPTIONS = {
-        "__desc__": "Total-optimized model. Predicts combined points using market anchors (opening_ou, spread, ou_movement), opponent-adjusted scoring diffs, form (win%, margins r3/r10), and situational factors.",
-        "dpf": "Points scored differential (offense - defense, opponent-adjusted)",
-        "dpa": "Points allowed differential (opponent-adjusted)",
-        "himp": "Home team implied scoring from OU line",
-        "aimp": "Away team implied scoring from OU line",
-        "dimp": "Implied scoring difference",
-        "opening_ou": "Opening over/under line (pre-market anchor)",
-        "ou_movement": "Over/under line movement from open to close",
-        "home_win_pct_r5": "Home team win rate last 5 games",
-        "away_win_pct_r5": "Away team win rate last 5 games",
-        "home_margin_r3": "Home team avg margin last 3 games",
-        "away_margin_r3": "Away team avg margin last 3 games",
-        "home_margin_r10": "Home team avg margin last 10 games (half-season identity)",
-        "away_margin_r10": "Away team avg margin last 10 games",
-        "rest_diff": "Rest days advantage (home - away)",
-        "travel_miles": "Away team travel distance",
-        "tz_diff": "Time zone difference",
-        "is_short": "Short week flag (Thu/Fri/Sat)",
-        "is_dome": "Dome stadium flag",
-        "temp": "Temperature (F) at kickoff",
-        "wind": "Wind speed (mph) at kickoff",
-    }
-    _OU_CATEGORIES = {
-        "Opponent-Adjusted Scoring": ["dpf", "dpa"],
-        "Market Features": ["himp", "aimp", "dimp", "opening_ou", "spread", "ou_movement"],
-        "Form & Identity": ["home_win_pct_r5", "away_win_pct_r5", "home_margin_r3", "away_margin_r3", "home_margin_r10", "away_margin_r10"],
-        "Rest & Travel": ["rest_diff", "travel_miles", "tz_diff"],
-        "Situational": ["is_short", "is_dome", "temp", "wind"],
-    }
 
     ou_variant = _build_model_variant("O/U", "ou_results_baseline.json", _OU_DESCRIPTIONS, _OU_CATEGORIES,
                                         sport="nfl", model_type="ou")
@@ -2691,39 +2723,7 @@ def _get_nfl_model_detail() -> SportModelDetailOut:
 def _get_nba_model_detail() -> SportModelDetailOut:
     """Build NBA model detail with ATS + OU specialized variants."""
 
-    _NBA_ATS_DESCRIPTIONS = {
-        "__desc__": "NBA ATS model. Rolling form streaks (ATS margin/wins, straight-up wins), implied market scoring, and betting lines. Features from season-level rolling windows.",
-        "h_ats_margin_5": "Home team avg ATS cover margin last 5 games",
-        "a_ats_margin_5": "Away team avg ATS cover margin last 5 games",
-        "h_ats_wins_5": "Home team ATS wins in last 5 games (count 0-5)",
-        "a_ats_wins_5": "Away team ATS wins in last 5 games (count 0-5)",
-        "h_implied": "Home team implied scoring from OU line",
-        "a_implied": "Away team implied scoring from OU line",
-        "h_wins_5": "Home team straight-up wins in last 5 games",
-        "h_wins_10": "Home team straight-up wins in last 10 games",
-        "a_wins_5": "Away team straight-up wins in last 5 games",
-        "a_wins_10": "Away team straight-up wins in last 10 games",
-    }
-    _NBA_ATS_CATEGORIES = {
-        "Form & Streaks": ["h_ats_wins_5", "a_ats_wins_5", "h_ats_margin_5", "a_ats_margin_5",
-                           "h_wins_5", "h_wins_10", "a_wins_5", "a_wins_10"],
-        "Market Features": ["h_implied", "a_implied"],
-    }
-    _NBA_OU_DESCRIPTIONS = {
-        "__desc__": "NBA OU model. Projects total points using straight-up win streaks, implied market scoring, and betting lines.",
-        "h_implied": "Home team implied scoring from OU line",
-        "a_implied": "Away team implied scoring from OU line",
-        "h_wins_5": "Home team straight-up wins in last 5 games",
-        "h_wins_10": "Home team straight-up wins in last 10 games",
-        "a_wins_5": "Away team straight-up wins in last 5 games",
-        "a_wins_10": "Away team straight-up wins in last 10 games",
-    }
-    _NBA_OU_CATEGORIES = {
-        "Form & Identity": ["h_wins_5", "h_wins_10", "a_wins_5", "a_wins_10"],
-        "Market Features": ["h_implied", "a_implied"],
-    }
-
-    # ── Load ATS + OU results from training_runs ───────────────────────────
+    # ── Load ATS + OU results from training_runs ──
     try:
         conn = _pg_conn()
         cur = conn.cursor()
@@ -4122,7 +4122,7 @@ async def get_model_detail_from_run(
     if sport == "nfl":
         variant = _build_nfl_model_variant(results, variant_name, model_type)
     else:
-        variant = _build_generic_model_variant(results, variant_name, model_type)
+        variant = _build_generic_model_variant(results, variant_name, model_type, sport=sport)
 
     if not variant:
         return {"error": "Could not build model variant from this run's data"}
@@ -4153,18 +4153,28 @@ def _build_nfl_model_variant(results, name, model_type):
     )
 
 
-def _build_generic_model_variant(results, name, model_type):
+def _build_generic_model_variant(results, name, model_type, sport="mlb"):
     """Build an MLB/NBA model variant from raw result data."""
-    _descriptions_map = {
-        "ats": _MLB_ATS_DESCRIPTIONS,
-        "ou": _MLB_OU_DESCRIPTIONS,
-        "ml": _MLB_ML_DESCRIPTIONS,
-    }
-    _categories_map = {
-        "ats": _MLB_ATS_CATEGORIES,
-        "ou": _MLB_OU_CATEGORIES,
-        "ml": _MLB_ML_CATEGORIES,
-    }
+    if sport == "nba":
+        _descriptions_map = {
+            "ats": _NBA_ATS_DESCRIPTIONS,
+            "ou": _NBA_OU_DESCRIPTIONS,
+        }
+        _categories_map = {
+            "ats": _NBA_ATS_CATEGORIES,
+            "ou": _NBA_OU_CATEGORIES,
+        }
+    else:
+        _descriptions_map = {
+            "ats": _MLB_ATS_DESCRIPTIONS,
+            "ou": _MLB_OU_DESCRIPTIONS,
+            "ml": _MLB_ML_DESCRIPTIONS,
+        }
+        _categories_map = {
+            "ats": _MLB_ATS_CATEGORIES,
+            "ou": _MLB_OU_CATEGORIES,
+            "ml": _MLB_ML_CATEGORIES,
+        }
     return _build_mlb_model_variant(
         name,
         results,
@@ -4654,7 +4664,7 @@ async def get_prediction_ev_distribution(
 
     # Resolve sport config inlined
     if sport == "nfl":
-        schema, use_ats, use_ml = "nfl", True, False
+        schema, use_ats, use_ml = "nfl", True, True
         conf_ats = "margin_conf"; conf_ml = "margin_conf"; conf_ou = "margin_conf"
         conf_main = "margin_conf"
         rl_col = "margin_conf"
@@ -5232,19 +5242,7 @@ def _build_model_variant(name, results_file, feature_descriptions, feature_categ
             category=cat_lookup.get(feat_name, "Other"),
         ))
 
-    # Fill in any defined features not in results at zero importance
-    defined_feats = set()
-    for feats_list in feature_categories_def.values():
-        defined_feats.update(feats_list)
-    existing = set(f.name for f in features)
-    for fn in sorted(defined_feats):
-        if fn not in existing:
-            features.append(ModelFeatureOut(
-                name=fn,
-                description=feature_descriptions.get(fn, fn),
-                importance=0,
-                category=cat_lookup.get(fn, "Other"),
-            ))
+
 
     fi_plot = [{"name": f.name, "importance": f.importance} for f in features[:15]]
 
@@ -5325,76 +5323,8 @@ def _get_nfl_model_detail() -> SportModelDetailOut:
     """
     import os
 
-    # ── ATS Model ──
-    _ATS_DESCRIPTIONS = {
-        "__desc__": "Spread-optimized model. Features: opponent-adjusted scoring, implied market (OU-based), spread movement, short-term form (5G win%, 3G margin, cover streak, bounce-back), long-term identity (10G margin, season YTD ATS%), dome. No raw spread — captures market dynamics, scoring differentials, streaks, and season identity.",
-        "hpf": "Home team opponent-adjusted PPG (weighted by opponent strength)",
-        "hpa": "Home team opponent-adjusted PPG allowed",
-        "apf": "Away team opponent-adjusted PPG",
-        "apa": "Away team opponent-adjusted PPG allowed",
-        "dpf": "Points scored differential (offense - defense)",
-        "dpa": "Points allowed differential (opponent-adjusted)",
-        "himp": "Home team implied scoring from over/under line",
-        "aimp": "Away team implied scoring from over/under line",
-        "dimp": "Home-away implied scoring difference (market edge)",
-        "spread_movement": "Point spread movement from open to close",
-        "home_win_pct_r5": "Home team win rate in last 5 games (recent form)",
-        "away_win_pct_r5": "Away team win rate in last 5 games (recent form)",
-        "home_margin_r3": "Home team avg margin in last 3 games (blowout vs squeak)",
-        "away_margin_r3": "Away team avg margin in last 3 games",
-        "home_cover_pct_r5": "Home team ATS cover rate last 5 games (ATS hot/cold streak)",
-        "away_cover_pct_r5": "Away team ATS cover rate last 5 games",
-        "home_embarrassed": "Binary: 1 if home team lost by 14+ in most recent game (bounce-back spot)",
-        "away_embarrassed": "Binary: 1 if away team lost by 14+ in most recent game",
-        "home_season_ats_pct": "Home team cumulative season-to-date ATS cover rate (season identity)",
-        "away_season_ats_pct": "Away team cumulative season-to-date ATS cover rate",
-        "home_margin_r10": "Home team avg margin in last 10 games (half-season identity)",
-        "away_margin_r10": "Away team avg margin in last 10 games",
-        "travel_miles": "Away team travel distance in miles (haversine from stadium coordinates)",
-        "is_dome": "Binary: 1 if game is in a domed stadium",
-    }
-    _ATS_CATEGORIES = {
-        "Opponent-Adjusted Scoring": ["hpf", "hpa", "apf", "apa", "dpf", "dpa"],
-        "Market Features": ["himp", "aimp", "dimp", "spread_movement"],
-        "Short-Term Form": ["home_win_pct_r5", "away_win_pct_r5", "home_margin_r3", "away_margin_r3", "home_cover_pct_r5", "away_cover_pct_r5", "home_embarrassed", "away_embarrassed"],
-        "Long-Term Identity": ["home_margin_r10", "away_margin_r10", "home_season_ats_pct", "away_season_ats_pct"],
-        "Situational": ["travel_miles", "is_dome"],
-    }
-
     ats_variant = _build_model_variant("ATS", "ats_backtest_results.json", _ATS_DESCRIPTIONS, _ATS_CATEGORIES,
                                         sport="nfl", model_type="ats")
-
-    # ── OU Model ──
-    _OU_DESCRIPTIONS = {
-        "__desc__": "Total-optimized model. Predicts combined points using market anchors (opening_ou, spread, ou_movement), opponent-adjusted scoring diffs, form (win%, margins r3/r10), and situational factors.",
-        "dpf": "Points scored differential (offense - defense, opponent-adjusted)",
-        "dpa": "Points allowed differential (opponent-adjusted)",
-        "himp": "Home team implied scoring from OU line",
-        "aimp": "Away team implied scoring from OU line",
-        "dimp": "Implied scoring difference",
-        "opening_ou": "Opening over/under line (pre-market anchor)",
-        "ou_movement": "Over/under line movement from open to close",
-        "home_win_pct_r5": "Home team win rate last 5 games",
-        "away_win_pct_r5": "Away team win rate last 5 games",
-        "home_margin_r3": "Home team avg margin last 3 games",
-        "away_margin_r3": "Away team avg margin last 3 games",
-        "home_margin_r10": "Home team avg margin last 10 games (half-season identity)",
-        "away_margin_r10": "Away team avg margin last 10 games",
-        "rest_diff": "Rest days advantage (home - away)",
-        "travel_miles": "Away team travel distance",
-        "tz_diff": "Time zone difference",
-        "is_short": "Short week flag (Thu/Fri/Sat)",
-        "is_dome": "Dome stadium flag",
-        "temp": "Temperature (F) at kickoff",
-        "wind": "Wind speed (mph) at kickoff",
-    }
-    _OU_CATEGORIES = {
-        "Opponent-Adjusted Scoring": ["dpf", "dpa"],
-        "Market Features": ["himp", "aimp", "dimp", "opening_ou", "spread", "ou_movement"],
-        "Form & Identity": ["home_win_pct_r5", "away_win_pct_r5", "home_margin_r3", "away_margin_r3", "home_margin_r10", "away_margin_r10"],
-        "Rest & Travel": ["rest_diff", "travel_miles", "tz_diff"],
-        "Situational": ["is_short", "is_dome", "temp", "wind"],
-    }
 
     ou_variant = _build_model_variant("O/U", "ou_results_baseline.json", _OU_DESCRIPTIONS, _OU_CATEGORIES,
                                         sport="nfl", model_type="ou")

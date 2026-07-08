@@ -673,7 +673,7 @@ async def _save_backtest_prediction(
         ml_pick = home_str if ats_proba > 0.5 else away_str
 
         # ── Results ─────────────────────────────────────────────────────────────
-        home_covered = (home_score - away_score) > spread if not home_fav else (home_score - away_score) < spread
+        home_covered = (home_score - away_score + spread) > 0
         ats_result = "Win" if home_covered == (ats_proba > 0.5) else "Loss"
         ou_result = None
         if actual_total > over_under:
