@@ -216,17 +216,12 @@ def _get_features(model_type: str) -> List[str]:
         return _FEATURES_CACHE_ATS
     if model_type == "ou" and _FEATURES_CACHE_OU is not None:
         return _FEATURES_CACHE_OU
-    conn = _get_sync_conn()
-    try:
-        with conn.cursor() as cur:
-            if model_type == "ats":
-                feats = get_model_features(cur, live_ats_only=True)
-                _FEATURES_CACHE_ATS = feats
-            else:
-                feats = get_model_features(cur, live_ou_only=True)
-                _FEATURES_CACHE_OU = feats
-    finally:
-        conn.close()
+    if model_type == "ats":
+        feats = get_model_features(target="ats")
+        _FEATURES_CACHE_ATS = feats
+    else:
+        feats = get_model_features(target="ou")
+        _FEATURES_CACHE_OU = feats
     return feats
 
 
@@ -439,7 +434,10 @@ async def backtest_season(
         years = [2024, 2025]
 
     dl = get_data_loader()
-    df = dl.load_data(limit=limit)
+    if limit is not None:
+        df = dl.load_games(limit=limit)
+    else:
+        df = dl.load_data()
     logger.info("Loaded %d NBA games from data loader%s", len(df), f" (limit={limit})" if limit else "")
 
     # Keep enough history for rolling-feature computation (at least one
@@ -487,7 +485,17 @@ async def backtest_season(
         # Optionally save per-game predictions
         if save_results and (ats_model or ou_model):
             for idx, row in year_df.iterrows():
-                _save_backtest_prediction(row, ats_model, ou_model)
+                ats_feats, ats_names = _extract_feature_vector(row, "ats")
+                ou_feats, ou_names = _extract_feature_vector(row, "ou")
+                gid = row.get("game_id")
+                await _save_backtest_prediction(
+                    game_id=gid,
+                    row=row,
+                    ats_model=ats_model,
+                    ou_model=ou_model,
+                    ats_features=(ats_feats, ats_names),
+                    ou_features=(ou_feats, ou_names),
+                )
                 total_game_preds += 1
 
     logger.info("Backtest complete: %d years, %d game predictions saved",
@@ -784,198 +792,218 @@ async def _save_api_prediction(
         logger.error("Failed to save API prediction for game %%s: %%s", game_id, exc)
 
 
-def _save_backtest_prediction(
-    row: pd.Series,
-    ats_model: Optional[xgb.Booster] = None,
-    ou_model: Optional[xgb.Booster] = None,
+async def _save_backtest_prediction(
+    game_id,
+    row,
+    ats_model=None,
+    ou_model=None,
+    ats_features=None,
+    ou_features=None,
+    db: AsyncSession = None,
 ) -> None:
-    """Save a backtest prediction using the NBAGamePrediction ORM model.
+    """Save a single backtest prediction using the NBAGamePrediction ORM model.
 
-    This is a synchronous function (backtest runs without async).
+    Mirrors the NFL/MLB _save_backtest_prediction pattern.
+    Relies on row being a pd.Series / dict-like with the actual game outcome.
     """
-    from sqlalchemy import create_engine
-    from sqlalchemy.orm import Session as SyncSession
-
-    # ── Run ATS model ──
-    ats_probability = 0.5
-    ats_side = ""
-    ats_confidence_label = ""
-    ats_confidence_value = 0.0
-    if ats_model is not None:
-        try:
-            ats_feats = _get_features("ats")
-            if all(f in row.index for f in ats_feats):
-                X_ats = row[ats_feats].values.reshape(1, -1)
-                d_ats = xgb.DMatrix(X_ats)
-                ats_probability = float(ats_model.predict(d_ats)[0])
-                ats_side = row.get("home_team", "") if ats_probability > 0.5 else row.get("away_team", "")
-                ats_confidence_label = _get_confidence_label(ats_probability)
-                ats_confidence_value = _get_confidence_value(ats_probability)
-        except Exception as exc:
-            logger.debug("  ATS model error: %s", exc)
-
-    # ── Run OU model ──
-    ou_probability = 0.5
-    ou_side = ""
-    ou_confidence_label = ""
-    ou_confidence_value = 0.0
-    if ou_model is not None:
-        try:
-            ou_feats = _get_features("ou")
-            if all(f in row.index for f in ou_feats):
-                X_ou = row[ou_feats].values.reshape(1, -1)
-                d_ou = xgb.DMatrix(X_ou)
-                ou_probability = float(ou_model.predict(d_ou)[0])
-                ou_side = "Over" if ou_probability > 0.5 else "Under"
-                ou_confidence_label = _get_confidence_label(ou_probability)
-                ou_confidence_value = _get_confidence_value(ou_probability)
-        except Exception as exc:
-            logger.debug("  OU model error: %s", exc)
-
-    # ── Extract row values ──
-    game_id = row.get("game_id")
     if not game_id:
-        logger.warning("No game_id in row — skipping backtest save")
         return
 
-    home_team = _str_safe(row.get("home_team"))
-    away_team = _str_safe(row.get("away_team"))
-    spread_str = _str_safe(row.get("spread"))
-    over_under = row.get("over_under", "")
+    engine = None
+    close_session = False
+    if db is None:
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import Session as SyncSession
 
-    from app.core.config import settings
-
-    mb_dsn = settings.database_url
-    sync_dsn = mb_dsn.replace("+asyncpg", "").replace("postgresql+asyncpg://", "postgresql://")
-
-    spread_val = _float_safe(spread_str)
-    over_under_val = _float_safe(over_under)
-
-    # ── Compute predicted scores ──
-    spread_for_margin = _float_safe(spread_str) or 0.0
-    predicted_margin = spread_for_margin
-    predicted_total = over_under_val
-
-    pred_home_score = None
-    pred_away_score = None
-    if predicted_total is not None and predicted_margin is not None:
-        pred_home_score = max(0.0, round((predicted_total + predicted_margin) / 2.0, 1))
-        pred_away_score = max(0.0, round((predicted_total - predicted_margin) / 2.0, 1))
-
-    # ── Determine picks ──
-    spread_pick = ats_side
-    ou_pick_side = ou_side
-
-    ml_favorite = _str_safe(row.get("favorite", ""))
-    home_ml = _float_safe(row.get("home_ml")) or 0
-    away_ml = _float_safe(row.get("away_ml")) or 0
-    ml_pick_side = ml_favorite
-
-    # ── Actual game results ──
-    act_home_score = _float_safe(row.get("home_score")) or 0.0
-    act_away_score = _float_safe(row.get("away_score")) or 0.0
-    act_total = act_home_score + act_away_score
-    act_margin = act_home_score - act_away_score
-
-    # ── ATS / OU results ──
-    ats_result = None
-    ou_result = None
-    if spread_val is not None and spread_val != 0:
-        home_spread_pick = (row.get("home_team", "") == ats_side)
-        effective_margin = act_margin + spread_val if home_spread_pick else act_margin - spread_val
-        if effective_margin > 0:
-            ats_result = "win"
-        elif effective_margin == 0:
-            ats_result = "push"
-        else:
-            ats_result = "loss"
-    if over_under_val is not None:
-        if act_total > over_under_val:
-            ou_result = "over" if ou_side == "Over" else "under"
-        elif act_total < over_under_val:
-            ou_result = "under" if ou_side == "Over" else "over"
-        else:
-            ou_result = "push"
-
-    # ── Profit / Loss ──
-    ats_profit = 1.0 if ats_result == "win" else (-1.1 if ats_result == "loss" else 0.0)
-    ou_profit = 1.0 if ou_result == "over" else (-1.1 if ou_result == "under" else 0.0)
-    ml_profit = 0.0
-    ml_result = None
-
-    # ── Handicapper info ──
-    home_stats_json = _build_nba_home_stats(row)
-    away_stats_json = _build_nba_away_stats(row)
-    situational_json = _build_nba_situational(row)
-    splits_json = _build_nba_splits(row)
-
-    # ── Features ──
-    features_dict = {}
-    ats_feats = _get_features("ats")
-    if all(f in row.index for f in ats_feats):
-        features_dict["ats"] = {f: _float_safe(row[f]) for f in ats_feats}
-    ou_feats = _get_features("ou")
-    if all(f in row.index for f in ou_feats):
-        features_dict["ou"] = {f: _float_safe(row[f]) for f in ou_feats}
-    features_json_str = json.dumps(features_dict, default=str) if features_dict else None
-
-    now = datetime.now(timezone.utc)
-
-    _f = lambda v: round(float(v), 4) if v is not None else None
-
-    # ── Build ORM record ──
-    rec = NBAGamePrediction(
-        game_id=game_id,
-        predicted_home_score=_f(pred_home_score),
-        predicted_away_score=_f(pred_away_score),
-        predicted_total=_f(predicted_total),
-        predicted_margin=_f(predicted_margin),
-        margin_conf=_f(ats_probability),
-        ml_conf=None,
-        ou_conf=_f(ou_probability),
-        ou_pick=str(ou_pick_side) if ou_pick_side else None,
-        spread_pick=str(spread_pick) if spread_pick else None,
-        ml_pick=str(ml_pick_side) if ml_pick_side else None,
-        actual_home_score=_f(act_home_score),
-        actual_away_score=_f(act_away_score),
-        actual_total=_f(act_total),
-        actual_margin=_f(act_margin),
-        ats_result=ats_result,
-        ou_result=ou_result,
-        ml_result=ml_result,
-        ats_odds=_f(spread_val),
-        ou_odds=_f(over_under_val),
-        ml_odds=_f(home_ml),
-        ats_profit=_f(ats_profit),
-        ou_profit=_f(ou_profit),
-        ml_profit=_f(ml_profit),
-        home_stats_json=home_stats_json,
-        away_stats_json=away_stats_json,
-        situational_json=situational_json,
-        splits_json=splits_json,
-        features_json=features_json_str,
-        source="backtest",
-        created_at=now,
-    )
+        from app.core.config import settings as _st
+        dsn = _st.database_url.replace("+asyncpg", "").replace("postgresql+asyncpg://", "postgresql://")
+        engine = create_engine(dsn)
+        db = SyncSession(engine)
+        close_session = True
 
     try:
-        engine = create_engine(sync_dsn) if sync_dsn else create_engine("postgresql://localhost:5432/earl_knows_football")
-        with SyncSession(engine) as session:
-            session.execute(
+        home_team_id_str = str(row.get("home_team_id", ""))
+        away_team_id_str = str(row.get("away_team_id", ""))
+        home_str = home_team_id_str
+        away_str = away_team_id_str
+        spread = _float_safe(row.get("closing_spread", row.get("spread", 0)))
+        over_under = _float_safe(row.get("closing_ou", row.get("over_under", 0)))
+
+        # ── ATS prediction ────────────────────────────────────────────
+        ats_proba = 0.5
+        if ats_model is not None and ats_features is not None:
+            feats, names = ats_features
+            if feats is not None:
+                dmat = xgb.DMatrix(feats, feature_names=names)
+                ats_proba = float(ats_model.predict(dmat)[0])
+
+        # ── OU prediction ─────────────────────────────────────────────
+        ou_total = None
+        if ou_model is not None and ou_features is not None:
+            feats, names = ou_features
+            if feats is not None:
+                dmat = xgb.DMatrix(feats, feature_names=names)
+                ou_total = float(ou_model.predict(dmat)[0])
+
+        # ── Actuals ────────────────────────────────────
+        home_score = _float_safe(row.get("home_score"))
+        away_score = _float_safe(row.get("away_score"))
+        actual_total = (home_score or 0) + (away_score or 0)
+        actual_margin = (home_score or 0) - (away_score or 0)
+
+        # ── Picks ─────────────────────────────────────────────────
+        margin_conf = round(max(ats_proba, 1 - ats_proba), 4)
+        home_fav = spread is not None and spread < 0
+
+        if ats_proba > 0.5:
+            spread_pick = home_str
+        else:
+            spread_pick = away_str
+
+        ou_pick = None
+        if ou_total is not None and over_under is not None:
+            ou_pick = "Over" if ou_total > over_under else "Under"
+
+        ml_pick = home_str if home_fav else away_str
+
+        # ── Results ───────────────────────────────────────────────────
+        ats_result = None
+        ou_result = None
+        ml_result = None
+        if spread is not None and spread != 0 and home_score is not None and away_score is not None:
+            effective_margin = actual_margin + spread if spread_pick == home_str else actual_margin - spread
+            if effective_margin > 0:
+                ats_result = "win"
+            elif effective_margin == 0:
+                ats_result = "push"
+            else:
+                ats_result = "loss"
+        if over_under is not None and ou_total is not None and home_score is not None:
+            if actual_total > over_under:
+                ou_result = "over" if ou_pick == "Over" else "under"
+            elif actual_total < over_under:
+                ou_result = "under" if ou_pick == "Over" else "over"
+            else:
+                ou_result = "push"
+
+        # ── Profit/Loss ────────────────────────────────────────
+        ats_profit = 1.0 if ats_result == "win" else (-1.1 if ats_result == "loss" else 0.0)
+        ou_profit = 1.0 if ou_result == "over" else (-1.1 if ou_result == "under" else 0.0)
+        ml_profit = 0.0
+
+        # ── Odds ──────────────────────────────────────────────────────
+        ats_odds_value = spread
+        ou_odds_value = over_under
+        ml_odds_value = _float_safe(row.get("home_moneyline", row.get("home_ml"))) if home_fav else _float_safe(row.get("away_moneyline", row.get("away_ml")))
+
+        # ── Calibrated confidences ─────────────────────────────────────────
+        ats_conf_cal = row.get("ats_conf_cal")
+        ou_conf_cal = row.get("ou_conf_cal")
+        ml_conf_cal = row.get("ml_conf_cal")
+
+        # ── Handicapper info (best-effort; row may lack display columns) ──
+        try:
+            home_stats = _build_nba_home_stats(row)
+        except Exception:
+            home_stats = json.dumps({"team": str(row.get("home_team_id", ""))})
+        try:
+            away_stats = _build_nba_away_stats(row)
+        except Exception:
+            away_stats = json.dumps({"team": str(row.get("away_team_id", ""))})
+        try:
+            situational = _build_nba_situational(row)
+        except Exception:
+            situational = json.dumps({})
+        try:
+            splits = _build_nba_splits(row)
+        except Exception:
+            splits = json.dumps({})
+
+        # ── Features JSON ────────────────────────────────────────────────────
+        ats_feats = _get_features("ats") if callable(_get_features) else []
+        ou_feats = _get_features("ou") if callable(_get_features) else []
+        features_dict = {}
+        if ats_features and ats_features[0] is not None and all(f in row.index for f in ats_feats if isinstance(f, str)):
+            features_dict["ats"] = {f: _float_safe(row[f]) for f in ats_feats if isinstance(f, str)}
+        if ou_features and ou_features[0] is not None and all(f in row.index for f in ou_feats):
+            features_dict["ou"] = {f: _float_safe(row[f]) for f in ou_feats}
+        features_json_str = json.dumps(features_dict, default=str) if features_dict else None
+
+        # ── Predicted scores ───────────────────────────────────────────────
+        predicted_margin = ats_proba * spread * 2 if spread else None
+        predicted_total = ou_total
+        pred_home_score = None
+        pred_away_score = None
+        if predicted_total is not None and predicted_margin is not None:
+            pred_home_score = max(0.0, round((predicted_total + predicted_margin) / 2.0, 1))
+            pred_away_score = max(0.0, round((predicted_total - predicted_margin) / 2.0, 1))
+
+        # ── Build ORM record ────────────────────────────────────────────
+        _f = lambda v: round(float(v), 4) if v is not None else None
+
+        rec = NBAGamePrediction(
+            game_id=game_id,
+            predicted_home_score=_f(pred_home_score),
+            predicted_away_score=_f(pred_away_score),
+            predicted_total=_f(predicted_total),
+            predicted_margin=_f(predicted_margin),
+            margin_conf=_f(margin_conf),
+            ml_conf=None,
+            ou_conf=None,
+            ats_conf_cal=_f(ats_conf_cal),
+            ml_conf_cal=_f(ml_conf_cal),
+            ou_conf_cal=_f(ou_conf_cal),
+            ou_pick=ou_pick,
+            spread_pick=spread_pick,
+            ml_pick=ml_pick,
+            actual_home_score=_f(home_score),
+            actual_away_score=_f(away_score),
+            actual_total=_f(actual_total),
+            actual_margin=_f(actual_margin),
+            ats_result=ats_result,
+            ou_result=ou_result,
+            ml_result=ml_result,
+            ats_odds=round(ats_odds_value) if ats_odds_value else None,
+            ou_odds=round(ou_odds_value) if ou_odds_value else None,
+            ml_odds=round(ml_odds_value) if ml_odds_value else None,
+            ats_profit=_f(ats_profit),
+            ou_profit=_f(ou_profit),
+            ml_profit=_f(ml_profit),
+            home_stats_json=home_stats if isinstance(home_stats, str) else json.dumps(home_stats, default=str) if home_stats else None,
+            away_stats_json=away_stats if isinstance(away_stats, str) else json.dumps(away_stats, default=str) if away_stats else None,
+            situational_json=situational if isinstance(situational, str) else json.dumps(situational, default=str) if situational else None,
+            splits_json=splits if isinstance(splits, str) else json.dumps(splits, default=str) if splits else None,
+            features_json=features_json_str,
+            source="backtest",
+            created_at=datetime.now(timezone.utc),
+        )
+
+        # ── Save via ORM ───────────────────────────────────────────────────────────
+        if close_session:
+            db.execute(
                 sa_delete(NBAGamePrediction).where(
                     NBAGamePrediction.game_id == game_id,
                     NBAGamePrediction.source == "backtest",
                 )
             )
-            session.add(rec)
-            session.commit()
-        logger.debug("  Saved backtest prediction for game %%s (%%s vs %%s)", game_id, home_team, away_team)
-    except Exception as exc:
-        import traceback as _tb
-        logger.error("  Failed to save backtest prediction for game %%s: %%s", game_id, exc)
-        _tb.print_exc()
+            db.add(rec)
+            db.commit()
+        else:
+            await db.execute(
+                sa_delete(NBAGamePrediction).where(
+                    NBAGamePrediction.game_id == game_id,
+                    NBAGamePrediction.source == "backtest",
+                )
+            )
+            db.add(rec)
+            await db.commit()
 
-# ── Handicap info builders (PRIME DIRECTIVE) ──────────────────────────────────────
+    except Exception:
+        logger.exception("_save_backtest_prediction failed for game %%s", game_id)
+    finally:
+        if engine is not None:
+            engine.dispose()
+
 
 
 def _build_nba_home_stats(row: pd.Series) -> str:
@@ -1079,14 +1107,31 @@ def _str_safe(val) -> str:
 if __name__ == "__main__":
     import sys
 
-    async def main():
+    def _configure_logging() -> None:
+        """Ensure the root logger has a handler so CLI output is visible."""
+        root = logging.getLogger()
+        if not root.handlers:
+            logging.basicConfig(
+                level=logging.DEBUG,
+                format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+                datefmt="%H:%M:%S",
+            )
+
+    async def _main():
+        _configure_logging()
+        from dotenv import load_dotenv
+        load_dotenv()
+        # Ensure DATABASE_URL uses sync scheme for data-loader/psycopg2 compat
+        raw = os.environ.get("DATABASE_URL", "")
+        if "+asyncpg" in raw:
+            os.environ["DATABASE_URL"] = raw.replace("+asyncpg", "").replace("postgresql+asyncpg://", "postgresql://")
         if len(sys.argv) > 1 and sys.argv[1] == "backtest":
+            kwargs = {}
             if len(sys.argv) > 2:
-                years_to_test = [int(y) for y in sys.argv[2].split(",")]
-            else:
-                years_to_test = None  # use function default ([2024, 2025])
-            logger.info("Backtesting NBA seasons %s...", years_to_test or [2024, 2025])
-            results = await backtest_season(years=years_to_test, limit=None, save_results=True)
+                years = [int(y) for y in sys.argv[2].split(",")]
+                kwargs["years"] = years
+            logger.info("Backtesting NBA seasons %s...", kwargs.get("years", [2024, 2025]))
+            results = await backtest_season(**kwargs, limit=None, save_results=True)
             for mt in ("ats", "ou"):
                 for r in results.get(mt, []):
                     print(f"  {mt.upper()} {r['year']}: "
@@ -1102,8 +1147,8 @@ if __name__ == "__main__":
 
         else:
             print("Usage: python -m backend.app.handicapping.nba.nba_engine [backtest|predict]")
-            print("  backtest [years]    — backtest models (e.g. '2022,2023,2024,2025')")
-            print("  predict [days]      — predict upcoming games (default 7 days)")
+            print("  backtest [years]    -- backtest models (e.g. '2022,2023,2024,2025')")
+            print("  predict [days]      -- predict upcoming games (default 7 days)")
             sys.exit(1)
 
-    asyncio.run(main())
+    asyncio.run(_main())
