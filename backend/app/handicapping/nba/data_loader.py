@@ -26,6 +26,7 @@ import pandas as pd
 import psycopg2
 import psycopg2.extras
 from math import asin, cos, radians, sin, sqrt
+from sqlalchemy import create_engine
 
 logger = logging.getLogger(__name__)
 
@@ -317,6 +318,16 @@ COMPUTED_FEATURES_CATALOG: Dict[str, str] = {
     "a_ast_ratio_r10": "Away team assist ratio (AST/FGM) rolling 10",
     "h_ast_ratio_r20": "Home team assist ratio (AST/FGM) rolling 20",
     "a_ast_ratio_r20": "Away team assist ratio (AST/FGM) rolling 20",
+
+    # ── Star player features (season 35 only) ──────────────────────────
+    "h_star_ppg_5": "Home team top-3 scorers PPG rolling 5",
+    "a_star_ppg_5": "Away team top-3 scorers PPG rolling 5",
+    "h_stars_active": "Home team active top-3 scorers count",
+    "a_stars_active": "Away team active top-3 scorers count",
+    "h_star1_ppg_5": "Home team leading scorer PPG rolling 5",
+    "a_star1_ppg_5": "Away team leading scorer PPG rolling 5",
+    "h_star1_active": "Home team leading scorer active (binary)",
+    "a_star1_active": "Away team leading scorer active (binary)",
 }
 
 DISPLAY_NAMES: Dict[str, str] = {
@@ -439,6 +450,16 @@ DISPLAY_NAMES: Dict[str, str] = {
     "a_ast_ratio_r10": "Away AST/FGM L10",
     "h_ast_ratio_r20": "Home AST/FGM L20",
     "a_ast_ratio_r20": "Away AST/FGM L20",
+
+    # ── Star player features ───────────────────────────────────────────
+    "h_star_ppg_5": "Home Stars PPG L5",
+    "a_star_ppg_5": "Away Stars PPG L5",
+    "h_stars_active": "Home Stars Active",
+    "a_stars_active": "Away Stars Active",
+    "h_star1_ppg_5": "Home Top Scorer PPG L5",
+    "a_star1_ppg_5": "Away Top Scorer PPG L5",
+    "h_star1_active": "Home Top Scorer Active",
+    "a_star1_active": "Away Top Scorer Active",
 }
 
 
@@ -998,6 +1019,109 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
     df["net_rtg_diff_5"] = df["h_net_rtg_r5"] - df["a_net_rtg_r5"]
     df["net_rtg_diff_10"] = df["h_net_rtg_r10"] - df["a_net_rtg_r10"]
     df["pace_diff_5"] = df["h_pace_r5"] - df["a_pace_r5"]
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    #  1c. Star player tracking (season 35 only — player_game_stats sparse)
+    # ═══════════════════════════════════════════════════════════════════════════
+    _star_engine = create_engine(DEFAULT_DB_URL)
+    try:
+        # Identify top-3 scorers per team for seasons matching player_game_stats
+        with _star_engine.connect() as _conn:
+            _players_df = pd.read_sql("""
+                SELECT pss.player_id, pss.team_id, pss.points_per_game,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY pss.team_id ORDER BY pss.points_per_game DESC
+                       ) AS star_rank
+                FROM nba.player_season_stats pss
+                WHERE pss.season_id = 35
+                  AND pss.games_played >= 30
+                  AND pss.team_id IS NOT NULL
+            """, _conn)
+
+        _star_players = _players_df[_players_df["star_rank"] <= 3].copy()
+        _star_ids = list(_star_players["player_id"].unique())
+
+        if _star_ids:
+            with _star_engine.connect() as _conn:
+                # Build placeholders safely
+                _placeholders = ",".join([str(pid) for pid in _star_ids])
+                _game_logs = pd.read_sql(f"""
+                    SELECT pgs.player_id, pgs.game_id, pgs.team_id,
+                           pgs.points, pgs.minutes, g.date
+                    FROM nba.player_game_stats pgs
+                    JOIN nba.games g ON pgs.game_id = g.id
+                    WHERE pgs.player_id IN ({_placeholders})
+                    ORDER BY pgs.player_id, g.date
+                """, _conn)
+
+            _gl = _game_logs.copy()
+            _gl["points"] = _gl["points"].fillna(0).astype(float)
+            _gl["minutes"] = _gl["minutes"].fillna(0).astype(int)
+
+            # Rolling 5-game PPG per player (shifted — no look-ahead bias)
+            _gl["ppg_r5"] = (
+                _gl.groupby("player_id")["points"]
+                .transform(lambda s: s.shift(1).rolling(5, min_periods=1).mean())
+            )
+            _gl["active"] = (_gl["minutes"] > 0).astype(int)
+
+            # Merge rank info
+            _gl = _gl.merge(
+                _star_players[["player_id", "team_id", "star_rank"]],
+                on=["player_id", "team_id"],
+                how="left",
+            )
+
+            # Filter to TOP 3 scorers per team-game
+            _star_only = _gl[_gl["star_rank"].notna() & (_gl["star_rank"] <= 3)].copy()
+
+            if len(_star_only) > 0:
+                # Per-game team aggregates for star players only
+                _game_summary = _star_only.groupby(["game_id", "team_id"]).agg(
+                    star_ppg_5=("ppg_r5", "sum"),
+                    stars_active=("active", "sum"),
+                ).reset_index()
+
+                # Top scorer per game per team
+                _top_star = _gl[_gl["star_rank"] == 1].copy()
+                _top_summary = _top_star.groupby(["game_id", "team_id"]).agg(
+                    star1_ppg_5=("ppg_r5", "first"),
+                    star1_active=("active", "first"),
+                ).reset_index()
+
+                _game_star = _game_summary.merge(_top_summary, on=["game_id", "team_id"], how="left")
+
+                # Merge home side
+                _home = _game_star.rename(columns={
+                    "team_id": "home_team_id",
+                    "star_ppg_5": "h_star_ppg_5",
+                    "stars_active": "h_stars_active",
+                    "star1_ppg_5": "h_star1_ppg_5",
+                    "star1_active": "h_star1_active",
+                })
+                df = df.merge(
+                    _home[["game_id", "home_team_id", "h_star_ppg_5", "h_stars_active",
+                           "h_star1_ppg_5", "h_star1_active"]],
+                    on=["game_id", "home_team_id"],
+                    how="left",
+                )
+
+                # Merge away side
+                _away = _game_star.rename(columns={
+                    "team_id": "away_team_id",
+                    "star_ppg_5": "a_star_ppg_5",
+                    "stars_active": "a_stars_active",
+                    "star1_ppg_5": "a_star1_ppg_5",
+                    "star1_active": "a_star1_active",
+                })
+                df = df.merge(
+                    _away[["game_id", "away_team_id", "a_star_ppg_5", "a_stars_active",
+                           "a_star1_ppg_5", "a_star1_active"]],
+                    on=["game_id", "away_team_id"],
+                    how="left",
+                )
+    finally:
+        _star_engine.dispose()
 
     # ═══════════════════════════════════════════════════════════════════════════
     #  2. Rest days & back-to-back
