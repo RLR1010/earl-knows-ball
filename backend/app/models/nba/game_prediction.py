@@ -55,6 +55,10 @@ class NBAGamePrediction(Base):
     ats_profit = Column(Float, nullable=True)
     ou_profit = Column(Float, nullable=True)
     ml_profit = Column(Float, nullable=True)
+    # Expected value (calibrated conf × odds)
+    ats_ev = Column(Float, nullable=True, comment="Expected value for $100 ATS bet")
+    ou_ev = Column(Float, nullable=True, comment="Expected value for $100 OU bet")
+    ml_ev = Column(Float, nullable=True, comment="Expected value for $100 ML bet")
 
     # Metadata
     source = Column(String(50), nullable=True)  # "backtest" or "api"

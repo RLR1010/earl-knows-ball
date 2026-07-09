@@ -1957,8 +1957,8 @@ async def get_prediction_ev_distribution(
         rl_col = "margin_conf"
     elif sport == "nba":
         schema, use_ats, use_ml = "nba", True, True
-        conf_ats = "rl_conf"; conf_ml = "ml_conf"; conf_ou = "ou_conf"
-        conf_main = "rl_conf"
+        conf_ats = "margin_conf"; conf_ml = "ml_conf"; conf_ou = "ou_conf"
+        conf_main = "margin_conf"
         rl_col = "ats_result"
     else:
         schema, use_ats, use_ml = "mlb", True, True
@@ -4670,8 +4670,8 @@ async def get_prediction_ev_distribution(
         rl_col = "margin_conf"
     elif sport == "nba":
         schema, use_ats, use_ml = "nba", True, True
-        conf_ats = "rl_conf"; conf_ml = "ml_conf"; conf_ou = "ou_conf"
-        conf_main = "rl_conf"
+        conf_ats = "margin_conf"; conf_ml = "ml_conf"; conf_ou = "ou_conf"
+        conf_main = "margin_conf"
         rl_col = "ats_result"
     else:
         schema, use_ats, use_ml = "mlb", True, True

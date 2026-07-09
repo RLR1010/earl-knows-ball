@@ -19,6 +19,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from app.handicapping.calibrate_confidence import calibrate
+
 import numpy as np
 import pandas as pd
 import psycopg2
@@ -33,6 +35,20 @@ from sklearn.metrics import roc_auc_score, mean_absolute_error, mean_squared_err
 from app.handicapping.nba.data_loader import NBADataLoader, get_data_loader, get_model_features
 
 logger = logging.getLogger(__name__)
+
+
+def _profit_per_100(odds: float) -> float:
+    """Profit on a $100 bet at American odds."""
+    if odds < 0:
+        return 100.0 / abs(odds)
+    return odds / 100.0
+
+
+def _ev(conf_: float, odds_: float) -> float:
+    """Expected value for a $100 bet given calibrated win prob and American odds."""
+    profit_if_win = 100.0 * _profit_per_100(odds_)
+    return round((conf_ * profit_if_win) - ((1.0 - conf_) * 100.0), 2)
+
 
 # ── Paths ───────────────────────────────────────────────────────────────────────
 MODELS_DIR = Path.home() / ".openclaw" / "workspace" / "earl-knows-football" / "data" / "models" / "nba"
@@ -484,19 +500,22 @@ async def backtest_season(
 
         # Optionally save per-game predictions
         if save_results and (ats_model or ou_model):
-            for idx, row in year_df.iterrows():
-                ats_feats, ats_names = _extract_feature_vector(row, "ats")
-                ou_feats, ou_names = _extract_feature_vector(row, "ou")
-                gid = row.get("game_id")
-                await _save_backtest_prediction(
-                    game_id=gid,
-                    row=row,
-                    ats_model=ats_model,
-                    ou_model=ou_model,
-                    ats_features=(ats_feats, ats_names),
-                    ou_features=(ou_feats, ou_names),
-                )
-                total_game_preds += 1
+            sessionmaker = db or _get_async_session()
+            async with sessionmaker() as session:
+                for idx, row in year_df.iterrows():
+                    ats_feats, ats_names = _extract_feature_vector(row, "ats")
+                    ou_feats, ou_names = _extract_feature_vector(row, "ou")
+                    gid = row.get("game_id")
+                    await _save_backtest_prediction(
+                        game_id=gid,
+                        row=row,
+                        ats_model=ats_model,
+                        ou_model=ou_model,
+                        ats_features=(ats_feats, ats_names),
+                        ou_features=(ou_feats, ou_names),
+                        db=session,
+                    )
+                    total_game_preds += 1
 
     logger.info("Backtest complete: %d years, %d game predictions saved",
                 len(years), total_game_preds)
@@ -731,10 +750,21 @@ async def _save_api_prediction(
     situational_json = _load_or_dumps(pick_card.get("situational_json") or pick_card.get("situational") or {})
     splits_json = _load_or_dumps(pick_card.get("splits_json") or pick_card.get("splits") or {})
 
-    # \u2500\u2500 Calibrated confidences (if available) \u2500\u2500
-    ats_conf_cal = pick_card.get("ats_conf_cal")
-    ou_conf_cal = pick_card.get("ou_conf_cal")
-    ml_conf_cal = pick_card.get("ml_conf_cal")
+    # \u2500\u2500 Calibrated confidences \u2500\u2500
+    ats_conf_cal = pick_card.get("ats_conf_cal") or (
+        calibrate(float(margin_conf), "ats", "nba") if margin_conf is not None else None
+    )
+    ml_conf_cal = pick_card.get("ml_conf_cal") or (
+        calibrate(float(ml_conf), "ml", "nba") if ml_conf is not None else None
+    )
+    ou_conf_cal = pick_card.get("ou_conf_cal") or (
+        calibrate(float(ou_conf), "ou", "nba") if ou_conf is not None else None
+    )
+
+    # ── Expected value (calibrated conf × odds) ──
+    ats_ev = _ev(ats_conf_cal, ats_odds) if ats_conf_cal is not None and ats_odds else None
+    ou_ev = _ev(ou_conf_cal, ou_odds) if ou_conf_cal is not None and ou_odds else None
+    ml_ev = _ev(ml_conf_cal, ml_odds) if ml_conf_cal is not None and ml_odds else None
 
     _f = lambda v: round(float(v), 4) if v is not None else None
 
@@ -757,6 +787,9 @@ async def _save_api_prediction(
         ats_odds=_f(ats_odds),
         ou_odds=_f(ou_odds),
         ml_odds=_f(ml_odds),
+        ats_ev=_f(ats_ev),
+        ou_ev=_f(ou_ev),
+        ml_ev=_f(ml_ev),
         home_stats_json=home_stats_json,
         away_stats_json=away_stats_json,
         situational_json=situational_json,
@@ -787,9 +820,9 @@ async def _save_api_prediction(
                 )
                 session.add(rec)
                 await session.commit()
-        logger.debug("Saved API prediction for game %%s (source=%%s)", game_id, source)
+        logger.debug("Saved API prediction for game %s (source=%s)", game_id, source)
     except Exception as exc:
-        logger.error("Failed to save API prediction for game %%s: %%s", game_id, exc)
+        logger.error("Failed to save API prediction for game %s: %s", game_id, exc)
 
 
 async def _save_backtest_prediction(
@@ -852,7 +885,7 @@ async def _save_backtest_prediction(
         actual_margin = (home_score or 0) - (away_score or 0)
 
         # ── Picks ─────────────────────────────────────────────────
-        margin_conf = round(max(ats_proba, 1 - ats_proba), 4)
+
         home_fav = spread is not None and spread < 0
 
         if ats_proba > 0.5:
@@ -870,6 +903,8 @@ async def _save_backtest_prediction(
         ats_result = None
         ou_result = None
         ml_result = None
+        if home_score is not None and away_score is not None:
+            ml_result = "Win" if (home_score > away_score and ml_pick == home_str) or (away_score > home_score and ml_pick == away_str) else "Loss"
         if spread is not None and spread != 0 and home_score is not None and away_score is not None:
             effective_margin = actual_margin + spread if spread_pick == home_str else actual_margin - spread
             if effective_margin > 0:
@@ -886,20 +921,20 @@ async def _save_backtest_prediction(
             else:
                 ou_result = "push"
 
-        # ── Profit/Loss ────────────────────────────────────────
-        ats_profit = 1.0 if ats_result == "win" else (-1.1 if ats_result == "loss" else 0.0)
-        ou_profit = 1.0 if ou_result == "over" else (-1.1 if ou_result == "under" else 0.0)
-        ml_profit = 0.0
-
         # ── Odds ──────────────────────────────────────────────────────
         ats_odds_value = spread
         ou_odds_value = over_under
         ml_odds_value = _float_safe(row.get("home_moneyline", row.get("home_ml"))) if home_fav else _float_safe(row.get("away_moneyline", row.get("away_ml")))
 
-        # ── Calibrated confidences ─────────────────────────────────────────
-        ats_conf_cal = row.get("ats_conf_cal")
-        ou_conf_cal = row.get("ou_conf_cal")
-        ml_conf_cal = row.get("ml_conf_cal")
+        # ── Profit/Loss (per $100 bet) ────────────────────────────
+        # ATS/OU use standard -110 juice; ML uses the actual moneyline odds
+        ats_profit = round(100.0 * _profit_per_100(-110), 2) if ats_result == "win" else (-100.0 if ats_result == "loss" else 0.0)
+        ou_profit = round(100.0 * _profit_per_100(-110), 2) if ou_result == "over" else (-100.0 if ou_result == "under" else 0.0)
+        ml_profit = 0.0
+        if ml_odds_value and ml_result == "Win":
+            ml_profit = round(100.0 * _profit_per_100(float(ml_odds_value)), 2)
+        elif ml_result == "Loss":
+            ml_profit = -100.0
 
         # ── Handicapper info (best-effort; row may lack display columns) ──
         try:
@@ -929,9 +964,29 @@ async def _save_backtest_prediction(
             features_dict["ou"] = {f: _float_safe(row[f]) for f in ou_feats}
         features_json_str = json.dumps(features_dict, default=str) if features_dict else None
 
-        # ── Predicted scores ───────────────────────────────────────────────
+        # ── Predicted scores & confidence ────────────────────────────────────
         predicted_margin = ats_proba * spread * 2 if spread else None
         predicted_total = ou_total
+        margin_conf = round(min(0.5 + abs(predicted_margin + spread) * 0.03, 0.90), 4) if spread else 0.5
+        ml_conf_val = round(min(0.5 + abs(predicted_margin) * 0.025, 0.92), 4) if predicted_margin is not None else 0.5
+        ou_conf_val = round(min(0.5 + abs(ou_total - over_under) * 0.04, 0.92), 4) if (ou_total is not None and over_under) else 0.5
+
+        # ── Calibrate raw confidences ──
+        ats_conf_cal = calibrate(float(margin_conf), "ats", "nba") if margin_conf is not None else None
+        ml_conf_cal = calibrate(float(ml_conf_val), "ml", "nba") if ml_conf_val is not None else None
+        ou_conf_cal = calibrate(float(ou_conf_val), "ou", "nba") if ou_conf_val is not None else None
+
+        # ── Expected value ──
+        ats_ev = _ev(ats_conf_cal, ats_odds_value) if ats_conf_cal is not None and ats_odds_value else None
+        ou_ev = _ev(ou_conf_cal, ou_odds_value) if ou_conf_cal is not None and ou_odds_value else None
+        ml_ev = _ev(ml_conf_cal, ml_odds_value) if ml_conf_cal is not None and ml_odds_value else None
+
+        logger.info(
+            "NBA backtest game %s: spread=%s, ats_proba=%s, pred_margin=%s, margin_conf=%s, "
+            "ou_total=%s, over_under=%s, ml_result=%s",
+            game_id, spread, ats_proba, predicted_margin, margin_conf,
+            ou_total, over_under, ml_result
+        )
         pred_home_score = None
         pred_away_score = None
         if predicted_total is not None and predicted_margin is not None:
@@ -948,11 +1003,14 @@ async def _save_backtest_prediction(
             predicted_total=_f(predicted_total),
             predicted_margin=_f(predicted_margin),
             margin_conf=_f(margin_conf),
-            ml_conf=None,
-            ou_conf=None,
+            ml_conf=_f(ml_conf_val),
+            ou_conf=_f(ou_conf_val),
             ats_conf_cal=_f(ats_conf_cal),
             ml_conf_cal=_f(ml_conf_cal),
             ou_conf_cal=_f(ou_conf_cal),
+            ats_ev=_f(ats_ev),
+            ou_ev=_f(ou_ev),
+            ml_ev=_f(ml_ev),
             ou_pick=ou_pick,
             spread_pick=spread_pick,
             ml_pick=ml_pick,
@@ -979,6 +1037,13 @@ async def _save_backtest_prediction(
         )
 
         # ── Save via ORM ───────────────────────────────────────────────────────────
+        logger.info(
+            "Saving backtest prediction game_id=%s: "
+            "ml_conf=%s ou_conf=%s ml_result=%s margin_conf=%s "
+            "ats_result=%s ou_result=%s ml_pick=%s",
+            game_id, rec.ml_conf, rec.ou_conf, rec.ml_result,
+            rec.margin_conf, rec.ats_result, rec.ou_result, rec.ml_pick,
+        )
         if close_session:
             db.execute(
                 sa_delete(NBAGamePrediction).where(
@@ -999,7 +1064,7 @@ async def _save_backtest_prediction(
             await db.commit()
 
     except Exception:
-        logger.exception("_save_backtest_prediction failed for game %%s", game_id)
+        logger.exception("_save_backtest_prediction failed for game %s", game_id)
     finally:
         if engine is not None:
             engine.dispose()
@@ -1125,12 +1190,12 @@ if __name__ == "__main__":
         raw = os.environ.get("DATABASE_URL", "")
         if "+asyncpg" in raw:
             os.environ["DATABASE_URL"] = raw.replace("+asyncpg", "").replace("postgresql+asyncpg://", "postgresql://")
-        if len(sys.argv) > 1 and sys.argv[1] == "backtest":
-            kwargs = {}
+        # Default: run backtest with 2024,2025 when no args or "backtest" specified
+        if len(sys.argv) < 2 or sys.argv[1] == "backtest":
+            kwargs = {"years": [2024, 2025]}
             if len(sys.argv) > 2:
-                years = [int(y) for y in sys.argv[2].split(",")]
-                kwargs["years"] = years
-            logger.info("Backtesting NBA seasons %s...", kwargs.get("years", [2024, 2025]))
+                kwargs["years"] = [int(y) for y in sys.argv[2].split(",")]
+            logger.info("Backtesting NBA seasons %s...", kwargs["years"])
             results = await backtest_season(**kwargs, limit=None, save_results=True)
             for mt in ("ats", "ou"):
                 for r in results.get(mt, []):
@@ -1147,8 +1212,9 @@ if __name__ == "__main__":
 
         else:
             print("Usage: python -m backend.app.handicapping.nba.nba_engine [backtest|predict]")
-            print("  backtest [years]    -- backtest models (e.g. '2022,2023,2024,2025')")
+            print("  backtest [years]    -- backtest models (default: 2024,2025)")
             print("  predict [days]      -- predict upcoming games (default 7 days)")
+            print("  (default: backtest 2024,2025 when run with no args)")
             sys.exit(1)
 
     asyncio.run(_main())

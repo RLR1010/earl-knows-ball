@@ -373,7 +373,8 @@ async def batch_predict_upcoming_games(
                     ou_pred = float(ou_model.predict(dmat)[0])
 
             # Build pick card
-            margin_conf = round(max(ats_proba, 1 - ats_proba), 4)
+            pred_margin = abs(spread) * (2 * ats_proba - 1) if spread != 0 else 0
+            margin_conf = round(min(0.5 + abs(pred_margin + spread) * 0.04, 0.90), 4) if spread else 0.5
 
             spread_pick = None
             if spread is not None:
@@ -391,7 +392,6 @@ async def batch_predict_upcoming_games(
             predicted_home, predicted_away = None, None
             if ou_pred is not None and spread is not None:
                 pred_total = ou_pred
-                pred_margin = abs(spread) * (2 * ats_proba - 1) if spread != 0 else 0
                 if ats_proba > 0.5:
                     predicted_home = round((pred_total + pred_margin) / 2)
                     predicted_away = round((pred_total - pred_margin) / 2)
@@ -414,6 +414,7 @@ async def batch_predict_upcoming_games(
                 "ml_pick": ml_pick,
                 "home_ml": _float_safe(row.get("home_ml")),
                 "away_ml": _float_safe(row.get("away_ml")),
+                "closing_ou": _float_safe(over_under),
                 "spread_home_odds": _float_safe(row.get("spread_home_odds")),
                 "spread_away_odds": _float_safe(row.get("spread_away_odds")),
                 "over_odds": _float_safe(row.get("over_odds")),
@@ -575,8 +576,9 @@ async def _save_api_prediction(result: Dict[str, Any]) -> None:
             predicted_away_score=pred_away_score,
             predicted_total=predicted_total,
             predicted_margin=pred_margin,
-            margin_conf=result.get("margin_conf"),
-            ou_conf=result.get("ou_conf"),
+            margin_conf=round(min(0.5 + abs(pred_margin + spread) * 0.04, 0.90), 4) if spread else 0.5,
+            ml_conf=round(min(0.5 + abs(pred_margin) * 0.025, 0.92), 4),
+            ou_conf=round(min(0.5 + abs(predicted_total - result.get("closing_ou", 0)) * 0.07, 0.92), 4) if (predicted_total is not None and result.get("closing_ou")) else 0.5,
             ou_pick=ou_pick,
             spread_pick=spread_pick,
             ml_pick=ml_pick,
@@ -654,7 +656,8 @@ async def _save_backtest_prediction(
         actual_margin = (home_score or 0) - (away_score or 0)
 
         # ── Picks ───────────────────────────────────────────────────────────────
-        margin_conf = round(max(ats_proba, 1 - ats_proba), 4)
+        pred_margin_pred = 2 * spread * (ats_proba - 0.5) if spread != 0 else 0
+        margin_conf = round(min(0.5 + abs(pred_margin_pred + spread) * 0.04, 0.90), 4) if spread else 0.5
         home_fav = spread < 0
         if home_fav:
             spread_pick = f"{home_str} {abs(spread):.1f}"
@@ -759,9 +762,10 @@ async def _save_backtest_prediction(
                 predicted_home_score=_int_safe(home_score),  # use actual as placeholder
                 predicted_away_score=_int_safe(away_score),
                 predicted_total=ou_total,
-                predicted_margin=actual_margin,
+                predicted_margin=pred_margin_pred,
                 margin_conf=margin_conf,
-                ou_conf=abs(ou_total - closing_ou) / closing_ou if ou_total and closing_ou else None,
+                ml_conf=round(min(0.5 + abs(pred_margin_pred) * 0.025, 0.92), 4),
+                ou_conf=round(min(0.5 + abs(ou_total - closing_ou) * 0.07, 0.92), 4) if (ou_total is not None and closing_ou) else 0.5,
                 ou_pick=ou_pick,
                 spread_pick=spread_pick,
                 ml_pick=ml_pick,
@@ -804,9 +808,10 @@ async def _save_backtest_prediction(
                 predicted_home_score=_int_safe(home_score),
                 predicted_away_score=_int_safe(away_score),
                 predicted_total=ou_total,
-                predicted_margin=actual_margin,
+                predicted_margin=pred_margin_pred,
                 margin_conf=margin_conf,
-                ou_conf=abs(ou_total - closing_ou) / closing_ou if ou_total and closing_ou else None,
+                ml_conf=round(min(0.5 + abs(pred_margin_pred) * 0.025, 0.92), 4),
+                ou_conf=round(min(0.5 + abs(ou_total - closing_ou) * 0.07, 0.92), 4) if (ou_total is not None and closing_ou) else 0.5,
                 ou_pick=ou_pick,
                 spread_pick=spread_pick,
                 ml_pick=ml_pick,

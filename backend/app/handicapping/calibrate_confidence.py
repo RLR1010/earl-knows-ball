@@ -142,21 +142,44 @@ async def build_calibration(db, sport: str = "nfl"):
         rl_col = "run_line_result" if sport == "mlb" else "ats_result"
 
         # Collect data for each market
+        # Map market to confidence column (NBA uses margin_conf, not rl_conf)
+        conf_cols = {
+            "rl": "rl_conf" if sport != "nba" else "margin_conf",
+            "ou": "ou_conf",
+            "ml": "ml_conf",
+        }
+        # Map market to result filter condition (NBA uses different casing/values)
+        result_filters = {
+            "rl": f"LOWER(gp.{rl_col}) IN ('win','loss')",
+            "ou": "gp.ou_result IN ('over','under')",
+            "ml": "LOWER(gp.ml_result) IN ('win','loss')",
+        }
+
         curve_data = {}
-        for market, col, res_col in [
-            ("rl", "rl_conf", rl_col),
-            ("ou", "ou_conf", "ou_result"),
-            ("ml", "ml_conf", "ml_result"),
-        ]:
+        for market in ("rl", "ou", "ml"):
+            col = conf_cols[market]
+            res_filter = result_filters[market]
+            res_col = rl_col if market == "rl" else ("ou_result" if market == "ou" else "ml_result")
+
+            # Per-market win condition (sport-aware for result column names)
+            if market == "rl":
+                res_table = rl_col  # 'ats_result' for NBA, 'run_line_result' for MLB
+                win_sql = f"LOWER(gp.{res_table}) IN ('win','Win')"
+            elif market == "ml":
+                win_sql = "gp.ml_result = 'Win'"
+            else:
+                # ou: compare ou_pick (bet side) with actual outcome
+                win_sql = "LOWER(gp.ou_pick) = LOWER(gp.ou_result)"
+
             raw_rows = await db.execute(_t(f"""
                 SELECT FLOOR(gp.{col} * {BIN_COUNT}) / {BIN_COUNT} as bucket,
                        COUNT(*) as n,
                        ROUND(AVG(gp.{col})::numeric, 3) as avg_raw,
-                       COUNT(*) FILTER (WHERE gp.{res_col} = 'Win') as wins
+                       COUNT(*) FILTER (WHERE {win_sql}) as wins
                 FROM {schema}.game_predictions gp
-                WHERE gp.source = 'api'
+                WHERE gp.source IN ('api', 'backtest')
                   AND gp.{col} IS NOT NULL
-                  AND gp.{res_col} IN ('Win','Loss')
+                  AND {res_filter}
                 GROUP BY bucket
                 ORDER BY bucket
             """))
@@ -267,6 +290,7 @@ if __name__ == "__main__":
         async for db in get_db():
             await build_calibration(db, sport="nfl")
             await build_calibration(db, sport="mlb")
+            await build_calibration(db, sport="nba")
             break
 
         print("\nSample calibration lookups:")
