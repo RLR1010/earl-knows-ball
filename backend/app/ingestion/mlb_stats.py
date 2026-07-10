@@ -25,6 +25,7 @@ from app.models.mlb import (
     MLBGames,
     GameStatus,
     MLBPlayer,
+    MLBInjury,
     MLBBattingStats,
     MLBPitchingStats,
 )
@@ -1457,17 +1458,75 @@ async def sync_team_roster(
 
         if status_code in ("A",):
             result["active"].append(full_name)
+            # If player had an active injury record, mark it resolved
+            if player and player.id:
+                await _resolve_active_injuries(db, player.id)
         elif status_code.startswith("D") or status_code in ("ILF", "DR", "SUS", "RES"):
             result["injured"].append({
                 "name": full_name,
                 "status": status_desc,
                 "position": pos_abbr,
             })
+            # Upsert injury record
+            if player and player.id:
+                await _upsert_injury(db, player.id, team_db_id, status_desc)
 
         if player:
             result["total"] += 1
 
     return result
+
+
+async def _upsert_injury(
+    db: AsyncSession,
+    player_id: int,
+    team_id: int,
+    status: str,
+) -> None:
+    """Upsert an active injury record for a player."""
+    from app.models.mlb import MLBInjury
+    from sqlalchemy import select
+
+    existing = await db.execute(
+        select(MLBInjury).where(
+            MLBInjury.player_id == player_id,
+            MLBInjury.is_active == True,
+        )
+    )
+    injury = existing.scalar_one_or_none()
+    if injury:
+        if injury.status != status or injury.team_id != team_id:
+            injury.status = status
+            injury.team_id = team_id
+            await db.flush()
+    else:
+        new_injury = MLBInjury(
+            player_id=player_id,
+            team_id=team_id,
+            status=status,
+            is_active=True,
+        )
+        db.add(new_injury)
+        await db.flush()
+
+
+async def _resolve_active_injuries(
+    db: AsyncSession,
+    player_id: int,
+) -> None:
+    """Mark all active injury records for a player as resolved."""
+    from app.models.mlb import MLBInjury
+    from sqlalchemy import select
+
+    existing = await db.execute(
+        select(MLBInjury).where(
+            MLBInjury.player_id == player_id,
+            MLBInjury.is_active == True,
+        )
+    )
+    for injury in existing.scalars().all():
+        injury.is_active = False
+        await db.flush()
 
 
 async def sync_all_team_rosters(

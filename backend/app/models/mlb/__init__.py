@@ -12,6 +12,7 @@ from .writeup import MLBGameWriteup
 from .team_split import MLBTeamSplit
 from .bullpen_stat import MLBBullpenStat
 from .venue import MLBVenue
+from .injury import MLBInjury
 
 __all__ = [
     "MLBTeam",
@@ -29,4 +30,5 @@ __all__ = [
     "MLBTeamSplit",
     "MLBBullpenStat",
     "MLBVenue",
+    "MLBInjury",
 ]

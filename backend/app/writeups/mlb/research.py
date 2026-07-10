@@ -936,6 +936,8 @@ async def get_research_brief(
     return {
         "game_summary": summary,
         **results,
+        "home_team_name": summary.get("home_team", {}).get("name", "Home"),
+        "away_team_name": summary.get("away_team", {}).get("name", "Away"),
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "as_of_date": as_of_date.isoformat() if as_of_date else None,
     }
