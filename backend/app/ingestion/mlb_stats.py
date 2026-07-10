@@ -1497,6 +1497,7 @@ async def _upsert_injury(
     if injury:
         if injury.injury_type != injury_type or injury.team_id != team_id:
             injury.injury_type = injury_type
+            injury.status = injury_type  # research query reads i.status
             injury.team_id = team_id
             await db.flush()
     else:
@@ -1504,6 +1505,7 @@ async def _upsert_injury(
             player_id=player_id,
             team_id=team_id,
             injury_type=injury_type,
+            status=injury_type,  # research query reads i.status
             is_active=True,
         )
         db.add(new_injury)
