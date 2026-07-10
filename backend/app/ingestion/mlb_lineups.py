@@ -154,7 +154,7 @@ async def save_lineups(db: AsyncSession, game_id: int, away_lineup: list[dict], 
         bo = entry["batting_order"]
         if bo < 1 or bo > 9:
             if entry.get("is_starting_pitcher"):
-                bo = 0
+                continue  # SPs handled separately by caller at bo=0
             else:
                 continue
         _add("away", bo, entry)
@@ -162,7 +162,7 @@ async def save_lineups(db: AsyncSession, game_id: int, away_lineup: list[dict], 
         bo = entry["batting_order"]
         if bo < 1 or bo > 9:
             if entry.get("is_starting_pitcher"):
-                bo = 0
+                continue  # SPs handled separately by caller at bo=0
             else:
                 continue
         _add("home", bo, entry)
@@ -220,10 +220,7 @@ async def update_lineups_for_date(db: AsyncSession, game_date: date) -> dict:
             away_lu = lineup_data.get("away_lineup", [])
             home_lu = lineup_data.get("home_lineup", [])
 
-            if away_lu or home_lu:
-                await save_lineups(db, db_game.id, away_lu, home_lu)
-                stats["lineups_saved"] += 1
-            # Save / update starting pitchers (from DB game record — available even for past games)
+            # Save / update starting pitchers first (so old SP rows are gone before save_lineups)
             from app.models.mlb import MLBLineup
             from sqlalchemy import delete as sa_delete
             await db.execute(sa_delete(MLBLineup).where(
@@ -242,6 +239,9 @@ async def update_lineups_for_date(db: AsyncSession, game_date: date) -> dict:
                     player_id=None, player_name=db_game.away_pitcher_name,
                     position="SP", created_at=now, updated_at=now,
                 ))
+            if away_lu or home_lu:
+                await save_lineups(db, db_game.id, away_lu, home_lu)
+                stats["lineups_saved"] += 1
 
         except Exception as e:
             logger.error(f"Error processing game {game_info.get('game_pk')}: {e}")

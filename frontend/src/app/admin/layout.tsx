@@ -9,6 +9,7 @@ const NAV_ITEMS = [
   { label: "Subscriptions", path: "/admin/subscriptions", icon: "🔄" },
   { label: "Plans", path: "/admin/plans", icon: "📋" },
   { label: "Models", path: "/admin/models", icon: "🧠" },
+  { label: "Content", path: "/admin/content", icon: "✍️" },
   { label: "Articles", path: "/admin/articles", icon: "📰" },
   { label: "　RSS Feeds", path: "/admin/articles/rss", icon: "📡" },
   { label: "Predictions", path: "/admin/predictions", icon: "🎯" },

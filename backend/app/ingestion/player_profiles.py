@@ -86,13 +86,13 @@ Receiving TDs: {int(s.rec_tds or 0)}
     try:
         async with httpx.AsyncClient(timeout=20.0) as client:
             resp = await client.post(
-                "https://api.deepseek.com/v1/chat/completions",
+                f"{settings.deepseek_base_url}/v1/chat/completions",
                 headers={
                     "Authorization": f"Bearer {settings.deepseek_api_key}",
                     "Content-Type": "application/json",
                 },
                 json={
-                    "model": "deepseek-chat",
+                    "model": "deepseek-v4-flash",
                     "messages": [
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": f"Write a career summary for this player:\n\n{data}"},

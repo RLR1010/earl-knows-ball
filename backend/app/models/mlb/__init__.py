@@ -8,6 +8,10 @@ from .article import MLBArticle
 from .betting_line import MLBBettingLine
 from .game_prediction import MLBGamePrediction
 from .lineup import MLBLineup
+from .writeup import MLBGameWriteup
+from .team_split import MLBTeamSplit
+from .bullpen_stat import MLBBullpenStat
+from .venue import MLBVenue
 
 __all__ = [
     "MLBTeam",
@@ -21,4 +25,8 @@ __all__ = [
     "MLBBettingLine",
     "MLBGamePrediction",
     "MLBLineup",
+    "MLBGameWriteup",
+    "MLBTeamSplit",
+    "MLBBullpenStat",
+    "MLBVenue",
 ]

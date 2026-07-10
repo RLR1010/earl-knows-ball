@@ -5,6 +5,13 @@ from fastapi.middleware.cors import CORSMiddleware
 import logging
 from contextlib import asynccontextmanager
 
+# ── Logging config ──────────────────────────────────────────────
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(name)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+
 from app import task_scheduler
 
 
@@ -48,6 +55,7 @@ from app.routers import (
     subscriptions,
     teams,
     admin,
+    writeups,
 )
 
 app.include_router(auth.router)
@@ -64,6 +72,7 @@ app.include_router(stats.router)
 app.include_router(subscriptions.router)
 app.include_router(teams.router)
 app.include_router(admin.router)
+app.include_router(writeups.router)
 
 
 @app.get("/")

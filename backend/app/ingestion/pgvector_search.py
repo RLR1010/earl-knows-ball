@@ -48,12 +48,16 @@ async def search_articles(
     top_k: int = 8,
     scope_teams: Optional[list[str]] = None,
     sport: str = "nfl",
+    date_to: Optional[str] = None,
+    date_from: Optional[str] = None,
 ) -> list[dict]:
     """
     Search articles via pgvector cosine similarity.
 
     Args:
         sport: "nfl", "nba", or "mlb"
+        date_to: Only articles published on or before this date (ISO-8601 date string)
+        date_from: Only articles published on or after this date (ISO-8601 date string)
 
     Returns list of {text, title, source_name} ordered by relevance.
     """
@@ -70,17 +74,32 @@ async def search_articles(
     # Build embedding string for pgvector query
     emb_str = "[" + ",".join(str(round(x, 8)) for x in embedding) + "]"
 
+    # Build WHERE clauses
+    conditions = []
+    params = {"top_k": top_k}
+
+    if date_to:
+        conditions.append("a.published_at <= :date_to")
+        params["date_to"] = date_to
+    if date_from:
+        conditions.append("a.published_at >= :date_from")
+        params["date_from"] = date_from
+
+    where_clause = " AND ".join(conditions)
+    where_sql = f"WHERE {where_clause}" if conditions else ""
+
     # Search with cosine similarity
     sql = text(f"""
         SELECT a.id, a.title, a.body, a.source_name,
                ae.embedding <-> '{emb_str}'::vector AS distance
         FROM {embed_table} ae
         JOIN {article_table} a ON a.id = ae.article_id
+        {where_sql}
         ORDER BY ae.embedding <-> '{emb_str}'::vector
         LIMIT :top_k
     """)
 
-    r = await db.execute(sql, {"top_k": top_k})
+    r = await db.execute(sql, params)
     results = r.fetchall()
 
     articles = []
@@ -100,13 +119,14 @@ async def search_articles(
     # If no results from vector search, fall back to keyword search
     if not articles:
         logger.info("Vector search returned no results, falling back to keyword search")
-        keyword_r = await db.execute(
-            select(model)
-            .where(
-                model.title.ilike(f"%{query}%")
-            )
-            .limit(top_k)
+        kw_query = select(model).where(
+            model.title.ilike(f"%{query}%")
         )
+        if date_to:
+            kw_query = kw_query.where(model.published_at <= date_to)
+        if date_from:
+            kw_query = kw_query.where(model.published_at >= date_from)
+        keyword_r = await db.execute(kw_query.limit(top_k))
         for article in keyword_r.scalars().all():
             text_content = f"# {article.title}\n\nSource: {article.source_name or 'Unknown'}"
             if article.body:

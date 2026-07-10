@@ -92,6 +92,12 @@ export default function SiteStructurePage() {
       content: () => <AdminPanel />,
     },
     {
+      id: "content",
+      title: "Content System & Write-Up Generation",
+      emoji: "✍️",
+      content: () => <ContentWriteupSystem />,
+    },
+    {
       id: "infrastructure",
       title: "Infrastructure & Deployment",
       emoji: "🚢",
@@ -108,7 +114,7 @@ export default function SiteStructurePage() {
           file purposes, and key patterns. Use this page to understand how everything fits together.
         </p>
         <p className="text-gray-500 text-xs mt-2">
-          Last updated: June 8, 2026
+          Last updated: July 9, 2026
         </p>
       </div>
 
@@ -1160,6 +1166,192 @@ function AdminPanel() {
           <p>3. Backend <code className="text-earl-400">get_admin_user()</code> dependency decodes JWT, checks <code className="text-earl-400">user.is_admin</code></p>
           <p>4. Non-admin users are redirected to <code className="text-earl-400">/login</code></p>
           <p className="text-yellow-400 mt-2">⚠️ CRITICAL: The test user is <code className="text-yellow-300">test@earl.com</code> / <code className="text-yellow-300">test1234</code>. Never modify the rich@ljart.com account.</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ContentWriteupSystem() {
+  return (
+    <div className="space-y-6">
+      {/* Overview */}
+      <div className="bg-white/5 border border-white/10 rounded-xl p-4">
+        <h3 className="text-sm font-semibold text-earl-400 mb-3">📝 Overview</h3>
+        <div className="text-xs text-gray-400 space-y-2">
+          <p>
+            The <strong className="text-gray-300">Content System</strong> generates AI-powered game previews
+            for every MLB game (NFL and NBA coming soon). Each game gets <strong className="text-gray-300">two write-ups</strong>:
+          </p>
+          <div className="grid grid-cols-2 gap-4 mt-3">
+            <div className="bg-white/[0.02] border border-white/10 rounded-lg p-3">
+              <div className="text-sm font-medium text-gray-300 mb-1">Public</div>
+              <div className="text-xs text-gray-500">
+                Game preview with no picks, predictions, or betting info.
+                Available to all visitors. ~400-700 words.
+              </div>
+            </div>
+            <div className="bg-white/[0.02] border border-white/10 rounded-lg p-3">
+              <div className="text-sm font-medium text-gray-300 mb-1">Premium</div>
+              <div className="text-xs text-gray-500">
+                Full handicapping: includes run line, OU, and ML picks with
+                confidence and reasoning. ~600-1,000 words.
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Pipeline */}
+      <div className="bg-white/5 border border-white/10 rounded-xl p-4">
+        <h3 className="text-sm font-semibold text-earl-400 mb-3">🔁 Generation Pipeline</h3>
+        <div className="space-y-0">
+          <Step num={1} label="Research Phase">
+            Calls <code className="text-earl-400">get_research_brief()</code> in
+            {" "}<code className="text-earl-400">app/writeups/mlb/research.py</code> which runs 12 concurrent
+            database queries — game summary, team stats, pitching matchup,
+            betting lines, predictions, head-to-head, injuries, recent form,
+            bullpen stats, team splits, venue info, weather, and standings.
+            All queries accept <code className="text-earl-400">as_of_date</code> for historical mode.
+            Returns a JSON research brief (~10-15KB).
+          </Step>
+          <Arrow />
+          <Step num={2} label="Generation Phase">
+            Research brief + system prompt sent to DeepSeek API via
+            {" "}<code className="text-earl-400">base_generator.py</code> using <code className="text-earl-400">httpx.AsyncClient</code>.
+            Model: <code className="text-earl-400">deepseek-chat</code>, temp=0.5, max_tokens=4096, timeout=60s.
+            Returns JSON: <code className="text-earl-400">{"{title, public_content, premium_content}"}</code>
+          </Step>
+          <Arrow />
+          <Step num={3} label="Quality Checks">
+            8 automated checks run on the generated content: minimum word
+            count (public ≥300, premium ≥500), no picks in public version,
+            picks must appear in premium version, historical spoiler
+            detection, tier consistency, stat references, and title quality.
+            Auto-sets status to <code className="text-earl-400">review</code> if all pass,
+            {" "}<code className="text-earl-400">draft</code> otherwise.
+          </Step>
+          <Arrow />
+          <Step num={4} label="Storage">
+            Write-up upserted into <code className="text-earl-400">mlb.game_writeups</code> table.
+            Research brief and quality checks stored as JSONB columns.
+            Version bumps on regeneration (keeps history).
+            Status lifecycle: draft → review → published → archived.
+          </Step>
+        </div>
+      </div>
+
+      {/* File Map */}
+      <div className="bg-white/5 border border-white/10 rounded-xl p-4">
+        <h3 className="text-sm font-semibold text-earl-400 mb-3">📁 File Map</h3>
+        <div className="text-xs font-mono space-y-1">
+          <div className="text-gray-300">backend/app/writeups/</div>
+          <div className="pl-4 text-gray-400">
+            <div>├── <strong className="text-earl-400">__init__.py</strong></div>
+            <div>├── <strong className="text-earl-400">base_generator.py</strong> — DeepSeek integration, prompt templates, 8 QC checks</div>
+            <div>└── mlb/</div>
+            <div className="pl-4">
+              <div>├── <strong className="text-earl-400">__init__.py</strong></div>
+              <div>├── <strong className="text-earl-400">research.py</strong> — 12+ async DB query functions + combined <code className="text-earl-400">get_research_brief()</code></div>
+              <div>└── <strong className="text-earl-400">generator.py</strong> — MLB generator class (research → generate → store)</div>
+            </div>
+          </div>
+          <div className="mt-3 text-gray-300">backend/app/routers/</div>
+          <div className="pl-4 text-gray-400">
+            <div>└── <strong className="text-earl-400">writeups.py</strong> — 6 API endpoints</div>
+          </div>
+          <div className="mt-3 text-gray-300">frontend/src/app/admin/content/</div>
+          <div className="pl-4 text-gray-400">
+            <div>├── <strong className="text-earl-400">page.tsx</strong> — Schedule grid with game cards, date nav, bulk generate</div>
+            <div>└── <strong className="text-earl-400">[id]/page.tsx</strong> — Split-pane editor (public/premium), status management</div>
+          </div>
+          <div className="mt-3 text-gray-300">backend/scripts/</div>
+          <div className="pl-4 text-gray-400">
+            <div>├── <strong className="text-earl-400">create_writeup_tables.py</strong> — Schema migration for new tables</div>
+            <div>├── <strong className="text-earl-400">ingest_venues.py</strong> — 51 stadiums with dimensions, capacity, altitude</div>
+            <div>├── <strong className="text-earl-400">ingest_team_splits.py</strong> — Home/away/day/night/grass/turf splits</div>
+            <div>└── <strong className="text-earl-400">ingest_bullpen_stats.py</strong> — Bullpen ERA, WHIP, K/9 per team/season</div>
+          </div>
+        </div>
+      </div>
+
+      {/* API Endpoints */}
+      <div className="bg-white/5 border border-white/10 rounded-xl p-4">
+        <h3 className="text-sm font-semibold text-earl-400 mb-3">🔌 Write-up API Endpoints</h3>
+        <div className="space-y-1.5 text-xs">
+          <div className="flex items-center gap-4">
+            <code className="text-green-400 font-mono">GET</code>
+            <code className="text-gray-300 font-mono">/writeups/mlb/games</code>
+            <span className="text-gray-500">Games with write-up status for admin UI</span>
+          </div>
+          <div className="flex items-center gap-4">
+            <code className="text-orange-400 font-mono">POST</code>
+            <code className="text-gray-300 font-mono">/writeups/mlb/generate/{`{game_id}`}</code>
+            <span className="text-gray-500">Trigger generation (research → DeepSeek → QC → store)</span>
+          </div>
+          <div className="flex items-center gap-4">
+            <code className="text-green-400 font-mono">GET</code>
+            <code className="text-gray-300 font-mono">/writeups/mlb/list</code>
+            <span className="text-gray-500">List write-ups (filter by status, game, limit)</span>
+          </div>
+          <div className="flex items-center gap-4">
+            <code className="text-green-400 font-mono">GET</code>
+            <code className="text-gray-300 font-mono">/writeups/mlb/{`{id}`}?tier=public|premium</code>
+            <span className="text-gray-500">Get write-up content</span>
+          </div>
+          <div className="flex items-center gap-4">
+            <code className="text-blue-400 font-mono">PATCH</code>
+            <code className="text-gray-300 font-mono">/writeups/mlb/{`{id}`}</code>
+            <span className="text-gray-500">Save edits (title, public/premium content)</span>
+          </div>
+          <div className="flex items-center gap-4">
+            <code className="text-blue-400 font-mono">PATCH</code>
+            <code className="text-gray-300 font-mono">/writeups/mlb/{`{id}`}/status?status=published</code>
+            <span className="text-gray-500">Update status (draft/review/published/archived)</span>
+          </div>
+        </div>
+      </div>
+
+      {/* DB Tables */}
+      <div className="bg-white/5 border border-white/10 rounded-xl p-4">
+        <h3 className="text-sm font-semibold text-earl-400 mb-3">🗄️ New Database Tables (mlb schema)</h3>
+        <div className="text-xs space-y-3">
+          <div className="bg-white/[0.02] border border-white/10 rounded-lg p-3">
+            <div className="font-medium text-gray-300 mb-1">game_writeups</div>
+            <div className="text-gray-500">
+              One row per game. Stores title, public_content (no picks),
+              premium_content (with picks), research_brief (JSONB),
+              quality_checks (JSONB), status, version, is_historical flag,
+              historical_game_date, generated_by metadata.
+              FK → mlb.games(id) with CASCADE delete.
+              UNIQUE on game_id.
+            </div>
+          </div>
+          <div className="bg-white/[0.02] border border-white/10 rounded-lg p-3">
+            <div className="font-medium text-gray-300 mb-1">venues</div>
+            <div className="text-gray-500">
+              51 records — all 30 active MLB parks (with dimensions, capacity,
+              altitude, park factors), plus spring training and special event
+              venues. FK from games.venue_id referencing mlb_venue_id.
+            </div>
+          </div>
+          <div className="bg-white/[0.02] border border-white/10 rounded-lg p-3">
+            <div className="font-medium text-gray-300 mb-1">team_splits</div>
+            <div className="text-gray-500">
+              1,204 rows — per team per season: home/away/day/night/grass/turf
+              splits. Includes wins, losses, runs scored/allowed.
+              Batting/pitching rates (AVG, OBP, SLG, ERA) are NULL until
+              player-level split data is available.
+            </div>
+          </div>
+          <div className="bg-white/[0.02] border border-white/10 rounded-lg p-3">
+            <div className="font-medium text-gray-300 mb-1">bullpen_stats</div>
+            <div className="text-gray-500">
+              630 rows — 30 teams × 21 seasons. Aggregated from pitching_stats
+              filtered to pure relievers (games_started=0). ERA, WHIP, K/9,
+              saves, blown saves, holds.
+            </div>
+          </div>
         </div>
       </div>
     </div>
