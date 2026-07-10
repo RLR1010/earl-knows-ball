@@ -24,5 +24,10 @@ class MLBInjury(Base):
     )
     is_active = Column(Boolean, nullable=True, default=True)
 
-    # No SQLAlchemy FK for player_id (no constraint in DB)
-    player = relationship("MLBPlayer", backref="injuries", foreign_keys=[player_id])
+    # No FK constraint on player_id in DB, use primaryjoin explicitly
+    player = relationship(
+        "MLBPlayer",
+        backref="injuries",
+        primaryjoin="MLBInjury.player_id == MLBPlayer.id",
+        foreign_keys=[player_id],
+    )
