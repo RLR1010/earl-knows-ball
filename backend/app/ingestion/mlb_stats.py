@@ -1481,7 +1481,7 @@ async def _upsert_injury(
     db: AsyncSession,
     player_id: int,
     team_id: int,
-    status: str,
+    injury_type: str,
 ) -> None:
     """Upsert an active injury record for a player."""
     from app.models.mlb import MLBInjury
@@ -1495,15 +1495,15 @@ async def _upsert_injury(
     )
     injury = existing.scalar_one_or_none()
     if injury:
-        if injury.status != status or injury.team_id != team_id:
-            injury.status = status
+        if injury.injury_type != injury_type or injury.team_id != team_id:
+            injury.injury_type = injury_type
             injury.team_id = team_id
             await db.flush()
     else:
         new_injury = MLBInjury(
             player_id=player_id,
             team_id=team_id,
-            status=status,
+            injury_type=injury_type,
             is_active=True,
         )
         db.add(new_injury)
