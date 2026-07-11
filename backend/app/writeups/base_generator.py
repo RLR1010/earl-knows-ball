@@ -143,27 +143,41 @@ Write your article below. Start with the title on its own line (preceded by ##),
             "Do NOT mention the actual result or final score — this is a post-game "
             "handicapping analysis, not a recap. Focus on how the game played out "
             "relative to the betting lines, what moved, and lessons for future games."
-            if is_historical else ""
+            if is_historical else (
+                "This is a PREVIEW for an upcoming game. Write in present/future tense."
+            )
         )
 
-        return f"""You are a baseball handicapper for Earl Knows Ball, a premium sports betting analysis site.
+        return f"""You are a senior sports writer for Earl Knows Ball, the premier handicapping and analysis platform. Your writing style is professional, insightful, and engaging — think a mix of ESPN insider analysis and a sharp beat writer.
 
-Write an exclusive insider analysis for PAYING SUBSCRIBERS. Length: 300-600 words.
+Write an exclusive insider analysis article for PAYING SUBSCRIBERS. This is a full article, not a short snippet.
 
-Include:
-- Sharp betting insights and angles
+Length: 1600-3200 words — be detailed and comprehensive.
+
+What to include:
+- Advanced stats breakdown and key matchup analysis
+- In-depth handicapping angles with historical context
+- Betting trends, line movement analysis, and what it means
 - Model predictions and probabilities (if available in the data below)
-- Line movement analysis and what it means
-- Key matchups (pitcher vs batter splits, bullpen edges)
 - Explicit betting recommendations where supported by the data
 - Why the public is wrong vs right
-- Proprietary handicapping angles
+- Proprietary handicapping insights that give the reader a real edge
+- Coaching strategy deep-dives when relevant
 
-Output format: Return valid JSON ONLY with two keys:
-- "title": A short, punchy title for the premium section (5-10 words)
-- "content": The full premium write-up (300-600 words)
+⚠️ RULES:
+- This content must offer genuine ADDITIONAL insight. It must be different from the public preview.
+- Good: deep breakdown of one key matchup, betting angle with context, proprietary edge analysis
+- Bad: rephrasing the public section, generic filler, content obvious to any casual fan
+- If you cannot think of genuinely premium-worthy content, focus on one key angle and explain it exhaustively
+- Premium content should feel like you're giving the reader a real edge they can't get elsewhere
 
-No markdown fences. No extra text. Valid JSON only.
+Output format (preferred): Return valid JSON with these keys:
+- "title": A punchy, engaging title for the premium section (include team names, max ~80 chars)
+- "content": The full premium article (1600-3200 words, many paragraphs — be detailed and comprehensive)
+
+If you cannot return JSON, write the article directly starting with `## Title` on the first line, then the article body. JSON is preferred but article text is acceptable.
+
+No markdown fences.
 {tense_note}"""
 
     # ── Generation ──────────────────────────────────────────
@@ -250,27 +264,37 @@ No markdown fences. No extra text. Valid JSON only.
         return parsed
 
     def _parse_premium_response(self, raw: str) -> dict[str, str]:
-        """Parse the premium-only JSON response from DeepSeek."""
+        """Parse the premium response. Tries JSON first (from premium_system_prompt),
+        falls back to treating the first line as the title. Uses the full response
+        body as content in the fallback."""
         import json
 
         cleaned = raw.strip()
-        if cleaned.startswith("```"):
-            start = cleaned.find("{")
+
+        # Try JSON extraction (premium_system_prompt asks for JSON)
+        json_attempt = cleaned
+        if json_attempt.startswith("```"):
+            start = json_attempt.find("{")
             if start >= 0:
-                cleaned = cleaned[start:]
-            end = cleaned.rfind("}")
+                json_attempt = json_attempt[start:]
+            end = json_attempt.rfind("}")
             if end >= 0:
-                cleaned = cleaned[: end + 1]
+                json_attempt = json_attempt[: end + 1]
 
         try:
-            parsed = json.loads(cleaned)
+            parsed = json.loads(json_attempt)
             return {
                 "title": parsed.get("title", ""),
                 "content": parsed.get("content", ""),
             }
         except (json.JSONDecodeError, TypeError):
-            logger.warning("failed to parse premium JSON response — using raw text")
-            return {"title": "", "content": cleaned[:600]}
+            pass  # fall through to plain text parsing
+
+        # Fallback: first non-empty line is the title, rest is content
+        lines = cleaned.split("\n", 1)
+        title = lines[0].strip().strip("#").strip() if lines else ""
+        content = lines[1].strip() if len(lines) > 1 else ""
+        return {"title": title, "content": content}
 
     async def _call_deepseek(self, system: str, user_prompt: str) -> str | None:
         """Call DeepSeek via OpenAI SDK and return the raw response content.
