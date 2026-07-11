@@ -83,67 +83,87 @@ class ToolChatEngine:
         Returns:
             Final answer text from DeepSeek.
         """
-        client = AsyncOpenAI(
-            api_key=settings.deepseek_api_key,
-            base_url=f"{settings.deepseek_base_url.rstrip('/')}/v1",
-            timeout=45.0,
-        )
+        original_answer = ""
 
-        # First call with tools available
-        response = await client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            tools=self.tools,
-            tool_choice="auto",
-        )
-
-        assistant_msg = response.choices[0].message
-        self._append_assistant(messages, assistant_msg)
-
-        turns = 0
-        while assistant_msg.tool_calls and turns < max_turns:
-            turns += 1
-            logger.info(
-                "Tool call round %d/%d: %d tool(s)",
-                turns, max_turns, len(assistant_msg.tool_calls),
+        try:
+            client = AsyncOpenAI(
+                api_key=settings.deepseek_api_key,
+                base_url=f"{settings.deepseek_base_url.rstrip('/')}/v1",
+                timeout=45.0,
             )
 
-            # Execute each tool call
-            for tool_call in assistant_msg.tool_calls:
-                try:
-                    result = await self.executor(db, tool_call)
-                    content = json.dumps(result, default=str)
-                except Exception as e:
-                    logger.exception("Tool execution failed: %s", e)
-                    content = json.dumps({"error": str(e)})
-
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tool_call.id,
-                    "content": content,
-                })
-
-            # Next turn
+            # First call with tools available
             response = await client.chat.completions.create(
                 model=self.model,
                 messages=messages,
                 tools=self.tools,
                 tool_choice="auto",
             )
+
             assistant_msg = response.choices[0].message
             self._append_assistant(messages, assistant_msg)
 
-        # If DeepSeek still wants to call tools (hit max_turns), force a final answer
-        if not assistant_msg.content and assistant_msg.tool_calls:
-            logger.info("Hit max_turns with pending tool calls — forcing final answer")
-            messages.append({"role": "user", "content": "You have all the data you need. Provide your final answer now. Be concise."})
-            response = await client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-            )
-            assistant_msg = response.choices[0].message
+            turns = 0
+            while assistant_msg.tool_calls and turns < max_turns:
+                turns += 1
+                logger.info(
+                    "Tool call round %d/%d: %d tool(s)",
+                    turns, max_turns, len(assistant_msg.tool_calls),
+                )
 
-        return assistant_msg.content or ""
+                # Execute each tool call
+                for tool_call in assistant_msg.tool_calls:
+                    try:
+                        result = await self.executor(db, tool_call)
+                        content = json.dumps(result, default=str)
+                    except Exception as e:
+                        logger.exception("Tool execution failed: %s", e)
+                        content = json.dumps({"error": str(e)})
+
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "content": content,
+                    })
+
+                # Next turn
+                response = await client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    tools=self.tools,
+                    tool_choice="auto",
+                )
+                assistant_msg = response.choices[0].message
+                self._append_assistant(messages, assistant_msg)
+
+            # If DeepSeek still wants to call tools (hit max_turns), force a final answer
+            if not assistant_msg.content and assistant_msg.tool_calls:
+                logger.info("Hit max_turns with pending tool calls — forcing final answer")
+                # Execute the remaining tool calls to avoid hanging tool_calls
+                for tool_call in assistant_msg.tool_calls:
+                    try:
+                        result = await self.executor(db, tool_call)
+                        content = json.dumps(result, default=str)
+                    except Exception as e:
+                        logger.exception("Tool execution failed: %s", e)
+                        content = json.dumps({"error": str(e)})
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "content": content,
+                    })
+                messages.append({"role": "user", "content": "You have all the data you need. Provide your final answer now based on the tool results. Be concise."})
+                response = await client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                )
+                assistant_msg = response.choices[0].message
+
+            original_answer = assistant_msg.content or ""
+            return original_answer
+        except Exception as e:
+            logger.warning("research_and_answer error: %s", e)
+            return f"I was researching your question but hit a snag. Here's what I know so far:\n\n{original_answer}"
 
 
     @staticmethod
@@ -167,12 +187,14 @@ class ToolChatEngine:
         """Append an assistant message (with optional tool_calls) to the message list."""
         entry: dict[str, Any] = {
             "role": "assistant",
-            "content": msg.content or "",
         }
         if msg.tool_calls:
+            entry["content"] = None
             entry["tool_calls"] = [
                 tc.model_dump() for tc in msg.tool_calls
             ]
+        else:
+            entry["content"] = msg.content or ""
         messages.append(entry)
 
     @staticmethod

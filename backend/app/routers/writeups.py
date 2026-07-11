@@ -259,6 +259,49 @@ async def get_mlb_writeup(
 
 
 # ──────────────────────────────────────────────
+#  Get write-up by game ID
+# ──────────────────────────────────────────────
+
+@router.get("/mlb/by-game/{game_id}")
+async def get_mlb_writeup_by_game(
+    game_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """Get a write-up for a specific MLB game ID, returning both public and premium content."""
+    row = await db.execute(
+        text("""
+            SELECT
+                w.id AS writeup_id, w.game_id, w.title,
+                w.public_content, w.premium_content,
+                w.status, w.version, w.is_historical,
+                w.published_at, w.created_at
+            FROM mlb.game_writeups w
+            WHERE w.game_id = :gid
+            ORDER BY w.created_at DESC
+            LIMIT 1
+        """),
+        {"gid": game_id},
+    )
+    r = row.mappings().one_or_none()
+    if r is None:
+        return {"game_id": game_id, "has_writeup": False, "public_content": "", "premium_content": ""}
+
+    return {
+        "writeup_id": r["writeup_id"],
+        "game_id": r["game_id"],
+        "title": r["title"],
+        "public_content": r["public_content"],
+        "premium_content": r["premium_content"],
+        "status": r["status"],
+        "version": r["version"],
+        "is_historical": r["is_historical"],
+        "published_at": r["published_at"].isoformat() if r["published_at"] else None,
+        "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+        "has_writeup": True,
+    }
+
+
+# ──────────────────────────────────────────────
 #  Update write-up content
 # ──────────────────────────────────────────────
 

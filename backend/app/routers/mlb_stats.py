@@ -1531,3 +1531,51 @@ async def mlb_feature_definitions():
         })
 
     return features
+
+
+@router.get("/mlb/games/{game_id}/prediction-stats")
+async def mlb_game_prediction_stats(
+    game_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """Return detailed prediction stats for the stats tab.
+
+    Returns the same data the boxscore endpoint returns in pick_card,
+    plus full features_json for the stats details view.
+    """
+    from app.models.mlb import MLBGamePrediction
+
+    pred_r = await db.execute(
+        select(MLBGamePrediction).where(
+            MLBGamePrediction.game_id == game_id,
+            MLBGamePrediction.source == "api",
+        )
+    )
+    pred = pred_r.scalar_one_or_none()
+    if not pred:
+        return {"game_id": game_id, "has_prediction": False}
+
+    return {
+        "game_id": game_id,
+        "has_prediction": True,
+        "predicted_home_runs": pred.predicted_home_runs,
+        "predicted_away_runs": pred.predicted_away_runs,
+        "predicted_total": pred.predicted_total,
+        "predicted_margin": pred.predicted_margin,
+        # MLB uses confidence fields instead of separate probabilities
+        "home_win_prob": pred.ml_conf_cal if pred.ml_conf_cal is not None else pred.ml_conf,
+        "over_prob": pred.ou_conf_cal if pred.ou_conf_cal is not None else pred.ou_conf,
+        "confidence": (pred.ml_conf_cal or 0) if pred.ml_conf_cal is not None else pred.ml_conf,
+        "home_spread_cover_prob": pred.rl_conf_cal if pred.rl_conf_cal is not None else pred.rl_conf,
+        "away_spread_cover_prob": (1.0 - pred.rl_conf_cal) if pred.rl_conf_cal is not None else ((1.0 - pred.rl_conf) if pred.rl_conf is not None else None),
+        "features_json": _sanitize_json(json.loads(pred.features_json)) if pred.features_json else None,
+        "home_stats_json": _sanitize_json(json.loads(pred.home_stats_json)) if pred.home_stats_json else None,
+        "away_stats_json": _sanitize_json(json.loads(pred.away_stats_json)) if pred.away_stats_json else None,
+        "situational_json": _sanitize_json(json.loads(pred.situational_json)) if pred.situational_json else None,
+        "splits_json": _sanitize_json(json.loads(pred.splits_json)) if pred.splits_json else None,
+
+        "actual_home_runs": pred.actual_home_runs,
+        "actual_away_runs": pred.actual_away_runs,
+        "actual_total": pred.actual_total,
+        "actual_margin": pred.actual_margin,
+    }
