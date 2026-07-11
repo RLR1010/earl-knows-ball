@@ -902,3 +902,137 @@ async def ingest_mlb_lines_and_picks(
 
     return {"status": "ok", "results": results}
 
+
+@router.post("/ingest/mlb/weather-forecast")
+async def ingest_mlb_weather_forecast(
+    force_refresh: bool = Query(False, description="Re-fetch forecasts even if games already have weather"),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Fetch NWS weather forecasts for upcoming MLB games.
+
+    Fills temperature, wind_speed, wind_direction, and weather_condition
+    for SCHEDULED games that are still missing weather data.
+
+    Can be run on a cron schedule (e.g., every 3-4 hours during season).
+    """
+    import logging
+    logger = logging.getLogger("earl.mlb_weather_forecast_route")
+
+    from app.ingestion.mlb_weather_forecast import main as run_forecast
+
+    try:
+        await run_forecast(force_refresh=force_refresh)
+        return {"status": "ok", "message": "Weather forecast refresh complete"}
+    except Exception as e:
+        import traceback
+        logger.error(f"Weather forecast refresh failed: {e}\n{traceback.format_exc()}")
+        return {"status": "error", "message": str(e)}
+
+
+@router.post("/ingest/mlb/seed-venue-geo")
+async def ingest_mlb_seed_venue_geo(
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Seed latitude, longitude, and home plate orientation for known MLB venues.
+    Safe to run multiple times — only fills NULL values.
+    """
+    import logging
+    logger = logging.getLogger("earl.seed_venue_geo_route")
+
+    from app.ingestion.seed_venue_geo import seed
+
+    try:
+        await seed()
+        return {"status": "ok", "message": "Venue geo data seeded"}
+    except Exception as e:
+        import traceback
+        logger.error(f"Venue geo seeding failed: {e}\n{traceback.format_exc()}")
+        return {"status": "error", "message": str(e)}
+
+
+@router.post("/ingest/nfl/weather-forecast")
+async def ingest_nfl_weather_forecast(
+    force_refresh: bool = Query(False, description="Re-fetch forecasts even if games already have weather"),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Fetch NWS weather forecasts for upcoming NFL games.
+
+    Fills temperature, wind_speed, and weather_condition
+    for SCHEDULED games that are still missing weather data.
+    """
+    import logging
+    logger = logging.getLogger("earl.nfl_weather_forecast_route")
+
+    from app.ingestion.nfl_weather_forecast import main as run_forecast
+
+    try:
+        await run_forecast(force_refresh=force_refresh)
+        return {"status": "ok", "message": "NFL weather forecast refresh complete"}
+    except Exception as e:
+        import traceback
+        logger.error(f"NFL weather forecast refresh failed: {e}\n{traceback.format_exc()}")
+        return {"status": "error", "message": str(e)}
+
+
+@router.post("/ingest/nfl/seed-venues")
+async def ingest_nfl_seed_venues(
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Seed nfl.venues with known NFL stadium data (lat, lon, roof, surface).
+    Safe to run multiple times — skips already-seeded venues.
+    """
+    import logging
+    logger = logging.getLogger("earl.seed_nfl_venues_route")
+
+    from app.ingestion.seed_nfl_venues import seed, link_game_venues
+
+    try:
+        await seed()
+        await link_game_venues()
+        return {"status": "ok", "message": "NFL venues seeded and linked"}
+    except Exception as e:
+        import traceback
+        logger.error(f"NFL venue seeding failed: {e}\n{traceback.format_exc()}")
+        return {"status": "error", "message": str(e)}
+
+
+@router.post("/ingest/weather-update")
+async def ingest_weather_update(
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Combined weather update for all sports.
+
+    Fetches NWS weather forecasts for upcoming SCHEDULED games across MLB and NFL.
+    Always overwrites existing weather data with latest forecast.
+    Only processes SCHEDULED games — never touches started or completed games.
+
+    Intended for daily cron at 6:03 AM CT.
+    """
+    import logging
+    logger = logging.getLogger("earl.weather_update_route")
+    import traceback
+
+    results = {}
+
+    for sport in ["mlb", "nfl"]:
+        try:
+            if sport == "mlb":
+                from app.ingestion.mlb_weather_forecast import main as run
+            else:
+                from app.ingestion.nfl_weather_forecast import main as run
+
+            await run(force_refresh=True)
+            results[sport] = "ok"
+            logger.info(f"Weather update OK for {sport}")
+        except Exception as e:
+            results[sport] = f"error: {e}"
+            logger.error(f"Weather update failed for {sport}: {e}\n{traceback.format_exc()}")
+
+    all_ok = all(v == "ok" for v in results.values())
+    return {"status": "ok" if all_ok else "partial", "results": results}
+
