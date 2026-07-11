@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -118,6 +118,19 @@ async def generate_mlb_writeup(
     as_of_date_parsed = (
         datetime.fromisoformat(as_of_date) if as_of_date else None
     )
+
+    # Auto-detect historical: if the game was in the past, treat as historical
+    game_row = await db.execute(
+        text("SELECT date FROM mlb.games WHERE id = :gid"),
+        {"gid": game_id},
+    )
+    game_date = game_row.scalar()
+    if game_date and game_date < datetime.now(timezone.utc) and not as_of_date_parsed:
+        is_historical = True
+        as_of_date_parsed = game_date
+        # Subtract 1 second so research queries (which use <=) exclude this game.
+        # Otherwise the previewed game's final result leaks into the form/stats.
+        as_of_date_parsed -= timedelta(seconds=1)
 
     gen = MLBWriteupGenerator()
     writeup, qc_results = await gen.generate(

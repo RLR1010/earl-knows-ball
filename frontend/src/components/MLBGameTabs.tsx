@@ -7,25 +7,27 @@ interface MLBGameTabsProps {
   pickCard: any;
   game: any;
   formatOdds: (v: any) => string;
+  boxscore?: any;
+  linescore?: any;
 }
 
-export default function MLBGameTabs({ gameId, pickCard, game, formatOdds }: MLBGameTabsProps) {
+export default function MLBGameTabs({ gameId, pickCard, game, formatOdds, boxscore, linescore }: MLBGameTabsProps) {
   const [activeTab, setActiveTab] = useState<string>("boxscore");
   const [writeup, setWriteup] = useState<any>(null);
   const [predictionStats, setPredictionStats] = useState<any>(null);
   const [loadingWriteup, setLoadingWriteup] = useState(false);
   const [loadingStats, setLoadingStats] = useState(false);
 
-  const hasBoxscore = !!(game.boxscore_data?.home_score != null || game.boxscore_data?.away_score != null);
+  const hasBoxscore = !!(boxscore?.teams?.away?.teamStats || linescore?.teams?.away?.runs != null);
 
   // Track whether we've already attempted each fetch (prevents infinite loops on error)
   const writeupAttempted = useRef(false);
   const statsAttempted = useRef(false);
 
-  // Set default tab based on whether the game has started
+  // Default: boxscore tab if available, otherwise Game Preview tab
   useEffect(() => {
     if (!hasBoxscore) {
-      setActiveTab("picks");
+      setActiveTab("summary");
     }
   }, [hasBoxscore]);
 
@@ -71,13 +73,13 @@ export default function MLBGameTabs({ gameId, pickCard, game, formatOdds }: MLBG
 
   const tabs = [
     { key: "boxscore", label: "Box Score", enabled: hasBoxscore },
-    { key: "summary", label: "Game Summary", enabled: true },
+    { key: "summary", label: "Game Preview", enabled: true },
     { key: "picks", label: "Earl's Picks", enabled: true },
     { key: "analysis", label: "Detailed Analysis", enabled: true },
     { key: "stats", label: "Detailed Stats", enabled: true },
   ];
 
-  // If no boxscore, default to summary; but show boxscore tab as disabled/absent
+  // If no boxscore, boxscore tab is hidden and default is Game Preview
   const visibleTabs = tabs.filter(t => t.key !== "boxscore" || hasBoxscore);
 
   return (
@@ -88,7 +90,7 @@ export default function MLBGameTabs({ gameId, pickCard, game, formatOdds }: MLBG
           <button
             key={tab.key}
             onClick={() => setActiveTab(tab.key)}
-            className={`px-4 py-2.5 text-xs uppercase tracking-wider font-medium transition-colors ${
+            className={`px-4 py-2.5 text-xs uppercase tracking-wider font-medium transition-colors cursor-pointer ${
               activeTab === tab.key
                 ? "text-earl-400 border-b-2 border-earl-400"
                 : "text-gray-500 hover:text-gray-300"
@@ -111,71 +113,304 @@ export default function MLBGameTabs({ gameId, pickCard, game, formatOdds }: MLBG
   );
 
   function renderBoxScore() {
-    const bd = game.boxscore_data || {};
-    const homeScore = bd.home_score ?? "-";
-    const awayScore = bd.away_score ?? "-";
-    const homeTeam = game.home_team || "Home";
-    const awayTeam = game.away_team || "Away";
+    if (!boxscore) return (
+      <div className="text-sm text-gray-500 text-center py-8">
+        Boxscore not yet available. Check back during or after the game.
+      </div>
+    );
+
+    const awayTeamData = boxscore?.teams?.away;
+    const homeTeamData = boxscore?.teams?.home;
+    const awayPlayers = (awayTeamData?.players || {}) as Record<string, any>;
+    const homePlayers = (homeTeamData?.players || {}) as Record<string, any>;
+    const awayTeamName = awayTeamData?.team?.teamName || game.away_team || "Away";
+    const homeTeamName = homeTeamData?.team?.teamName || game.home_team || "Home";
+    const lsTeams = linescore?.teams || {};
+    const awayRuns = lsTeams?.away?.runs ?? game.away_score ?? "-";
+    const homeRuns = lsTeams?.home?.runs ?? game.home_score ?? "-";
+
+    // Look up player by ID from players dict (keyed "ID{id}")
+    const lookupPlayer = (players: Record<string, any>, id: number | string) =>
+      players[`ID${id}`];
+
+    // Get position abbreviation from player data
+    const getPos = (p: any) => p?.position?.abbreviation || "-";
+
+    // Build batting order from battingOrder array (contains player IDs)
+    const buildBatters = (battingOrder: number[] | undefined, players: Record<string, any>) =>
+      (battingOrder || []).map((pid: number) => lookupPlayer(players, pid)).filter(Boolean);
+
+    // Build pitchers from pitchers array (contains player IDs)
+    const buildPitchers = (pitcherIds: number[] | undefined, players: Record<string, any>) =>
+      (pitcherIds || []).map((pid: number) => lookupPlayer(players, pid)).filter(Boolean);
+
+    const awayBatters = buildBatters(awayTeamData?.battingOrder, awayPlayers);
+    const homeBatters = buildBatters(homeTeamData?.battingOrder, homePlayers);
+    const awayPitcherList = buildPitchers(awayTeamData?.pitchers, awayPlayers);
+    const homePitcherList = buildPitchers(homeTeamData?.pitchers, homePlayers);
 
     return (
-      <div className="space-y-4">
-        {/* Final Score */}
+      <div className="space-y-6">
+        {/* Score header */}
         <div className="flex items-center justify-between px-4 py-2 bg-white/5 rounded-lg">
           <div className="flex-1 text-right">
-            <div className="text-lg font-bold text-white">{awayTeam}</div>
-            <div className="text-3xl font-bold text-gray-300">{awayScore}</div>
+            <div className="text-lg font-bold text-white">{awayTeamName}</div>
+            <div className="text-3xl font-bold text-gray-300">{awayRuns}</div>
           </div>
           <div className="px-6 text-gray-500 font-bold text-lg">-</div>
           <div className="flex-1">
-            <div className="text-lg font-bold text-white">{homeTeam}</div>
-            <div className="text-3xl font-bold text-gray-300">{homeScore}</div>
+            <div className="text-lg font-bold text-white">{homeTeamName}</div>
+            <div className="text-3xl font-bold text-gray-300">{homeRuns}</div>
           </div>
         </div>
 
         {/* Inning-by-inning linescore */}
-        {bd.linescore && (
-          <div className="overflow-x-auto">
-            <table className="w-full text-xs">
+        {linescore?.innings && linescore.innings.length > 0 && (
+          <div className="overflow-x-auto border border-white/10 rounded-xl p-2">
+            <table className="w-full text-xs text-center">
               <thead>
                 <tr className="text-gray-500 border-b border-white/10">
-                  <th className="text-left py-1 px-2"></th>
-                  {bd.linescore.innings?.map((_: any, i: number) => (
-                    <th key={i} className="text-center py-1 px-2">{i + 1}</th>
+                  <th className="py-1 px-2 text-left"></th>
+                  {linescore.innings.map((_: any, i: number) => (
+                    <th key={i} className="py-1 px-2 w-7">{i + 1}</th>
                   ))}
-                  <th className="text-center py-1 px-2 font-bold">R</th>
-                  <th className="text-center py-1 px-2 font-bold">H</th>
-                  <th className="text-center py-1 px-2 font-bold">E</th>
+                  <th className="py-1 px-2 w-7 font-bold">R</th>
+                  <th className="py-1 px-2 w-7 font-bold">H</th>
+                  <th className="py-1 px-2 w-7 font-bold">E</th>
                 </tr>
               </thead>
               <tbody>
                 <tr className="border-b border-white/5">
-                  <td className="py-1 px-2 text-white font-medium">{awayTeam}</td>
-                  {bd.linescore.innings?.map((inn: any, i: number) => (
-                    <td key={i} className="text-center py-1 px-2 text-gray-300">{inn.away ?? "-"}</td>
+                  <td className="py-1 px-2 text-left text-white font-medium">{awayTeamName}</td>
+                  {linescore.innings.map((inn: any, i: number) => (
+                    <td key={i} className="py-1 px-2 text-gray-300">{inn.away?.runs != null ? inn.away?.runs : "-"}</td>
                   ))}
-                  <td className="text-center py-1 px-2 text-white font-bold">{awayScore}</td>
-                  <td className="text-center py-1 px-2 text-gray-300">{bd.linescore.away_hits ?? "-"}</td>
-                  <td className="text-center py-1 px-2 text-gray-300">{bd.linescore.away_errors ?? "-"}</td>
+                  <td className="py-1 px-2 text-white font-bold">{awayRuns}</td>
+                  <td className="py-1 px-2 text-gray-300">{lsTeams?.away?.hits ?? "-"}</td>
+                  <td className="py-1 px-2 text-gray-300">{lsTeams?.away?.errors ?? "-"}</td>
                 </tr>
                 <tr>
-                  <td className="py-1 px-2 text-white font-medium">{homeTeam}</td>
-                  {bd.linescore.innings?.map((inn: any, i: number) => (
-                    <td key={i} className="text-center py-1 px-2 text-gray-300">{inn.home ?? "-"}</td>
+                  <td className="py-1 px-2 text-left text-white font-medium">{homeTeamName}</td>
+                  {linescore.innings.map((inn: any, i: number) => (
+                    <td key={i} className="py-1 px-2 text-gray-300">{inn.home?.runs != null ? inn.home?.runs : "-"}</td>
                   ))}
-                  <td className="text-center py-1 px-2 text-white font-bold">{homeScore}</td>
-                  <td className="text-center py-1 px-2 text-gray-300">{bd.linescore.home_hits ?? "-"}</td>
-                  <td className="text-center py-1 px-2 text-gray-300">{bd.linescore.home_errors ?? "-"}</td>
+                  <td className="py-1 px-2 text-white font-bold">{homeRuns}</td>
+                  <td className="py-1 px-2 text-gray-300">{lsTeams?.home?.hits ?? "-"}</td>
+                  <td className="py-1 px-2 text-gray-300">{lsTeams?.home?.errors ?? "-"}</td>
                 </tr>
+                {linescore.currentInningOrdinal && game.game_status && !["Final", "Completed"].includes(game.game_status) && (
+                  <tr>
+                    <td colSpan={linescore.innings.length + 4} className="pt-2 text-center">
+                      <span className="text-xs text-yellow-400 bg-yellow-400/10 px-3 py-0.5 rounded-full">
+                        {linescore.inningState || "In Progress"} {linescore.currentInningOrdinal}
+                      </span>
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>
         )}
 
-        {/* Game status */}
-        {game.game_status && game.game_status !== "Final" && game.game_status !== "Completed" && (
+        {/* Away team batting */}
+        {awayBatters.length > 0 && (
+          <div>
+            <h4 className="text-sm font-semibold text-white mb-2">{awayTeamName} — Batting</h4>
+            <div className="overflow-x-auto border border-white/10 rounded-xl">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="bg-white/[0.03] text-gray-500 uppercase text-[10px] tracking-wider border-b border-white/10">
+                    <th className="text-left py-1.5 px-2">Batter</th>
+                    <th className="text-center py-1.5 px-2 w-7">Pos</th>
+                    <th className="text-center py-1.5 px-2 w-7">AB</th>
+                    <th className="text-center py-1.5 px-2 w-7">R</th>
+                    <th className="text-center py-1.5 px-2 w-7">H</th>
+                    <th className="text-center py-1.5 px-2 w-8">RBI</th>
+                    <th className="text-center py-1.5 px-2 w-7">BB</th>
+                    <th className="text-center py-1.5 px-2 w-7">SO</th>
+                    <th className="text-center py-1.5 px-2 w-8">LOB</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {awayBatters.map((p: any, i: number) => {
+                    const s = p?.stats?.batting || {};
+                    return (
+                      <tr key={i} className="border-b border-white/5 hover:bg-white/[0.02]">
+                        <td className="py-1 px-2 text-white text-xs font-medium">{p?.person?.fullName || "-"}</td>
+                        <td className="py-1 px-2 text-gray-400 text-xs text-center">{getPos(p)}</td>
+                        <td className="py-1 px-2 text-gray-400 text-xs text-center">{s.atBats ?? "-"}</td>
+                        <td className="py-1 px-2 text-gray-400 text-xs text-center">{s.runs ?? "-"}</td>
+                        <td className="py-1 px-2 text-gray-400 text-xs text-center">{s.hits ?? "-"}</td>
+                        <td className="py-1 px-2 text-gray-400 text-xs text-center">{s.rbi ?? "-"}</td>
+                        <td className="py-1 px-2 text-gray-400 text-xs text-center">{s.baseOnBalls ?? "-"}</td>
+                        <td className="py-1 px-2 text-gray-400 text-xs text-center">{s.strikeOuts ?? "-"}</td>
+                        <td className="py-1 px-2 text-gray-400 text-xs text-center">{s.leftOnBase ?? "-"}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {/* Away team pitching */}
+        {awayPitcherList.length > 0 && (
+          <div>
+            <h4 className="text-sm font-semibold text-white mb-2">{awayTeamName} — Pitching</h4>
+            <div className="overflow-x-auto border border-white/10 rounded-xl">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="bg-white/[0.03] text-gray-500 uppercase text-[10px] tracking-wider border-b border-white/10">
+                    <th className="text-left py-1.5 px-2">Pitcher</th>
+                    <th className="text-center py-1.5 px-2 w-7">IP</th>
+                    <th className="text-center py-1.5 px-2 w-7">H</th>
+                    <th className="text-center py-1.5 px-2 w-7">R</th>
+                    <th className="text-center py-1.5 px-2 w-7">ER</th>
+                    <th className="text-center py-1.5 px-2 w-7">BB</th>
+                    <th className="text-center py-1.5 px-2 w-7">SO</th>
+                    <th className="text-center py-1.5 px-2 w-7">HR</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {awayPitcherList.map((p: any, i: number) => {
+                    const ps = p?.stats?.pitching || {};
+                    return (
+                      <tr key={i} className="border-b border-white/5 hover:bg-white/[0.02]">
+                        <td className="py-1 px-2 text-white text-xs font-medium">{p?.person?.fullName || "-"}</td>
+                        <td className="py-1 px-2 text-gray-400 text-xs text-center">{ps.inningsPitched ?? "-"}</td>
+                        <td className="py-1 px-2 text-gray-400 text-xs text-center">{ps.hits ?? "-"}</td>
+                        <td className="py-1 px-2 text-gray-400 text-xs text-center">{ps.runs ?? "-"}</td>
+                        <td className="py-1 px-2 text-gray-400 text-xs text-center">{ps.earnedRuns ?? "-"}</td>
+                        <td className="py-1 px-2 text-gray-400 text-xs text-center">{ps.baseOnBalls ?? "-"}</td>
+                        <td className="py-1 px-2 text-gray-400 text-xs text-center">{ps.strikeOuts ?? "-"}</td>
+                        <td className="py-1 px-2 text-gray-400 text-xs text-center">{ps.homeRuns ?? "-"}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {/* Home team batting */}
+        {homeBatters.length > 0 && (
+          <div>
+            <h4 className="text-sm font-semibold text-white mb-2">{homeTeamName} — Batting</h4>
+            <div className="overflow-x-auto border border-white/10 rounded-xl">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="bg-white/[0.03] text-gray-500 uppercase text-[10px] tracking-wider border-b border-white/10">
+                    <th className="text-left py-1.5 px-2">Batter</th>
+                    <th className="text-center py-1.5 px-2 w-7">Pos</th>
+                    <th className="text-center py-1.5 px-2 w-7">AB</th>
+                    <th className="text-center py-1.5 px-2 w-7">R</th>
+                    <th className="text-center py-1.5 px-2 w-7">H</th>
+                    <th className="text-center py-1.5 px-2 w-8">RBI</th>
+                    <th className="text-center py-1.5 px-2 w-7">BB</th>
+                    <th className="text-center py-1.5 px-2 w-7">SO</th>
+                    <th className="text-center py-1.5 px-2 w-8">LOB</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {homeBatters.map((p: any, i: number) => {
+                    const s = p?.stats?.batting || {};
+                    return (
+                      <tr key={i} className="border-b border-white/5 hover:bg-white/[0.02]">
+                        <td className="py-1 px-2 text-white text-xs font-medium">{p?.person?.fullName || "-"}</td>
+                        <td className="py-1 px-2 text-gray-400 text-xs text-center">{getPos(p)}</td>
+                        <td className="py-1 px-2 text-gray-400 text-xs text-center">{s.atBats ?? "-"}</td>
+                        <td className="py-1 px-2 text-gray-400 text-xs text-center">{s.runs ?? "-"}</td>
+                        <td className="py-1 px-2 text-gray-400 text-xs text-center">{s.hits ?? "-"}</td>
+                        <td className="py-1 px-2 text-gray-400 text-xs text-center">{s.rbi ?? "-"}</td>
+                        <td className="py-1 px-2 text-gray-400 text-xs text-center">{s.baseOnBalls ?? "-"}</td>
+                        <td className="py-1 px-2 text-gray-400 text-xs text-center">{s.strikeOuts ?? "-"}</td>
+                        <td className="py-1 px-2 text-gray-400 text-xs text-center">{s.leftOnBase ?? "-"}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {/* Home team pitching */}
+        {homePitcherList.length > 0 && (
+          <div>
+            <h4 className="text-sm font-semibold text-white mb-2">{homeTeamName} — Pitching</h4>
+            <div className="overflow-x-auto border border-white/10 rounded-xl">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="bg-white/[0.03] text-gray-500 uppercase text-[10px] tracking-wider border-b border-white/10">
+                    <th className="text-left py-1.5 px-2">Pitcher</th>
+                    <th className="text-center py-1.5 px-2 w-7">IP</th>
+                    <th className="text-center py-1.5 px-2 w-7">H</th>
+                    <th className="text-center py-1.5 px-2 w-7">R</th>
+                    <th className="text-center py-1.5 px-2 w-7">ER</th>
+                    <th className="text-center py-1.5 px-2 w-7">BB</th>
+                    <th className="text-center py-1.5 px-2 w-7">SO</th>
+                    <th className="text-center py-1.5 px-2 w-7">HR</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {homePitcherList.map((p: any, i: number) => {
+                    const ps = p?.stats?.pitching || {};
+                    return (
+                      <tr key={i} className="border-b border-white/5 hover:bg-white/[0.02]">
+                        <td className="py-1 px-2 text-white text-xs font-medium">{p?.person?.fullName || "-"}</td>
+                        <td className="py-1 px-2 text-gray-400 text-xs text-center">{ps.inningsPitched ?? "-"}</td>
+                        <td className="py-1 px-2 text-gray-400 text-xs text-center">{ps.hits ?? "-"}</td>
+                        <td className="py-1 px-2 text-gray-400 text-xs text-center">{ps.runs ?? "-"}</td>
+                        <td className="py-1 px-2 text-gray-400 text-xs text-center">{ps.earnedRuns ?? "-"}</td>
+                        <td className="py-1 px-2 text-gray-400 text-xs text-center">{ps.baseOnBalls ?? "-"}</td>
+                        <td className="py-1 px-2 text-gray-400 text-xs text-center">{ps.strikeOuts ?? "-"}</td>
+                        <td className="py-1 px-2 text-gray-400 text-xs text-center">{ps.homeRuns ?? "-"}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {/* Team stats summary */}
+        {(awayTeamData?.teamStats || homeTeamData?.teamStats) && (
+          <div className="grid grid-cols-2 gap-4">
+            {awayTeamData?.teamStats?.batting && (
+              <div className="border border-white/10 rounded-xl p-3">
+                <h5 className="text-xs font-semibold text-white mb-2">{awayTeamName}</h5>
+                <div className="space-y-1 text-xs text-gray-400">
+                  <div className="flex justify-between"><span>AVG</span><span>{awayTeamData.teamStats.batting.avg || "-"}</span></div>
+                  <div className="flex justify-between"><span>OBP</span><span>{awayTeamData.teamStats.batting.obp || "-"}</span></div>
+                  <div className="flex justify-between"><span>SLG</span><span>{awayTeamData.teamStats.batting.slg || "-"}</span></div>
+                  <div className="flex justify-between"><span>OPS</span><span>{awayTeamData.teamStats.batting.ops || "-"}</span></div>
+                  <div className="flex justify-between"><span>LOB</span><span>{awayTeamData.teamStats.batting.leftOnBase ?? linescore?.teams?.away?.leftOnBase ?? "-"}</span></div>
+                </div>
+              </div>
+            )}
+            {homeTeamData?.teamStats?.batting && (
+              <div className="border border-white/10 rounded-xl p-3">
+                <h5 className="text-xs font-semibold text-white mb-2">{homeTeamName}</h5>
+                <div className="space-y-1 text-xs text-gray-400">
+                  <div className="flex justify-between"><span>AVG</span><span>{homeTeamData.teamStats.batting.avg || "-"}</span></div>
+                  <div className="flex justify-between"><span>OBP</span><span>{homeTeamData.teamStats.batting.obp || "-"}</span></div>
+                  <div className="flex justify-between"><span>SLG</span><span>{homeTeamData.teamStats.batting.slg || "-"}</span></div>
+                  <div className="flex justify-between"><span>OPS</span><span>{homeTeamData.teamStats.batting.ops || "-"}</span></div>
+                  <div className="flex justify-between"><span>LOB</span><span>{homeTeamData.teamStats.batting.leftOnBase ?? linescore?.teams?.home?.leftOnBase ?? "-"}</span></div>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Game status for live games */}
+        {linescore?.currentInningOrdinal && game.game_status && !["Final", "Completed"].includes(game.game_status) && (
           <div className="text-center">
             <span className="text-xs text-yellow-400 bg-yellow-400/10 px-3 py-1 rounded-full">
-              {game.game_status} {bd.inning ? `- ${bd.inning_text || `Top ${bd.inning}`}` : ""}
+              {game.game_status} - {linescore.inningState} {linescore.currentInningOrdinal}
             </span>
           </div>
         )}
@@ -185,14 +420,14 @@ export default function MLBGameTabs({ gameId, pickCard, game, formatOdds }: MLBG
 
   function renderGameSummary() {
     if (loadingWriteup) {
-      return <div className="text-sm text-gray-400 text-center py-8">Loading game summary...</div>;
+      return <div className="text-sm text-gray-400 text-center py-8">Loading game preview...</div>;
     }
 
     const content = writeup?.public_content;
     if (!content) {
       return (
         <div className="text-sm text-gray-500 text-center py-8">
-          No game summary available yet. Check back after the game.
+          No game preview available yet. Check back closer to game time.
         </div>
       );
     }

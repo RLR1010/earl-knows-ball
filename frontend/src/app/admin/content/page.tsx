@@ -53,13 +53,25 @@ const STATUS_LABELS: Record<string, string> = {
   archived: "Archived",
 };
 
+function localDateStr(isoStr: string): string {
+  return new Date(isoStr).toLocaleDateString("en-CA", {
+    timeZone: "America/Chicago",
+  });
+}
+
 function formatDate(dateStr: string): string {
-  const d = new Date(dateStr);
+  // Date-only strings like "2026-07-11" are parsed as midnight UTC by
+  // the spec, which shifts them to the previous day in America/Chicago.
+  // Add T12 to land in local noon — avoids the UTC-midnight rollover.
+  const d = dateStr.includes("T")
+    ? new Date(dateStr)
+    : new Date(dateStr + "T12:00:00");
   return d.toLocaleDateString("en-US", {
     weekday: "short",
     month: "short",
     day: "numeric",
     year: "numeric",
+    timeZone: "America/Chicago",
   });
 }
 
@@ -69,6 +81,7 @@ function formatTime(dateStr: string): string {
     hour: "numeric",
     minute: "2-digit",
     timeZoneName: "short",
+    timeZone: "America/Chicago",
   });
 }
 
@@ -121,8 +134,10 @@ function GameCard({
   generating: boolean;
 }) {
   const today = new Date();
-  const gameDate = new Date(game.date);
-  const isPast = gameDate < today;
+  // Compare local date strings so past/future respects the user's timezone
+  const todayLocal = today.toLocaleDateString("en-CA", { timeZone: "America/Chicago" });
+  const gameLocal = new Date(game.date).toLocaleDateString("en-CA", { timeZone: "America/Chicago" });
+  const isPast = gameLocal < todayLocal;
 
   return (
     <div
@@ -221,11 +236,14 @@ export default function AdminContent() {
 
     const start = new Date();
     start.setDate(start.getDate() + daysOffset);
-    const end = new Date(start);
-    end.setDate(end.getDate() + 2); // Show 3 days at a time
+    // API window: +2 days to catch evening games that start after midnight UTC
+    const apiEnd = new Date(start);
+    apiEnd.setDate(apiEnd.getDate() + 2);
 
-    const from = start.toISOString().split("T")[0];
-    const to = end.toISOString().split("T")[0];
+    // Use local-date strings for the backend filter so the API
+    // queries the correct UTC window around the user's local dates.
+    const from = start.toLocaleDateString("en-CA", { timeZone: "America/Chicago" });
+    const to = apiEnd.toLocaleDateString("en-CA", { timeZone: "America/Chicago" });
 
     try {
       const res = await fetch(
@@ -279,7 +297,8 @@ export default function AdminContent() {
       // Call backend directly (bypass proxy) to avoid the 30s proxy timeout
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 180_000);
-      const res = await fetch(`http://localhost:8001/writeups/${sport}/generate/${gameId}`, {
+      const params = new URLSearchParams({ is_historical: "true" });
+      const res = await fetch(`http://localhost:8001/writeups/${sport}/generate/${gameId}?${params}`, {
         method: "POST",
         headers: { Authorization: `Bearer ${token()}`, "Content-Type": "application/json" },
         signal: controller.signal,
@@ -328,7 +347,7 @@ export default function AdminContent() {
     for (const game of missing) {
       setGenerating(game.id);
       try {
-        await fetch(`/api/writeups/${sport}/generate/${game.id}`, {
+        await fetch(`/api/writeups/${sport}/generate/${game.id}?is_historical=true`, {
           method: "POST",
           headers: { Authorization: `Bearer ${token()}` },
         });
@@ -411,7 +430,7 @@ export default function AdminContent() {
 
         <div className="flex items-center gap-2">
           <button
-            onClick={() => setDaysOffset((d) => d - 3)}
+            onClick={() => setDaysOffset((d) => d - 2)}
             className="px-3 py-1.5 text-xs font-medium rounded-lg bg-white/[0.03] border border-white/10 text-gray-400 hover:text-white transition"
           >
             ← Earlier
@@ -423,7 +442,7 @@ export default function AdminContent() {
             Today
           </button>
           <button
-            onClick={() => setDaysOffset((d) => d + 3)}
+            onClick={() => setDaysOffset((d) => d + 2)}
             className="px-3 py-1.5 text-xs font-medium rounded-lg bg-white/[0.03] border border-white/10 text-gray-400 hover:text-white transition"
           >
             Later →
@@ -488,7 +507,7 @@ export default function AdminContent() {
 function groupByDay(games: Game[]): { date: string; games: Game[] }[] {
   const groups: Record<string, Game[]> = {};
   for (const g of games) {
-    const day = g.date.split("T")[0];
+    const day = localDateStr(g.date);
     if (!groups[day]) groups[day] = [];
     groups[day].push(g);
   }

@@ -393,12 +393,6 @@ function MLBClassicPage({ gameId }: { gameId: string | undefined }) {
   function confidenceLabel(conf: number) { return conf >= 0.7 ? "HIGH" : conf >= 0.4 ? "MED" : conf > 0 ? "LOW" : "-"; }
   function formatOdds(odds: number | null) { if (!odds) return "-"; return odds > 0 ? `+${odds}` : `${odds}`; }
 
-  // Innings for linescore display
-  const maxInnings = Math.max(linescore?.innings?.length || 0, 9);
-  const innings = linescore?.innings || [];
-  const inningLabels = Array.from({ length: maxInnings }, (_, i) => `${i + 1}`);
-  if (linescore?.teams?.home?.runs != null && maxInnings > 0) inningLabels.push("R", "H", "E");
-
   return (
     <div className="max-w-6xl mx-auto space-y-6">
       {/* Scoreboard */}
@@ -432,37 +426,13 @@ function MLBClassicPage({ gameId }: { gameId: string | undefined }) {
         </div>
       </div>
 
-      {/* Innings Linescore */}
-      {innings.length > 0 && (
-        <div className="overflow-x-auto border border-white/10 rounded-xl">
-          <table className="w-full text-center text-xs">
-            <thead><tr className="bg-white/[0.03] text-gray-500 uppercase text-[10px] tracking-wider border-b border-white/10">
-              <th className="px-2 py-1.5 text-left"></th>
-              {inningLabels.map((l, i) => <th key={i} className="px-2 py-1.5 w-8">{l}</th>)}
-            </tr></thead>
-            <tbody>
-              {[{ side: "away", label: game.away_team }, { side: "home", label: game.home_team }].map(({ side, label }) => (
-                <tr key={side} className="border-t border-white/5">
-                  <td className="px-2 py-1 text-left font-medium text-gray-300">{label}</td>
-                  {inningLabels.map((_, i) => (
-                    <td key={i} className="px-2 py-1 text-gray-400 font-medium">
-                      {i < innings.length ? (side === "away" ? innings[i].away?.runs : innings[i].home?.runs) ?? "-" : i >= maxInnings - 3 && innings.length > 0
-                        ? side === "away" ? linescore.teams.away[["runs","hits","errors"][i - maxInnings + 3]] : linescore.teams.home[["runs","hits","errors"][i - maxInnings + 3]]
-                        : "-"}
-                    </td>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+
 
       {/* Betting Lines - shown whenever available */}
       {betting_lines?.length > 0 && (
         <div className="border border-white/10 rounded-xl p-4 bg-white/5">
           <div className="text-xs text-gray-500 uppercase tracking-wider mb-3">Betting Lines</div>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div className="text-center p-3 rounded-lg bg-white/[0.03]">
               <div className="text-[10px] text-gray-500 uppercase">Moneyline</div>
               <div className="text-sm mt-1"><span className="text-earl-400">{game.away_team}</span> {formatOdds(betting_lines[0]?.away_moneyline)}<span className="text-gray-600 mx-2">|</span><span className="text-gray-400">{game.home_team}</span> {formatOdds(betting_lines[0]?.home_moneyline)}</div>
@@ -492,10 +462,6 @@ function MLBClassicPage({ gameId }: { gameId: string | undefined }) {
                   </>
                 ) : "-"}
               </div>
-            </div>
-            <div className="text-center p-3 rounded-lg bg-white/[0.03]">
-              <div className="text-[10px] text-gray-500 uppercase">Source</div>
-              <div className="text-xs mt-1 text-gray-400">{betting_lines[0]?.sportsbook || betting_lines[0]?.source}</div>
             </div>
           </div>
         </div>
@@ -542,6 +508,8 @@ function MLBClassicPage({ gameId }: { gameId: string | undefined }) {
           pickCard={pick_card}
           game={game}
           formatOdds={formatOdds}
+          boxscore={boxscore}
+          linescore={linescore}
         />
 
       <div className="text-center"><Link href="/mlb/schedule" className="text-sm text-earl-400 hover:text-earl-300 transition">← Back to Schedule</Link></div>

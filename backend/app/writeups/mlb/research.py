@@ -911,7 +911,7 @@ async def get_research_brief(
             if sp_home or sp_away:
                 starting_pitchers = [sp_home, sp_away]
 
-        game_dt = summary.get("game_datetime") or datetime.now(timezone.utc)
+        game_dt = summary.get("date") or datetime.now(timezone.utc)
         if isinstance(game_dt, str):
             game_dt = datetime.fromisoformat(game_dt)
 

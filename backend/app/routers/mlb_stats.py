@@ -1385,6 +1385,7 @@ async def mlb_game_boxscore(
                 "strikes": ls.get("strikes"),
                 "outs": ls.get("outs"),
                 "teams": ls.get("teams"),
+                "innings": ls.get("innings", []),
             }
 
     # Attach lineups from mlb.lineups table with season stats
