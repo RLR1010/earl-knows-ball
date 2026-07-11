@@ -131,6 +131,41 @@ This is a game preview — not a betting analysis. Write in the style of a well-
 
 Write your article below. Start with the title on its own line (preceded by ##), then the article body."""
 
+    def premium_system_prompt(self, is_historical: bool = False) -> str:
+        """System prompt for the premium-only (insider) writeup.
+
+        This is called AFTER the public writeup is done, with the full research
+        brief that includes betting lines, splits, model predictions, etc.
+        Outputs JSON so the front-end can parse title + premium_content.
+        """
+        tense_note = (
+            "CRITICAL: This is a HISTORICAL write-up. The game has already been played. "
+            "Do NOT mention the actual result or final score — this is a post-game "
+            "handicapping analysis, not a recap. Focus on how the game played out "
+            "relative to the betting lines, what moved, and lessons for future games."
+            if is_historical else ""
+        )
+
+        return f"""You are a baseball handicapper for Earl Knows Ball, a premium sports betting analysis site.
+
+Write an exclusive insider analysis for PAYING SUBSCRIBERS. Length: 300-600 words.
+
+Include:
+- Sharp betting insights and angles
+- Model predictions and probabilities (if available in the data below)
+- Line movement analysis and what it means
+- Key matchups (pitcher vs batter splits, bullpen edges)
+- Explicit betting recommendations where supported by the data
+- Why the public is wrong vs right
+- Proprietary handicapping angles
+
+Output format: Return valid JSON ONLY with two keys:
+- "title": A short, punchy title for the premium section (5-10 words)
+- "content": The full premium write-up (300-600 words)
+
+No markdown fences. No extra text. Valid JSON only.
+{tense_note}"""
+
     # ── Generation ──────────────────────────────────────────
 
     async def generate(
@@ -141,46 +176,101 @@ Write your article below. Start with the title on its own line (preceded by ##),
     ) -> dict[str, Any]:
         """Generate a write-up for the given *game_id*.
 
+        Makes TWO separate LLM calls:
+          1. Public call  — stripped research, no betting data, plain text
+          2. Premium call — full research with picks, JSON output
+
         Returns the dict with keys: *title*, *public_content*, *premium_content*,
         *title_brief*, *research_brief*, *is_historical*, *qc_results*.
         """
         logger.info("generating write-up for game_id=%s", game_id)
 
-        # ---- 1. Research ----
+        # ---- 1. Full research is fetched once ----
         research = await self.research_brief(game_id, as_of_date)
         if "error" in research:
             logger.warning("research_brief failed for game %s: %s", game_id, research["error"])
             return {"error": research["error"]}
 
-        # ---- 2. Build conversation ----
-        system = self.system_prompt(is_historical)
-        user_prompt = self._build_messages(research)
+        # ---- 2A. Public call — stripped research, no betting data ----
+        stripped = dict(research)
+        for key in ("betting_lines", "predictions", "home_splits", "away_splits"):
+            stripped.pop(key, None)
 
-        # ---- 3. Call DeepSeek ----
-        raw = await self._call_deepseek(system, user_prompt)
-        if raw is None:
-            return {"error": "DeepSeek API call failed — check logs"}
+        public_system = self.public_system_prompt(is_historical)
+        public_prompt = self._build_messages(stripped)
 
-        # ---- 4. Parse response ----
-        parsed = self._parse_response(raw, research, is_historical)
-        if "error" in parsed:
-            return parsed
+        raw_public = await self._call_deepseek(public_system, public_prompt)
+        if raw_public is None:
+            return {"error": "DeepSeek API call failed for public section"}
 
-        # ---- 5. Quality checks ----
+        # Parse title + body from public response
+        pub_lines = raw_public.strip().split("\n", 1)
+        title = pub_lines[0].strip().strip("#").strip() if pub_lines else ""
+        public_content = pub_lines[1].strip() if len(pub_lines) > 1 else ""
+
+        # ---- 2B. Premium call — full research with picks ----
+        premium_system = self.premium_system_prompt(is_historical)
+        premium_prompt = self._build_messages(research)
+
+        raw_premium = await self._call_deepseek(premium_system, premium_prompt)
+        if raw_premium is None:
+            logger.warning("premium LLM call failed for game %s — using fallback", game_id)
+            premium_content = "Premium content unavailable — API call failed."
+            premium_title_brief = ""
+        else:
+            # Parse JSON premium response
+            premium_parsed = self._parse_premium_response(raw_premium)
+            premium_content = premium_parsed.get("content", "")
+            premium_title_brief = premium_parsed.get("title", "")
+
+        # ---- 3. Assemble final result ----
+        parsed = {
+            "title": title,
+            "title_brief": premium_title_brief,
+            "public_content": public_content,
+            "premium_content": premium_content,
+            "research_brief": research,
+            "is_historical": is_historical,
+        }
+
+        # ---- 4. Quality checks ----
         qc_results = self.run_quality_checks(parsed, research)
         parsed["qc_results"] = qc_results
 
-        # ---- 6. Store ----
+        # ---- 5. Store ----
         await self.store(game_id, parsed, qc_results)
 
         logger.info(
             "write-up %s for game %s — qc=%s/%s passed",
-            parsed.get("title", "(no title)"),
+            title or "(no title)",
             game_id,
             sum(1 for q in qc_results if q.get("passed")),
             len(qc_results),
         )
         return parsed
+
+    def _parse_premium_response(self, raw: str) -> dict[str, str]:
+        """Parse the premium-only JSON response from DeepSeek."""
+        import json
+
+        cleaned = raw.strip()
+        if cleaned.startswith("```"):
+            start = cleaned.find("{")
+            if start >= 0:
+                cleaned = cleaned[start:]
+            end = cleaned.rfind("}")
+            if end >= 0:
+                cleaned = cleaned[: end + 1]
+
+        try:
+            parsed = json.loads(cleaned)
+            return {
+                "title": parsed.get("title", ""),
+                "content": parsed.get("content", ""),
+            }
+        except (json.JSONDecodeError, TypeError):
+            logger.warning("failed to parse premium JSON response — using raw text")
+            return {"title": "", "content": cleaned[:600]}
 
     async def _call_deepseek(self, system: str, user_prompt: str) -> str | None:
         """Call DeepSeek via OpenAI SDK and return the raw response content.

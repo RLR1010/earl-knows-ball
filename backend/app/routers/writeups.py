@@ -61,8 +61,8 @@ async def get_public_writeup(
         text(f"""
             SELECT id, game_id, title, public_content, version, status
             FROM {table}
-            WHERE game_id = :game_id AND status = 'published'
-            ORDER BY version DESC LIMIT 1
+            WHERE game_id = :game_id
+            ORDER BY created_at DESC LIMIT 1
         """),
         {"game_id": game_id},
     )
