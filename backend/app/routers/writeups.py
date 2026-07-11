@@ -17,6 +17,87 @@ router = APIRouter(prefix="/writeups", tags=["writeups"])
 
 
 # ──────────────────────────────────────────────
+#  Public write-up (no picks / no betting data)
+# ──────────────────────────────────────────────
+
+
+@router.get("/{sport}/{game_id}/public")
+async def get_public_writeup(
+    sport: str,
+    game_id: int,
+    as_of_date: Optional[str] = Query(None),
+    db: AsyncSession = Depends(get_db),
+):
+    """Generate or return a cached public-only write-up.
+
+    This endpoint:
+    - Fetches a stripped research brief (no betting lines, ATS splits,
+      line movement, or model predictions)
+    - Makes a separate, shorter LLM call with a 1200-2000 word target
+    - Does NOT include any premium / insider content
+
+    If a public write-up already exists in the DB for this game, we
+    return it directly. Otherwise we generate and cache it.
+    """
+    from datetime import datetime as dt_module
+    from sqlalchemy import select
+
+    as_of_dt = dt_module.fromisoformat(as_of_date) if as_of_date else None
+
+    # Pick the right generator for the sport
+    from app.writeups.mlb.research import get_public_research_brief
+
+    if sport == "mlb":
+        research_fn = get_public_research_brief
+        generator_cls = MLBWriteupGenerator
+    else:
+        raise HTTPException(status_code=400, detail=f"Unknown sport: {sport}")
+
+    generator = generator_cls()
+
+    # Check if a cached public writeup exists
+    table = f"{sport}.game_writeups"
+    row = await db.execute(
+        text(f"""
+            SELECT id, game_id, title, public_content, version, status
+            FROM {table}
+            WHERE game_id = :game_id AND status = 'published'
+            ORDER BY version DESC LIMIT 1
+        """),
+        {"game_id": game_id},
+    )
+    existing = row.first()
+
+    if existing and existing.public_content:
+        return {
+            "id": existing.id,
+            "game_id": existing.game_id,
+            "title": existing.title,
+            "content": existing.public_content,
+            "version": existing.version,
+            "cached": True,
+        }
+
+    # No cached version — generate fresh
+    # Fetch stripped research brief directly
+    stripped_research = await research_fn(db, game_id, as_of_dt)
+    if "error" in stripped_research:
+        raise HTTPException(status_code=502, detail=stripped_research["error"])
+
+    is_historical = stripped_research.get("is_historical", False)
+    result = await generator.generate_public(game_id, stripped_research, is_historical)
+    if "error" in result:
+        raise HTTPException(status_code=502, detail=result["error"])
+
+    return {
+        "game_id": game_id,
+        "title": result.get("title", ""),
+        "content": result.get("public_content", ""),
+        "cached": False,
+    }
+
+
+# ──────────────────────────────────────────────
 #  Games for content admin
 # ──────────────────────────────────────────────
 

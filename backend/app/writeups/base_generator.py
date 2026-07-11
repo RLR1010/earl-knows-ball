@@ -89,6 +89,48 @@ Return ONLY valid JSON with the following fields:
 
 Return valid JSON only. No markdown fences. No extra text."""
 
+    def public_system_prompt(self, is_historical: bool = False) -> str:
+        """System prompt for the public-only writeup (no picks, no betting data).
+
+        Uses markdown/plain text output (not JSON) since there is only one
+        content section and we want a natural article format.
+        """
+        tense_note = (
+            "CRITICAL: This is a HISTORICAL write-up. The game has already been played "
+            "but the article must be written as if it hasn't happened yet. "
+            "DO NOT mention the actual result, final score, or anything that happened in the game. "
+            "Write entirely in future/present tense as if previewing an upcoming game. "
+            "Use phrases like 'will face', 'looks to', 'enters this game'. "
+            "Never use 'won', 'lost', 'defeated', 'victory', or any past-tense outcome language."
+        ) if is_historical else (
+            "This is a PREVIEW for an upcoming game. Write in present/future tense."
+        )
+
+        return f"""You are a baseball writer for Earl Knows Ball, a sports analysis site. Write a game preview/article for the general public.
+
+Length: 1200-2000 words.
+
+Focus on:
+- Game narrative and stakes (division race, wild card implications, streaks)
+- Team context and recent storylines
+- Pitching matchup highlights (ERA, recent outings, velocity trends — skip deep batter-vs-pitcher tables)
+- Key player storylines (who's hot, who's slumping, milestones, returns from IL)
+- Basic venue and weather context
+- High-level injury notes
+
+Do NOT include:
+- Betting odds, lines, spreads, totals, or moneyline numbers
+- Implied public betting percentages
+- ATS splits or any ATS/OU record references
+- Any handicapping predictions, model picks, or edge calculations
+- Line movement data
+
+This is a game preview — not a betting analysis. Write in the style of a well-informed beat writer: insightful, engaging, and authoritative.
+
+{tense_note}
+
+Write your article below. Start with the title on its own line (preceded by ##), then the article body."""
+
     # ── Generation ──────────────────────────────────────────
 
     async def generate(
@@ -350,6 +392,47 @@ Return valid JSON only. No markdown fences. No extra text."""
             "title": title,
             "public_content": public_content,
             "premium_content": premium_content,
+            "research_brief": research,
+            "is_historical": is_historical,
+        }
+
+    # ── Public-only generation ────────────────────────────
+
+    def _build_public_messages(self, research: dict[str, Any]) -> str:
+        """Build the user prompt for a public-only writeup.
+
+        Relies on the caller having already stripped betting/proprietary keys
+        from the research dict via get_public_research_brief.
+        """
+        return self._build_messages(research)
+
+    async def generate_public(
+        self,
+        game_id: int,
+        research: dict[str, Any],
+        is_historical: bool = False,
+    ) -> dict[str, Any]:
+        """Generate a public-only write-up (no picks, no premium section).
+
+        This is a separate, lighter LLM call meant for the public-facing
+        endpoint. The 1200-2000 word target avoids overwhelming casual readers
+        and the stripped research keeps proprietary data out of the prompt.
+        """
+        system = self.public_system_prompt(is_historical)
+        user_prompt = self._build_public_messages(research)
+
+        raw = await self._call_deepseek(system, user_prompt)
+        if raw is None:
+            return {"error": "DeepSeek API call failed — check logs"}
+
+        # Parse into title + content (free-form; we expect first line as title)
+        lines = raw.strip().split("\n", 1)
+        title = lines[0].strip().strip("#").strip() if lines else ""
+        content = lines[1].strip() if len(lines) > 1 else ""
+
+        return {
+            "title": title,
+            "public_content": content,
             "research_brief": research,
             "is_historical": is_historical,
         }

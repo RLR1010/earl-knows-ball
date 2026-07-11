@@ -941,3 +941,26 @@ async def get_research_brief(
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "as_of_date": as_of_date.isoformat() if as_of_date else None,
     }
+
+
+async def get_public_research_brief(
+    db: AsyncSession,
+    game_id: int,
+    as_of_date: Optional[datetime] = None,
+) -> dict[str, Any]:
+    """Public-facing research brief — same data as get_research_brief but with
+    betting lines, predictions, splits, and line movement stripped out.
+
+    The result preserves: game summary, team stats, pitching matchup,
+    head-to-head, injuries, recent form, venue, weather, standings,
+    and article enrichment."""
+    brief = await get_research_brief(db, game_id, as_of_date)
+    if "error" in brief:
+        return brief
+
+    # Strip proprietary / handicapping data
+    stripped_keys = {"betting_lines", "predictions", "home_splits", "away_splits"}
+    for key in stripped_keys:
+        brief.pop(key, None)
+
+    return brief

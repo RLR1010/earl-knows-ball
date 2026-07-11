@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.mlb import MLBGameWriteup
 from app.writeups.base_generator import BaseWriteupGenerator, QCResults
-from app.writeups.mlb.research import get_research_brief
+from app.writeups.mlb.research import get_research_brief, get_public_research_brief
 
 logger = logging.getLogger("writeups")
 
@@ -171,3 +171,17 @@ class MLBWriteupGenerator(BaseWriteupGenerator):
         if passed >= total / 2:
             return "draft"  # some issues, needs work
         return "draft"  # needs significant work
+
+    async def generate_public(
+        self,
+        game_id: int,
+        research: dict[str, Any],
+        is_historical: bool = False,
+    ) -> dict[str, Any]:
+        """Generate a public-only write-up (no picks, no premium section).
+
+        The caller is responsible for passing a stripped research brief
+        (from get_public_research_brief). Makes a separate shorter LLM call
+        with a 1200-2000 word target.
+        """
+        return await super().generate_public(game_id, research, is_historical)
