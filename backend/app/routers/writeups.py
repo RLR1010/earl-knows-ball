@@ -178,13 +178,16 @@ async def list_mlb_games_for_content(
 @router.post("/mlb/generate/{game_id}")
 async def generate_mlb_writeup(
     game_id: int,
-    is_historical: bool = Query(False),
+    is_historical: Optional[bool] = Query(None),  # deprecated — auto-detected from game status
     as_of_date: Optional[str] = Query(None),
     db: AsyncSession = Depends(get_db),
 ):
     """Generate a write-up for an MLB game.
 
-    - *is_historical*: if True, the AI writes as if the game hasn't happened.
+    is_historical is now auto-detected from the game's status in the
+    database (F = final → historical). If explicitly passed, it overrides
+    auto-detection.
+
     - *as_of_date*: ISO-8601 date to filter research data (used for historical
       write-ups to only show data available before that date).
     """

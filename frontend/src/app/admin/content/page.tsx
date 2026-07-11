@@ -297,8 +297,8 @@ export default function AdminContent() {
       // Call backend directly (bypass proxy) to avoid the 30s proxy timeout
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 180_000);
-      const params = new URLSearchParams({ is_historical: "true" });
-      const res = await fetch(`http://localhost:8001/writeups/${sport}/generate/${gameId}?${params}`, {
+      // is_historical is now auto-detected from game status on the backend
+      const res = await fetch(`http://localhost:8001/writeups/${sport}/generate/${gameId}`, {
         method: "POST",
         headers: { Authorization: `Bearer ${token()}`, "Content-Type": "application/json" },
         signal: controller.signal,
@@ -347,7 +347,7 @@ export default function AdminContent() {
     for (const game of missing) {
       setGenerating(game.id);
       try {
-        await fetch(`/api/writeups/${sport}/generate/${game.id}?is_historical=true`, {
+        await fetch(`/api/writeups/${sport}/generate/${game.id}`, {
           method: "POST",
           headers: { Authorization: `Bearer ${token()}` },
         });

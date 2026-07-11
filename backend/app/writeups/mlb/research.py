@@ -938,6 +938,8 @@ async def get_research_brief(
         **results,
         "home_team_name": summary.get("home_team", {}).get("name", "Home"),
         "away_team_name": summary.get("away_team", {}).get("name", "Away"),
+        "is_historical": summary.get("status") == "F",  # F = Final, not in-progress/pre-game
+        "game_status": summary.get("status", ""),
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "as_of_date": as_of_date.isoformat() if as_of_date else None,
     }

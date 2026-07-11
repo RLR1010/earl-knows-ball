@@ -185,7 +185,7 @@ No markdown fences.
     async def generate(
         self,
         game_id: int,
-        is_historical: bool = False,
+        is_historical: bool | None = None,  # deprecated — now read from research
         as_of_date: datetime | None = None,
     ) -> dict[str, Any]:
         """Generate a write-up for the given *game_id*.
@@ -193,6 +193,9 @@ No markdown fences.
         Makes TWO separate LLM calls:
           1. Public call  — stripped research, no betting data, plain text
           2. Premium call — full research with picks, JSON output
+
+        is_historical is now determined from the game's status in the
+        research brief. The parameter is kept for backward compat.
 
         Returns the dict with keys: *title*, *public_content*, *premium_content*,
         *title_brief*, *research_brief*, *is_historical*, *qc_results*.
@@ -204,6 +207,8 @@ No markdown fences.
         if "error" in research:
             logger.warning("research_brief failed for game %s: %s", game_id, research["error"])
             return {"error": research["error"]}
+
+        is_historical = research.get("is_historical", bool(is_historical))
 
         # ---- 2A. Public call — stripped research, no betting data ----
         stripped = dict(research)
