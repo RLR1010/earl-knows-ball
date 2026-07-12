@@ -570,7 +570,8 @@ async def preview_nfl_writeup(
     """Preview an NFL writeup (no DB save)."""
     from app.writeups.nfl.generator import NFLWriteupGenerator
     gen = NFLWriteupGenerator()
-    research = await gen.research_brief(db, game_id)
+    gen._db = db
+    research = await gen.research_brief(game_id)
     return {"research": research}
 
 
@@ -582,7 +583,8 @@ async def preview_public_nfl_writeup(
     """Preview a public NFL writeup (no DB save, no picks)."""
     from app.writeups.nfl.generator import NFLWriteupGenerator
     gen = NFLWriteupGenerator()
-    research = await gen.get_public_research(db, game_id)
+    gen._db = db
+    research = await gen.get_public_research(game_id)
     return {"research": research}
 
 
@@ -625,7 +627,9 @@ async def generate_public_nfl_writeup(
     """Generate and save a public-only NFL writeup (no picks)."""
     from app.writeups.nfl.generator import NFLWriteupGenerator
     gen = NFLWriteupGenerator()
-    result = await gen.generate_public(db, game_id)
+    gen._db = db
+    research = await gen.get_public_research(game_id)
+    result = await gen.generate_public(game_id, research)
     row = await db.execute(
         text("""SELECT id, game_id, title, public_content, premium_content,
                  status, version, is_historical,

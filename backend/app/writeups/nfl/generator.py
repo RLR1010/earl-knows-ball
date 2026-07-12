@@ -78,22 +78,35 @@ Write like a real human sports journalist — natural, flowing prose, not an AI-
 Write your article below. Start with the title on its own plain line, then the article body. Do not use any markdown, hashtags, asterisks, or special formatting.
 {tense_note}"""
 
-    async def research_brief(
+    async def generate(
         self,
         db: AsyncSession,
+        game_id: int,
+        is_historical: bool = False,
+        as_of_date: Optional[date] = None,
+    ) -> Any:
+        """Full pipeline with DB session."""
+        self._db = db
+        result = await super().generate(game_id, is_historical, as_of_date)
+        self._db = None
+        return result
+
+    async def research_brief(
+        self,
         game_id: int,
         as_of_date: Optional[date] = None,
     ) -> dict[str, Any]:
         """Fetch the full research brief for a game (includes model picks)."""
+        db = getattr(self, "_db", None)
         return await get_research_brief(db, game_id, as_of_date)
 
     async def get_public_research(
         self,
-        db: AsyncSession,
         game_id: int,
         as_of_date: Optional[date] = None,
     ) -> dict[str, Any]:
         """Fetch the public (no picks) research brief."""
+        db = getattr(self, "_db", None)
         return await get_public_research_brief(db, game_id, as_of_date)
 
     def sport_context(self) -> str:
