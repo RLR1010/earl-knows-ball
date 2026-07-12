@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 
 /* ─────────────────────────────────────────────
    Types
@@ -60,7 +60,9 @@ const STATUS_LABELS: Record<string, string> = {
 export default function ContentEditor() {
   const params = useParams();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const writeupId = params.id as string;
+  const sport = searchParams.get("sport") || "mlb";
 
   const [writeup, setWriteup] = useState<Writeup | null>(null);
   const [publicContent, setPublicContent] = useState("");
@@ -118,7 +120,7 @@ export default function ContentEditor() {
     } finally {
       setLoading(false);
     }
-  }, [writeupId]);
+  }, [writeupId, sport]);
 
   useEffect(() => {
     fetchWriteup();
