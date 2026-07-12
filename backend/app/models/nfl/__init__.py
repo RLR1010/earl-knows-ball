@@ -13,6 +13,7 @@ from .dfs_salary import DfsSalary
 from .team_pace_stats import TeamPaceStats
 from .article import Article
 from .game_prediction import NFLGamePrediction
+from .writeup import NFLGameWriteup
 
 __all__ = [
     "Game",
@@ -30,4 +31,5 @@ __all__ = [
     "TeamPaceStats",
     "Article",
     "NFLGamePrediction",
+    "NFLGameWriteup",
 ]

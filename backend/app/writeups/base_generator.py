@@ -129,7 +129,10 @@ This is a game preview — not a betting analysis. Write in the style of a well-
 
 {tense_note}
 
-Write your article below. Start with the title on its own line (preceded by ##), then the article body."""
+⚠️ HUMAN VOICE DIRECTIVES (CRITICAL):
+Write like a real human sports journalist — natural, flowing prose, not an AI-generated article. Absolutely NO bullet points, numbered lists, dashes, asterisks, or any structured formatting in the article body whatsoever. NO bold, italics, markdown, or special characters in the prose — just plain natural text. Vary sentence length and structure and avoid repetitive patterns that scream "AI wrote this." Write in paragraphs, not structured sections with headings beyond the title. No robotic formulas like "Let's break down..." or "Here's what you need to know..." — write naturally. This should read as if a beat writer pounded it out on their laptop, not a language model.
+
+Write your article below. Start with the title on its own plain line, then the article body. Do not use any markdown, hashtags, asterisks, or special formatting."""
 
     def premium_system_prompt(self, is_historical: bool = False) -> str:
         """System prompt for the premium-only (insider) writeup.
@@ -171,13 +174,16 @@ What to include:
 - If you cannot think of genuinely premium-worthy content, focus on one key angle and explain it exhaustively
 - Premium content should feel like you're giving the reader a real edge they can't get elsewhere
 
+⚠️ HUMAN VOICE DIRECTIVES (CRITICAL — apply to the CONTENT):
+The article content must read like a real human sports journalist wrote it — natural, flowing prose, not AI-generated text. Absolutely NO bullet points, numbered lists, dashes, asterisks, or any structured formatting in the article body. NO bold, italics, markdown, or special characters in the prose — just plain natural text. Vary sentence length and structure and avoid repetitive patterns that sound like AI. Write in paragraphs, not structured sections with subheadings beyond the title. No robotic formulas like "Let's break down..." or "Here's a deep dive..." — write naturally. This should read as if a seasoned handicapper sat down and wrote their analysis, not a language model.
+
 Output format (preferred): Return valid JSON with these keys:
-- "title": A punchy, engaging title for the premium section (include team names, max ~80 chars)
-- "content": The full premium article (1600-3200 words, many paragraphs — be detailed and comprehensive)
+  - "title": A punchy, engaging title for the premium section (include team names, max ~80 chars)
+  - "content": The full premium article content — natural flowing paragraphs, no structured formatting
 
-If you cannot return JSON, write the article directly starting with `## Title` on the first line, then the article body. JSON is preferred but article text is acceptable.
+If you cannot return JSON, write the article directly starting with the title on its own plain line. JSON is preferred but article text is acceptable.
 
-No markdown fences.
+No markdown fences, no hash signs, no special formatting whatsoever.
 {tense_note}"""
 
     # ── Generation ──────────────────────────────────────────

@@ -471,3 +471,339 @@ async def update_writeup_status(
     await db.commit()
 
     return {"id": writeup_id, "status": status, "ok": True}
+# ──────────────────────────────────────────────
+#  NFL WRITEUP ENDPOINTS
+# ──────────────────────────────────────────────
+
+
+@router.get("/nfl/games")
+async def list_nfl_games_for_content(
+    from_date: Optional[str] = Query(None, alias="from"),
+    to_date: Optional[str] = Query(None, alias="to"),
+    status: Optional[str] = Query(None),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return NFL games enriched with write-up status for the content admin."""
+    from datetime import datetime as dt_module
+    conditions = []
+    params: dict = {}
+    if from_date:
+        conditions.append("g.date >= :from_date")
+        params["from_date"] = dt_module.strptime(from_date[:10], "%Y-%m-%d").date()
+    if to_date:
+        conditions.append("g.date <= :to_date")
+        params["to_date"] = dt_module.strptime(to_date[:10], "%Y-%m-%d").date()
+    if status:
+        conditions.append("w.status = :status")
+        params["status"] = status
+    where_clause = " AND ".join(conditions) if conditions else "1=1"
+    rows = await db.execute(
+        text(f"""SELECT g.id, g.date, g.week, g.game_type AS season_type,
+                 g.venue,
+                 ht.abbreviation AS home_abbr, ht.name AS home_name,
+                 at.abbreviation AS away_abbr, at.name AS away_name,
+                 CAST(g.status AS text) AS game_status,
+                 w.id AS writeup_id, w.title AS writeup_title,
+                 w.status AS writeup_status, w.version AS writeup_version
+          FROM nfl.games g
+          JOIN nfl.teams ht ON ht.id = g.home_team_id
+          JOIN nfl.teams at ON at.id = g.away_team_id
+          LEFT JOIN nfl.game_writeups w ON w.game_id = g.id
+          WHERE {where_clause}
+          ORDER BY g.date ASC"""),
+        params,
+    )
+    return [
+        {
+            "id": r.id, "date": r.date.isoformat() if r.date else None,
+            "week": r.week, "season_type": r.season_type,
+            "home_team": r.home_abbr, "home_team_name": r.home_name,
+            "away_team": r.away_abbr, "away_team_name": r.away_name,
+            "venue": r.venue, "game_status": r.game_status,
+            "writeup_id": r.writeup_id, "writeup_title": r.writeup_title,
+            "writeup_status": r.writeup_status, "writeup_version": r.writeup_version,
+        }
+        for r in rows.mappings()
+    ]
+
+
+@router.get("/nfl/nearest-game")
+async def nfl_nearest_game_date(
+    date: str = Query(...),
+    db: AsyncSession = Depends(get_db),
+):
+    """Find nearest NFL game dates using Python date math."""
+    rows = await db.execute(
+        text('SELECT DISTINCT CAST(g.date AS date) AS game_day'
+            ' FROM nfl.games g'
+            ' WHERE g.status IN (\'FINAL\', \'SCHEDULED\', \'IN_PROGRESS\')'
+            ' AND g.game_type = \'REG\''
+            ' ORDER BY game_day')
+    )
+    all_dates = [r[0] for r in rows.fetchall() if r[0]]
+
+    from datetime import date as dt_date
+    target = dt_date.fromisoformat(date[:10])
+
+    prev_date = None
+    for d in reversed(all_dates):
+        if d < target:
+            prev_date = d
+            break
+
+    next_date = None
+    for d in all_dates:
+        if d > target:
+            next_date = d
+            break
+
+    return {
+        "prev_date": str(prev_date) if prev_date else None,
+        "next_date": str(next_date) if next_date else None,
+    }
+
+@router.post("/nfl/preview/{game_id}")
+async def preview_nfl_writeup(
+    game_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """Preview an NFL writeup (no DB save)."""
+    from app.writeups.nfl.generator import NFLWriteupGenerator
+    gen = NFLWriteupGenerator()
+    research = await gen.research_brief(db, game_id)
+    return {"research": research}
+
+
+@router.post("/nfl/preview-public/{game_id}")
+async def preview_public_nfl_writeup(
+    game_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """Preview a public NFL writeup (no DB save, no picks)."""
+    from app.writeups.nfl.generator import NFLWriteupGenerator
+    gen = NFLWriteupGenerator()
+    research = await gen.get_public_research(db, game_id)
+    return {"research": research}
+
+
+@router.post("/nfl/generate/{game_id}")
+async def generate_nfl_writeup(
+    game_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """Generate and save a premium NFL writeup."""
+    from app.writeups.nfl.generator import NFLWriteupGenerator
+    gen = NFLWriteupGenerator()
+    result = await gen.generate(db, game_id)
+    row = await db.execute(
+        text("""SELECT id, game_id, title, public_content, premium_content,
+                 status, version, is_historical,
+                 published_at, created_at
+          FROM nfl.game_writeups WHERE game_id = :gid
+          ORDER BY created_at DESC LIMIT 1"""),
+        {"gid": game_id},
+    )
+    r = row.mappings().one_or_none()
+    if r is None:
+        return {"ok": True, "note": "generated but read-back returned nothing"}
+    return {
+        "writeup_id": r["id"], "game_id": r["game_id"], "title": r["title"],
+        "public_content": r["public_content"], "premium_content": r["premium_content"],
+        "status": r["status"], "version": r["version"],
+        "is_historical": r["is_historical"],
+        "published_at": r["published_at"].isoformat() if r["published_at"] else None,
+        "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+        "ok": True,
+    }
+
+
+@router.post("/nfl/generate-public/{game_id}")
+async def generate_public_nfl_writeup(
+    game_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """Generate and save a public-only NFL writeup (no picks)."""
+    from app.writeups.nfl.generator import NFLWriteupGenerator
+    gen = NFLWriteupGenerator()
+    result = await gen.generate_public(db, game_id)
+    row = await db.execute(
+        text("""SELECT id, game_id, title, public_content, premium_content,
+                 status, version, is_historical,
+                 published_at, created_at
+          FROM nfl.game_writeups WHERE game_id = :gid
+          ORDER BY created_at DESC LIMIT 1"""),
+        {"gid": game_id},
+    )
+    r = row.mappings().one_or_none()
+    if r is None:
+        return {"ok": True, "note": "generated but read-back returned nothing"}
+    return {
+        "writeup_id": r["id"], "game_id": r["game_id"], "title": r["title"],
+        "public_content": r["public_content"], "premium_content": r["premium_content"],
+        "status": r["status"], "version": r["version"],
+        "is_historical": r["is_historical"],
+        "published_at": r["published_at"].isoformat() if r["published_at"] else None,
+        "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+        "ok": True,
+    }
+
+
+@router.get("/nfl/writeups")
+async def list_nfl_writeups(
+    game_id: Optional[int] = Query(None),
+    status_filter: Optional[str] = Query("published", alias="status"),
+    page: int = Query(1, ge=1),
+    per_page: int = Query(20, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+):
+    """List NFL writeups with optional filters."""
+    where = []
+    params: dict = {}
+    if game_id:
+        where.append("w.game_id = :gid")
+        params["gid"] = game_id
+    if status_filter:
+        where.append("w.status = :status")
+        params["status"] = status_filter
+    where_clause = " AND ".join(where) if where else "TRUE"
+    offset = (page - 1) * per_page
+    rows = await db.execute(
+        text(f"""SELECT w.id, w.game_id, w.title, w.status, w.version,
+                 w.is_historical, w.published_at, w.created_at,
+                 g.week, g.date,
+                 ht.abbreviation AS home, at.abbreviation AS away
+          FROM nfl.game_writeups w
+          JOIN nfl.games g ON w.game_id = g.id
+          JOIN nfl.teams ht ON g.home_team_id = ht.id
+          JOIN nfl.teams at ON g.away_team_id = at.id
+          WHERE {where_clause}
+          ORDER BY w.updated_at DESC
+          LIMIT :limit OFFSET :offset"""),
+        {**params, "limit": per_page, "offset": offset},
+    )
+    items = [
+        {
+            "writeup_id": r["id"], "game_id": r["game_id"],
+            "title": r["title"], "status": r["status"],
+            "version": r["version"], "is_historical": r["is_historical"],
+            "published_at": r["published_at"].isoformat() if r["published_at"] else None,
+            "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+            "week": r["week"], "matchup": f"{r['away']} @ {r['home']}",
+            "date": r["date"].isoformat() if r["date"] else None,
+        }
+        for r in rows.mappings()
+    ]
+    return {"items": items, "page": page, "per_page": per_page}
+
+
+@router.get("/nfl/{writeup_id}")
+async def get_nfl_writeup(
+    writeup_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """Get a specific NFL writeup by ID."""
+    row = await db.execute(
+        text("""SELECT w.id, w.game_id, w.title, w.public_content, w.premium_content,
+                 w.status, w.version, w.is_historical,
+                 w.published_at, w.created_at,
+                 g.week, g.date,
+                 ht.abbreviation AS home, at.abbreviation AS away
+          FROM nfl.game_writeups w
+          JOIN nfl.games g ON w.game_id = g.id
+          JOIN nfl.teams ht ON g.home_team_id = ht.id
+          JOIN nfl.teams at ON g.away_team_id = at.id
+          WHERE w.id = :wid"""),
+        {"wid": writeup_id},
+    )
+    r = row.mappings().one_or_none()
+    if r is None:
+        raise HTTPException(status_code=404, detail="Writeup not found")
+    return {
+        "writeup_id": r["id"], "game_id": r["game_id"],
+        "title": r["title"], "public_content": r["public_content"],
+        "premium_content": r["premium_content"], "status": r["status"],
+        "version": r["version"], "is_historical": r["is_historical"],
+        "week": r["week"], "matchup": f"{r['away']} @ {r['home']}",
+        "game_date": r["date"].isoformat() if r["date"] else None,
+        "published_at": r["published_at"].isoformat() if r["published_at"] else None,
+        "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+    }
+
+
+@router.get("/nfl/game/{game_id}")
+async def get_nfl_writeup_by_game(
+    game_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """Get the latest NFL writeup for a specific game."""
+    row = await db.execute(
+        text("""SELECT w.id AS writeup_id, w.game_id, w.title,
+                 w.public_content, w.premium_content,
+                 w.status, w.version, w.is_historical,
+                 w.published_at, w.created_at
+          FROM nfl.game_writeups w
+          WHERE w.game_id = :gid
+          ORDER BY w.created_at DESC LIMIT 1"""),
+        {"gid": game_id},
+    )
+    r = row.mappings().one_or_none()
+    if r is None:
+        return {"game_id": game_id, "has_writeup": False, "public_content": "", "premium_content": ""}
+    return {
+        "writeup_id": r["writeup_id"], "game_id": r["game_id"],
+        "title": r["title"], "public_content": r["public_content"],
+        "premium_content": r["premium_content"], "status": r["status"],
+        "version": r["version"], "is_historical": r["is_historical"],
+        "published_at": r["published_at"].isoformat() if r["published_at"] else None,
+        "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+        "has_writeup": True,
+    }
+
+
+@router.patch("/nfl/{writeup_id}")
+async def update_nfl_writeup(
+    writeup_id: int,
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+):
+    """Update an NFL writeup's content."""
+    updates = []
+    params: dict = {"wid": writeup_id}
+    if "title" in body:
+        updates.append("title = :title")
+        params["title"] = body["title"]
+    if "public_content" in body:
+        updates.append("public_content = :public_content")
+        params["public_content"] = body["public_content"]
+    if "premium_content" in body:
+        updates.append("premium_content = :premium_content")
+        params["premium_content"] = body["premium_content"]
+    if not updates:
+        return {"id": writeup_id, "updated": False, "note": "no fields to update"}
+    updates.append("version = version + 1")
+    updates.append("updated_at = NOW()")
+    set_clause = ", ".join(updates)
+    await db.execute(text(f"UPDATE nfl.game_writeups SET {set_clause} WHERE id = :wid"), params)
+    await db.commit()
+    return {"id": writeup_id, "updated": True}
+
+
+@router.patch("/nfl/{writeup_id}/status")
+async def update_nfl_writeup_status(
+    writeup_id: int,
+    status: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Update the status of an NFL writeup."""
+    valid = ("draft", "review", "published", "archived")
+    if status not in valid:
+        raise HTTPException(status_code=400, detail=f"Invalid status. Must be one of {valid}")
+    published_clause = ", published_at = NOW()" if status == "published" else ""
+    await db.execute(
+        text(f"UPDATE nfl.game_writeups SET status = :status{published_clause}, updated_at = NOW() WHERE id = :wid"),
+        {"wid": writeup_id, "status": status},
+    )
+    await db.commit()
+    return {"id": writeup_id, "status": status, "ok": True}
+
+

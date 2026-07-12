@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timezone
+import zoneinfo
 from typing import Any, Optional
 
 from sqlalchemy import text, select
@@ -25,6 +26,42 @@ from app.models.mlb import (
 )
 
 logger = logging.getLogger("writeups")
+
+# ── Timezone helpers ────────────────────────────────────────
+_TZ_EASTERN = zoneinfo.ZoneInfo("America/New_York")
+
+
+def _to_eastern(dt_tz):
+    """Convert a datetime (aware or naive) to US/Eastern, treating naive as UTC."""
+    if dt_tz is None:
+        return None
+    if dt_tz.tzinfo is None:
+        dt_tz = dt_tz.replace(tzinfo=timezone.utc)
+    return dt_tz.astimezone(_TZ_EASTERN)
+
+
+def _fmt_local(dt_tz):
+    """Format a timezone-aware datetime to a friendly US/Eastern string."""
+    local = _to_eastern(dt_tz)
+    if local is None:
+        return None
+    day_name = local.strftime("%a")
+    month_day = local.strftime("%b %d")
+    time_str = local.strftime("%I:%M %p").lstrip("0").replace(" 0", " ")
+    return f"{month_day} ({day_name}) {time_str} ET"
+
+
+def _parse_utc_dt(raw):
+    """Parse a UTC text timestamp into a timezone-aware datetime."""
+    if not raw:
+        return None
+    try:
+        cleaned = raw.strip()
+        if cleaned.endswith("+00") and not cleaned.endswith("+00:00"):
+            cleaned += ":00"
+        return datetime.fromisoformat(cleaned)
+    except (ValueError, TypeError):
+        return None
 
 
 # ──────────────────────────────────────────────
@@ -89,7 +126,7 @@ async def get_game_summary(
         "game_id": r["id"],
         "mlb_game_id": r["mlb_game_id"],
         "season_id": r["season_id"],
-        "date": r["date"].isoformat() if r["date"] else None,
+        "date": _to_eastern(r["date"]).isoformat() if r["date"] else None,
         "status": r["status"],
         "game_type": r["game_type"],
         "day_night": r["day_night"],
@@ -359,7 +396,7 @@ async def _pitcher_profile(
     for s in recent.mappings():
         is_home = (s["home_pitcher_name"] or "").lower() == (name or "").lower()
         starts.append({
-            "date": s["date"].isoformat() if s["date"] else None,
+            "date": _to_eastern(s["date"]).isoformat() if s["date"] else None,
             "opponent": s["away_abbr"] if is_home else s["home_abbr"],
             "team_score": s["home_score"] if is_home else s["away_score"],
             "opponent_score": s["away_score"] if is_home else s["home_score"],
@@ -543,7 +580,7 @@ async def get_head_to_head(
         else:
             t2_wins += 1
         games.append({
-            "date": r["date"].isoformat() if r["date"] else None,
+            "date": _to_eastern(r["date"]).isoformat() if r["date"] else None,
             "venue": r["home_abbr"],
             "winner": r["home_abbr"] if r["home_score"] > r["away_score"] else r["away_abbr"],
             "score": f"{r['home_score']}-{r['away_score']}",
@@ -640,7 +677,7 @@ async def get_recent_form(
         if won:
             wins += 1
         games.append({
-            "date": r["date"].isoformat() if r["date"] else None,
+            "date": _to_eastern(r["date"]).isoformat() if r["date"] else None,
             "location": r["location"],
             "result": "W" if won else "L",
             "team_score": r["team_score"],
@@ -938,6 +975,8 @@ async def get_research_brief(
         **results,
         "home_team_name": summary.get("home_team", {}).get("name", "Home"),
         "away_team_name": summary.get("away_team", {}).get("name", "Away"),
+        "is_historical": summary.get("status") == "F",
+        "game_status": summary.get("status", ""),
         "is_historical": summary.get("status") == "F",  # F = Final, not in-progress/pre-game
         "game_status": summary.get("status", ""),
         "generated_at": datetime.now(timezone.utc).isoformat(),

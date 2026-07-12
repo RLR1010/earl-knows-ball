@@ -3,7 +3,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 
-const SPORTS = ["mlb"] as const;
+const SPORTS = ["mlb", "nfl"] as const;
 type Sport = (typeof SPORTS)[number];
 
 /* ─────────────────────────────────────────────
@@ -228,6 +228,25 @@ export default function AdminContent() {
   });
   const [showHistorical, setShowHistorical] = useState(false);
 
+  // ── Find nearest game date for smart navigation ─────────────────
+
+  const fetchNearestGame = useCallback(async (targetDate: string, direction: 'next' | 'prev'): Promise<string | null> => {
+    try {
+      const res = await fetch(
+        `/api/writeups/${sport}/nearest-game?date=${targetDate}`,
+        { headers: { Authorization: `Bearer ${token()}` } }
+      );
+      if (!res.ok) return null;
+      const data = await res.json();
+      // prev_date is the most recent day before the target that has games
+      // next_date is the next day after the target that has games
+      if (direction === 'next') return data.next_date || null;
+      return data.prev_date || null;
+    } catch {
+      return null;
+    }
+  }, [sport]);
+
   // ── Fetch games for the selected date range ─────────────────
 
   const fetchGames = useCallback(async () => {
@@ -284,6 +303,28 @@ export default function AdminContent() {
       setLoading(false);
     }
   }, [daysOffset, sport]);
+
+  // ── On mount / sport change: snap to nearest game for NFL ──
+
+  useEffect(() => {
+    if (sport === "nfl") {
+      // Find the next upcoming game and snap to it
+      const today = new Date().toLocaleDateString("en-CA");
+      fetchNearestGame(today, "next").then((date) => {
+        if (date) {
+          const diff = Math.round(
+            (new Date(date).getTime() - new Date(new Date().toDateString()).getTime()) /
+              (1000 * 60 * 60 * 24)
+          );
+          setDaysOffset(diff);
+        }
+      });
+    } else {
+      setDaysOffset(0);
+    }
+  }, [sport, fetchNearestGame]);
+
+  // ── Refetch when daysOffset changes ──
 
   useEffect(() => {
     fetchGames();
@@ -430,7 +471,23 @@ export default function AdminContent() {
 
         <div className="flex items-center gap-2">
           <button
-            onClick={() => setDaysOffset((d) => d - 2)}
+            onClick={async () => {
+              if (sport === "nfl") {
+                const today = new Date();
+                const cur = new Date(today);
+                cur.setDate(cur.getDate() + daysOffset);
+                const ds = cur.toLocaleDateString("en-CA");
+                const prev = await fetchNearestGame(ds, "prev");
+                if (prev) {
+                  const diff = Math.round(
+                    (new Date(prev).getTime() - new Date(new Date().toDateString()).getTime()) / (1000 * 60 * 60 * 24)
+                  );
+                  setDaysOffset(diff);
+                }
+              } else {
+                setDaysOffset((d) => d - 2);
+              }
+            }}
             className="px-3 py-1.5 text-xs font-medium rounded-lg bg-white/[0.03] border border-white/10 text-gray-400 hover:text-white transition"
           >
             ← Earlier
@@ -442,7 +499,23 @@ export default function AdminContent() {
             Today
           </button>
           <button
-            onClick={() => setDaysOffset((d) => d + 2)}
+            onClick={async () => {
+              if (sport === "nfl") {
+                const today = new Date();
+                const cur = new Date(today);
+                cur.setDate(cur.getDate() + daysOffset);
+                const ds = cur.toLocaleDateString("en-CA");
+                const nxt = await fetchNearestGame(ds, "next");
+                if (nxt) {
+                  const diff = Math.round(
+                    (new Date(nxt).getTime() - new Date(new Date().toDateString()).getTime()) / (1000 * 60 * 60 * 24)
+                  );
+                  setDaysOffset(diff);
+                }
+              } else {
+                setDaysOffset((d) => d + 2);
+              }
+            }}
             className="px-3 py-1.5 text-xs font-medium rounded-lg bg-white/[0.03] border border-white/10 text-gray-400 hover:text-white transition"
           >
             Later →
