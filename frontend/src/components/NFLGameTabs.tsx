@@ -8,18 +8,18 @@ interface NFLPlayerStat {
   player_id: number;
   player_name: string;
   position: string | null;
+  pass_attempts: number | null;
+  pass_completions: number | null;
   pass_yards: number | null;
-  pass_td: number | null;
+  pass_tds: number | null;
   pass_int: number | null;
+  rush_attempts: number | null;
   rush_yards: number | null;
-  rush_td: number | null;
+  rush_tds: number | null;
+  targets: number | null;
   receptions: number | null;
-  rec_yards: number | null;
-  rec_td: number | null;
-  tackles: number | null;
-  sacks: number | null;
-  fumbles: number | null;
-  interceptions: number | null;
+  receiving_yards: number | null;
+  receiving_tds: number | null;
 }
 
 interface NFLTeamStats {
@@ -180,18 +180,20 @@ function TeamStatsTable({ homeStats, awayStats, homeTeam, awayTeam }: {
 
 function PlayerStatRow({ p }: { p: NFLPlayerStat }) {
   const cols: { label: string; value: number | null }[] = [
-    ...(p.pass_yards != null ? [{ label: "Pass Yds", value: p.pass_yards }] : []),
-    ...(p.pass_td != null ? [{ label: "TD", value: p.pass_td }] : []),
-    ...(p.pass_int != null ? [{ label: "INT", value: p.pass_int }] : []),
-    ...(p.rush_yards != null ? [{ label: "Rush Yds", value: p.rush_yards }] : []),
-    ...(p.rush_td != null ? [{ label: "Rush TD", value: p.rush_td }] : []),
+    // Passing
+    ...(p.pass_completions != null ? [{ label: "Cmp", value: p.pass_completions }] : []),
+    ...(p.pass_attempts != null ? [{ label: "Att", value: p.pass_attempts }] : []),
+    ...(p.pass_yards != null ? [{ label: "Yds", value: p.pass_yards }] : []),
+    ...(p.pass_tds != null ? [{ label: "TD", value: p.pass_tds }] : []),
+    ...(p.pass_int != null ? [{ label: "Int", value: p.pass_int }] : []),
+    // Rushing
+    ...(p.rush_attempts != null ? [{ label: "Att", value: p.rush_attempts }] : []),
+    ...(p.rush_yards != null ? [{ label: "Yds", value: p.rush_yards }] : []),
+    ...(p.rush_tds != null ? [{ label: "TD", value: p.rush_tds }] : []),
+    // Receiving
     ...(p.receptions != null ? [{ label: "Rec", value: p.receptions }] : []),
-    ...(p.rec_yards != null ? [{ label: "Rec Yds", value: p.rec_yards }] : []),
-    ...(p.rec_td != null ? [{ label: "Rec TD", value: p.rec_td }] : []),
-    ...(p.tackles != null ? [{ label: "Tack", value: p.tackles }] : []),
-    ...(p.sacks != null ? [{ label: "Sack", value: p.sacks }] : []),
-    ...(p.interceptions != null ? [{ label: "Int", value: p.interceptions }] : []),
-    ...(p.fumbles != null ? [{ label: "Fum", value: p.fumbles }] : []),
+    ...(p.receiving_yards != null ? [{ label: "Yds", value: p.receiving_yards }] : []),
+    ...(p.receiving_tds != null ? [{ label: "TD", value: p.receiving_tds }] : []),
   ];
   return (
     <tr className="border-b border-white/5 hover:bg-white/[0.02]">
@@ -207,18 +209,20 @@ function PlayerStatRow({ p }: { p: NFLPlayerStat }) {
 function PlayerStatsSection({ title, players }: { title: string; players: NFLPlayerStat[] }) {
   const displayCols = players.length > 0
     ? [
-        ...(players[0].pass_yards != null ? ["Pass Yds"] : []),
-        ...(players[0].pass_td != null ? ["TD"] : []),
-        ...(players[0].pass_int != null ? ["INT"] : []),
-        ...(players[0].rush_yards != null ? ["Rush Yds"] : []),
-        ...(players[0].rush_td != null ? ["Rush TD"] : []),
+        // Passing headers
+        ...(players[0].pass_completions != null ? ["Cmp"] : []),
+        ...(players[0].pass_attempts != null ? ["Att"] : []),
+        ...(players[0].pass_yards != null ? ["Yds"] : []),
+        ...(players[0].pass_tds != null ? ["TD"] : []),
+        ...(players[0].pass_int != null ? ["Int"] : []),
+        // Rushing headers
+        ...(players[0].rush_attempts != null ? ["Att"] : []),
+        ...(players[0].rush_yards != null ? ["Yds"] : []),
+        ...(players[0].rush_tds != null ? ["TD"] : []),
+        // Receiving headers
         ...(players[0].receptions != null ? ["Rec"] : []),
-        ...(players[0].rec_yards != null ? ["Rec Yds"] : []),
-        ...(players[0].rec_td != null ? ["Rec TD"] : []),
-        ...(players[0].tackles != null ? ["Tack"] : []),
-        ...(players[0].sacks != null ? ["Sack"] : []),
-        ...(players[0].interceptions != null ? ["Int"] : []),
-        ...(players[0].fumbles != null ? ["Fum"] : []),
+        ...(players[0].receiving_yards != null ? ["Yds"] : []),
+        ...(players[0].receiving_tds != null ? ["TD"] : []),
       ]
     : [];
 

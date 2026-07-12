@@ -54,12 +54,6 @@ class BoxScorePlayer(BaseModel):
     field_goals_made: int = 0
     field_goals_attempted: int = 0
     extra_points_made: int = 0
-    # Defense
-    tackles: float = 0.0
-    sacks: float = 0.0
-    interceptions: int = 0
-    fumbles_recovered: int = 0
-    defensive_tds: int = 0
 
 
 class BoxScoreStats(BaseModel):
@@ -253,6 +247,10 @@ async def _build_team_box_stats(
         key=lambda p: (p["pass_yards"] + p["rush_yards"] + p["receiving_yards"]) + (p["pass_tds"] + p["rush_tds"] + p["receiving_tds"]) * 10,
         reverse=True,
     )
+
+    # Only show offensive and special teams players (no defensive positions)
+    offensive_positions = {"QB", "RB", "FB", "WR", "TE", "K", "P", "LS"}
+    all_players = [p for p in all_players if p["position"] in offensive_positions]
 
     # Also fetch penalties/penalty_yards from nfl.game_stats table
     penalties = 0
