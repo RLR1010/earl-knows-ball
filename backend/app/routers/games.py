@@ -3,7 +3,7 @@ from sqlalchemy import select, func, text
 from sqlalchemy.orm import joinedload
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
-from app.models import Game, Season, Team, PlayerWeeklyStats, Player, BettingLine
+from app.models import Game, Season, Team, PlayerWeeklyStats, Player, BettingLine, NFLGamePrediction
 from pydantic import BaseModel
 
 router = APIRouter()
@@ -392,3 +392,80 @@ async def get_game(game_id: int, db: AsyncSession = Depends(get_db)):
     )
     bl = line_result.fetchone()
     return await _game_to_out(game, float(bl.closing_spread) if bl and bl.closing_spread is not None else None, float(bl.closing_ou) if bl and bl.closing_ou is not None else None)
+
+
+
+@router.get("/handicapping/predictions/{game_id}")
+async def get_nfl_prediction(
+    game_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """Get NFL game prediction for the Earl's Picks tab."""
+    result = await db.execute(
+        select(NFLGamePrediction)
+        .where(NFLGamePrediction.game_id == game_id)
+        .order_by(NFLGamePrediction.id.desc())
+        .limit(1)
+    )
+    pred = result.scalar_one_or_none()
+    if pred is None:
+        return {"detail": "No prediction found"}
+
+    # Get teams for context
+    game_result = await db.execute(select(Game).where(Game.id == game_id))
+    game = game_result.scalar_one_or_none()
+    if game is None:
+        return {"detail": "Game not found"}
+
+    home_team = await db.execute(select(Team).where(Team.id == game.home_team_id))
+    away_team = await db.execute(select(Team).where(Team.id == game.away_team_id))
+    home_abbr = home_team.scalar_one().abbreviation
+    away_abbr = away_team.scalar_one().abbreviation
+
+    # Spread pick: team + margin
+    margin = pred.predicted_margin or 0
+    pick_team = pred.spread_pick or (home_abbr if margin >= 0 else away_abbr)
+    ats_pick = f"{pick_team} {margin:+.1f}"
+
+    # Moneyline pick: convert team abbr to "home"/"away"
+    ml_pick = pred.ml_pick or (home_abbr if margin >= 0 else away_abbr)
+    moneyline = "home" if ml_pick == home_abbr else "away"
+
+    # Over/under
+    ou_pick = pred.ou_pick or "Over"
+    ou_total = pred.predicted_total or 0
+
+    # Confidence scores
+    conf_at = max(pred.ats_conf_cal or 0, pred.margin_conf or 0)
+    conf_ml = pred.ml_conf_cal or pred.ml_conf or 0
+    conf_ou = pred.ou_conf_cal or pred.ou_conf or 0
+    conf_overall = (conf_at + conf_ml + conf_ou) / 3.0
+
+    return {
+        "predicted": {
+            "ats": ats_pick,
+            "over_under": ou_pick,
+            "moneyline": moneyline,
+            "home_score": round(pred.predicted_home_score or 0),
+            "away_score": round(pred.predicted_away_score or 0),
+            "confidence": {
+                "ats": min(round(conf_at * 100, 1), 100.0),
+                "ml": min(round(conf_ml * 100, 1), 100.0),
+                "ou": min(round(conf_ou * 100, 1), 100.0),
+                "overall": min(round(conf_overall * 100, 1), 100.0),
+            },
+        },
+        "line": {
+            "spread": margin,
+            "over_under": round(ou_total, 1),
+        },
+        "results": {
+            "ats": pred.ats_result or "N/A",
+            "over_under": pred.ou_result or "N/A",
+            "moneyline": pred.ml_result or "N/A",
+        },
+        "actual": {
+            "home_score": pred.actual_home_score,
+            "away_score": pred.actual_away_score,
+        },
+    }
