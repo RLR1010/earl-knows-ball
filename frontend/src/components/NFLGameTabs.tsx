@@ -142,12 +142,13 @@ function TeamStatsTable({ homeStats, awayStats, homeTeam, awayTeam }: {
     { label: "Penalty Yards", home: homeStats.penalty_yards, away: awayStats.penalty_yards, better: "low" },
   ];
 
-  const isBetter = (v: number | string | null | undefined, better?: "high" | "low") => {
-    if (v == null || v === "-" || !better) return false;
+  const isBetter = (v: number | string | null | undefined, otherV: number | string | null | undefined, better?: "high" | "low") => {
+    if (v == null || otherV == null || v === "-" || otherV === "-" || !better) return false;
     const n = typeof v === "string" ? parseFloat(v) : v;
-    if (isNaN(n)) return false;
-    if (better === "high") return n > 0;
-    return n === 0;
+    const on = typeof otherV === "string" ? parseFloat(otherV) : otherV;
+    if (isNaN(n) || isNaN(on)) return false;
+    if (better === "high") return n > on;
+    return n < on;
   };
 
   const fmtVal = (v: number | string | null | undefined) => v != null ? v : "-";
@@ -165,9 +166,9 @@ function TeamStatsTable({ homeStats, awayStats, homeTeam, awayTeam }: {
         <tbody>
           {stats.map(s => (
             <tr key={s.label} className="border-b border-white/5">
-              <td className={`py-2 px-3 text-sm text-right ${isBetter(s.away, s.better) ? "text-green-400 font-bold" : ""}`}>{fmtVal(s.away)}</td>
+              <td className={`py-2 px-3 text-sm text-right ${isBetter(s.away, s.home, s.better) ? "text-green-400 font-bold" : ""}`}>{fmtVal(s.away)}</td>
               <td className="py-2 px-3 text-xs text-gray-500 uppercase tracking-wider text-center font-medium">{s.label}</td>
-              <td className={`py-2 px-3 text-sm ${isBetter(s.home, s.better) ? "text-green-400 font-bold" : ""}`}>{fmtVal(s.home)}</td>
+              <td className={`py-2 px-3 text-sm ${isBetter(s.home, s.away, s.better) ? "text-green-400 font-bold" : ""}`}>{fmtVal(s.home)}</td>
             </tr>
           ))}
         </tbody>
