@@ -1,6 +1,7 @@
 """Write-up API endpoints — trigger generation, list, preview, publish."""
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -709,6 +710,7 @@ async def get_nfl_writeup(
     row = await db.execute(
         text("""SELECT w.id, w.game_id, w.title, w.public_content, w.premium_content,
                  w.status, w.version, w.is_historical,
+                 w.research_brief, w.quality_checks,
                  w.published_at, w.created_at,
                  g.week, g.date,
                  ht.abbreviation AS home, at.abbreviation AS away
@@ -722,11 +724,15 @@ async def get_nfl_writeup(
     r = row.mappings().one_or_none()
     if r is None:
         raise HTTPException(status_code=404, detail="Writeup not found")
+    rb = r.get("research_brief")
+    qc = r.get("quality_checks")
     return {
         "writeup_id": r["id"], "game_id": r["game_id"],
         "title": r["title"], "public_content": r["public_content"],
         "premium_content": r["premium_content"], "status": r["status"],
         "version": r["version"], "is_historical": r["is_historical"],
+        "research_brief": json.loads(rb) if isinstance(rb, str) else rb,
+        "quality_checks": json.loads(qc) if isinstance(qc, str) else qc,
         "week": r["week"], "matchup": f"{r['away']} @ {r['home']}",
         "game_date": r["date"].isoformat() if r["date"] else None,
         "published_at": r["published_at"].isoformat() if r["published_at"] else None,
