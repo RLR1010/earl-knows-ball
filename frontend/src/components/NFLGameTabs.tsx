@@ -179,21 +179,21 @@ function TeamStatsTable({ homeStats, awayStats, homeTeam, awayTeam }: {
 // ── Player Stat Components ────────────────────────────────────
 
 function PlayerStatRow({ p }: { p: NFLPlayerStat }) {
-  const cols: { label: string; value: number | null }[] = [
+  const cols: { label: string; value: number | null; key: string }[] = [
     // Passing
-    ...(p.pass_completions != null ? [{ label: "Cmp", value: p.pass_completions }] : []),
-    ...(p.pass_attempts != null ? [{ label: "Att", value: p.pass_attempts }] : []),
-    ...(p.pass_yards != null ? [{ label: "Yds", value: p.pass_yards }] : []),
-    ...(p.pass_tds != null ? [{ label: "TD", value: p.pass_tds }] : []),
-    ...(p.pass_int != null ? [{ label: "Int", value: p.pass_int }] : []),
+    ...(p.pass_completions != null ? [{ label: "Cmp", value: p.pass_completions, key: "p-cmp" }] : []),
+    ...(p.pass_attempts != null ? [{ label: "Att", value: p.pass_attempts, key: "p-att" }] : []),
+    ...(p.pass_yards != null ? [{ label: "Yds", value: p.pass_yards, key: "p-yds" }] : []),
+    ...(p.pass_tds != null ? [{ label: "TD", value: p.pass_tds, key: "p-td" }] : []),
+    ...(p.pass_int != null ? [{ label: "Int", value: p.pass_int, key: "p-int" }] : []),
     // Rushing
-    ...(p.rush_attempts != null ? [{ label: "Att", value: p.rush_attempts }] : []),
-    ...(p.rush_yards != null ? [{ label: "Yds", value: p.rush_yards }] : []),
-    ...(p.rush_tds != null ? [{ label: "TD", value: p.rush_tds }] : []),
+    ...(p.rush_attempts != null ? [{ label: "Att", value: p.rush_attempts, key: "r-att" }] : []),
+    ...(p.rush_yards != null ? [{ label: "Yds", value: p.rush_yards, key: "r-yds" }] : []),
+    ...(p.rush_tds != null ? [{ label: "TD", value: p.rush_tds, key: "r-td" }] : []),
     // Receiving
-    ...(p.receptions != null ? [{ label: "Rec", value: p.receptions }] : []),
-    ...(p.receiving_yards != null ? [{ label: "Yds", value: p.receiving_yards }] : []),
-    ...(p.receiving_tds != null ? [{ label: "TD", value: p.receiving_tds }] : []),
+    ...(p.receptions != null ? [{ label: "Rec", value: p.receptions, key: "rec-rec" }] : []),
+    ...(p.receiving_yards != null ? [{ label: "Yds", value: p.receiving_yards, key: "rec-yds" }] : []),
+    ...(p.receiving_tds != null ? [{ label: "TD", value: p.receiving_tds, key: "rec-td" }] : []),
   ];
   return (
     <tr className="border-b border-white/5 hover:bg-white/[0.02]">
@@ -201,53 +201,49 @@ function PlayerStatRow({ p }: { p: NFLPlayerStat }) {
         {p.player_name}
         {p.position ? <span className="text-gray-500 text-[10px] ml-1">({p.position})</span> : null}
       </td>
-      {cols.map(c => <td key={c.label} className="py-2 px-3 text-sm text-right">{c.value}</td>)}
+      {cols.map(c => <td key={c.key} className="py-2 px-3 text-sm text-right">{c.value}</td>)}
     </tr>
   );
 }
 
 function PlayerStatsSection({ title, players }: { title: string; players: NFLPlayerStat[] }) {
-  const displayCols = players.length > 0
+  const displayCols: { label: string; key: string }[] = players.length > 0
     ? [
         // Passing headers
-        ...(players[0].pass_completions != null ? ["Cmp"] : []),
-        ...(players[0].pass_attempts != null ? ["Att"] : []),
-        ...(players[0].pass_yards != null ? ["Yds"] : []),
-        ...(players[0].pass_tds != null ? ["TD"] : []),
-        ...(players[0].pass_int != null ? ["Int"] : []),
+        ...(players[0].pass_completions != null ? [{ label: "Cmp", key: "p-cmp" }] : []),
+        ...(players[0].pass_attempts != null ? [{ label: "Att", key: "p-att" }] : []),
+        ...(players[0].pass_yards != null ? [{ label: "Yds", key: "p-yds" }] : []),
+        ...(players[0].pass_tds != null ? [{ label: "TD", key: "p-td" }] : []),
+        ...(players[0].pass_int != null ? [{ label: "Int", key: "p-int" }] : []),
         // Rushing headers
-        ...(players[0].rush_attempts != null ? ["Att"] : []),
-        ...(players[0].rush_yards != null ? ["Yds"] : []),
-        ...(players[0].rush_tds != null ? ["TD"] : []),
+        ...(players[0].rush_attempts != null ? [{ label: "Att", key: "r-att" }] : []),
+        ...(players[0].rush_yards != null ? [{ label: "Yds", key: "r-yds" }] : []),
+        ...(players[0].rush_tds != null ? [{ label: "TD", key: "r-td" }] : []),
         // Receiving headers
-        ...(players[0].receptions != null ? ["Rec"] : []),
-        ...(players[0].receiving_yards != null ? ["Yds"] : []),
-        ...(players[0].receiving_tds != null ? ["TD"] : []),
+        ...(players[0].receptions != null ? [{ label: "Rec", key: "rec-rec" }] : []),
+        ...(players[0].receiving_yards != null ? [{ label: "Yds", key: "rec-yds" }] : []),
+        ...(players[0].receiving_tds != null ? [{ label: "TD", key: "rec-td" }] : []),
       ]
     : [];
-
   return (
-    <div className="mt-6">
-      <div className="bg-white/5 px-4 py-2 text-sm font-semibold">{title}</div>
+    <div>
+      <h4 className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-2">{title}</h4>
       <div className="overflow-x-auto">
-        <table className="w-full text-xs">
+        <table className="w-full text-left">
           <thead>
             <tr className="bg-white/[0.03] text-gray-500 uppercase text-[10px] tracking-wider">
               <th className="py-2 px-3 text-left">Player</th>
-              {displayCols.map(c => <th key={c} className="py-2 px-3 text-right">{c}</th>)}
+              {displayCols.map(c => <th key={c.key} className="py-2 px-3 text-right">{c.label}</th>)}
             </tr>
           </thead>
           <tbody>
-            {players.map(p => <PlayerStatRow key={p.player_id} p={p} />)}
+            {players.map((p, i) => <PlayerStatRow key={`${p.player_id}-${i}`} p={p} />)}
           </tbody>
         </table>
       </div>
     </div>
   );
 }
-
-// ── Tab Content Components ─────────────────────────────────────
-
 function NFLBoxScoreContent({ homeTeam, awayTeam, homeStats, awayStats }: {
   homeTeam: string;
   awayTeam: string;
