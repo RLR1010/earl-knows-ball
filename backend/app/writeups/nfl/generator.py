@@ -5,11 +5,12 @@ and custom message building for the rich nested research structure.
 """
 from __future__ import annotations
 
-import json
 import logging
-from datetime import date
+from datetime import date, datetime
+from decimal import Decimal
 from typing import Any, Optional
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.writeups.base_generator import BaseWriteupGenerator
@@ -111,6 +112,95 @@ Write your article below. Start with the title on its own plain line, then the a
 
     def sport_context(self) -> str:
         return "NFL football"
+
+    # ── Store Override ───────────────────────────────────────
+
+    @staticmethod
+    def _convert_for_json(obj: Any) -> Any:
+        """Recursively convert non-serializable types (Decimal, etc.)."""
+        if isinstance(obj, dict):
+            return {k: NFLWriteupGenerator._convert_for_json(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [NFLWriteupGenerator._convert_for_json(v) for v in obj]
+        if isinstance(obj, Decimal):
+            return float(obj)
+        return obj
+
+    async def store(
+        self,
+        game_id: int,
+        writeup: dict[str, Any],
+        qc_results: list[dict[str, Any]],
+    ) -> int:
+        """Insert or update the write-up in `nfl.game_writeups`."""
+        db = self._db
+        from app.models.nfl.writeup import NFLGameWriteup
+
+        status = self._derive_status(qc_results)
+        is_hist = writeup.get("is_historical", False)
+
+        hist_game_date = None
+        if is_hist:
+            game_summary = (writeup.get("research_brief", {}) or {}).get("game_summary", {})
+            date_str = game_summary.get("date", "")
+            if date_str:
+                try:
+                    hist_game_date = datetime.fromisoformat(date_str)
+                except (ValueError, TypeError):
+                    pass
+
+        research_data = NFLWriteupGenerator._convert_for_json(writeup.get("research_brief") or None)
+        qc_data = NFLWriteupGenerator._convert_for_json(qc_results or writeup.get("quality_checks") or None)
+
+        existing_row = await db.execute(
+            text("SELECT id, version FROM nfl.game_writeups WHERE game_id = :gid"),
+            {"gid": game_id},
+        )
+        existing = existing_row.mappings().one_or_none()
+
+        if existing:
+            writeup_obj = await db.get(NFLGameWriteup, existing["id"])
+            if writeup_obj:
+                writeup_obj.version = existing["version"] + 1
+                writeup_obj.title = writeup.get("title", "")
+                writeup_obj.public_content = writeup.get("public_content", "")
+                writeup_obj.premium_content = writeup.get("premium_content", "")
+                writeup_obj.research_brief = research_data
+                writeup_obj.quality_checks = qc_data
+                writeup_obj.status = status
+                writeup_obj.is_historical = is_hist
+                writeup_obj.historical_game_date = hist_game_date
+                db.add(writeup_obj)
+        else:
+            writeup_obj = NFLGameWriteup(
+                game_id=game_id,
+                version=1,
+                title=writeup.get("title", ""),
+                public_content=writeup.get("public_content", ""),
+                premium_content=writeup.get("premium_content", ""),
+                research_brief=research_data,
+                quality_checks=qc_data,
+                status=status,
+                is_historical=is_hist,
+                historical_game_date=hist_game_date,
+            )
+            db.add(writeup_obj)
+
+        await db.flush()
+        await db.commit()
+        return writeup_obj.id
+
+    def _derive_status(self, qc_results: list[dict[str, Any]]) -> str:
+        """Auto-set status based on quality checks."""
+        if not qc_results:
+            return "draft"
+        passed = sum(1 for q in qc_results if q.get("passed"))
+        total = len(qc_results)
+        if passed == total:
+            return "review"
+        if passed >= total / 2:
+            return "draft"
+        return "draft"
 
     # ── Message Builder Override ─────────────────────────────
 

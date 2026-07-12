@@ -369,7 +369,7 @@ export default function AdminContent() {
   };
 
   const handleEdit = (writeupId: number) => {
-    router.push(`/admin/content/${writeupId}`);
+    router.push(`/admin/content/${writeupId}?sport=${sport}`);
   };
 
   const handleGenerateAll = async () => {

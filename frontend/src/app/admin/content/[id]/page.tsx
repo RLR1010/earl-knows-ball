@@ -81,7 +81,7 @@ export default function ContentEditor() {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`/api/writeups/mlb/${writeupId}?tier=premium`, {
+      const res = await fetch(`/api/writeups/${sport}/${writeupId}?tier=premium`, {
         headers: { Authorization: `Bearer ${token()}` },
       });
       if (!res.ok) throw new Error(`Failed to load: ${res.status}`);
@@ -102,7 +102,7 @@ export default function ContentEditor() {
       }
 
       // We need both versions — fetch with tier=public as well
-      const pubRes = await fetch(`/api/writeups/mlb/${writeupId}?tier=public`, {
+      const pubRes = await fetch(`/api/writeups/${sport}/${writeupId}?tier=public`, {
         headers: { Authorization: `Bearer ${token()}` },
       });
       if (pubRes.ok) {
@@ -131,7 +131,7 @@ export default function ContentEditor() {
     try {
       // Update title via backend
       // For now just save content locally
-      const res = await fetch(`/api/writeups/mlb/${writeupId}?tier=premium`, {
+      const res = await fetch(`/api/writeups/${sport}/${writeupId}?tier=premium`, {
         method: "PATCH",
         headers: {
           Authorization: `Bearer ${token()}`,
@@ -157,7 +157,7 @@ export default function ContentEditor() {
   const handleStatusChange = async (newStatus: string) => {
     try {
       const res = await fetch(
-        `/api/writeups/mlb/${writeupId}/status?status=${newStatus}`,
+        `/api/writeups/${sport}/${writeupId}/status?status=${newStatus}`,
         {
           method: "PATCH",
           headers: { Authorization: `Bearer ${token()}` },
@@ -182,7 +182,7 @@ export default function ContentEditor() {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 180_000);
       const res = await fetch(
-        `http://localhost:8001/writeups/mlb/generate/${writeup.game_id}`,
+        `http://localhost:8001/writeups/${sport}/generate/${writeup.game_id}`,
         {
           method: "POST",
           headers: { Authorization: `Bearer ${token()}`, "Content-Type": "application/json" },
