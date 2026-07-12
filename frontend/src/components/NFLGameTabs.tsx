@@ -157,10 +157,10 @@ function TeamStatsTable({ homeStats, awayStats, homeTeam, awayTeam }: {
     <div className="overflow-x-auto">
       <table className="w-full text-xs">
         <thead>
-          <tr className="bg-white/[0.03] text-gray-500 uppercase text-[10px] tracking-wider">
-            <th className="text-right py-2 px-3 w-1/3">{awayTeam}</th>
-            <th className="text-center py-2 px-3 w-1/3"></th>
-            <th className="py-2 px-3 w-1/3">{homeTeam}</th>
+          <tr className="bg-white/[0.03] text-gray-500 uppercase tracking-wider">
+            <th className="text-right py-2 px-3 w-1/3 text-xs">{awayTeam}</th>
+            <th className="text-center py-2 px-3 w-1/3 text-[10px]"></th>
+            <th className="text-left py-2 px-3 w-1/3 text-xs">{homeTeam}</th>
           </tr>
         </thead>
         <tbody>
