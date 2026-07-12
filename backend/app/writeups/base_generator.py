@@ -129,17 +129,14 @@ This is a game preview — not a betting analysis. Write in the style of a well-
 
 {tense_note}
 
-⚠️ HUMAN VOICE DIRECTIVES (CRITICAL):
-Write like a real human sports journalist — natural, flowing prose, not an AI-generated article. Absolutely NO bullet points, numbered lists, dashes, asterisks, or any structured formatting in the article body whatsoever. NO bold, italics, markdown, or special characters in the prose — just plain natural text. Vary sentence length and structure and avoid repetitive patterns that scream "AI wrote this." Write in paragraphs, not structured sections with headings beyond the title. No robotic formulas like "Let's break down..." or "Here's what you need to know..." — write naturally. This should read as if a beat writer pounded it out on their laptop, not a language model.
-
-Write your article below. Start with the title on its own plain line, then the article body. Do not use any markdown, hashtags, asterisks, or special formatting."""
+Write your article below. Start with the title on its own line (preceded by ##), then the article body."""
 
     def premium_system_prompt(self, is_historical: bool = False) -> str:
         """System prompt for the premium-only (insider) writeup.
 
         This is called AFTER the public writeup is done, with the full research
         brief that includes betting lines, splits, model predictions, etc.
-        Outputs JSON so the front-end can parse title + premium_content.
+        Same format as public: first line is the title, then blank line, then content. No JSON.
         """
         tense_note = (
             "CRITICAL: This is a HISTORICAL write-up. The game has already been played. "
@@ -174,16 +171,16 @@ What to include:
 - If you cannot think of genuinely premium-worthy content, focus on one key angle and explain it exhaustively
 - Premium content should feel like you're giving the reader a real edge they can't get elsewhere
 
-⚠️ HUMAN VOICE DIRECTIVES (CRITICAL — apply to the CONTENT):
-The article content must read like a real human sports journalist wrote it — natural, flowing prose, not AI-generated text. Absolutely NO bullet points, numbered lists, dashes, asterisks, or any structured formatting in the article body. NO bold, italics, markdown, or special characters in the prose — just plain natural text. Vary sentence length and structure and avoid repetitive patterns that sound like AI. Write in paragraphs, not structured sections with subheadings beyond the title. No robotic formulas like "Let's break down..." or "Here's a deep dive..." — write naturally. This should read as if a seasoned handicapper sat down and wrote their analysis, not a language model.
+OUTPUT FORMAT (CRITICAL): Start your response with the article TITLE on its own line.
+Then a blank line. Then the full article content as plain text paragraphs.
+No JSON, no markdown, no special formatting. Just a title line, blank line, then the article.
 
-Output format (preferred): Return valid JSON with these keys:
-  - "title": A punchy, engaging title for the premium section (include team names, max ~80 chars)
-  - "content": The full premium article content — natural flowing paragraphs, no structured formatting
+Example:
+The Javier Conundrum: Why This Astros-Rangers Matchup Screams Texas
 
-If you cannot return JSON, write the article directly starting with the title on its own plain line. JSON is preferred but article text is acceptable.
+On paper, this looks like a battle of two middling AL West teams with losing June records...
 
-No markdown fences, no hash signs, no special formatting whatsoever.
+This is the same format as the public article -- plain text, no JSON layer.
 {tense_note}"""
 
     # ── Generation ──────────────────────────────────────────
@@ -224,7 +221,7 @@ No markdown fences, no hash signs, no special formatting whatsoever.
         public_system = self.public_system_prompt(is_historical)
         public_prompt = self._build_messages(stripped)
 
-        raw_public = await self._call_deepseek(public_system, public_prompt)
+        raw_public = await self._call_deepseek(public_system, public_prompt, max_tokens=2000, reasoning="high")
         if raw_public is None:
             return {"error": "DeepSeek API call failed for public section"}
 
@@ -237,7 +234,7 @@ No markdown fences, no hash signs, no special formatting whatsoever.
         premium_system = self.premium_system_prompt(is_historical)
         premium_prompt = self._build_messages(research)
 
-        raw_premium = await self._call_deepseek(premium_system, premium_prompt)
+        raw_premium = await self._call_deepseek(premium_system, premium_prompt, max_tokens=3000, reasoning="high")
         if raw_premium is None:
             logger.warning("premium LLM call failed for game %s — using fallback", game_id)
             premium_content = "Premium content unavailable — API call failed."
@@ -275,36 +272,14 @@ No markdown fences, no hash signs, no special formatting whatsoever.
         return parsed
 
     def _parse_premium_response(self, raw: str) -> dict[str, str]:
-        """Parse the premium response. Tries JSON first (from premium_system_prompt),
-        falls back to treating the first line as the title. Uses the full response
-        body as content in the fallback."""
-        import json
+        """Parse premium response: first line = title, rest = content.
 
+        Same plain-text format as the public writeup -- first line is the title,
+        everything after is the article body. No JSON handling needed."""
         cleaned = raw.strip()
-
-        # Try JSON extraction (premium_system_prompt asks for JSON)
-        json_attempt = cleaned
-        if json_attempt.startswith("```"):
-            start = json_attempt.find("{")
-            if start >= 0:
-                json_attempt = json_attempt[start:]
-            end = json_attempt.rfind("}")
-            if end >= 0:
-                json_attempt = json_attempt[: end + 1]
-
-        try:
-            parsed = json.loads(json_attempt)
-            return {
-                "title": parsed.get("title", ""),
-                "content": parsed.get("content", ""),
-            }
-        except (json.JSONDecodeError, TypeError):
-            pass  # fall through to plain text parsing
-
-        # Fallback: first non-empty line is the title, rest is content
         lines = cleaned.split("\n", 1)
         title = lines[0].strip().strip("#").strip() if lines else ""
-        content = lines[1].strip() if len(lines) > 1 else ""
+        content = lines[1].strip() if len(lines) > 1 else cleaned
         return {"title": title, "content": content}
 
     async def _call_deepseek(self, system: str, user_prompt: str) -> str | None:

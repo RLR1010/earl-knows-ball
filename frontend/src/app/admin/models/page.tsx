@@ -241,7 +241,7 @@ function ModelVariantSection({ variant: _variant, loadedRunInfo, trainingRuns, o
               ].filter(Boolean).join(" | ");
               return (
                 <option key={run.id} value={run.id}>
-                  Run #{run.id} — {new Date(run.trained_at || run.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })} — {stats}
+                  Run #{run.id} — {new Date(run.trained_at ?? run.created_at ?? Date.now()).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })} — {stats}
                 </option>
               );
             })}
@@ -536,7 +536,7 @@ export default function AdminModels() {
       const json = await res.json();
       if (res.ok) {
         setLoadedRunInfo(json.variant || json);
-        setSelectedRunId(String(runId));
+        setSelectedRunId(runId);
       } else {
         setLoadedRunInfo({ error: json.detail || "Failed to load" });
       }

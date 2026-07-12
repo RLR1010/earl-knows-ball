@@ -70,7 +70,77 @@ def compute_team_game_aggregates(
              WHERE sub.season = gs.season
                AND sub.week = gs.week
                AND sub.team_abbr = gs.opponent_abbr
-               AND sub.opponent_abbr = gs.team_abbr) AS opp_ypp
+               AND sub.opponent_abbr = gs.team_abbr) AS opp_ypp,
+            (SELECT sub.first_downs
+             FROM nfl.game_stats sub
+             WHERE sub.season = gs.season
+               AND sub.week = gs.week
+               AND sub.team_abbr = gs.opponent_abbr
+               AND sub.opponent_abbr = gs.team_abbr) AS def_first_downs,
+            (SELECT sub.third_down_attempts
+             FROM nfl.game_stats sub
+             WHERE sub.season = gs.season
+               AND sub.week = gs.week
+               AND sub.team_abbr = gs.opponent_abbr
+               AND sub.opponent_abbr = gs.team_abbr) AS def_tda,
+            (SELECT sub.third_down_conversions
+             FROM nfl.game_stats sub
+             WHERE sub.season = gs.season
+               AND sub.week = gs.week
+               AND sub.team_abbr = gs.opponent_abbr
+               AND sub.opponent_abbr = gs.team_abbr) AS def_tdc,
+            (SELECT sub.fourth_down_attempts
+             FROM nfl.game_stats sub
+             WHERE sub.season = gs.season
+               AND sub.week = gs.week
+               AND sub.team_abbr = gs.opponent_abbr
+               AND sub.opponent_abbr = gs.team_abbr) AS def_fda,
+            (SELECT sub.fourth_down_conversions
+             FROM nfl.game_stats sub
+             WHERE sub.season = gs.season
+               AND sub.week = gs.week
+               AND sub.team_abbr = gs.opponent_abbr
+               AND sub.opponent_abbr = gs.team_abbr) AS def_fdc,
+            (SELECT sub.red_zone_trips
+             FROM nfl.game_stats sub
+             WHERE sub.season = gs.season
+               AND sub.week = gs.week
+               AND sub.team_abbr = gs.opponent_abbr
+               AND sub.opponent_abbr = gs.team_abbr) AS def_rz_trips,
+            (SELECT sub.red_zone_tds
+             FROM nfl.game_stats sub
+             WHERE sub.season = gs.season
+               AND sub.week = gs.week
+               AND sub.team_abbr = gs.opponent_abbr
+               AND sub.opponent_abbr = gs.team_abbr) AS def_rz_tds,
+            (SELECT sub.explosive_plays
+             FROM nfl.game_stats sub
+             WHERE sub.season = gs.season
+               AND sub.week = gs.week
+               AND sub.team_abbr = gs.opponent_abbr
+               AND sub.opponent_abbr = gs.team_abbr) AS def_explosive_plays,
+            (SELECT sub.three_and_outs
+             FROM nfl.game_stats sub
+             WHERE sub.season = gs.season
+               AND sub.week = gs.week
+               AND sub.team_abbr = gs.opponent_abbr
+               AND sub.opponent_abbr = gs.team_abbr) AS def_three_and_outs,
+            (SELECT sub.interceptions_thrown
+             FROM nfl.game_stats sub
+             WHERE sub.season = gs.season
+               AND sub.week = gs.week
+               AND sub.team_abbr = gs.opponent_abbr
+               AND sub.opponent_abbr = gs.team_abbr) AS def_ints_thrown,
+            first_downs          AS first_downs,
+            third_down_attempts  AS tda,
+            third_down_conversions AS tdc,
+            fourth_down_attempts AS fda,
+            fourth_down_conversions AS fdc,
+            red_zone_trips       AS rz_trips,
+            red_zone_tds         AS rz_tds,
+            explosive_plays      AS explosive_plays,
+            three_and_outs       AS three_and_outs,
+            interceptions_thrown AS ints_thrown
         FROM nfl.game_stats gs
         WHERE gs.season_type = 'REG'
     ),
@@ -131,7 +201,127 @@ def compute_team_game_aggregates(
                 PARTITION BY team_abbr
                 ORDER BY season, week
                 ROWS BETWEEN {window} PRECEDING AND 1 PRECEDING
-            ) AS def_rush_ypg_r{window}
+            ) AS def_rush_ypg_r{window},
+            -- PBP-derived rolling features
+            AVG(first_downs) OVER (
+                PARTITION BY team_abbr ORDER BY season, week
+                ROWS BETWEEN {window} PRECEDING AND 1 PRECEDING
+            ) AS first_downs_r{window},
+            CASE WHEN SUM(tda) OVER (
+                PARTITION BY team_abbr ORDER BY season, week
+                ROWS BETWEEN {window} PRECEDING AND 1 PRECEDING
+            ) > 0
+                THEN 100.0 * SUM(tdc) OVER (
+                    PARTITION BY team_abbr ORDER BY season, week
+                    ROWS BETWEEN {window} PRECEDING AND 1 PRECEDING
+                ) / NULLIF(SUM(tda) OVER (
+                    PARTITION BY team_abbr ORDER BY season, week
+                    ROWS BETWEEN {window} PRECEDING AND 1 PRECEDING
+                ), 0)
+                ELSE 0
+            END AS third_down_pct_r{window},
+            CASE WHEN SUM(fda) OVER (
+                PARTITION BY team_abbr ORDER BY season, week
+                ROWS BETWEEN {window} PRECEDING AND 1 PRECEDING
+            ) > 0
+                THEN 100.0 * SUM(fdc) OVER (
+                    PARTITION BY team_abbr ORDER BY season, week
+                    ROWS BETWEEN {window} PRECEDING AND 1 PRECEDING
+                ) / NULLIF(SUM(fda) OVER (
+                    PARTITION BY team_abbr ORDER BY season, week
+                    ROWS BETWEEN {window} PRECEDING AND 1 PRECEDING
+                ), 0)
+                ELSE 0
+            END AS fourth_down_pct_r{window},
+            AVG(rz_trips) OVER (
+                PARTITION BY team_abbr ORDER BY season, week
+                ROWS BETWEEN {window} PRECEDING AND 1 PRECEDING
+            ) AS rz_trips_r{window},
+            CASE WHEN SUM(rz_trips) OVER (
+                PARTITION BY team_abbr ORDER BY season, week
+                ROWS BETWEEN {window} PRECEDING AND 1 PRECEDING
+            ) > 0
+                THEN 100.0 * SUM(rz_tds) OVER (
+                    PARTITION BY team_abbr ORDER BY season, week
+                    ROWS BETWEEN {window} PRECEDING AND 1 PRECEDING
+                ) / NULLIF(SUM(rz_trips) OVER (
+                    PARTITION BY team_abbr ORDER BY season, week
+                    ROWS BETWEEN {window} PRECEDING AND 1 PRECEDING
+                ), 0)
+                ELSE 0
+            END AS rz_td_pct_r{window},
+            AVG(explosive_plays) OVER (
+                PARTITION BY team_abbr ORDER BY season, week
+                ROWS BETWEEN {window} PRECEDING AND 1 PRECEDING
+            ) AS explosive_plays_r{window},
+            AVG(three_and_outs) OVER (
+                PARTITION BY team_abbr ORDER BY season, week
+                ROWS BETWEEN {window} PRECEDING AND 1 PRECEDING
+            ) AS three_and_outs_r{window},
+            AVG(ints_thrown) OVER (
+                PARTITION BY team_abbr ORDER BY season, week
+                ROWS BETWEEN {window} PRECEDING AND 1 PRECEDING
+            ) AS ints_thrown_r{window},
+            -- Defensive PBP-derived rolling features
+            AVG(def_first_downs) OVER (
+                PARTITION BY team_abbr ORDER BY season, week
+                ROWS BETWEEN {window} PRECEDING AND 1 PRECEDING
+            ) AS def_first_downs_r{window},
+            CASE WHEN SUM(def_tda) OVER (
+                PARTITION BY team_abbr ORDER BY season, week
+                ROWS BETWEEN {window} PRECEDING AND 1 PRECEDING
+            ) > 0
+                THEN 100.0 * SUM(def_tdc) OVER (
+                    PARTITION BY team_abbr ORDER BY season, week
+                    ROWS BETWEEN {window} PRECEDING AND 1 PRECEDING
+                ) / NULLIF(SUM(def_tda) OVER (
+                    PARTITION BY team_abbr ORDER BY season, week
+                    ROWS BETWEEN {window} PRECEDING AND 1 PRECEDING
+                ), 0)
+                ELSE 0
+            END AS def_third_down_pct_r{window},
+            CASE WHEN SUM(def_fda) OVER (
+                PARTITION BY team_abbr ORDER BY season, week
+                ROWS BETWEEN {window} PRECEDING AND 1 PRECEDING
+            ) > 0
+                THEN 100.0 * SUM(def_fdc) OVER (
+                    PARTITION BY team_abbr ORDER BY season, week
+                    ROWS BETWEEN {window} PRECEDING AND 1 PRECEDING
+                ) / NULLIF(SUM(def_fda) OVER (
+                    PARTITION BY team_abbr ORDER BY season, week
+                    ROWS BETWEEN {window} PRECEDING AND 1 PRECEDING
+                ), 0)
+                ELSE 0
+            END AS def_fourth_down_pct_r{window},
+            AVG(def_rz_trips) OVER (
+                PARTITION BY team_abbr ORDER BY season, week
+                ROWS BETWEEN {window} PRECEDING AND 1 PRECEDING
+            ) AS def_rz_trips_r{window},
+            CASE WHEN SUM(def_rz_trips) OVER (
+                PARTITION BY team_abbr ORDER BY season, week
+                ROWS BETWEEN {window} PRECEDING AND 1 PRECEDING
+            ) > 0
+                THEN 100.0 * SUM(def_rz_tds) OVER (
+                    PARTITION BY team_abbr ORDER BY season, week
+                    ROWS BETWEEN {window} PRECEDING AND 1 PRECEDING
+                ) / NULLIF(SUM(def_rz_trips) OVER (
+                    PARTITION BY team_abbr ORDER BY season, week
+                    ROWS BETWEEN {window} PRECEDING AND 1 PRECEDING
+                ), 0)
+                ELSE 0
+            END AS def_rz_td_pct_r{window},
+            AVG(def_explosive_plays) OVER (
+                PARTITION BY team_abbr ORDER BY season, week
+                ROWS BETWEEN {window} PRECEDING AND 1 PRECEDING
+            ) AS def_explosive_plays_r{window},
+            AVG(def_three_and_outs) OVER (
+                PARTITION BY team_abbr ORDER BY season, week
+                ROWS BETWEEN {window} PRECEDING AND 1 PRECEDING
+            ) AS def_three_and_outs_r{window},
+            AVG(def_ints_thrown) OVER (
+                PARTITION BY team_abbr ORDER BY season, week
+                ROWS BETWEEN {window} PRECEDING AND 1 PRECEDING
+            ) AS def_ints_thrown_r{window}
         FROM team_base
     )
     SELECT
@@ -150,7 +340,23 @@ def compute_team_game_aggregates(
         COALESCE(def_ypg_r{window}, 0) AS def_ypg,
         COALESCE(def_ypp_r{window}, 0) AS def_ypp,
         COALESCE(def_pass_ypg_r{window}, 0) AS def_pass_ypg,
-        COALESCE(def_rush_ypg_r{window}, 0) AS def_rush_ypg
+        COALESCE(def_rush_ypg_r{window}, 0) AS def_rush_ypg,
+        COALESCE(first_downs_r{window}, 0) AS first_downs,
+        COALESCE(third_down_pct_r{window}, 0) AS third_down_pct,
+        COALESCE(fourth_down_pct_r{window}, 0) AS fourth_down_pct,
+        COALESCE(rz_trips_r{window}, 0) AS rz_trips,
+        COALESCE(rz_td_pct_r{window}, 0) AS rz_td_pct,
+        COALESCE(explosive_plays_r{window}, 0) AS explosive_plays,
+        COALESCE(three_and_outs_r{window}, 0) AS three_and_outs,
+        COALESCE(ints_thrown_r{window}, 0) AS ints_thrown,
+        COALESCE(def_first_downs_r{window}, 0) AS def_first_downs,
+        COALESCE(def_third_down_pct_r{window}, 0) AS def_third_down_pct,
+        COALESCE(def_fourth_down_pct_r{window}, 0) AS def_fourth_down_pct,
+        COALESCE(def_rz_trips_r{window}, 0) AS def_rz_trips,
+        COALESCE(def_rz_td_pct_r{window}, 0) AS def_rz_td_pct,
+        COALESCE(def_explosive_plays_r{window}, 0) AS def_explosive_plays,
+        COALESCE(def_three_and_outs_r{window}, 0) AS def_three_and_outs,
+        COALESCE(def_ints_thrown_r{window}, 0) AS def_ints_thrown
     FROM team_rolling
     ORDER BY season, week, team_abbr
     """

@@ -4,6 +4,7 @@ import { useParams, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { NBABoxScorePage } from "@/components/NBABoxScore";
 import MLBGameTabs from "@/components/MLBGameTabs";
+import NFLGameTabs, { BettingLinesCard } from "@/components/NFLGameTabs";
 
 // ── Shared Types ─────────────────────────────────────────────
 
@@ -12,6 +13,7 @@ interface GameInfo {
   venue: string | null; roof_type: string | null;
   home_team: string; away_team: string;
   home_score: number | null; away_score: number | null;
+  spread?: number | null; over_under?: number | null;
 }
 
 interface BoxScoreStats {
@@ -23,7 +25,12 @@ interface BoxScoreStats {
   top_players: any[];
 }
 
-interface NFLBoxScore { game: GameInfo; home_stats: BoxScoreStats | null; away_stats: BoxScoreStats | null; }
+interface NFLBoxScore {
+  game: GameInfo;
+  home_stats: BoxScoreStats | null;
+  away_stats: BoxScoreStats | null;
+  betting_lines?: Array<{ spread: number | null; over_under: number | null; home_team?: string; away_team?: string; home_ml?: number | null; away_ml?: number | null }> | null;
+}
 
 interface GamePrediction {
   game_id: number; season: number; week: number;
@@ -290,9 +297,10 @@ export default function GameDetailPage() {
       <Link href={backHref} className="text-sm text-earl-400 hover:text-earl-300">← Back to Schedule</Link></div>;
   }
 
-  // Create a 'fake' prediction with just line data for the pick card
-  const lineOnlyPred: GamePrediction | null = gameLine && !prediction ? {
-    game_id: parseInt(gameId || "0"), season: 0, week: 0,
+  // Build combined prediction (use real pred or line-only fallback)
+  const predForTabs = prediction || (gameLine ? ({
+    game_id: parseInt(gameId || "0"),
+    season: 0, week: nflBoxScore?.game?.week || 0,
     home_team: nflBoxScore?.game?.home_team || "",
     away_team: nflBoxScore?.game?.away_team || "",
     date: nflBoxScore?.game?.date || null,
@@ -301,30 +309,73 @@ export default function GameDetailPage() {
     results: { ats: "N/A", ou: "N/A", ml: "N/A" },
     confidence: { overall: null, ats: null, ou: null, ml: null },
     line: gameLine,
-  } : null;
+  }) as unknown as GamePrediction : null);
+
+  const nflGameStatus = nflBoxScore?.game?.status?.toLowerCase() || "";
+  const isNflFinal = nflGameStatus === "final";
+  const nflBadge = isNflFinal
+    ? { label: "FINAL", cls: "text-green-400" }
+    : { label: nflGameStatus?.toUpperCase() || "SCHEDULED", cls: "text-earl-400" };
+  const hWon = isNflFinal && (nflBoxScore?.game?.home_score ?? 0) > (nflBoxScore?.game?.away_score ?? 0);
+  const aWon = isNflFinal && (nflBoxScore?.game?.away_score ?? 0) > (nflBoxScore?.game?.home_score ?? 0);
 
   return (
     <div className="max-w-4xl mx-auto space-y-6">
-      {/* Closing line banner - always show at top */}
-      {(gameLine || prediction?.line) && (
-        <div className="border border-white/10 rounded-xl p-4 bg-gradient-to-br from-earl-900/20 to-transparent text-center">
-          <div className="text-xs text-gray-500 uppercase tracking-wider mb-3">Closing Line</div>
-          <span className="inline-block px-6 py-2.5 rounded-lg bg-gradient-to-r from-earl-800/40 via-earl-600/50 to-earl-800/40 border border-earl-500/50 text-lg font-bold tracking-wide">
-            <span className="text-earl-200">{formatLineAway((gameLine || prediction?.line)?.spread || null, nflBoxScore?.game?.away_team || "")}</span>
-            <span className="mx-4 text-gray-500">|</span>
-            <span className="text-earl-300">{formatSpreadLine((gameLine || prediction?.line)?.spread || null, nflBoxScore?.game?.home_team || "")}</span>
-            {(gameLine || prediction?.line)?.over_under != null && (
-              <>
-                <span className="mx-4 text-gray-500">|</span>
-                <span className="text-white">O/U {(gameLine || prediction?.line)?.over_under}</span>
-              </>
-            )}
-          </span>
+      {/* Score Card */}
+      {nflBoxScore && (
+        <div className="border border-white/10 rounded-xl p-6 bg-gradient-to-r from-white/5 to-white/0 text-center">
+          <span className={`text-sm font-bold ${nflBadge.cls}`}>{nflBadge.label}</span>
+          {nflBoxScore.game.week && <span className="text-sm text-gray-500 ml-3">Week {nflBoxScore.game.week}</span>}
+          <div className="flex items-center justify-center gap-8 md:gap-16 mt-4">
+            <div className="flex flex-col items-center gap-1">
+              <div className={`w-12 h-12 rounded-full bg-white/10 flex items-center justify-center text-xl font-bold ${aWon ? "opacity-100" : "opacity-60"}`}>{nflBoxScore.game.away_team?.slice(0, 3).toUpperCase()}</div>
+              <span className="text-sm font-semibold text-gray-300">{nflBoxScore.game.away_team || ""}</span>
+              <span className={`text-5xl font-bold mt-1 ${aWon ? "text-earl-400" : "text-gray-400"}`}>
+                {nflBoxScore.game.away_score != null ? nflBoxScore.game.away_score : "-"}
+              </span>
+            </div>
+            <div className="text-4xl text-gray-600 font-black">@</div>
+            <div className="flex flex-col items-center gap-1">
+              <div className={`w-12 h-12 rounded-full bg-white/10 flex items-center justify-center text-xl font-bold ${hWon ? "opacity-100" : "opacity-60"}`}>{nflBoxScore.game.home_team?.slice(0, 3).toUpperCase()}</div>
+              <span className="text-sm font-semibold text-gray-300">{nflBoxScore.game.home_team || ""}</span>
+              <span className={`text-5xl font-bold mt-1 ${hWon ? "text-earl-400" : "text-gray-400"}`}>
+                {nflBoxScore.game.home_score != null ? nflBoxScore.game.home_score : "-"}
+              </span>
+            </div>
+          </div>
         </div>
       )}
-      {nflBoxScore && <NFLBoxScore data={nflBoxScore} />}
-      {prediction && <NFLPickCard pred={prediction} />}
-      {lineOnlyPred && <NFLPickCard pred={lineOnlyPred} />}
+
+      {/* Betting Lines Card — from boxscore endpoint's betting_lines (same pattern as MLB) */}
+      {(() => {
+        const bl = nflBoxScore?.betting_lines?.[0];
+        const spread = bl?.spread ?? null;
+        const over_under = bl?.over_under ?? null;
+        const homeML = bl?.home_ml ?? null;
+        const awayML = bl?.away_ml ?? null;
+        if (spread == null && over_under == null && homeML == null && awayML == null) return null;
+        return (
+          <BettingLinesCard
+            homeTeam={nflBoxScore?.game?.home_team || ""}
+            awayTeam={nflBoxScore?.game?.away_team || ""}
+            spread={spread}
+            over_under={over_under}
+            homeML={homeML}
+            awayML={awayML}
+          />
+        );
+      })()}
+
+      {/* NFL Game Tabs */}
+      {nflBoxScore && (
+        <NFLGameTabs
+          gameId={gameId || ""}
+          boxscore={nflBoxScore}
+          prediction={predForTabs}
+        />
+      )}
+
+      {/* Back link */}
       <div className="text-center pt-4">
         <Link href={backHref} className="text-sm text-earl-400 hover:text-earl-300 transition">← Back to Schedule</Link>
       </div>

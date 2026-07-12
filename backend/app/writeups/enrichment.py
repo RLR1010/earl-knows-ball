@@ -31,6 +31,7 @@ async def enrich_writeup_context(
     game_date: datetime,
     starting_pitchers: Optional[list[str]] = None,
     pitching_matchup: Optional[dict] = None,
+    retry: bool = False,
 ) -> dict[str, Any]:
     """Search recent articles + have DeepSeek extract writeup-relevant context.
 
@@ -38,6 +39,7 @@ async def enrich_writeup_context(
         sport: "nfl", "nba", or "mlb"
         game_date: The game date (articles from 7 days before are searched)
         starting_pitchers: For MLB — names of both SPs
+        retry: If True, uses broader generic queries (used after first pass returned empty)
 
     Returns:
         Dict with keys:
@@ -54,16 +56,25 @@ async def enrich_writeup_context(
     date_from = date_to - timedelta(days=7)
 
     # ── 2. Build search queries ─────────────────────────────
-    queries = [
-        f"{home_team} {away_team} preview",
-        f"{home_team} {away_team} injury report",
-        f"{home_team} news",
-        f"{away_team} news",
-    ]
-    if starting_pitchers:
-        for sp in starting_pitchers:
-            if sp:
-                queries.append(f"{sp}")
+    if retry:
+        # Broader generic queries — catch articles missed on first pass
+        queries = [
+            f"{home_team} {sport.upper()} 2026",
+            f"{away_team} {sport.upper()} 2026",
+            f"{home_team} baseball latest",
+            f"{away_team} baseball latest",
+        ]
+    else:
+        queries = [
+            f"{home_team} {away_team} preview",
+            f"{home_team} {away_team} injury report",
+            f"{home_team} news",
+            f"{away_team} news",
+        ]
+        if starting_pitchers:
+            for sp in starting_pitchers:
+                if sp:
+                    queries.append(f"{sp}")
 
     all_articles: list[dict] = []
     seen_urls: set[str] = set()
@@ -181,7 +192,9 @@ async def _call_deepseek_enrichment(
         "- Speculative trade rumors\n\n"
         "If there's genuinely useful context, provide a concise summary "
         "(max {MAX_RETURN_WORDS} words). "
-        "If nothing substantial is found, respond with exactly: NO_RELEVANT_INFO"
+        "If nothing substantial is found, still write a brief summary "
+        "like 'No newsworthy developments found for this matchup.' "
+        "Do NOT respond with NO_RELEVANT_INFO — always write something useful."
     )
 
     user_lines = [
@@ -216,20 +229,42 @@ async def _call_deepseek_enrichment(
                 {"role": "user", "content": user_prompt},
             ],
             temperature=0.3,
-            max_tokens=768,
-            timeout=60.0,
+            max_tokens=1024,
+            timeout=120.0,  # 2 min — DeepSeek sometimes needs extra time
         )
 
         content = (response.choices[0].message.content or "").strip()
-        if content == "NO_RELEVANT_INFO":
-            logger.info("DeepSeek enrichment: no relevant info found")
+        if content in ("NO_RELEVANT_INFO", ""):
+            logger.info("DeepSeek enrichment: no relevant info — building fallback from article text")
+            seen_sources = set()
+            fallback_parts = []
+            for a in (articles or [])[:8]:
+                source = a.get("source_name", "")
+                if source in seen_sources:
+                    continue
+                seen_sources.add(source)
+                title = a.get("title", "") or ""
+                pub_date = a.get("published_at")
+                snippet = (a.get("body", "") or "")[:200].strip()
+                if isinstance(pub_date, datetime):
+                    date_tag = f" ({pub_date.strftime('%b %d, %Y')})"
+                else:
+                    date_tag = f" ({pub_date})" if pub_date else ""
+                if snippet:
+                    fallback_parts.append(f"• {title}{date_tag} — {source}\n  {snippet}")
+                else:
+                    fallback_parts.append(f"• {title}{date_tag} — {source}")
+            if fallback_parts:
+                result = "Recent articles:\n" + "\n\n".join(fallback_parts)
+                logger.info("Fallback enrichment: built %d chars from %d articles", len(result), len(fallback_parts))
+                return result[:1500]
             return ""
 
         logger.info(
             "DeepSeek enrichment: found %d chars of context",
             len(content),
         )
-        return content[:1200]
+        return content[:1500]
 
     except Exception as e:
         logger.warning("DeepSeek enrichment call failed: %s", e)

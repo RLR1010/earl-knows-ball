@@ -69,6 +69,7 @@ class BoxScoreStats(BaseModel):
     turnovers: int = 0
     first_downs: int = 0
     third_down_pct: float | None = None
+    fourth_down_pct: float | None = None
     time_of_possession: str | None = None
     penalties: int = 0
     penalty_yards: int = 0
@@ -79,6 +80,7 @@ class BoxScoreOut(BaseModel):
     game: GameOut
     home_stats: BoxScoreStats
     away_stats: BoxScoreStats
+    betting_lines: list[dict] | None = None
 
 
 async def _game_to_out(game: Game, spread: float | None = None, over_under: float | None = None) -> GameOut:
@@ -252,10 +254,63 @@ async def _build_team_box_stats(
         reverse=True,
     )
 
+    # Also fetch penalties/penalty_yards from nfl.game_stats table
+    penalties = 0
+    penalty_yards = 0
+    season_year_row = await db.execute(
+        select(Season.year).where(Season.id == game.season_id)
+    )
+    season_year = season_year_row.scalar_one_or_none()
+    if season_year and game.week is not None:
+        gs_result = await db.execute(
+            text("""
+                SELECT penalties, penalty_yards
+                FROM nfl.game_stats
+                WHERE season = :season AND week = :week AND team_abbr = :abbr
+            """),
+            {"season": season_year, "week": game.week, "abbr": team_abbr},
+        )
+        gs_row = gs_result.fetchone()
+        if gs_row is not None:
+            penalties = gs_row.penalties or 0
+            penalty_yards = gs_row.penalty_yards or 0
+
+    # Read down conversion and advanced stats from game_stats table
+    first_downs = 0
+    third_down_pct = None
+    fourth_down_pct = None
+    time_of_possession = None
+
+    if season_year and game.week is not None:
+        gs_result = await db.execute(
+            text("""
+                SELECT first_downs, third_down_attempts, third_down_conversions,
+                       fourth_down_attempts, fourth_down_conversions
+                FROM nfl.game_stats
+                WHERE season = :season AND week = :week AND team_abbr = :abbr
+            """),
+            {"season": season_year, "week": game.week, "abbr": team_abbr},
+        )
+        gs_row = gs_result.fetchone()
+        if gs_row is not None:
+            first_downs = gs_row.first_downs or 0
+            tda = gs_row.third_down_attempts or 0
+            tdc = gs_row.third_down_conversions or 0
+            fda = gs_row.fourth_down_attempts or 0
+            fdc = gs_row.fourth_down_conversions or 0
+            third_down_pct = round(tdc / tda * 100, 1) if tda > 0 else None
+            fourth_down_pct = round(fdc / fda * 100, 1) if fda > 0 else None
+
     return BoxScoreStats(
         total_yards=round(total_yards, 1),
         pass_yards=round(pass_yards, 1),
         rush_yards=round(rush_yards, 1),
+        first_downs=first_downs,
+        third_down_pct=third_down_pct,
+        fourth_down_pct=fourth_down_pct,
+        time_of_possession=time_of_possession,
+        penalties=penalties,
+        penalty_yards=penalty_yards,
         turnovers=turnovers,
         top_players=[BoxScorePlayer(**p) for p in all_players[:8]],
     )
@@ -272,7 +327,23 @@ async def get_game_box_score(game_id: int, db: AsyncSession = Depends(get_db)):
     if not game:
         return None
 
-    game_out = await _game_to_out(game)
+    # Get best betting line
+    line_result = await db.execute(
+        text("""
+            SELECT closing_spread, closing_ou, closing_home_ml, closing_away_ml
+            FROM nfl.betting_lines_consolidated
+            WHERE game_id = :game_id
+            LIMIT 1
+        """),
+        {"game_id": game_id},
+    )
+    bl = line_result.fetchone()
+    spread = float(bl.closing_spread) if bl and bl.closing_spread is not None else None
+    over_under = float(bl.closing_ou) if bl and bl.closing_ou is not None else None
+    home_ml = int(bl.closing_home_ml) if bl and bl.closing_home_ml is not None else None
+    away_ml = int(bl.closing_away_ml) if bl and bl.closing_away_ml is not None else None
+
+    game_out = await _game_to_out(game, spread, over_under)
 
     home_stats = await _build_team_box_stats(
         db, game, game.home_team_id, game_out.home_team or ""
@@ -281,7 +352,24 @@ async def get_game_box_score(game_id: int, db: AsyncSession = Depends(get_db)):
         db, game, game.away_team_id, game_out.away_team or ""
     )
 
-    return BoxScoreOut(game=game_out, home_stats=home_stats, away_stats=away_stats)
+    # Build betting_lines array matching MLB response shape
+    betting_lines = []
+    if bl:
+        betting_lines.append({
+            "spread": spread,
+            "over_under": over_under,
+            "home_team": game_out.home_team,
+            "away_team": game_out.away_team,
+            "home_ml": home_ml,
+            "away_ml": away_ml,
+        })
+
+    return BoxScoreOut(
+        game=game_out,
+        home_stats=home_stats,
+        away_stats=away_stats,
+        betting_lines=betting_lines if betting_lines else None
+    )
 
 
 @router.get("/games/{game_id}")
@@ -294,24 +382,15 @@ async def get_game(game_id: int, db: AsyncSession = Depends(get_db)):
     game = result.unique().scalar_one_or_none()
     if not game:
         return None
-    # Get best betting line (priority: nflverse > sbr_closing > the_odds_api > the_odds_api_opening > sbr_opening)
+    # Get best betting line from consolidated table
     line_result = await db.execute(
         text("""
-            SELECT spread, over_under
-            FROM nfl.betting_lines
+            SELECT closing_spread, closing_ou
+            FROM nfl.betting_lines_consolidated
             WHERE game_id = :game_id
-            ORDER BY
-                CASE source
-                    WHEN 'nflverse' THEN 1
-                    WHEN 'sbr_closing' THEN 2
-                    WHEN 'the_odds_api' THEN 3
-                    WHEN 'the_odds_api_opening' THEN 4
-                    ELSE 5
-                END,
-                recorded_at DESC
             LIMIT 1
         """),
         {"game_id": game_id},
     )
     bl = line_result.fetchone()
-    return await _game_to_out(game, float(bl.spread) if bl and bl.spread is not None else None, float(bl.over_under) if bl and bl.over_under is not None else None)
+    return await _game_to_out(game, float(bl.closing_spread) if bl and bl.closing_spread is not None else None, float(bl.closing_ou) if bl and bl.closing_ou is not None else None)

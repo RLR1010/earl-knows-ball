@@ -438,7 +438,7 @@ export default function TeamDetailPage() {
             {sport === "nfl" ? (
               <Image src={`/logos/${abbrUpper}.png`} alt={meta.name} width={56} height={56} className="object-contain w-full h-full" />
             ) : (
-              <img src={getTeamLogoUrl(abbrUpper, sport)} alt={meta.name} width={56} height={56} className="object-contain w-full h-full" style={{ filter: 'brightness(1.1)' }} />
+              <img src={getTeamLogoUrl(abbrUpper, sport) || undefined} alt={meta.name} width={56} height={56} className="object-contain w-full h-full" style={{ filter: 'brightness(1.1)' }} />
             )}
           </div>
           <div>
@@ -1090,7 +1090,7 @@ function NBATeamSchedule({ games, loading, sport, abbrUpper, seasonYear, nbaDate
                 <div className="flex-1 flex items-center justify-center gap-4">
                   <div className="flex items-center gap-2">
                     <div className="w-6 h-6 rounded-full bg-white/10 flex items-center justify-center shrink-0 overflow-hidden">
-                      <img src={getTeamLogoUrl(opponent, sport)} alt={opponent} width={24} height={24} className="object-contain" style={{ filter: "brightness(1.1)" }} />
+                      <img src={getTeamLogoUrl(opponent, sport) || undefined} alt={opponent} width={24} height={24} className="object-contain" style={{ filter: "brightness(1.1)" }} />
                     </div>
                     <span className={"text-sm font-semibold " + (!isHome ? "text-white" : "text-gray-400")}>{opponent}</span>
                     {isFinal && <span className={"text-base font-bold " + (won ? "text-earl-400" : lost ? "text-red-400" : "text-white")}>{!isHome ? g.away_score : g.home_score}</span>}
@@ -1108,7 +1108,7 @@ function NBATeamSchedule({ games, loading, sport, abbrUpper, seasonYear, nbaDate
                     {isFinal && <span className={"text-base font-bold " + (won && isHome ? "text-earl-400" : lost && isHome ? "text-red-400" : "text-white")}>{isHome ? g.home_score : g.away_score}</span>}
                     <span className={"text-sm font-semibold " + (isHome ? "text-white" : "text-gray-400")}>{isHome ? abbrUpper : opponent}</span>
                     <div className="w-6 h-6 rounded-full bg-white/10 flex items-center justify-center shrink-0 overflow-hidden">
-                      <img src={getTeamLogoUrl(isHome ? g.home_team : g.away_team, sport)} alt={abbrUpper} width={24} height={24} className="object-contain" style={{ filter: "brightness(1.1)" }} />
+                      <img src={getTeamLogoUrl(isHome ? g.home_team : g.away_team, sport) || undefined} alt={abbrUpper} width={24} height={24} className="object-contain" style={{ filter: "brightness(1.1)" }} />
                     </div>
                   </div>
                 </div>
@@ -1216,7 +1216,7 @@ function NFLMLBTeamSchedule({ games, sport, abbrUpper, seasonYear, formatGameDat
 
                   {/* Opponent */}
                   <div className="flex items-center justify-center gap-2 mt-2">
-                    <img src={getTeamLogoUrl(opponent, "mlb")} alt={opponent} width={24} height={24} className="object-contain shrink-0" style={{ filter: "brightness(1.1)" }} />
+                    <img src={getTeamLogoUrl(opponent, "mlb") || undefined} alt={opponent} width={24} height={24} className="object-contain shrink-0" style={{ filter: "brightness(1.1)" }} />
                     <span className="text-sm font-semibold text-gray-200">{opponent}</span>
                   </div>
 

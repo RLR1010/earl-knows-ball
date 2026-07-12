@@ -7,7 +7,18 @@ import Image from "next/image";
 import { api, Game, formatSpread, formatSpreadAway, formatOverUnder } from "@/lib/api";
 import { getTeamLogoUrl } from "@/lib/team_logos";
 
-const WEEKS = Array.from({ length: 18 }, (_, i) => i + 1);
+const WEEKS = Array.from({ length: 22 }, (_, i) => i + 1);
+
+const PLAYOFF_LABELS: Record<number, string> = {
+  19: "Wild Card",
+  20: "Divisional",
+  21: "Conf Champ",
+  22: "Super Bowl",
+};
+function weekLabel(w: number): string {
+  if (w >= 19) return PLAYOFF_LABELS[w] || `Week ${w}`;
+  return `Week ${w}`;
+}
 const MLB_YEARS = Array.from({ length: 21 }, (_, i) => 2026 - i);
 const NBA_YEARS = Array.from({ length: 21 }, (_, i) => 2026 - i);
 
@@ -501,7 +512,7 @@ function MLBSchedule({ sport }: { sport: string }) {
               >
                 {/* Matchup header: [logo] AWAY [score] @ [score] HOME [logo] */}
                 <div className="flex items-center justify-center gap-1.5 text-lg">
-                  <Image src={getTeamLogoUrl(g.away_team, "mlb")} alt={g.away_team} width={20} height={20} className="object-contain shrink-0" unoptimized />
+                  {getTeamLogoUrl(g.away_team, "mlb") && <Image src={getTeamLogoUrl(g.away_team, "mlb")!} alt={g.away_team} width={20} height={20} className="object-contain shrink-0" unoptimized />}
                   <div className={`font-semibold ${awayWon ? "text-earl-400" : "text-gray-300"}`}>{g.away_team}</div>
 
                   {isFinal && <span className="font-bold text-white">{g.away_score}</span>}
@@ -513,7 +524,7 @@ function MLBSchedule({ sport }: { sport: string }) {
                   {isLive && g.home_score !== null && <span className="font-bold text-red-400">{g.home_score}</span>}
 
                   <div className={`font-semibold ${homeWon ? "text-earl-400" : "text-gray-300"}`}>{g.home_team}</div>
-                  <Image src={getTeamLogoUrl(g.home_team, "mlb")} alt={g.home_team} width={20} height={20} className="object-contain shrink-0" unoptimized />
+                  {getTeamLogoUrl(g.home_team, "mlb") && <Image src={getTeamLogoUrl(g.home_team, "mlb")!} alt={g.home_team} width={20} height={20} className="object-contain shrink-0" unoptimized />}
                 </div>
 
                 {/* Status/time */}
@@ -590,7 +601,7 @@ function NFLSchedule({ sport }: { sport: string }) {
     setLoading(true);
     api.games
       .list({ season_year: seasonYear, week })
-      .then(data => setGames(data.filter(g => g.game_type === "REG")))
+      .then(data => setGames(data))
       .finally(() => setLoading(false));
   }, [week, seasonYear]);
 
@@ -627,7 +638,7 @@ function NFLSchedule({ sport }: { sport: string }) {
                 : "bg-white/5 text-gray-400 hover:bg-white/10"
             }`}
           >
-            Week {w}
+            {weekLabel(w)}
           </button>
         ))}
       </div>

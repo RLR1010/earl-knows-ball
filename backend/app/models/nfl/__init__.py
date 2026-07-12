@@ -14,6 +14,7 @@ from .team_pace_stats import TeamPaceStats
 from .article import Article
 from .game_prediction import NFLGamePrediction
 from .writeup import NFLGameWriteup
+from .play_by_play import PlayByPlay
 
 __all__ = [
     "Game",
@@ -32,4 +33,5 @@ __all__ = [
     "Article",
     "NFLGamePrediction",
     "NFLGameWriteup",
+    "PlayByPlay",
 ]

@@ -67,7 +67,10 @@ async def ingest_stats(
     db: AsyncSession = Depends(get_db),
 ):
     result = await ingest_nflverse_stats(db, season_year=season)
-    return {"status": "ok", "source": "nflverse", **result}
+    # Also aggregate PBP into game_stats for this season
+    from app.ingestion.pbp_game_stats import aggregate_pbp_to_game_stats
+    pbp_result = await aggregate_pbp_to_game_stats(db, seasons=[season])
+    return {"status": "ok", "source": "nflverse", **result, "game_stats_updated": pbp_result.get(str(season), 0)}
 
 
 @router.post("/ingest/nflverse-historical")
@@ -81,8 +84,12 @@ async def ingest_historical_stats(
         if year == 2025:
             continue  # already loaded
         result = await ingest_nflverse_stats(db, season_year=year)
+        # Also aggregate PBP if available
+        from app.ingestion.pbp_game_stats import aggregate_pbp_to_game_stats
+        pbp_result = await aggregate_pbp_to_game_stats(db, seasons=[year])
+        result["game_stats_updated"] = pbp_result.get(str(year), 0)
         results.append(result)
-        print(f"[Earl] {year}: {result['stats_loaded']} stats")
+        print(f"[Earl] {year}: {result['stats_loaded']} stats, {result['game_stats_updated']} game_stats")
     return {"status": "ok", "source": "nflverse", "seasons": results}
 
 
@@ -1035,4 +1042,27 @@ async def ingest_weather_update(
 
     all_ok = all(v == "ok" for v in results.values())
     return {"status": "ok" if all_ok else "partial", "results": results}
+
+
+@router.post("/ingest/nfl/pbp")
+async def ingest_nfl_pbp(
+    years: list[int] = Query(default=[2025], description="Seasons to ingest"),
+    replace: bool = Query(default=False, description="Replace existing data for these seasons"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Ingest NFL play-by-play data from nflverse parquet files."""
+    from app.ingestion.nflverse_pbp import ingest_nfl_pbp as run
+    result = await run(db, years=years, replace=replace)
+    return {"status": "ok", **result}
+
+
+@router.post("/ingest/nfl/pbp-game-stats")
+async def ingest_nfl_pbp_game_stats(
+    seasons: list[int] = Query(default=[2025, 2024, 2023], description="Seasons to aggregate"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Aggregate PBP data into nfl.game_stats (first downs, 3rd/4th down, red zone, etc.)."""
+    from app.ingestion.pbp_game_stats import aggregate_pbp_to_game_stats
+    result = await aggregate_pbp_to_game_stats(db, seasons=seasons)
+    return {"status": "ok", "seasons": result}
 

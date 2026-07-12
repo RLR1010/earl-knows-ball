@@ -723,7 +723,70 @@ async def get_bullpen_stats(
 
 
 # ──────────────────────────────────────────────
-#  10. Team Splits
+#  10. Team Hitting Roster
+# ──────────────────────────────────────────────
+
+async def get_series_results(
+    db: AsyncSession,
+    home_team_id: int,
+    away_team_id: int,
+    game_date,
+    limit_games: int = 5,
+) -> list[dict]:
+    """Fetch recent results between home and away teams before this game date."""
+    from sqlalchemy import text as sql_text
+    stmt = sql_text("""
+        SELECT g.id, g.date, g.home_team_id, g.away_team_id,
+               g.home_score, g.away_score,
+               ht.name AS home_name, at.name AS away_name
+        FROM mlb.games g
+        JOIN mlb.teams ht ON ht.id = g.home_team_id
+        JOIN mlb.teams at ON at.id = g.away_team_id
+        WHERE ((g.home_team_id = :h_id AND g.away_team_id = :a_id)
+               OR (g.home_team_id = :a_id AND g.away_team_id = :h_id))
+          AND g.date < :game_date
+          AND g.home_score IS NOT NULL AND g.away_score IS NOT NULL
+        ORDER BY g.date DESC
+        LIMIT :lim
+    """)
+    result = await db.execute(stmt, {
+        "h_id": home_team_id, "a_id": away_team_id,
+        "game_date": game_date, "lim": limit_games,
+    })
+    rows = result.mappings().fetchall()
+    return [dict(r) for r in rows]
+
+
+async def get_team_hitting_stats(
+    db: AsyncSession,
+    team_id: int,
+    season_id: int,
+    limit: int = 14,
+) -> list[dict]:
+    """Fetch top hitters for a team in a given season with full batting stats."""
+    from sqlalchemy import text
+    result = await db.execute(
+        text("""
+            SELECT p.name, p.position,
+                   bs.games_played, bs.plate_appearances, bs.at_bats,
+                   bs.runs, bs.hits, bs.doubles, bs.triples,
+                   bs.home_runs, bs.runs_batted_in, bs.stolen_bases,
+                   bs.base_on_balls, bs.strikeouts,
+                   bs.avg, bs.obp, bs.slg, bs.ops
+            FROM mlb.batting_stats bs
+            JOIN mlb.players p ON p.id = bs.player_id
+            WHERE bs.team_id = :team_id AND bs.season_id = :season_id
+            ORDER BY bs.plate_appearances DESC
+            LIMIT :limit
+        """),
+        {"team_id": team_id, "season_id": season_id, "limit": limit},
+    )
+    rows = result.mappings().fetchall()
+    return [dict(r) for r in rows]
+
+
+# ──────────────────────────────────────────────
+#  11. Team Splits
 # ──────────────────────────────────────────────
 
 async def get_team_splits(
@@ -905,6 +968,10 @@ async def get_research_brief(
     home_id = summary["home_team"]["id"]
     away_id = summary["away_team"]["id"]
 
+    game_dt = summary.get("date") or datetime.now(timezone.utc)
+    if isinstance(game_dt, str):
+        game_dt = datetime.fromisoformat(game_dt)
+
     tasks = {
         "home_stats": get_team_season_stats(db, home_id, season_id, as_of_date),
         "away_stats": get_team_season_stats(db, away_id, season_id, as_of_date),
@@ -915,6 +982,9 @@ async def get_research_brief(
         "injuries": get_injuries(db, game_id),
         "home_form": get_recent_form(db, home_id, season_id, 10, as_of_date),
         "away_form": get_recent_form(db, away_id, season_id, 10, as_of_date),
+        "home_roster": get_team_hitting_stats(db, home_id, season_id),
+        "away_roster": get_team_hitting_stats(db, away_id, season_id),
+        "series_results": get_series_results(db, home_id, away_id, game_dt),
         "home_splits": get_team_splits(db, home_id, season_id),
         "away_splits": get_team_splits(db, away_id, season_id),
         "home_bullpen": get_bullpen_stats(db, home_id, season_id),
@@ -948,10 +1018,6 @@ async def get_research_brief(
             if sp_home or sp_away:
                 starting_pitchers = [sp_home, sp_away]
 
-        game_dt = summary.get("date") or datetime.now(timezone.utc)
-        if isinstance(game_dt, str):
-            game_dt = datetime.fromisoformat(game_dt)
-
         if home_team_name and away_team_name:
             enrichment = await enrich_writeup_context(
                 db=db,
@@ -962,6 +1028,32 @@ async def get_research_brief(
                 starting_pitchers=starting_pitchers,
                 pitching_matchup=pm,
             )
+            # Retry once if enrichment came back empty
+            orig_enrichment = enrichment
+            if not enrichment.get("enriched_summary", "") or enrichment.get("article_count", 0) == 0:
+                logger.info(
+                    "Enrichment empty for game %s (%s @ %s) — retrying with broader queries",
+                    game_id, away_team_name, home_team_name,
+                )
+                retry_enrichment = await enrich_writeup_context(
+                    db=db,
+                    sport="mlb",
+                    home_team=home_team_name,
+                    away_team=away_team_name,
+                    game_date=game_dt,
+                    starting_pitchers=starting_pitchers,
+                    pitching_matchup=pm,
+                    retry=True,  # switch to broader generic queries
+                )
+                # Use whichever has content — prefer first pass fallback if retry is also empty
+                if retry_enrichment.get("enriched_summary", ""):
+                    enrichment = retry_enrichment
+                elif orig_enrichment.get("enriched_summary", ""):
+                    enrichment = orig_enrichment
+                    logger.info(
+                        "Keeping first-pass enrichment fallback (%d chars)",
+                        len(orig_enrichment.get("enriched_summary", "")),
+                    )
             results["article_enrichment"] = enrichment
         else:
             results["article_enrichment"] = {"enriched_summary": "", "article_count": 0}

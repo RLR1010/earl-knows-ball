@@ -109,11 +109,11 @@ export default function ContentEditor() {
       });
       if (pubRes.ok) {
         const pubData = await pubRes.json();
-        setPublicContent(pubData.public_content || "");
+        setPublicContent(pubData.content || "");
       } else {
-        setPublicContent(data.public_content || "");
+        setPublicContent(data.content || "");
       }
-      setPremiumContent(data.premium_content || "");
+      setPremiumContent(data.content || "");
     } catch (e: any) {
       console.error("fetchWriteup error:", e);
       setError(e.message);
