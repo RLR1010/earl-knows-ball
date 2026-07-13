@@ -920,7 +920,7 @@ async def _save_backtest_prediction(
         if home_score is not None and away_score is not None:
             ml_result = "Win" if (home_score > away_score and ml_pick == home_str) or (away_score > home_score and ml_pick == away_str) else "Loss"
         if spread is not None and spread != 0 and home_score is not None and away_score is not None:
-            effective_margin = actual_margin + spread if spread_pick == home_str else actual_margin - spread
+            effective_margin = actual_margin + spread if spread_pick == home_str else -(actual_margin + spread)
             if effective_margin > 0:
                 ats_result = "win"
             elif effective_margin == 0:
