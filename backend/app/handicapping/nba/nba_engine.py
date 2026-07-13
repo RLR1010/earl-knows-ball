@@ -900,8 +900,6 @@ async def _save_backtest_prediction(
 
         # ── Picks ─────────────────────────────────────────────────
 
-        home_fav = spread is not None and spread < 0
-
         if ats_proba > -(spread or 0):
             spread_pick = home_str
         else:
@@ -948,10 +946,7 @@ async def _save_backtest_prediction(
         # Map odds to the picked side
         ats_odds_value = spread_home_odds if spread_pick == home_str else spread_away_odds
         ou_odds_value = over_odds_val if ou_pick == "Over" else under_odds_val
-        ml_odds_value = home_ml if home_fav else away_ml
-        ats_odds_value = spread_home_odds if spread_pick == home_str else spread_away_odds
-        ou_odds_value = over_odds_val if ou_pick == "Over" else under_odds_val
-        ml_odds_value = home_ml if home_fav else away_ml
+        ml_odds_value = home_ml if ml_pick == home_str else away_ml
 
         # ── Profit/Loss (per $100 bet) ────────────────────────────
         # ATS/OU use the actual spread/over-under odds from betting_lines_consolidated
