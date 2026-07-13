@@ -1490,18 +1490,18 @@ async def get_prediction_stats(
         SELECT s.year,
                COUNT(*) as total,
                COUNT(*) FILTER (WHERE gp.{rl_col} IS NOT NULL) as ats_games,
-               COUNT(*) FILTER (WHERE gp.{rl_col}='Win') as ats_wins,
-               COUNT(*) FILTER (WHERE gp.{rl_col}='Loss') as ats_losses,
-               COUNT(*) FILTER (WHERE gp.{rl_col}='Push') as ats_pushes,
+               COUNT(*) FILTER (WHERE LOWER(gp.{rl_col})='win') as ats_wins,
+               COUNT(*) FILTER (WHERE LOWER(gp.{rl_col})='loss') as ats_losses,
+               COUNT(*) FILTER (WHERE LOWER(gp.{rl_col})='push') as ats_pushes,
                ROUND(COALESCE(SUM(gp.ats_profit) FILTER (WHERE gp.{rl_col} IS NOT NULL), 0))::int as ats_profit,
                COUNT(*) FILTER (WHERE gp.ou_result IS NOT NULL) as ou_games,
-               COUNT(*) FILTER (WHERE gp.ou_result='Win') as ou_wins,
-               COUNT(*) FILTER (WHERE gp.ou_result='Loss') as ou_losses,
-               COUNT(*) FILTER (WHERE gp.ou_result='Push') as ou_pushes,
+               COUNT(*) FILTER (WHERE LOWER(gp.ou_result) IN ('win','over')) as ou_wins,
+               COUNT(*) FILTER (WHERE LOWER(gp.ou_result) IN ('loss','under')) as ou_losses,
+               COUNT(*) FILTER (WHERE LOWER(gp.ou_result) IN ('push')) as ou_pushes,
                ROUND(COALESCE(SUM(gp.ou_profit) FILTER (WHERE gp.ou_result IS NOT NULL), 0))::int as ou_profit,
                COUNT(*) FILTER (WHERE gp.ml_result IS NOT NULL) as ml_games,
-               COUNT(*) FILTER (WHERE gp.ml_result='Win') as ml_wins,
-               COUNT(*) FILTER (WHERE gp.ml_result='Loss') as ml_losses,
+               COUNT(*) FILTER (WHERE LOWER(gp.ml_result)='win') as ml_wins,
+               COUNT(*) FILTER (WHERE LOWER(gp.ml_result)='loss') as ml_losses,
                ROUND(COALESCE(SUM(gp.ml_profit) FILTER (WHERE gp.ml_result IS NOT NULL), 0))::int as ml_profit
         FROM (
             SELECT DISTINCT ON (gp_inner.game_id) gp_inner.*
@@ -1588,6 +1588,12 @@ async def get_prediction_stats(
                     buckets[bk] = {model_type+"_w": 0, model_type+"_l": 0, "total": 0, "pushes": 0, "profit": 0}
                 res = {"ats": row[4], "ou": row[5], "ml": row[6]}[result_field]
                 pf = {"ats": row[7], "ou": row[8], "ml": row[9]}[result_field]
+                # Normalize: NBA uses 'win'/'loss'/'push' for ATS, 'over'/'under'/'push' for OU
+                if res:
+                    if result_field == "ou":
+                        res = {"over":"Win","under":"Loss","push":"Push"}.get(res.strip().lower(), "Win")
+                    else:
+                        res = res.strip().title()
                 if res == "Win":
                     buckets[bk][model_type+"_w"] += 1
                     buckets[bk]["total"] += 1
@@ -1628,6 +1634,10 @@ async def get_prediction_stats(
                 mc = row[0]  # margin_conf
                 ats_r, ou_r, ml_r = row[4], row[5], row[6]
                 ats_p, ou_p, ml_p = row[7], row[8], row[9]
+                # Normalize: NBA uses 'win'/'loss'/'push' for ATS, 'over'/'under'/'push' for OU
+                if ats_r: ats_r = ats_r.strip().title()
+                if ou_r: ou_r = {"over":"Win","under":"Loss","push":"Push"}.get(ou_r.strip().lower(), "Win")
+                if ml_r: ml_r = ml_r.strip().title()
                 bk = _bucket(mc, "overall")
                 if bk is None:
                     continue
@@ -1766,7 +1776,7 @@ async def get_prediction_calibration(
 
     def _bucket_index(cf: float) -> int:
         """Return bin index 0-19 for a confidence value."""
-        if cf is None or cf < 0.50:
+        if cf is None or cf != cf or cf < 0.50:  # cf != cf catches NaN
             return 0
         if cf >= 1.0:
             return BIN_COUNT - 1
@@ -1832,6 +1842,10 @@ async def get_prediction_calibration(
         ats_r = r.ats_result
         ou_r = r.ou_result
         ml_r = r.ml_result
+        # Normalize sport result strings: NBA uses 'win'/'loss'/'push' for ATS, 'over'/'under'/'push' for OU
+        if ats_r: ats_r = ats_r.strip().title()
+        if ou_r: ou_r = {"over": "Win", "under": "Loss", "push": "Push"}.get(ou_r.strip().lower(), "Win")
+        if ml_r: ml_r = ml_r.strip().title()
         ats_p = float(r.ats_profit or 0)
         ou_p = float(r.ou_profit or 0)
         ml_p = float(r.ml_profit or 0)
@@ -1954,7 +1968,7 @@ async def get_prediction_ev_distribution(
         conf_main = "margin_conf"
         schema, use_ats, use_ml = "nfl", True, True
         conf_ats = "margin_conf"; conf_ml = "margin_conf"; conf_ou = "margin_conf"
-        rl_col = "margin_conf"
+        rl_col = "ats_result"
     elif sport == "nba":
         schema, use_ats, use_ml = "nba", True, True
         conf_ats = "margin_conf"; conf_ml = "ml_conf"; conf_ou = "ou_conf"
@@ -1991,7 +2005,7 @@ async def get_prediction_ev_distribution(
     BIN_STEP = 0.025
 
     def _bucket_index(cf: float) -> int:
-        if cf is None or cf < 0.50: return 0
+        if cf is None or cf != cf or cf < 0.50: return 0  # cf != cf catches NaN
         if cf >= 1.0: return BIN_COUNT - 1
         idx = int((cf - 0.50) / BIN_STEP)
         return min(idx, BIN_COUNT - 1)
@@ -2018,49 +2032,56 @@ async def get_prediction_ev_distribution(
         rl_cf = float(r.rl_conf) if r.rl_conf is not None else mc
         ml_cf = float(r.ml_conf) if r.ml_conf is not None else mc
         ou_cf = float(r.ou_conf) if r.ou_conf is not None else mc
+        # Normalize sport result strings: NBA uses 'win'/'loss'/'push' for ATS, 'over'/'under'/'push' for OU
+        ats_r = r.ats_result
+        if ats_r: ats_r = ats_r.strip().title()
+        ou_r = r.ou_result
+        if ou_r: ou_r = {"over": "Win", "under": "Loss", "push": "Push"}.get(ou_r.strip().lower(), "Win")
+        ml_r = r.ml_result
+        if ml_r: ml_r = ml_r.strip().title()
 
         # ATS
         bi = _bucket_index(rl_cf)
-        if r.ats_result in ("Win", "Loss"):
+        if ats_r in ("Win", "Loss"):
             cal = calibrations["ats"][bi]
-            if r.ats_result == "Win": cal["w"] += 1
+            if ats_r == "Win": cal["w"] += 1
             else: cal["l"] += 1
-        if r.ats_result is not None and r.ats_odds is not None:
+        if ats_r is not None and r.ats_odds is not None:
             cal_rate = calibrations["ats"][bi]
             total = cal_rate["w"] + cal_rate["l"]
             wr = cal_rate["w"] / total if total > 0 else 0.50
             profit = _profit_per_100(int(r.ats_odds))
             ev = round((wr * profit) - ((1.0 - wr) * 100.0), 2)
-            ev_dist_picks["ats"].append({"result": r.ats_result, "ev": ev, "r": rl_cf, "profit": float(r.ats_profit or 0)})
+            ev_dist_picks["ats"].append({"result": ats_r, "ev": ev, "r": rl_cf, "profit": float(r.ats_profit or 0)})
 
         # OU
         bi = _bucket_index(ou_cf)
-        if r.ou_result in ("Win", "Loss"):
+        if ou_r in ("Win", "Loss"):
             cal = calibrations["ou"][bi]
-            if r.ou_result == "Win": cal["w"] += 1
+            if ou_r == "Win": cal["w"] += 1
             else: cal["l"] += 1
-        if r.ou_result is not None:
+        if ou_r is not None:
             cal_rate = calibrations["ou"][bi]
             total = cal_rate["w"] + cal_rate["l"]
             wr = cal_rate["w"] / total if total > 0 else 0.50
             profit = _profit_per_100(-110)
             ev = round((wr * profit) - ((1.0 - wr) * 100.0), 2)
-            ev_dist_picks["ou"].append({"result": r.ou_result, "ev": ev, "r": ou_cf, "profit": float(r.ou_profit or 0)})
+            ev_dist_picks["ou"].append({"result": ou_r, "ev": ev, "r": ou_cf, "profit": float(r.ou_profit or 0)})
 
         # ML
         if use_ml:
             bi = _bucket_index(ml_cf)
-            if r.ml_result in ("Win", "Loss"):
+            if ml_r in ("Win", "Loss"):
                 cal = calibrations["ml"][bi]
-                if r.ml_result == "Win": cal["w"] += 1
+                if ml_r == "Win": cal["w"] += 1
                 else: cal["l"] += 1
-            if r.ml_result is not None and r.ml_odds is not None:
+            if ml_r is not None and r.ml_odds is not None:
                 cal_rate = calibrations["ml"][bi]
                 total = cal_rate["w"] + cal_rate["l"]
                 wr = cal_rate["w"] / total if total > 0 else 0.50
                 profit = _profit_per_100(int(r.ml_odds))
                 ev = round((wr * profit) - ((1.0 - wr) * 100.0), 2)
-                ev_dist_picks["ml"].append({"result": r.ml_result, "ev": ev, "r": ml_cf, "profit": float(r.ml_profit or 0)})
+                ev_dist_picks["ml"].append({"result": ml_r, "ev": ev, "r": ml_cf, "profit": float(r.ml_profit or 0)})
 
     # ── Build EV distribution chart ──
     # Bucket picks by their calibrated EV score to show profit per EV range
@@ -4206,18 +4227,18 @@ async def get_prediction_stats(
         SELECT s.year,
                COUNT(*) as total,
                COUNT(*) FILTER (WHERE gp.{rl_col} IS NOT NULL) as ats_games,
-               COUNT(*) FILTER (WHERE gp.{rl_col}='Win') as ats_wins,
-               COUNT(*) FILTER (WHERE gp.{rl_col}='Loss') as ats_losses,
-               COUNT(*) FILTER (WHERE gp.{rl_col}='Push') as ats_pushes,
+               COUNT(*) FILTER (WHERE LOWER(gp.{rl_col})='win') as ats_wins,
+               COUNT(*) FILTER (WHERE LOWER(gp.{rl_col})='loss') as ats_losses,
+               COUNT(*) FILTER (WHERE LOWER(gp.{rl_col})='push') as ats_pushes,
                ROUND(COALESCE(SUM(gp.ats_profit) FILTER (WHERE gp.{rl_col} IS NOT NULL), 0))::int as ats_profit,
                COUNT(*) FILTER (WHERE gp.ou_result IS NOT NULL) as ou_games,
-               COUNT(*) FILTER (WHERE gp.ou_result='Win') as ou_wins,
-               COUNT(*) FILTER (WHERE gp.ou_result='Loss') as ou_losses,
-               COUNT(*) FILTER (WHERE gp.ou_result='Push') as ou_pushes,
+               COUNT(*) FILTER (WHERE LOWER(gp.ou_result) IN ('win','over')) as ou_wins,
+               COUNT(*) FILTER (WHERE LOWER(gp.ou_result) IN ('loss','under')) as ou_losses,
+               COUNT(*) FILTER (WHERE LOWER(gp.ou_result) IN ('push')) as ou_pushes,
                ROUND(COALESCE(SUM(gp.ou_profit) FILTER (WHERE gp.ou_result IS NOT NULL), 0))::int as ou_profit,
                COUNT(*) FILTER (WHERE gp.ml_result IS NOT NULL) as ml_games,
-               COUNT(*) FILTER (WHERE gp.ml_result='Win') as ml_wins,
-               COUNT(*) FILTER (WHERE gp.ml_result='Loss') as ml_losses,
+               COUNT(*) FILTER (WHERE LOWER(gp.ml_result)='win') as ml_wins,
+               COUNT(*) FILTER (WHERE LOWER(gp.ml_result)='loss') as ml_losses,
                ROUND(COALESCE(SUM(gp.ml_profit) FILTER (WHERE gp.ml_result IS NOT NULL), 0))::int as ml_profit
         FROM (
             SELECT DISTINCT ON (gp_inner.game_id) gp_inner.*
@@ -4301,6 +4322,12 @@ async def get_prediction_stats(
                     buckets[bk] = {model_type+"_w": 0, model_type+"_l": 0, "total": 0, "pushes": 0, "profit": 0}
                 res = {"ats": row[4], "ou": row[5], "ml": row[6]}[result_field]
                 pf = {"ats": row[7], "ou": row[8], "ml": row[9]}[result_field]
+                # Normalize: NBA uses 'win'/'loss'/'push' for ATS, 'over'/'under'/'push' for OU
+                if res:
+                    if result_field == "ou":
+                        res = {"over":"Win","under":"Loss","push":"Push"}.get(res.strip().lower(), "Win")
+                    else:
+                        res = res.strip().title()
                 if res == "Win":
                     buckets[bk][model_type+"_w"] += 1
                     buckets[bk]["total"] += 1
@@ -4341,6 +4368,10 @@ async def get_prediction_stats(
                 mc = row[0]  # margin_conf
                 ats_r, ou_r, ml_r = row[4], row[5], row[6]
                 ats_p, ou_p, ml_p = row[7], row[8], row[9]
+                # Normalize: NBA uses 'win'/'loss'/'push' for ATS, 'over'/'under'/'push' for OU
+                if ats_r: ats_r = ats_r.strip().title()
+                if ou_r: ou_r = {"over":"Win","under":"Loss","push":"Push"}.get(ou_r.strip().lower(), "Win")
+                if ml_r: ml_r = ml_r.strip().title()
                 bk = _bucket(mc, "overall")
                 if bk is None:
                     continue
@@ -4479,7 +4510,7 @@ async def get_prediction_calibration(
 
     def _bucket_index(cf: float) -> int:
         """Return bin index 0-19 for a confidence value."""
-        if cf is None or cf < 0.50:
+        if cf is None or cf != cf or cf < 0.50:  # cf != cf catches NaN
             return 0
         if cf >= 1.0:
             return BIN_COUNT - 1
@@ -4545,6 +4576,10 @@ async def get_prediction_calibration(
         ats_r = r.ats_result
         ou_r = r.ou_result
         ml_r = r.ml_result
+        # Normalize sport result strings: NBA uses 'win'/'loss'/'push' for ATS, 'over'/'under'/'push' for OU
+        if ats_r: ats_r = ats_r.strip().title()
+        if ou_r: ou_r = {"over": "Win", "under": "Loss", "push": "Push"}.get(ou_r.strip().lower(), "Win")
+        if ml_r: ml_r = ml_r.strip().title()
         ats_p = float(r.ats_profit or 0)
         ou_p = float(r.ou_profit or 0)
         ml_p = float(r.ml_profit or 0)
@@ -4667,7 +4702,7 @@ async def get_prediction_ev_distribution(
         schema, use_ats, use_ml = "nfl", True, True
         conf_ats = "margin_conf"; conf_ml = "margin_conf"; conf_ou = "margin_conf"
         conf_main = "margin_conf"
-        rl_col = "margin_conf"
+        rl_col = "ats_result"
     elif sport == "nba":
         schema, use_ats, use_ml = "nba", True, True
         conf_ats = "margin_conf"; conf_ml = "ml_conf"; conf_ou = "ou_conf"
@@ -4704,7 +4739,7 @@ async def get_prediction_ev_distribution(
     BIN_STEP = 0.025
 
     def _bucket_index(cf: float) -> int:
-        if cf is None or cf < 0.50: return 0
+        if cf is None or cf != cf or cf < 0.50: return 0  # cf != cf catches NaN
         if cf >= 1.0: return BIN_COUNT - 1
         idx = int((cf - 0.50) / BIN_STEP)
         return min(idx, BIN_COUNT - 1)
@@ -4731,49 +4766,56 @@ async def get_prediction_ev_distribution(
         rl_cf = float(r.rl_conf) if r.rl_conf is not None else mc
         ml_cf = float(r.ml_conf) if r.ml_conf is not None else mc
         ou_cf = float(r.ou_conf) if r.ou_conf is not None else mc
+        # Normalize sport result strings: NBA uses 'win'/'loss'/'push' for ATS, 'over'/'under'/'push' for OU
+        ats_r = r.ats_result
+        if ats_r: ats_r = ats_r.strip().title()
+        ou_r = r.ou_result
+        if ou_r: ou_r = {"over": "Win", "under": "Loss", "push": "Push"}.get(ou_r.strip().lower(), "Win")
+        ml_r = r.ml_result
+        if ml_r: ml_r = ml_r.strip().title()
 
         # ATS
         bi = _bucket_index(rl_cf)
-        if r.ats_result in ("Win", "Loss"):
+        if ats_r in ("Win", "Loss"):
             cal = calibrations["ats"][bi]
-            if r.ats_result == "Win": cal["w"] += 1
+            if ats_r == "Win": cal["w"] += 1
             else: cal["l"] += 1
-        if r.ats_result is not None and r.ats_odds is not None:
+        if ats_r is not None and r.ats_odds is not None:
             cal_rate = calibrations["ats"][bi]
             total = cal_rate["w"] + cal_rate["l"]
             wr = cal_rate["w"] / total if total > 0 else 0.50
             profit = _profit_per_100(int(r.ats_odds))
             ev = round((wr * profit) - ((1.0 - wr) * 100.0), 2)
-            ev_dist_picks["ats"].append({"result": r.ats_result, "ev": ev, "r": rl_cf, "profit": float(r.ats_profit or 0)})
+            ev_dist_picks["ats"].append({"result": ats_r, "ev": ev, "r": rl_cf, "profit": float(r.ats_profit or 0)})
 
         # OU
         bi = _bucket_index(ou_cf)
-        if r.ou_result in ("Win", "Loss"):
+        if ou_r in ("Win", "Loss"):
             cal = calibrations["ou"][bi]
-            if r.ou_result == "Win": cal["w"] += 1
+            if ou_r == "Win": cal["w"] += 1
             else: cal["l"] += 1
-        if r.ou_result is not None:
+        if ou_r is not None:
             cal_rate = calibrations["ou"][bi]
             total = cal_rate["w"] + cal_rate["l"]
             wr = cal_rate["w"] / total if total > 0 else 0.50
             profit = _profit_per_100(-110)
             ev = round((wr * profit) - ((1.0 - wr) * 100.0), 2)
-            ev_dist_picks["ou"].append({"result": r.ou_result, "ev": ev, "r": ou_cf, "profit": float(r.ou_profit or 0)})
+            ev_dist_picks["ou"].append({"result": ou_r, "ev": ev, "r": ou_cf, "profit": float(r.ou_profit or 0)})
 
         # ML
         if use_ml:
             bi = _bucket_index(ml_cf)
-            if r.ml_result in ("Win", "Loss"):
+            if ml_r in ("Win", "Loss"):
                 cal = calibrations["ml"][bi]
-                if r.ml_result == "Win": cal["w"] += 1
+                if ml_r == "Win": cal["w"] += 1
                 else: cal["l"] += 1
-            if r.ml_result is not None and r.ml_odds is not None:
+            if ml_r is not None and r.ml_odds is not None:
                 cal_rate = calibrations["ml"][bi]
                 total = cal_rate["w"] + cal_rate["l"]
                 wr = cal_rate["w"] / total if total > 0 else 0.50
                 profit = _profit_per_100(int(r.ml_odds))
                 ev = round((wr * profit) - ((1.0 - wr) * 100.0), 2)
-                ev_dist_picks["ml"].append({"result": r.ml_result, "ev": ev, "r": ml_cf, "profit": float(r.ml_profit or 0)})
+                ev_dist_picks["ml"].append({"result": ml_r, "ev": ev, "r": ml_cf, "profit": float(r.ml_profit or 0)})
 
     # ── Build EV distribution chart ──
     # Bucket picks by their calibrated EV score to show profit per EV range

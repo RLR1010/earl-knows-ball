@@ -33,6 +33,11 @@ class NFLGamePrediction(Base):
     ml_conf_cal = Column(Float, nullable=True, comment="Calibrated ML confidence")
     ou_conf_cal = Column(Float, nullable=True, comment="Calibrated OU confidence")
 
+    # Expected value (EV = conf_cal * profit_if_win - (1-conf_cal) * stake)
+    ats_ev = Column(Float, nullable=True, comment="Expected value on $100 ATS bet")
+    ml_ev = Column(Float, nullable=True, comment="Expected value on $100 ML bet")
+    ou_ev = Column(Float, nullable=True, comment="Expected value on $100 OU bet")
+
     # Picks
     ou_pick = Column(String(20), nullable=True)          # "Over", "Under"
     spread_pick = Column(String(100), nullable=True)     # e.g. "CHI -3.5"

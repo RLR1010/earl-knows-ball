@@ -110,6 +110,159 @@ function formatLineAway(spread: number | null | undefined, awayTeam: string): st
   return `${awayTeam} PK`;
 }
 
+function NFLPickCard({
+  pred,
+  homeTeam,
+  awayTeam,
+}: {
+  pred: GamePrediction | null;
+  homeTeam: string;
+  awayTeam: string;
+}) {
+  const predicted = pred?.predicted || {} as { home_score?: number; away_score?: number; total?: number; margin?: number; ats?: string; ou?: string; ml?: string };
+  const actual = pred?.actual || {} as { home_score?: number | null; away_score?: number | null; total?: number | null; margin?: number | null };
+  const results = pred?.results || {} as { ats?: string; ou?: string; ml?: string };
+  const line = pred?.line;
+  const conf = pred?.confidence;
+  const hasPrediction = predicted?.home_score != null && predicted?.away_score != null;
+  const isFinal = !!(actual.home_score != null && actual.away_score != null);
+
+  if (!pred || !hasPrediction) {
+    return (
+      <div className="border border-white/10 rounded-xl p-6 bg-gradient-to-br from-earl-900/20 to-transparent">
+        <div className="text-xs text-gray-500 uppercase tracking-wider mb-3">Earl's Picks</div>
+        <div className="text-center py-8">
+          <div className="text-gray-500 text-sm">No picks available for this game yet</div>
+          <div className="text-gray-600 text-xs mt-2">Picks are generated closer to game time</div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Compute spread text from pick and line data ──
+  const atsTeam = predicted.ats?.split(" ")[0] || "";
+  const atsVal = predicted.ats?.split(" ")[1] || "";
+  const ouPick = predicted.ou || "";
+  const mlPick = predicted.ml || "";
+
+  // ── Confidence bar colors ──
+  const confColor = (score?: number | null) =>
+    score == null ? "bg-gray-500" :
+    score >= 0.7 ? "bg-green-500" :
+    score >= 0.55 ? "bg-yellow-500" :
+    "bg-gray-500";
+
+  const confBgColor = (score?: number | null) =>
+    score == null ? "bg-gray-500/10" :
+    score >= 0.7 ? "bg-green-500/10" :
+    score >= 0.55 ? "bg-yellow-500/10" :
+    "bg-gray-500/10";
+
+  return (
+    <div className="border border-white/10 rounded-xl p-4 bg-gradient-to-br from-earl-900/20 to-transparent space-y-4">
+      <div className="text-xs text-gray-500 uppercase tracking-wider">Earl's Picks</div>
+
+      {/* Predicted score */}
+      {predicted.home_score != null && (
+        <div className="text-center">
+          <div className="inline-block border border-white/10 rounded-lg px-6 py-2 bg-white/5">
+            <span className="text-xs text-gray-500">Predicted</span>
+            <div className="text-lg font-bold tracking-tight">
+              <span className="text-gray-300">{awayTeam}</span>
+              <span className="text-white mx-2">{predicted.away_score}</span>
+              <span className="text-gray-600">@</span>
+              <span className="text-white mx-2">{predicted.home_score}</span>
+              <span className="text-gray-300">{homeTeam}</span>
+            </div>
+            <div className="text-xs text-gray-500 mt-1">
+              Total: {predicted.total && predicted.total !== 0 ? predicted.total : "?"} | Margin: {(predicted.home_score ?? 0) - (predicted.away_score ?? 0) >= 0 ? "+" : ""}{(predicted.home_score ?? 0) - (predicted.away_score ?? 0)}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Actual score for completed games */}
+      {isFinal && (
+        <div className="text-center">
+          <div className="inline-block border border-green-500/20 rounded-lg px-6 py-2 bg-green-500/5">
+            <span className="text-xs text-gray-500">Actual</span>
+            <div className="text-lg font-bold tracking-tight">
+              <span className="text-gray-300">{awayTeam}</span>
+              <span className="text-white mx-2">{actual.away_score}</span>
+              <span className="text-gray-600">@</span>
+              <span className="text-white mx-2">{actual.home_score}</span>
+              <span className="text-gray-300">{homeTeam}</span>
+            </div>
+            <div className="text-xs text-gray-500 mt-1">
+              Total: {actual.total} | Margin: {((actual.home_score ?? 0) - (actual.away_score ?? 0)) >= 0 ? "+" : ""}{(actual.home_score ?? 0) - (actual.away_score ?? 0)}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Three pick cards: ATS, O/U, Moneyline */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        {/* ATS */}
+        <div className={`rounded-lg p-3 border border-amber-500/40 bg-amber-500/10`}>
+          <div className="text-[10px] text-gray-500 uppercase">ATS</div>
+          {isFinal && results.ats ? (
+            <div className={`text-lg font-bold mt-1 ${results.ats === "Win" ? "text-green-400" : "text-red-400"}`}>
+              {results.ats}
+            </div>
+          ) : atsTeam ? (
+            <>
+              <div className="text-lg font-bold mt-1 text-amber-400">{atsVal ? `${atsTeam} ${atsVal}` : atsTeam}</div>
+              <ConfidenceBar score={conf?.ats ?? conf?.overall} />
+              <div className="text-xs text-gray-500 mt-1">
+                Line: {formatLineAway(line?.spread, awayTeam)} | {formatSpreadLine(line?.spread, homeTeam)}
+              </div>
+            </>
+          ) : (
+            <div className="text-xs text-gray-400 mt-2">No ATS data</div>
+          )}
+        </div>
+
+        {/* O/U */}
+        <div className={`rounded-lg p-3 border border-yellow-500/40 bg-yellow-500/10`}>
+          <div className="text-[10px] text-gray-500 uppercase">O/U {line?.over_under ?? ""}</div>
+          {isFinal && results.ou ? (
+            <div className={`text-lg font-bold mt-1 ${results.ou === "Win" ? "text-green-400" : "text-red-400"}`}>
+              {results.ou}
+            </div>
+          ) : ouPick ? (
+            <>
+              <div className="text-lg font-bold mt-1 text-yellow-400">{ouPick} {ouPick && line?.over_under ? line.over_under : ""}</div>
+              <ConfidenceBar score={conf?.ou ?? conf?.overall} />
+              <div className="text-xs text-gray-500 mt-1">
+                Predicted: {predicted.total}{line?.over_under != null ? ` | Line: ${line.over_under}` : ""}
+              </div>
+            </>
+          ) : (
+            <div className="text-xs text-gray-400 mt-2">No O/U data</div>
+          )}
+        </div>
+
+        {/* Moneyline */}
+        <div className={`rounded-lg p-3 border border-purple-500/40 bg-purple-500/10`}>
+          <div className="text-[10px] text-gray-500 uppercase">Moneyline</div>
+          {isFinal && results.ml ? (
+            <div className={`text-lg font-bold mt-1 ${results.ml === "Win" ? "text-green-400" : "text-red-400"}`}>
+              {results.ml}
+            </div>
+          ) : mlPick ? (
+            <>
+              <div className="text-lg font-bold mt-1 text-purple-400">{mlPick}</div>
+              <ConfidenceBar score={conf?.ml ?? conf?.overall} />
+            </>
+          ) : (
+            <div className="text-xs text-gray-400 mt-2">No ML data</div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ConfidenceBar({ score }: { score?: number | null }) {
   if (score == null) return null;
   const pct = Math.round(score * 100);
@@ -282,83 +435,7 @@ function NFLBoxScoreContent({ homeTeam, awayTeam, homeStats, awayStats }: {
   );
 }
 
-function NFLPickCard({
-  pred,
-  homeTeam,
-  awayTeam,
-}: {
-  pred: GamePrediction | null;
-  homeTeam: string;
-  awayTeam: string;
-}) {
-  const predicted = pred?.predicted || {};
-  const actual = pred?.actual || {};
-  const results = pred?.results || {};
-  const line = pred?.line;
-  const conf = pred?.confidence;
-  const noPrediction = !results.ats || results.ats === "N/A";
 
-  return (
-    <div className="border border-white/10 rounded-xl p-4 bg-gradient-to-br from-earl-900/20 to-transparent">
-      <div className="text-xs text-gray-500 uppercase tracking-wider mb-3">Earl's Prediction</div>
-
-      {line?.spread != null && (
-        <div className="text-center mb-4">
-          <span className="inline-block px-5 py-2 rounded-lg bg-gradient-to-r from-earl-800/40 via-earl-600/50 to-earl-800/40 border border-earl-500/50 text-base font-bold tracking-wide">
-            <span className="text-earl-200">{formatLineAway(line.spread, awayTeam)}</span>
-            <span className="mx-3 text-gray-500">|</span>
-            <span className="text-earl-300">{formatSpreadLine(line.spread, homeTeam)}</span>
-            {line.over_under != null && (
-              <>
-                <span className="mx-3 text-gray-500">|</span>
-                <span className="text-white">O/U {line.over_under}</span>
-              </>
-            )}
-          </span>
-        </div>
-      )}
-
-      {conf?.overall != null && (
-        <div className="text-center mb-4">
-          <span className={`inline-block px-4 py-1 rounded-lg text-sm font-bold tracking-wide ${
-            conf.overall >= 0.7 ? "bg-green-900/30 text-green-400 border border-green-500/40" :
-            conf.overall >= 0.55 ? "bg-yellow-900/30 text-yellow-400 border border-yellow-500/40" :
-            "bg-gray-800/30 text-gray-400 border border-gray-500/40"
-          }`}>
-            Overall Confidence: {Math.round(conf.overall * 100)}%
-          </span>
-        </div>
-      )}
-
-      {noPrediction ? (
-        <div className="text-sm text-gray-500 text-center">No prediction available for this game.</div>
-      ) : (
-        <div className="grid grid-cols-3 gap-4 mt-4">
-          <div className="text-center p-3 rounded-lg bg-white/[0.03]">
-            <div className="text-[10px] text-gray-500 uppercase">ATS</div>
-            <div className={`text-lg font-bold mt-1 ${results.ats === "Win" ? "text-green-400" : "text-red-400"}`}>{results.ats || "-"}</div>
-            <ConfidenceBar score={conf?.ats ?? conf?.overall} />
-            {predicted.home_score != null && predicted.away_score != null && (
-              <div className="text-xs text-gray-400 mt-1">Pred: {predicted.away_score}-{predicted.home_score}</div>
-            )}
-          </div>
-          <div className="text-center p-3 rounded-lg bg-white/[0.03]">
-            <div className="text-[10px] text-gray-500 uppercase">O/U</div>
-            <div className={`text-lg font-bold mt-1 ${results.ou === "Win" ? "text-green-400" : "text-red-400"}`}>{results.ou || "-"}</div>
-            <ConfidenceBar score={conf?.ou ?? conf?.overall} />
-            {predicted.total != null && <div className="text-xs text-gray-400 mt-1">Pred: {predicted.total}</div>}
-          </div>
-          <div className="text-center p-3 rounded-lg bg-white/[0.03]">
-            <div className="text-[10px] text-gray-500 uppercase">ML</div>
-            <div className={`text-lg font-bold mt-1 ${results.ml === "Win" ? "text-green-400" : "text-red-400"}`}>{results.ml || "-"}</div>
-            <ConfidenceBar score={conf?.ml ?? conf?.overall} />
-            <div className="text-xs text-gray-400 mt-1">{awayTeam} @ {homeTeam}</div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
 
 // ── Betting Lines Card ─────────────────────────────────────────
 
@@ -561,83 +638,252 @@ function DetailedStatsTab({ gameId, boxscore }: { gameId: string; boxscore: NFLB
   const [statsData, setStatsData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
+  const [featuresOpen, setFeaturesOpen] = useState(false);
+
+  const game = boxscore.game;
+  const homeTeam = game.home_team;
+  const awayTeam = game.away_team;
 
   useEffect(() => {
-    fetch(`/api/games/${gameId}/features`)
-      .then(r => r.ok ? r.json() : null)
-      .then(d => {
-        if (d) setStatsData(d);
-        else setError(true);
+    if (!gameId) return;
+    setLoading(true);
+    setError(false);
+    fetch(`/api/handicapping/nfl/prediction-stats/${gameId}`)
+      .then(res => {
+        if (!res.ok) throw new Error('Failed to fetch');
+        return res.json();
       })
-      .catch(() => setError(true))
-      .finally(() => setLoading(false));
+      .then(data => {
+        setStatsData(data);
+        setLoading(false);
+      })
+      .catch(err => {
+        console.error(err);
+        setError(true);
+        setLoading(false);
+      });
   }, [gameId]);
 
-  const homeTeam = boxscore.game?.home_team || "";
-  const awayTeam = boxscore.game?.away_team || "";
-  const homeStats = boxscore.home_stats || { total_yards: null, pass_yards: null, rush_yards: null, turnovers: null, first_downs: null, third_down_pct: null, fourth_down_pct: null, time_of_possession: null, penalties: null, penalty_yards: null, top_players: [] };
-  const awayStats = boxscore.away_stats || { total_yards: null, pass_yards: null, rush_yards: null, turnovers: null, first_downs: null, third_down_pct: null, fourth_down_pct: null, time_of_possession: null, penalties: null, penalty_yards: null, top_players: [] };
+  const featureDisplayNames: Record<string, string> = {
+    spread: 'Spread',
+    opening_spread: 'Opening Spread',
+    opening_ou: 'Opening O/U',
+    home_ats_streak: 'Home ATS Streak',
+    away_ats_streak: 'Away ATS Streak',
+    home_ml_streak: 'Home ML Streak',
+    away_ml_streak: 'Away ML Streak',
+    home_ou_streak: 'Home O/U Streak',
+    away_ou_streak: 'Away O/U Streak',
+    home_ats_pct_r10: 'Home ATS% (L10)',
+    away_ats_pct_r10: 'Away ATS% (L10)',
+    home_ml_pct_r10: 'Home Win% (L10)',
+    away_ml_pct_r10: 'Away Win% (L10)',
+    rest_days_home: 'Home Rest Days',
+    rest_days_away: 'Away Rest Days',
+    home_points_scored_pg: 'Home PPG',
+    home_points_allowed_pg: 'Home OPPG',
+    away_points_scored_pg: 'Away PPG',
+    away_points_allowed_pg: 'Away OPPG',
+    home_off_rush_ypg: 'Home Rush YPG',
+    home_off_pass_ypg: 'Home Pass YPG',
+    home_off_total_ypg: 'Home Total YPG',
+    home_def_rush_ypg: 'Home Def Rush YPG',
+    home_def_pass_ypg: 'Home Def Pass YPG',
+    home_def_total_ypg: 'Home Def Total YPG',
+    away_off_rush_ypg: 'Away Rush YPG',
+    away_off_pass_ypg: 'Away Pass YPG',
+    away_off_total_ypg: 'Away Total YPG',
+    away_def_rush_ypg: 'Away Def Rush YPG',
+    away_def_pass_ypg: 'Away Def Pass YPG',
+    away_def_total_ypg: 'Away Def Total YPG',
+    home_dvoa_total: 'Home Total DVOA',
+    home_dvoa_offense: 'Home Off DVOA',
+    home_dvoa_defense: 'Home Def DVOA',
+    away_dvoa_total: 'Away Total DVOA',
+    away_dvoa_offense: 'Away Off DVOA',
+    away_dvoa_defense: 'Away Def DVOA',
+    home_ats_pct: 'Home ATS%',
+    away_ats_pct: 'Away ATS%',
+    home_ml_pct: 'Home Win%',
+    away_ml_pct: 'Away Win%',
+    home_ou_over_pct: 'Home O/U Over%',
+    away_ou_over_pct: 'Away O/U Over%',
+    implied_home_ml: 'Implied Home ML',
+    implied_away_ml: 'Implied Away ML',
+    implied_total: 'Implied Total',
+    implied_spread: 'Implied Spread',
+    home_implied_win_pct: 'Home Implied Win%',
+    away_implied_win_pct: 'Away Implied Win%',
+    div_game: 'Division Game',
+    dome: 'Dome Game',
+    grass: 'Grass',
+    home_rookie_qb: 'Home Rookie QB',
+    away_rookie_qb: 'Away Rookie QB',
+    short_week_home: 'Home Short Week',
+    short_week_away: 'Away Short Week',
+  };
+
+  function getFeatureCategory(key: string): string {
+    if (key.startsWith('home_') || key.startsWith('away_')) return 'team';
+    if (key.includes('spread') || key.includes('ou') || key.includes('_ats_') || key.includes('_ml_') || key.startsWith('implied')) return 'betting';
+    if (key.startsWith('opening')) return 'opening';
+    return 'other';
+  }
+
+  function getDotColor(key: string): string {
+    const cat = getFeatureCategory(key);
+    switch (cat) {
+      case 'team': return '#22c55e';
+      case 'betting': return '#3b82f6';
+      case 'opening': return '#f59e0b';
+      default: return '#6b7280';
+    }
+  }
+
+  function formatFeatureValue(value: any): string {
+    if (value == null) return '-';
+    if (typeof value === 'boolean') return value ? 'Yes' : 'No';
+    if (typeof value === 'number') {
+      if (Number.isInteger(value)) return value.toString();
+      return value.toFixed(2);
+    }
+    return String(value);
+  }
 
   if (loading) {
     return (
-      <div className="border border-white/10 rounded-xl overflow-hidden">
-        <div className="bg-white/5 px-4 py-2 text-sm font-semibold">Team Stats</div>
-        <TeamStatsTable homeStats={homeStats} awayStats={awayStats} homeTeam={homeTeam} awayTeam={awayTeam} />
+      <div className="text-center py-8">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-emerald-500 mx-auto"></div>
+        <div className="text-gray-500 text-sm mt-2">Loading prediction data...</div>
       </div>
     );
   }
 
   if (error || !statsData) {
     return (
-      <div className="space-y-6">
-        <div className="border border-white/10 rounded-xl overflow-hidden">
-          <div className="bg-white/5 px-4 py-2 text-sm font-semibold">Team Stats</div>
-          <TeamStatsTable homeStats={homeStats} awayStats={awayStats} homeTeam={homeTeam} awayTeam={awayTeam} />
-        </div>
+      <div className="text-center py-8">
+        <div className="text-gray-500">Prediction stats not available yet.</div>
+        <div className="text-gray-600 text-xs mt-1">Data loads closer to game time.</div>
+        {boxscore?.home_stats && boxscore?.away_stats && (
+          <div className="mt-4">
+            <TeamStatsTable
+              homeStats={boxscore.home_stats}
+              awayStats={boxscore.away_stats}
+              homeTeam={homeTeam}
+              awayTeam={awayTeam}
+            />
+          </div>
+        )}
       </div>
     );
   }
 
+  const ps = statsData;
+  const isFinal = game.home_score != null && game.away_score != null;
+  const features = ps.features || ps.all_features || ps.model_features || {};
+  const splits = ps.splits || ps.betting_trends || {};
+  const situational = ps.situational || ps.situational_data || {};
+
   return (
     <div className="space-y-6">
-      {/* Team Stats */}
-      <div className="border border-white/10 rounded-xl overflow-hidden">
-        <div className="bg-white/5 px-4 py-2 text-sm font-semibold">Team Stats</div>
-        <TeamStatsTable homeStats={homeStats} awayStats={awayStats} homeTeam={homeTeam} awayTeam={awayTeam} />
-      </div>
-
-      {/* Situational Data */}
-      {statsData.situational && (
-        <div className="border border-white/10 rounded-xl p-4">
-          <div className="text-xs text-gray-500 uppercase tracking-wider mb-3">Situational</div>
-          <div className="grid grid-cols-2 md:grid-cols-3 gap-4 text-sm">
-            {Object.entries(statsData.situational).map(([key, val]) => (
-              <div key={key} className="bg-white/[0.03] rounded-lg p-3">
-                <div className="text-[10px] text-gray-500 uppercase">{key.replace(/_/g, " ")}</div>
-                <div className="text-white font-semibold mt-1">{String(val)}</div>
-              </div>
-            ))}
+      {/* Prediction Summary */}
+      {ps.predicted && (ps.predicted.home_score != null || ps.predicted.away_score != null) && (
+        <div>
+          <h3 className="text-xs text-gray-500 uppercase tracking-wider mb-2">Prediction Summary</h3>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-xl p-3 text-center">
+              <div className="text-gray-500 text-xs mb-1">{awayTeam}</div>
+              <div className="text-lg font-bold text-emerald-400">{ps.predicted.away_score != null ? Number(ps.predicted.away_score).toFixed(1) : '-'}</div>
+            </div>
+            <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-xl p-3 text-center">
+              <div className="text-gray-500 text-xs mb-1">{homeTeam}</div>
+              <div className="text-lg font-bold text-emerald-400">{ps.predicted.home_score != null ? Number(ps.predicted.home_score).toFixed(1) : '-'}</div>
+            </div>
+            <div className="bg-blue-500/10 border border-blue-500/30 rounded-xl p-3 text-center">
+              <div className="text-gray-500 text-xs mb-1">Total</div>
+              <div className="text-lg font-bold text-blue-400">{ps.predicted.total != null ? Number(ps.predicted.total).toFixed(1) : '-'}</div>
+            </div>
+            <div className="bg-purple-500/10 border border-purple-500/30 rounded-xl p-3 text-center">
+              <div className="text-gray-500 text-xs mb-1">Margin</div>
+              <div className="text-lg font-bold text-purple-400">{ps.predicted.margin != null ? (ps.predicted.margin > 0 ? '+' : '') + Number(ps.predicted.margin).toFixed(1) : '-'}</div>
+            </div>
           </div>
         </div>
       )}
 
-      {/* Team Splits */}
-      {statsData.splits && (
-        <div className="border border-white/10 rounded-xl p-4">
-          <div className="text-xs text-gray-500 uppercase tracking-wider mb-3">Team Splits</div>
-          {typeof statsData.splits === "object" && (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {Object.entries(statsData.splits).map(([team, splits]) => {
-                if (typeof splits !== "object") return null;
+      {/* Home/Away Team Stats */}
+      {boxscore?.home_stats && boxscore?.away_stats && (
+        <div>
+          <h3 className="text-xs text-gray-500 uppercase tracking-wider mb-2">Team Stats</h3>
+          <TeamStatsTable
+            homeStats={boxscore.home_stats}
+            awayStats={boxscore.away_stats}
+            homeTeam={homeTeam}
+            awayTeam={awayTeam}
+          />
+        </div>
+      )}
+
+      {/* Splits / Betting Trends */}
+      {Object.keys(splits).length > 0 && (
+        <div>
+          <h3 className="text-xs text-gray-500 uppercase tracking-wider mb-3">Betting Splits & Trends</h3>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="bg-white/[0.03] text-gray-500 uppercase tracking-wider">
+                  <th className="text-left py-2 px-3 w-2/5"></th>
+                  <th className="text-center py-2 px-3 w-3/10">{awayTeam}</th>
+                  <th className="text-center py-2 px-3 w-3/10">{homeTeam}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {Object.entries(splits).map(([key, val], idx) => {
+                  const displayName = featureDisplayNames[key] || key.split('_').map((w: string) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+                  if (typeof val !== 'object' || val === null) {
+                    return (
+                      <tr key={idx} className="border-t border-white/5">
+                        <td className="py-2 px-3 text-gray-400">{displayName}</td>
+                        <td className="py-2 px-3 text-center text-white" colSpan={2}>{formatFeatureValue(val)}</td>
+                      </tr>
+                    );
+                  }
+                  const obj = val as Record<string, any>;
+                  return (
+                    <tr key={idx} className="border-t border-white/5">
+                      <td className="py-2 px-3 text-gray-400">{displayName}</td>
+                      <td className="py-2 px-3 text-center text-white">{obj.away != null || obj.away_value != null ? formatFeatureValue(obj.away ?? obj.away_value) : '-'}</td>
+                      <td className="py-2 px-3 text-center text-white">{obj.home != null || obj.home_value != null ? formatFeatureValue(obj.home ?? obj.home_value) : '-'}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* All Model Features */}
+      {Object.keys(features).length > 0 && (
+        <div>
+          <button
+            onClick={() => setFeaturesOpen(!featuresOpen)}
+            className="flex items-center gap-2 text-xs text-gray-400 hover:text-white transition-colors"
+          >
+            <svg className={`w-3 h-3 transition-transform ${featuresOpen ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+            </svg>
+            All Model Features ({Object.keys(features).length})
+          </button>
+          {featuresOpen && (
+            <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 max-h-96 overflow-y-auto">
+              {Object.entries(features).map(([key, val], idx) => {
+                const displayName = featureDisplayNames[key] || key.split('_').map((w: string) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
                 return (
-                  <div key={team} className="bg-white/[0.03] rounded-lg p-3">
-                    <div className="text-xs font-semibold text-white mb-2">{team}</div>
-                    {Object.entries(splits as Record<string, any>).map(([k, v]) => (
-                      <div key={k} className="flex justify-between text-xs py-1 border-b border-white/5 last:border-0">
-                        <span className="text-gray-500 capitalize">{k.replace(/_/g, " ")}</span>
-                        <span className="text-white">{String(v)}</span>
-                      </div>
-                    ))}
+                  <div key={idx} className="flex items-center gap-2 bg-white/[0.03] rounded-lg px-3 py-2">
+                    <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: getDotColor(key) }} />
+                    <span className="text-gray-300 text-xs flex-1">{displayName}</span>
+                    <span className="text-white text-xs font-medium">{formatFeatureValue(val)}</span>
                   </div>
                 );
               })}
@@ -646,25 +892,45 @@ function DetailedStatsTab({ gameId, boxscore }: { gameId: string; boxscore: NFLB
         </div>
       )}
 
-      {/* Features JSON */}
-      {statsData.features && (
-        <div className="border border-white/10 rounded-xl overflow-hidden">
-          <div className="bg-white/5 px-4 py-2 text-sm font-semibold">Features</div>
-          <div className="p-4">
-            {typeof statsData.features === "object" ? (
-              <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
-                {Object.entries(statsData.features).map(([key, val]) => (
-                  <div key={key} className="bg-white/[0.03] rounded p-2 text-xs">
-                    <span className="text-gray-500">{key.replace(/_/g, " ")}</span>
-                    <span className="text-white ml-2 font-mono">{String(val)}</span>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <pre className="text-xs text-gray-400 whitespace-pre-wrap font-mono">
-                {JSON.stringify(statsData.features, null, 2)}
-              </pre>
-            )}
+      {/* Situational Data */}
+      {Object.keys(situational).length > 0 && (
+        <div>
+          <h3 className="text-xs text-gray-500 uppercase tracking-wider mb-3">Situational</h3>
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+            {Object.entries(situational).map(([key, val], idx) => {
+              const displayName = key.split('_').map((w: string) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+              return (
+                <div key={idx} className="bg-white/[0.03] rounded-lg px-3 py-2">
+                  <div className="text-[10px] text-gray-500">{displayName}</div>
+                  <div className="text-white text-sm font-medium mt-0.5">{formatFeatureValue(val)}</div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Actual Final Score */}
+      {isFinal && (
+        <div>
+          <h3 className="text-xs text-gray-500 uppercase tracking-wider mb-2">Final Score</h3>
+          <div className="grid grid-cols-4 gap-3">
+            <div className="bg-white/5 rounded-lg p-3 text-center">
+              <div className="text-gray-500 text-xs mb-1">{awayTeam}</div>
+              <div className="text-lg font-bold text-white">{game.away_score}</div>
+            </div>
+            <div className="bg-white/5 rounded-lg p-3 text-center">
+              <div className="text-gray-500 text-xs mb-1">{homeTeam}</div>
+              <div className="text-lg font-bold text-white">{game.home_score}</div>
+            </div>
+            <div className="bg-white/5 rounded-lg p-3 text-center">
+              <div className="text-gray-500 text-xs mb-1">Total</div>
+              <div className="text-lg font-bold text-white">{Number(game.home_score!) + Number(game.away_score!)}</div>
+            </div>
+            <div className="bg-white/5 rounded-lg p-3 text-center">
+              <div className="text-gray-500 text-xs mb-1">Margin</div>
+              <div className="text-lg font-bold text-white">{Number(game.home_score!) - Number(game.away_score!)}</div>
+            </div>
           </div>
         </div>
       )}

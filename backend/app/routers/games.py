@@ -1,3 +1,4 @@
+import json
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select, func, text
 from sqlalchemy.orm import joinedload
@@ -433,7 +434,6 @@ async def get_nfl_prediction(
 
     # Over/under
     ou_pick = pred.ou_pick or "Over"
-    ou_total = pred.predicted_total or 0
 
     # Confidence scores
     conf_at = max(pred.ats_conf_cal or 0, pred.margin_conf or 0)
@@ -441,31 +441,129 @@ async def get_nfl_prediction(
     conf_ou = pred.ou_conf_cal or pred.ou_conf or 0
     conf_overall = (conf_at + conf_ml + conf_ou) / 3.0
 
+    # Get the actual betting line from consolidated table
+    line_result = await db.execute(
+        text("""
+            SELECT closing_spread, closing_ou
+            FROM nfl.betting_lines_consolidated
+            WHERE game_id = :game_id
+            LIMIT 1
+        """),
+        {"game_id": game_id},
+    )
+    bl = line_result.fetchone()
+    closing_spread = float(bl.closing_spread) if bl and bl.closing_spread is not None else None
+    closing_ou = float(bl.closing_ou) if bl and bl.closing_ou is not None else None
+
+    # Compute predicted scores from total + margin
+    # predicted_home_score/away_score DB columns are known placeholders (actual scores)
+    # Use predicted_total + predicted_margin instead
+    abs_margin = abs(pred.predicted_margin or 0)
+    pred_total_raw = pred.predicted_total or 0
+    if pred.spread_pick and pred.spread_pick == home_abbr:
+        pred_home = round((pred_total_raw + abs_margin) / 2)
+        pred_away = round((pred_total_raw - abs_margin) / 2)
+    else:
+        pred_home = round((pred_total_raw - abs_margin) / 2)
+        pred_away = round((pred_total_raw + abs_margin) / 2)
+
+    # Get season year
+    season_year = (await db.execute(
+        select(Season.year).where(Season.id == game.season_id)
+    )).scalar() or 0
+
     return {
+        "game_id": game_id,
+        "season": season_year,
+        "week": game.week or 0,
+        "home_team": home_abbr,
+        "away_team": away_abbr,
+        "date": game.date.isoformat() if game.date else None,
         "predicted": {
             "ats": ats_pick,
-            "over_under": ou_pick,
-            "moneyline": moneyline,
-            "home_score": round(pred.predicted_home_score or 0),
-            "away_score": round(pred.predicted_away_score or 0),
-            "confidence": {
-                "ats": min(round(conf_at * 100, 1), 100.0),
-                "ml": min(round(conf_ml * 100, 1), 100.0),
-                "ou": min(round(conf_ou * 100, 1), 100.0),
-                "overall": min(round(conf_overall * 100, 1), 100.0),
-            },
+            "ou": ou_pick,
+            "ml": ml_pick,
+            "home_score": pred_home,
+            "away_score": pred_away,
+            "total": round(pred_total_raw),
+            "margin": pred_home - pred_away,
         },
-        "line": {
-            "spread": margin,
-            "over_under": round(ou_total, 1),
+        "actual": {
+            "home_score": pred.actual_home_score,
+            "away_score": pred.actual_away_score,
+            "total": (pred.actual_home_score or 0) + (pred.actual_away_score or 0) if pred.actual_home_score is not None else None,
+            "margin": (pred.actual_home_score or 0) - (pred.actual_away_score or 0) if pred.actual_home_score is not None else None,
         },
         "results": {
             "ats": pred.ats_result or "N/A",
-            "over_under": pred.ou_result or "N/A",
-            "moneyline": pred.ml_result or "N/A",
+            "ou": pred.ou_result or "N/A",
+            "ml": pred.ml_result or "N/A",
+        },
+        "confidence": {
+            "overall": round(min(conf_overall, 1.0), 3),
+            "ats": round(min(conf_at, 1.0), 3),
+            "ou": round(min(conf_ou, 1.0), 3),
+            "ml": round(min(conf_ml, 1.0), 3),
+        },
+        "line": {
+            "spread": closing_spread,
+            "over_under": closing_ou,
+        },
+    }
+
+
+@router.get("/handicapping/nfl/prediction-stats/{game_id}")
+async def get_nfl_prediction_stats(game_id: int, db: AsyncSession = Depends(get_db)):
+    """Return detailed prediction stats for an NFL game: features, splits, situational data."""
+    result = await db.execute(
+        select(NFLGamePrediction).where(NFLGamePrediction.game_id == game_id).limit(1)
+    )
+    pred = result.scalar_one_or_none()
+    if not pred:
+        return {"detail": "No prediction found for this game"}
+
+    def _safe_json(val):
+        if val is None:
+            return None
+        if isinstance(val, str):
+            try:
+                return json.loads(val)
+            except (json.JSONDecodeError, TypeError):
+                return None
+        return val
+
+    features = _safe_json(pred.features_json)
+    splits = _safe_json(pred.splits_json)
+    home_stats = _safe_json(pred.home_stats_json)
+    away_stats = _safe_json(pred.away_stats_json)
+    situational = _safe_json(pred.situational_json)
+
+    # Get season/year info
+    game_result = await db.execute(
+        select(Game).where(Game.id == game_id)
+    )
+    game = game_result.scalar_one_or_none()
+
+    abs_margin = abs(pred.predicted_margin or 0)
+    pred_total_raw = pred.predicted_total or 0
+    pred_home = round((pred_total_raw + abs_margin) / 2)
+    pred_away = round((pred_total_raw - abs_margin) / 2)
+
+    return {
+        "game_id": game_id,
+        "predicted": {
+            "home_score": pred_home,
+            "away_score": pred_away,
+            "total": round(pred_total_raw),
+            "margin": round(pred.predicted_margin or 0),
         },
         "actual": {
             "home_score": pred.actual_home_score,
             "away_score": pred.actual_away_score,
         },
+        "features": features or {},
+        "splits": splits or {},
+        "home_stats": home_stats or {},
+        "away_stats": away_stats or {},
+        "situational": situational or {},
     }

@@ -322,50 +322,49 @@ async def _build_pick_card(
     spread = float(row.get("spread", 0) or 0)
     ou_line = float(row.get("over_under", 0) or 0)
 
-    # ATS prediction
+    # ATS prediction (regression model outputs MARGIN: home_score - away_score)
     ats_vals, ats_names = _extract_feature_vector(row, "ats")
     ats_dmat = xgb.DMatrix(ats_vals, feature_names=ats_names)
-    implied_cover = float(ats_model.predict(ats_dmat)[0])
+    pred_margin = float(ats_model.predict(ats_dmat)[0])
 
-    # OU prediction
+    # OU prediction (regression model outputs TOTAL: home_score + away_score)
     ou_vals, ou_names = _extract_feature_vector(row, "ou")
     ou_dmat = xgb.DMatrix(ou_vals, feature_names=ou_names)
-    ou_prob = float(ou_model.predict(ou_dmat)[0])
+    pred_total = float(ou_model.predict(ou_dmat)[0])
 
-    # Confidence
-    confidence, raw_prob = _confidence_from_prob(implied_cover)
-    ou_confidence, ou_raw = _confidence_from_prob(ou_prob)
+    # ATS confidence: how far is predicted margin from the spread line
+    ats_conf_val = min(0.5 + abs(pred_margin + (spread or 0)) * 0.03, 0.90) if spread else 0.5
+    ou_conf_val = min(0.5 + abs(pred_total - (ou_line or 0)) * 0.03, 0.90) if ou_line else 0.5
+    ml_conf_val = min(0.5 + abs(pred_margin) * 0.03, 0.90)
 
-    # Moneyline conversion
-    # Pick the side (home cover / away cover)
+    # Moneyline
     if home_team and away_team:
-        ml_prob = _ml_prob_from_spread(implied_cover, spread)
-        ml_numeric = _prob_to_moneyline(ml_prob)
         favorite = home_team if spread < 0 else away_team
         underdog = away_team if spread < 0 else home_team
-        ml_prob_away = 1 - ml_prob
-        ml_numeric_away = _prob_to_moneyline(ml_prob_away)
+        # Derive ML odds from margin prediction
+        ml_prob_est = 1.0 / (1.0 + 10.0 ** (-pred_margin / 10.0)) if pred_margin != 0 else 0.5
+        ml_numeric = _prob_to_moneyline(ml_prob_est)
+        ml_numeric_away = _prob_to_moneyline(1 - ml_prob_est)
     else:
         ml_numeric = 0
         ml_numeric_away = 0
 
-    home_prob = implied_cover
-    away_prob = 1 - implied_cover
-
-    # Build the ATS pick
-    if implied_cover > 0.5:
+    # ATS: home covers if predicted_margin > -(spread)
+    home_covers = pred_margin > -(spread or 0)
+    if home_covers:
         ats_side = home_team
-        ats_spread = f"-{abs(spread):.1f}"
+        ats_spread = f"-{abs(spread):.1f}" if spread else "PK"
         ats_text = f"{home_team} {ats_spread}"
-        cover_conf = _confidence_from_prob(implied_cover)
+        ats_prob_val = ats_conf_val  # confidence IS the probability
     else:
         ats_side = away_team
-        ats_spread = f"+{abs(spread):.1f}"
+        ats_spread = f"+{abs(spread):.1f}" if spread else "PK"
         ats_text = f"{away_team} {ats_spread}"
-        cover_conf = _confidence_from_prob(away_prob)
+        ats_prob_val = ats_conf_val
 
-    # Build the OU pick
-    if ou_prob > 0.5:
+    # OU: over if predicted_total > ou_line
+    pred_over = pred_total > (ou_line or 0)
+    if pred_over:
         ou_side = "Over"
         ou_text = f"Over {ou_line:.1f}"
     else:
@@ -378,32 +377,32 @@ async def _build_pick_card(
         "away_team": away_team,
         "spread": spread,
         "over_under": ou_line,
-        "predicted_spread": spread,                         # placeholder – no pure spread model
-        "predicted_over_under": ou_line,                     # placeholder
-        "home_ats_prob": round(home_prob, 4),
-        "away_ats_prob": round(away_prob, 4),
-        "ou_over_prob": round(ou_prob, 4),
-        "ou_under_prob": round(1 - ou_prob, 4),
+        "predicted_spread": pred_margin,                    # predicted margin
+        "predicted_over_under": pred_total,                  # predicted total score
+        "home_ats_prob": round(ats_conf_val, 4),
+        "away_ats_prob": round(1 - ats_conf_val, 4),
+        "ou_over_prob": round(ou_conf_val, 4),
+        "ou_under_prob": round(1 - ou_conf_val, 4),
         "ats_pick": {
             "team": ats_side,
             "spread": ats_spread,
             "text": ats_text,
-            "probability": round(max(home_prob, away_prob), 4),
-            "confidence": cover_conf,
+            "probability": round(ats_prob_val, 4),
+            "confidence": round(ats_conf_val, 4),
         },
         "ou_pick": {
             "team": ou_side,
             "text": ou_text,
-            "probability": round(max(ou_prob, 1 - ou_prob), 4),
-            "confidence": ou_confidence,
+            "probability": round(ou_conf_val, 4),
+            "confidence": round(ou_conf_val, 4),
         },
         "ml_pick": {
             "favorite": favorite if home_team else "",
             "underdog": underdog if away_team else "",
             "home_ml": ml_numeric,
             "away_ml": ml_numeric_away,
-            "home_ml_prob": round(ml_prob, 4) if home_team else 0.5,
-            "away_ml_prob": round(ml_prob_away, 4) if away_team else 0.5,
+            "home_ml_prob": round(ml_prob_est, 4) if home_team else 0.5,
+            "away_ml_prob": round(1 - ml_prob_est, 4) if away_team else 0.5,
         },
         "model_version": f"nba-xgboost-{year}",
         "model_type": "xgboost",
@@ -684,32 +683,47 @@ async def _save_api_prediction(
     ml_pick_side = ml_pick.get("favorite", "") or pick_card.get("ml_favorite", "")
 
     # \u2500\u2500 Confidence / probability values \u2500\u2500
-    margin_conf = None
-    if ats_pick.get("confidence"):
-        _, margin_conf = ats_pick["confidence"]
-    margin_conf = margin_conf or ats_pick.get("probability") or pick_card.get("ats_probability")
+    # Confidence is now a float (from margin-spread gap), not a tuple; ats_pick.confidence IS the value
+    margin_conf = ats_pick.get("confidence") or ats_pick.get("probability") or pick_card.get("ats_probability", 0.50)
+    ou_conf = ou_pick.get("confidence") or ou_pick.get("probability") or pick_card.get("ou_probability", 0.50)
 
-    ou_conf = None
-    if ou_pick.get("confidence"):
-        _, ou_conf = ou_pick["confidence"]
-    ou_conf = ou_conf or ou_pick.get("probability") or pick_card.get("ou_probability")
+    ml_conf = ml_pick.get("confidence") or pick_card.get("ml_probability") or pick_card.get("home_ml_prob", 0.50)
 
-    ml_conf = ml_pick.get("home_ml_prob") or pick_card.get("ml_probability") or pick_card.get("home_ml_prob")
+    # ── Line / spread / odds values ──
+    # Read odds from data_loader row (betting_agg CTE columns)
+    spread_home_odds = _float_safe(row.get("spread_home_odds"))
+    spread_away_odds = _float_safe(row.get("spread_away_odds"))
+    ats_odds = spread_home_odds if spread_pick == str(row.get("home_team", "")) else spread_away_odds
 
-    # \u2500\u2500 Line / spread / odds values \u2500\u2500
-    ats_spread_str = ats_pick.get("spread", "") or pick_card.get("ats_spread", "")
-    ats_odds = None
-    if isinstance(ats_spread_str, (int, float)):
-        ats_odds = float(ats_spread_str)
-    elif isinstance(ats_spread_str, str):
-        try:
-            ats_odds = float(ats_spread_str)
-        except (ValueError, TypeError):
-            pass
+    over_odds_val = _float_safe(row.get("over_odds"))
+    under_odds_val = _float_safe(row.get("under_odds"))
+    ou_odds = over_odds_val if ou_pick_side == "Over" else under_odds_val
 
-    ou_odds = pick_card.get("over_under") or pick_card.get("ou_line")
+    home_ml = _float_safe(row.get("home_moneyline"))
+    away_ml = _float_safe(row.get("away_moneyline"))
     ml_odds = ml_pick.get("home_ml") or pick_card.get("home_ml")
+    if _odds_row is None:
+        # Fallback: try reading from data_loader row
+        _odds_row = FakeRow(
+            spread_home_odds=row.get("spread_home_odds"),
+            spread_away_odds=row.get("spread_away_odds"),
+            over_odds=row.get("over_odds"),
+            under_odds=row.get("under_odds"),
+            home_moneyline=row.get("home_moneyline"),
+            away_moneyline=row.get("away_moneyline"),
+        )
 
+    spread_home_odds = _float_safe(_odds_row.spread_home_odds if _odds_row else None)
+    spread_away_odds = _float_safe(_odds_row.spread_away_odds if _odds_row else None)
+    ats_odds = spread_home_odds if spread_pick == str(row.get("home_team", "")) else spread_away_odds
+
+    over_odds_val = _float_safe(_odds_row.over_odds if _odds_row else None)
+    under_odds_val = _float_safe(_odds_row.under_odds if _odds_row else None)
+    ou_odds = over_odds_val if ou_pick_side == "Over" else under_odds_val
+
+    home_ml = _float_safe(_odds_row.home_moneyline if _odds_row else None)
+    away_ml = _float_safe(_odds_row.away_moneyline if _odds_row else None)
+    ml_odds = ml_pick.get("home_ml") or pick_card.get("home_ml")
     # \u2500\u2500 Predicted scores \u2500\u2500
     predicted_total = pick_card.get("predicted_over_under") or pick_card.get("ou_predicted_total")
     predicted_margin = pick_card.get("predicted_spread") or pick_card.get("spread", 0)
@@ -888,7 +902,7 @@ async def _save_backtest_prediction(
 
         home_fav = spread is not None and spread < 0
 
-        if ats_proba > 0.5:
+        if ats_proba > -(spread or 0):
             spread_pick = home_str
         else:
             spread_pick = away_str
@@ -897,7 +911,7 @@ async def _save_backtest_prediction(
         if ou_total is not None and over_under is not None:
             ou_pick = "Over" if ou_total > over_under else "Under"
 
-        ml_pick = home_str if home_fav else away_str
+        ml_pick = home_str if ats_proba > 0 else away_str  # regression model: margin > 0 = home wins
 
         # ── Results ───────────────────────────────────────────────────
         ats_result = None
@@ -922,20 +936,42 @@ async def _save_backtest_prediction(
                 ou_result = "push"
 
         # ── Odds ──────────────────────────────────────────────────────
-        ats_odds_value = spread
-        ou_odds_value = over_under
-        ml_odds_value = _float_safe(row.get("home_moneyline", row.get("home_ml"))) if home_fav else _float_safe(row.get("away_moneyline", row.get("away_ml")))
+        # Extract odds from betting_lines_consolidated (via data_loader betting_agg CTE)
+        # Read odds from data_loader DataFrame (via betting_agg CTE in SQL)
+        spread_home_odds = _float_safe(row.get("spread_home_odds"))
+        spread_away_odds = _float_safe(row.get("spread_away_odds"))
+        over_odds_val = _float_safe(row.get("over_odds"))
+        under_odds_val = _float_safe(row.get("under_odds"))
+        home_ml = _float_safe(row.get("home_moneyline"))
+        away_ml = _float_safe(row.get("away_moneyline"))
+
+        # Map odds to the picked side
+        ats_odds_value = spread_home_odds if spread_pick == home_str else spread_away_odds
+        ou_odds_value = over_odds_val if ou_pick == "Over" else under_odds_val
+        ml_odds_value = home_ml if home_fav else away_ml
+        ats_odds_value = spread_home_odds if spread_pick == home_str else spread_away_odds
+        ou_odds_value = over_odds_val if ou_pick == "Over" else under_odds_val
+        ml_odds_value = home_ml if home_fav else away_ml
 
         # ── Profit/Loss (per $100 bet) ────────────────────────────
-        # ATS/OU use standard -110 juice; ML uses the actual moneyline odds
-        ats_profit = round(100.0 * _profit_per_100(-110), 2) if ats_result == "win" else (-100.0 if ats_result == "loss" else 0.0)
-        ou_profit = round(100.0 * _profit_per_100(-110), 2) if ou_result == "over" else (-100.0 if ou_result == "under" else 0.0)
+        # ATS/OU use the actual spread/over-under odds from betting_lines_consolidated
+        ats_profit = 0.0
+        if ats_result == "win" and ats_odds_value:
+            ats_profit = round(100.0 * _profit_per_100(ats_odds_value), 2)
+        elif ats_result == "loss":
+            ats_profit = -100.0
+
+        ou_profit = 0.0
+        if ou_result == "over" and ou_odds_value:
+            ou_profit = round(100.0 * _profit_per_100(ou_odds_value), 2)
+        elif ou_result == "under":
+            ou_profit = -100.0
+
         ml_profit = 0.0
         if ml_odds_value and ml_result == "Win":
             ml_profit = round(100.0 * _profit_per_100(float(ml_odds_value)), 2)
         elif ml_result == "Loss":
             ml_profit = -100.0
-
         # ── Handicapper info (best-effort; row may lack display columns) ──
         try:
             home_stats = _build_nba_home_stats(row)
@@ -965,7 +1001,7 @@ async def _save_backtest_prediction(
         features_json_str = json.dumps(features_dict, default=str) if features_dict else None
 
         # ── Predicted scores & confidence ────────────────────────────────────
-        predicted_margin = ats_proba * spread * 2 if spread else None
+        predicted_margin = ats_proba  # ATS regression model outputs margin (home_score - away_score) directly
         predicted_total = ou_total
         margin_conf = round(min(0.5 + abs(predicted_margin + spread) * 0.03, 0.90), 4) if spread else 0.5
         ml_conf_val = round(min(0.5 + abs(predicted_margin) * 0.025, 0.92), 4) if predicted_margin is not None else 0.5

@@ -22,11 +22,9 @@ import pandas as pd
 import psycopg2
 import xgboost as xgb
 from sklearn.metrics import (
-    accuracy_score,
-    log_loss,
-    precision_score,
-    recall_score,
-    roc_auc_score,
+    mean_absolute_error,
+    mean_squared_error,
+    r2_score,
 )
 
 from app.handicapping.db_training import save_training_run, update_pkl_filename
@@ -126,7 +124,10 @@ def run_backtest(
         logger.warning("Empty train (%d) or test (%d) for year %d", len(train_df), len(test_df), test_year)
         return {"year": test_year, "error": "insufficient data"}
 
-    target = "over_result" if ou_only else "home_ats_cover"
+    target = "home_actual_margin" if not ou_only else "home_actual_margin"
+    if target not in train_df.columns and "home_score" in train_df.columns and "away_score" in train_df.columns:
+        for df_t in [train_df, test_df]:
+            df_t[target] = df_t["home_score"] - df_t["away_score"]
     if target not in train_df.columns:
         logger.error("Target column '%s' not found — skipping year %d", target, test_year)
         return {"year": test_year, "error": f"missing target '{target}'"}
@@ -155,8 +156,8 @@ def run_backtest(
 
     hp = hyperparams or {}
     params: Dict[str, Any] = {
-        "objective": "binary:logistic",
-        "eval_metric": "logloss",
+        "objective": "reg:squarederror",
+        "eval_metric": "mae",
         "learning_rate": hp.get("learning_rate", DEFAULT_LEARNING_RATE),
         "max_depth": hp.get("max_depth", DEFAULT_MAX_DEPTH),
         "subsample": hp.get("subsample", DEFAULT_SUBSAMPLE),
@@ -179,20 +180,17 @@ def run_backtest(
         verbose_eval=False,
     )
 
-    y_pred_proba = model.predict(dtest)
-    y_pred = (y_pred_proba >= 0.5).astype(int)
+    y_pred = model.predict(dtest)
 
     try:
-        acc = accuracy_score(y_test, y_pred)
-        auc = roc_auc_score(y_test, y_pred_proba)
-        ll = log_loss(y_test, y_pred_proba)
-        prec = precision_score(y_test, y_pred, zero_division=0)
-        rec = recall_score(y_test, y_pred, zero_division=0)
+        mae = float(mean_absolute_error(y_test, y_pred))
+        rmse = float(np.sqrt(mean_squared_error(y_test, y_pred)))
+        r2 = float(r2_score(y_test, y_pred))
     except Exception:
-        acc = auc = ll = prec = rec = 0.0
+        mae = rmse = r2 = 0.0
 
-    y_train_pred = (model.predict(dtrain) >= 0.5).astype(int)
-    train_acc = accuracy_score(y_train, y_train_pred)
+    y_train_pred = model.predict(dtrain)
+    train_mae = float(mean_absolute_error(y_train, y_train_pred))
 
     importance = model.get_score(importance_type="gain")
     fi_sorted = sorted(
@@ -202,16 +200,14 @@ def run_backtest(
 
     result: Dict[str, Any] = {
         "year": test_year,
-        "accuracy": round(float(acc), 4),
-        "auc": round(float(auc), 4),
-        "log_loss": round(float(ll), 4),
-        "precision": round(float(prec), 4),
-        "recall": round(float(rec), 4),
+        "mae": round(mae, 4),
+        "rmse": round(rmse, 4),
+        "r2": round(r2, 4),
         "feature_importance": fi_sorted,
         "feature_set": feature_cols,
         "n_train": len(X_train),
         "n_test": len(X_test),
-        "train_accuracy": round(float(train_acc), 4),
+        "train_mae": round(train_mae, 4),
         "elapsed_seconds": round(time.time() - t0, 2),
         "target": target,
     }
@@ -459,13 +455,21 @@ async def train_model(
     df = _ensure_ats_features(df)
     df = df.sort_values(["season_year", "date"]).reset_index(drop=True)
 
-    target = "home_ats_cover"
+    # Regression target: actual margin (home_score - away_score). Compute from db columns.
+    if ou_only:
+        target = "home_actual_margin"
+        if target not in df.columns and "home_score" in df.columns and "away_score" in df.columns:
+            df["home_actual_margin"] = df["home_score"] - df["away_score"]
+    else:
+        target = "home_actual_margin"
+        if target not in df.columns and "home_score" in df.columns and "away_score" in df.columns:
+            df["home_actual_margin"] = df["home_score"] - df["away_score"]
     df_all = df.dropna(subset=[target]).copy()
 
     hp = hyperparams or {}
     params: Dict[str, Any] = {
-        "objective": "binary:logistic",
-        "eval_metric": "logloss",
+        "objective": "reg:squarederror",
+        "eval_metric": "mae",
         "learning_rate": hp.get("learning_rate", DEFAULT_LEARNING_RATE),
         "max_depth": hp.get("max_depth", DEFAULT_MAX_DEPTH),
         "subsample": hp.get("subsample", DEFAULT_SUBSAMPLE),
@@ -521,9 +525,9 @@ async def train_model(
 
         model = xgb.train(params, dtrain, num_boost_round=n_estimators, verbose_eval=False)
 
-        # Training accuracy
-        y_pred = (model.predict(dtrain) >= 0.5).astype(int)
-        train_acc = accuracy_score(y_train, y_pred)
+        # Training MAE
+        y_pred_train = model.predict(dtrain)
+        train_mae = float(mean_absolute_error(y_train, y_pred_train))
 
         importance = model.get_score(importance_type="gain")
         total_gain = sum(importance.values()) or 1.0
@@ -532,11 +536,12 @@ async def train_model(
             key=lambda x: -x["importance"],
         )
 
-        # Test accuracy (ATS) – evaluate on test year data
+        # Test evaluation – predict margin, then compute ATS/ML accuracy from margin against spread
         ats_total = 0
         ats_correct = 0
         ml_total = 0
         ml_correct = 0
+        test_mae = 0.0
 
         if not df_test.empty and len(df_test) > 0:
             available_test = [c for c in feature_cols if c in df_test.columns]
@@ -546,17 +551,24 @@ async def train_model(
                 X_test = df_test_clean[available_test].values
                 y_test = df_test_clean[target].values
                 dtest = xgb.DMatrix(X_test, feature_names=available_test)
-                probs = model.predict(dtest)
-                preds = (probs >= 0.5).astype(int)
+                pred_margins = model.predict(dtest)
+                test_mae = float(mean_absolute_error(y_test, pred_margins))
 
-                ats_total = len(y_test)
-                ats_correct = int((preds == y_test).sum())
+                # ATS: model picks home if predicted margin > -(spread), away otherwise
+                if "spread" in df_test_clean.columns and "home_actual_margin" in df_test_clean.columns:
+                    spreads = df_test_clean["spread"].values
+                    actual_margins = df_test_clean["home_actual_margin"].values
+                    ats_pick_home = pred_margins > -(spreads)
+                    ats_cover = (actual_margins > -(spreads)).astype(int)
+                    ats_pred = ats_pick_home.astype(int)
+                    ats_total = len(ats_pred)
+                    ats_correct = int((ats_pred == ats_cover).sum())
 
-                # Moneyline: model picks home team if predicted cover prob > 0.5
-                if "home_score" in df_test_clean.columns and "away_score" in df_test_clean.columns:
-                    home_won = (df_test_clean["home_score"].values > df_test_clean["away_score"].values).astype(int)
-                    ml_total = len(home_won)
-                    ml_correct = int((preds == home_won).sum())
+                    # ML: model picks home if margin > 0
+                    home_won = (actual_margins > 0).astype(int)
+                    ml_pred = (pred_margins > 0).astype(int)
+                    ml_total = len(ml_pred)
+                    ml_correct = int((ml_pred == home_won).sum())
 
         ats_incorrect = ats_total - ats_correct
         ats_pct = round(100 * ats_correct / ats_total, 2) if ats_total > 0 else 0.0
@@ -575,7 +587,7 @@ async def train_model(
             "name": f"{test_year} NBA ATS",
             "test_year": test_year,
             "total_games": ats_total,
-            "mae": float(ats_incorrect / max(ats_total, 1)),
+            "mae": round(float(test_mae), 4),
             "input_features": len(available),
             "feature_importance": fi_sorted,
             "model_params": {**params, "n_estimators": n_estimators},

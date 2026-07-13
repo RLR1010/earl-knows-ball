@@ -30,6 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sess
 
 from app.models.nfl.game_prediction import NFLGamePrediction
 from app.handicapping.nfl.data_loader import NFLDataLoader, get_data_loader, get_model_features
+from app.handicapping.calibrate_confidence import calibrate
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +46,14 @@ DB_DSN: str = os.environ.get(
     "postgresql://earl:earl2025@localhost:5432/earl_knows_football",
 )
 NFL_SCHEMA = "nfl"
+
+
+def _profit_per_100(odds: float) -> float:
+    """Convert American odds to profit per $100 risked."""
+    if odds < 0:
+        return 100.0 / abs(odds)
+    return odds / 100.0
+
 
 # ── Async DB setup ───────────────────────────────────────────────────────────────
 ASYNC_DSN: str = DB_DSN.replace("postgresql://", "postgresql+asyncpg://")
@@ -430,9 +439,7 @@ async def batch_predict_upcoming_games(
                 "away_abbr": away_str,
             })
             # Calibrated confidence
-            result["ats_conf_cal"] = round(abs(ats_proba - 0.5) * 2, 4)
-            result["ml_conf_cal"] = None
-            result["ou_conf_cal"] = None
+            # Calibrated confidences computed in _save_api_prediction via calibrate()
             # Features for pick-card
             pc_feats = _load_pick_card_feature_names()
             result["features"] = json.loads(_extract_pick_card_features(row, pc_feats))
@@ -562,6 +569,25 @@ async def _save_api_prediction(result: Dict[str, Any]) -> None:
         elif ml_pick == away_abbr:
             ml_odds_value = result.get("away_ml")
 
+        # ── Raw confidence computations ───
+        ats_raw = round(min(0.5 + abs(pred_margin + spread) * 0.04, 0.90), 4) if spread else 0.5
+        ml_raw = round(min(0.5 + abs(pred_margin) * 0.025, 0.92), 4)
+        ou_raw = round(min(0.5 + abs(predicted_total - result.get("closing_ou", 0)) * 0.07, 0.92), 4) if (predicted_total is not None and result.get("closing_ou")) else 0.5
+
+        # ── Calibrated confidences ───
+        ats_cal = calibrate(ats_raw, "ats", "nfl")
+        ml_cal = calibrate(ml_raw, "ml", "nfl")
+        ou_cal = calibrate(ou_raw, "ou", "nfl")
+
+        # ── Expected value helpers ───
+        def _ev(conf_: float, odds_: float) -> float:
+            profit_if_win = 100.0 * _profit_per_100(odds_)
+            return round((conf_ * profit_if_win) - ((1.0 - conf_) * 100.0), 2)
+
+        ats_ev = _ev(ats_cal, ats_odds_value) if ats_odds_value else None
+        ou_ev = _ev(ou_cal, ou_odds_value) if ou_odds_value else None
+        ml_ev = _ev(ml_cal, ml_odds_value) if ml_odds_value else None
+
         # Handicapper info
         home_stats = result.get("home_stats")
         away_stats = result.get("away_stats")
@@ -576,15 +602,18 @@ async def _save_api_prediction(result: Dict[str, Any]) -> None:
             predicted_away_score=pred_away_score,
             predicted_total=predicted_total,
             predicted_margin=pred_margin,
-            margin_conf=round(min(0.5 + abs(pred_margin + spread) * 0.04, 0.90), 4) if spread else 0.5,
-            ml_conf=round(min(0.5 + abs(pred_margin) * 0.025, 0.92), 4),
-            ou_conf=round(min(0.5 + abs(predicted_total - result.get("closing_ou", 0)) * 0.07, 0.92), 4) if (predicted_total is not None and result.get("closing_ou")) else 0.5,
+            margin_conf=ats_raw,
+            ml_conf=ml_raw,
+            ou_conf=ou_raw,
             ou_pick=ou_pick,
             spread_pick=spread_pick,
             ml_pick=ml_pick,
-            ats_conf_cal=result.get("ats_conf_cal"),
-            ml_conf_cal=result.get("ml_conf_cal"),
-            ou_conf_cal=result.get("ou_conf_cal"),
+            ats_conf_cal=ats_cal,
+            ml_conf_cal=ml_cal,
+            ou_conf_cal=ou_cal,
+            ats_ev=ats_ev,
+            ou_ev=ou_ev,
+            ml_ev=ml_ev,
             ats_profit=result.get("ats_profit"),
             ou_profit=result.get("ou_profit"),
             ml_profit=result.get("ml_profit"),
@@ -738,6 +767,24 @@ async def _save_backtest_prediction(
         elif ml_result == "Loss":
             ml_profit = -100.0 if ml_odds_value and ml_odds_value > 0 else -(abs(ml_odds_value or 100.0))
 
+        # ── Raw confidence computations ───
+        ml_raw = round(min(0.5 + abs(pred_margin_pred) * 0.025, 0.92), 4)
+        ou_raw = round(min(0.5 + abs(ou_total - closing_ou) * 0.07, 0.92), 4) if (ou_total is not None and closing_ou) else 0.5
+
+        # ── Calibrated confidences ───
+        ats_cal = calibrate(margin_conf, "ats", "nfl")
+        ml_cal = calibrate(ml_raw, "ml", "nfl")
+        ou_cal = calibrate(ou_raw, "ou", "nfl")
+
+        # ── Expected value ───
+        def _ev(conf_: float, odds_: float) -> float:
+            profit_if_win = 100.0 * _profit_per_100(odds_)
+            return round((conf_ * profit_if_win) - ((1.0 - conf_) * 100.0), 2)
+
+        ats_ev = _ev(ats_cal, ats_odds_value) if ats_odds_value else None
+        ml_ev = _ev(ml_cal, ml_odds_value) if ml_odds_value else None
+        ou_ev = _ev(ou_cal, ou_odds_value) if ou_odds_value else None
+
         # ── Handicapper info ────────────────────────────────────────────────────
         home_stats = _build_nfl_home_stats(row)
         away_stats = _build_nfl_away_stats(row)
@@ -764,14 +811,17 @@ async def _save_backtest_prediction(
                 predicted_total=ou_total,
                 predicted_margin=pred_margin_pred,
                 margin_conf=margin_conf,
-                ml_conf=round(min(0.5 + abs(pred_margin_pred) * 0.025, 0.92), 4),
-                ou_conf=round(min(0.5 + abs(ou_total - closing_ou) * 0.07, 0.92), 4) if (ou_total is not None and closing_ou) else 0.5,
+                ml_conf=ml_raw,
+                ou_conf=ou_raw,
                 ou_pick=ou_pick,
                 spread_pick=spread_pick,
                 ml_pick=ml_pick,
-                ats_conf_cal=abs(ats_proba - 0.5) * 2,
-                ml_conf_cal=abs(actual_margin) / (abs(spread) or 1) if spread else None,
-                ou_conf_cal=abs(actual_total - closing_ou) / (closing_ou or 1) if closing_ou else None,
+                ats_conf_cal=ats_cal,
+                ml_conf_cal=ml_cal,
+                ou_conf_cal=ou_cal,
+                ats_ev=ats_ev,
+                ml_ev=ml_ev,
+                ou_ev=ou_ev,
                 actual_home_score=home_score,
                 actual_away_score=away_score,
                 actual_total=actual_total,
@@ -810,14 +860,17 @@ async def _save_backtest_prediction(
                 predicted_total=ou_total,
                 predicted_margin=pred_margin_pred,
                 margin_conf=margin_conf,
-                ml_conf=round(min(0.5 + abs(pred_margin_pred) * 0.025, 0.92), 4),
-                ou_conf=round(min(0.5 + abs(ou_total - closing_ou) * 0.07, 0.92), 4) if (ou_total is not None and closing_ou) else 0.5,
+                ml_conf=ml_raw,
+                ou_conf=ou_raw,
                 ou_pick=ou_pick,
                 spread_pick=spread_pick,
                 ml_pick=ml_pick,
-                ats_conf_cal=abs(ats_proba - 0.5) * 2,
-                ml_conf_cal=abs(actual_margin) / (abs(spread) or 1) if spread else None,
-                ou_conf_cal=abs(actual_total - closing_ou) / (closing_ou or 1) if closing_ou else None,
+                ats_conf_cal=ats_cal,
+                ml_conf_cal=ml_cal,
+                ou_conf_cal=ou_cal,
+                ats_ev=ats_ev,
+                ml_ev=ml_ev,
+                ou_ev=ou_ev,
                 actual_home_score=home_score,
                 actual_away_score=away_score,
                 actual_total=actual_total,

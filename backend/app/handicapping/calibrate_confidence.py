@@ -229,7 +229,7 @@ async def build_calibration(db, sport: str = "nfl"):
                 COUNT(*) FILTER (WHERE gp.ml_result IN ('Win','Loss')) as ml_games,
                 COUNT(*) FILTER (WHERE gp.ml_result='Win') as ml_w
             FROM {schema}.game_predictions gp
-            WHERE gp.source = 'api'
+            WHERE gp.source IN ('api', 'backtest')
               AND gp.margin_conf IS NOT NULL
             GROUP BY bucket
             ORDER BY bucket

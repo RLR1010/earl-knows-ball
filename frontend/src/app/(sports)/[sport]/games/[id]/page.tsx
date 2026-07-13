@@ -329,7 +329,6 @@ export default function GameDetailPage() {
           <div className="flex items-center justify-center gap-8 md:gap-16 mt-4">
             <div className="flex flex-col items-center gap-1">
               <div className={`w-12 h-12 rounded-full bg-white/10 flex items-center justify-center text-xl font-bold ${aWon ? "opacity-100" : "opacity-60"}`}>{nflBoxScore.game.away_team?.slice(0, 3).toUpperCase()}</div>
-              <span className="text-sm font-semibold text-gray-300">{nflBoxScore.game.away_team || ""}</span>
               <span className={`text-5xl font-bold mt-1 ${aWon ? "text-earl-400" : "text-gray-400"}`}>
                 {nflBoxScore.game.away_score != null ? nflBoxScore.game.away_score : "-"}
               </span>
@@ -337,7 +336,6 @@ export default function GameDetailPage() {
             <div className="text-4xl text-gray-600 font-black">@</div>
             <div className="flex flex-col items-center gap-1">
               <div className={`w-12 h-12 rounded-full bg-white/10 flex items-center justify-center text-xl font-bold ${hWon ? "opacity-100" : "opacity-60"}`}>{nflBoxScore.game.home_team?.slice(0, 3).toUpperCase()}</div>
-              <span className="text-sm font-semibold text-gray-300">{nflBoxScore.game.home_team || ""}</span>
               <span className={`text-5xl font-bold mt-1 ${hWon ? "text-earl-400" : "text-gray-400"}`}>
                 {nflBoxScore.game.home_score != null ? nflBoxScore.game.home_score : "-"}
               </span>

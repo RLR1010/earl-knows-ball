@@ -714,7 +714,16 @@ class NFLDataLoader:
                      "off_ypg", "ypp", "pass_ypg", "rush_ypg",
                      "pass_ypa", "rush_ypa", "turnover_diff",
                      "def_ypg", "def_ypp",
-                     "def_pass_ypg", "def_rush_ypg"]
+                     "def_pass_ypg", "def_rush_ypg",
+                     # PBP-derived offensive stats used by build_features
+                     "first_downs", "third_down_pct", "fourth_down_pct",
+                     "rz_trips", "rz_td_pct",
+                     "explosive_plays", "three_and_outs", "ints_thrown",
+                     # PBP-derived defensive stats used by build_features
+                     "def_first_downs", "def_third_down_pct", "def_fourth_down_pct",
+                     "def_rz_trips", "def_rz_td_pct",
+                     "def_explosive_plays", "def_three_and_outs", "def_ints_thrown",
+                     ]
                 ].copy()
                 logger.info(
                     "Loaded %d team-game stat rows from nfl.game_stats (%d-%d)",
