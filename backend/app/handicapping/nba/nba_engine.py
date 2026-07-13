@@ -1103,74 +1103,111 @@ async def _save_backtest_prediction(
 
 
 def _build_nba_home_stats(row: pd.Series) -> str:
-    """Build home_stats_json for handicap info."""
-    home_team = _str_safe(row.get("home_team"))
-    home_ppg = _float_safe(row.get("home_ppg"))
-    home_oppg = _float_safe(row.get("home_oppg"))
-    home_win_pct = _float_safe(row.get("home_win_pct"))
-    home_ats_pct = _float_safe(row.get("home_ats_pct"))
-    home_ou_pct = _float_safe(row.get("home_ou_pct"))
-    home_recent = _str_safe(row.get("home_recent"))
+    """Build home_stats_json for handicap info using NBA data loader columns."""
     return json.dumps({
-        "team": home_team,
-        "ppg": home_ppg,
-        "oppg": home_oppg,
-        "win_pct": home_win_pct,
-        "ats_pct": home_ats_pct,
-        "ou_pct": home_ou_pct,
-        "recent_games": home_recent,
+        "team": _str_safe(row.get("home_team")),
+        "abbreviation": _str_safe(row.get("home_abbr")),
+        "ortg_r10": _float_safe(row.get("h_ortg_r10")),
+        "drtg_r10": _float_safe(row.get("h_drtg_r10")),
+        "net_rtg_r10": _float_safe(row.get("h_net_rtg_r10")),
+        "pace_r10": _float_safe(row.get("h_pace_r10")),
+        "adj_off_r10": _float_safe(row.get("h_adj_off_10")),
+        "adj_def_r10": _float_safe(row.get("h_adj_def_10")),
+        "ats_wins_r10": _float_safe(row.get("h_ats_wins_10")),
+        "ats_margin_r10": _float_safe(row.get("h_ats_margin_10")),
+        "ats_pct_r10": _calc_pct(row.get("h_ats_wins_10"), 10),
+        "wins_r10": _float_safe(row.get("h_wins_10")),
+        "win_pct_r10": _calc_pct(row.get("h_wins_10"), 10),
+        "ou_wins_r10": _float_safe(row.get("h_ou_wins_10")),
+        "ou_pct_r10": _calc_pct(row.get("h_ou_wins_10"), 10),
+        "ou_margin_r5": _float_safe(row.get("h_ou_margin_5")),
+        "ft_rate_r10": _float_safe(row.get("h_ft_rate_r10")),
+        "three_in_four": bool(row.get("h_three_in_four", 0)),
+        "implied_prob": _float_safe(row.get("h_implied")),
+        "rest_days": _float_safe(row.get("rest_h")),
+        "is_b2b": bool(row.get("home_b2b", 0)),
     })
 
 
 def _build_nba_away_stats(row: pd.Series) -> str:
-    """Build away_stats_json for handicap info."""
-    away_team = _str_safe(row.get("away_team"))
-    away_ppg = _float_safe(row.get("away_ppg"))
-    away_oppg = _float_safe(row.get("away_oppg"))
-    away_win_pct = _float_safe(row.get("away_win_pct"))
-    away_ats_pct = _float_safe(row.get("away_ats_pct"))
-    away_ou_pct = _float_safe(row.get("away_ou_pct"))
-    away_recent = _str_safe(row.get("away_recent"))
+    """Build away_stats_json for handicap info using NBA data loader columns."""
     return json.dumps({
-        "team": away_team,
-        "ppg": away_ppg,
-        "oppg": away_oppg,
-        "win_pct": away_win_pct,
-        "ats_pct": away_ats_pct,
-        "ou_pct": away_ou_pct,
-        "recent_games": away_recent,
+        "team": _str_safe(row.get("away_team")),
+        "abbreviation": _str_safe(row.get("away_abbr")),
+        "ortg_r10": _float_safe(row.get("a_ortg_r10")),
+        "drtg_r10": _float_safe(row.get("a_drtg_r10")),
+        "net_rtg_r10": _float_safe(row.get("a_net_rtg_r10")),
+        "pace_r10": _float_safe(row.get("a_pace_r10")),
+        "adj_off_r10": _float_safe(row.get("a_adj_off_10")),
+        "adj_def_r10": _float_safe(row.get("a_adj_def_10")),
+        "ats_wins_r10": _float_safe(row.get("a_ats_wins_10")),
+        "ats_margin_r10": _float_safe(row.get("a_ats_margin_10")),
+        "ats_pct_r10": _calc_pct(row.get("a_ats_wins_10"), 10),
+        "wins_r10": _float_safe(row.get("a_wins_10")),
+        "win_pct_r10": _calc_pct(row.get("a_wins_10"), 10),
+        "ou_wins_r10": _float_safe(row.get("a_ou_wins_10")),
+        "ou_pct_r10": _calc_pct(row.get("a_ou_wins_10"), 10),
+        "ou_margin_r5": _float_safe(row.get("a_ou_margin_5")),
+        "ft_rate_r10": _float_safe(row.get("a_ft_rate_r10")),
+        "three_in_four": bool(row.get("a_three_in_four", 0)),
+        "implied_prob": _float_safe(row.get("a_implied")),
+        "rest_days": _float_safe(row.get("rest_a")),
+        "is_b2b": bool(row.get("away_b2b", 0)),
     })
 
 
 def _build_nba_situational(row: pd.Series) -> str:
-    """Build situational_json for handicap info."""
+    """Build situational_json for handicap info using NBA data loader columns."""
     return json.dumps({
-        "rest_days_home": _float_safe(row.get("home_rest")),
-        "rest_days_away": _float_safe(row.get("away_rest")),
-        "is_back_to_back": bool(row.get("is_b2b")),
+        "rest_days_home": _float_safe(row.get("rest_h")),
+        "rest_days_away": _float_safe(row.get("rest_a")),
+        "rest_diff": _float_safe(row.get("rest_diff")),
+        "home_b2b": bool(row.get("home_b2b", 0)),
+        "away_b2b": bool(row.get("away_b2b", 0)),
+        "travel_miles": _float_safe(row.get("travel_miles")),
         "home_at_home": True,
-        "venue": _str_safe(row.get("venue")),
-        "is_division_game": bool(row.get("is_div_game")),
+        "venue": "",
+        "is_division_game": False,
+        "season_week": _float_safe(row.get("season_week")),
+        "two_games_today": bool(row.get("two_games", 0)),
     })
 
 
 def _build_nba_splits(row: pd.Series) -> str:
-    """Build splits_json for handicap info."""
+    """Build splits_json for handicap info using NBA data loader columns."""
     return json.dumps({
-        "home_ats_home": _float_safe(row.get("home_ats_home")),
-        "home_ats_away": _float_safe(row.get("home_ats_away")),
-        "home_ou_home": _float_safe(row.get("home_ou_home")),
-        "home_ou_away": _float_safe(row.get("home_ou_away")),
-        "away_ats_home": _float_safe(row.get("away_ats_home")),
-        "away_ats_away": _float_safe(row.get("away_ats_away")),
-        "away_ou_home": _float_safe(row.get("away_ou_home")),
-        "away_ou_away": _float_safe(row.get("away_ou_away")),
-        "home_line_movement": _str_safe(row.get("home_line_movement")),
-        "away_line_movement": _str_safe(row.get("away_line_movement")),
+        "closing_spread": _float_safe(row.get("closing_spread")),
+        "opening_spread": _float_safe(row.get("opening_spread")),
+        "spread_movement": _float_safe(row.get("spread_movement")),
+        "closing_ou": _float_safe(row.get("closing_ou")),
+        "opening_ou": _float_safe(row.get("opening_ou")),
+        "spread_home_odds": _float_safe(row.get("spread_home_odds")),
+        "spread_away_odds": _float_safe(row.get("spread_away_odds")),
+        "home_ml": _float_safe(row.get("home_ml")),
+        "away_ml": _float_safe(row.get("away_ml")),
+        "home_implied_pct": _float_safe(row.get("h_implied")),
+        "away_implied_pct": _float_safe(row.get("a_implied")),
+        "home_ats_cover_pct_r10": _calc_pct(row.get("h_ats_wins_10"), 10),
+        "away_ats_cover_pct_r10": _calc_pct(row.get("a_ats_wins_10"), 10),
+        "home_ou_over_pct_r10": _calc_pct(row.get("h_ou_wins_10"), 10),
+        "away_ou_over_pct_r10": _calc_pct(row.get("a_ou_wins_10"), 10),
     })
 
 
 # ── Safe casting helpers ──────────────────────────────────────────────────────────
+
+
+def _calc_pct(val, total: int) -> Optional[float]:
+    """Compute a percentage from wins/total, safely handling None/NaN."""
+    if val is None or total <= 0:
+        return None
+    try:
+        fval = float(val)
+        if np.isnan(fval):
+            return None
+        return round(fval / total, 3)
+    except (ValueError, TypeError):
+        return None
 
 
 def _int_safe(val) -> Optional[int]:
