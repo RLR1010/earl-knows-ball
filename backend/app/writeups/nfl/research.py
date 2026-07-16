@@ -275,6 +275,8 @@ async def get_team_season_stats(db: AsyncSession, team_abbr: str, season_id: int
             JOIN nfl.games g ON gs.season = :season_year
                 AND gs.week = g.week
                 AND gs.season_type = g.game_type
+            JOIN nfl.teams t ON t.id IN (g.home_team_id, g.away_team_id)
+                AND t.abbreviation = gs.team_abbr
             WHERE gs.team_abbr = :team_abbr
               AND g.season_id = :season_id
               {date_filter}
@@ -314,6 +316,8 @@ async def get_team_season_stats(db: AsyncSession, team_abbr: str, season_id: int
         JOIN nfl.games g ON gs.season = :season_year
             AND gs.week = g.week
             AND gs.season_type = g.game_type
+        JOIN nfl.teams t ON t.id IN (g.home_team_id, g.away_team_id)
+            AND t.abbreviation = gs.team_abbr
         WHERE gs.team_abbr = :team_abbr
           AND g.season_id = :season_id
           {date_filter}
@@ -382,6 +386,8 @@ async def get_team_rankings(db: AsyncSession, team_abbr: str, season_id: int,
             JOIN nfl.games g ON gs.season = (SELECT year FROM nfl.seasons WHERE id = :season_id)
                 AND gs.week = g.week
                 AND gs.season_type = g.game_type
+            JOIN nfl.teams t ON t.id IN (g.home_team_id, g.away_team_id)
+                AND t.abbreviation = gs.team_abbr
             WHERE g.season_id = :season_id
               {date_filter}
             GROUP BY gs.team_abbr
@@ -919,6 +925,8 @@ async def get_team_pace(db: AsyncSession, team_id: int, team_abbr: str,
         JOIN nfl.games g ON gs.season = (SELECT year FROM nfl.seasons WHERE id = :season_id)
             AND gs.week = g.week
             AND gs.season_type = g.game_type
+        JOIN nfl.teams t ON t.id IN (g.home_team_id, g.away_team_id)
+            AND t.abbreviation = gs.team_abbr
         WHERE gs.team_abbr = :team_abbr
           AND g.season_id = :season_id
           {date_filter}
@@ -959,6 +967,8 @@ async def get_defensive_matchup(db: AsyncSession, offense_abbr: str, defense_abb
         JOIN nfl.games g ON gs.season = (SELECT year FROM nfl.seasons WHERE id = :season_id)
             AND gs.week = g.week
             AND gs.season_type = g.game_type
+        JOIN nfl.teams t ON t.id IN (g.home_team_id, g.away_team_id)
+            AND t.abbreviation = gs.team_abbr
         WHERE gs.team_abbr = :off_abbr
           AND g.season_id = :season_id
           {date_filter}
@@ -976,6 +986,8 @@ async def get_defensive_matchup(db: AsyncSession, offense_abbr: str, defense_abb
         JOIN nfl.games g ON gs.season = (SELECT year FROM nfl.seasons WHERE id = :season_id)
             AND gs.week = g.week
             AND gs.season_type = g.game_type
+        JOIN nfl.teams t ON t.id IN (g.home_team_id, g.away_team_id)
+            AND t.abbreviation = gs.team_abbr
         WHERE gs.team_abbr = :def_abbr
           AND g.season_id = :season_id
           {date_filter}
@@ -1018,6 +1030,9 @@ async def get_research_brief(db: AsyncSession, game_id: int,
     game = await get_game_summary(db, game_id)
     if "error" in game:
         return game
+
+    # Strip actual scores — LLM must not see game results in preview
+    game.pop("score", None)
 
     sid = await db.execute(
         text("SELECT id FROM nfl.seasons WHERE year = :year"),
@@ -1069,6 +1084,51 @@ async def get_research_brief(db: AsyncSession, game_id: int,
             logger.warning("NFL research brief task %s failed: %s", name, e)
             results[name] = {}
 
+    # ── Article Research + Enrichment ──
+    home_team_name: str | None = game.get("home_team", {}).get("name")
+    away_team_name: str | None = game.get("away_team", {}).get("name")
+    game_dt: str | None = game.get("date")
+
+    # Parse game date string → date object for enrich_writeup_context
+    parsed_game_date: date | None = None
+    if game_dt:
+        try:
+            parsed_game_date = datetime.fromisoformat(game_dt).date()  # noqa: F821 — module-level import
+        except (ValueError, TypeError):
+            pass
+
+    if home_team_name and away_team_name and parsed_game_date:
+        from app.writeups.enrichment import enrich_writeup_context  # lazy import
+
+        enrichment = await enrich_writeup_context(
+            db=db,
+            sport="nfl",
+            home_team=home_team_name,
+            away_team=away_team_name,
+            game_date=parsed_game_date,
+            starting_pitchers=None,
+            pitching_matchup=None,
+        )
+        # Retry once if enrichment came back empty
+        orig_enrichment = enrichment
+        if not enrichment.get("enriched_summary", "") or enrichment.get("article_count", 0) == 0:
+            # Try with broader search: drop team names, use city/abbr
+            city_home = game.get("home_team", {}).get("abbr", "")
+            city_away = game.get("away_team", {}).get("abbr", "")
+            enrichment = await enrich_writeup_context(
+                db=db,
+                sport="nfl",
+                home_team=city_home,
+                away_team=city_away,
+                game_date=parsed_game_date,
+                starting_pitchers=None,
+                pitching_matchup=None,
+            )
+            enrichment["_fallback_used"] = True
+        results["article_enrichment"] = enrichment
+    else:
+        results["article_enrichment"] = {"enriched_summary": "", "article_count": 0}
+
     return {
         "game_info": game,
         "betting_lines": results.get("betting"),
@@ -1099,6 +1159,7 @@ async def get_research_brief(db: AsyncSession, game_id: int,
             "home_defense_vs_away_offense": results.get("home_def_matchup"),
             "away_defense_vs_home_offense": results.get("away_def_matchup"),
         },
+        "article_enrichment": results.get("article_enrichment", {"enriched_summary": "", "article_count": 0}),
     }
 
 

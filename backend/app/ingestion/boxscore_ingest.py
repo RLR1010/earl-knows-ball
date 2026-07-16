@@ -532,5 +532,160 @@ async def main():
     await conn.close()
 
 
+async def update_prediction_results(pg_conn) -> int:
+    """
+    Update mlb.game_predictions with actual scores and results for FINAL games
+    that have predictions but haven't had actual results populated yet.
+
+    Returns the number of predictions updated.
+    """
+    rows = await pg_conn.fetch(
+        """
+        SELECT gp.game_id,
+               gp.predicted_home_runs, gp.predicted_away_runs,
+               gp.predicted_margin,     gp.predicted_total,
+               gp.run_line_pick, gp.ou_pick, gp.ml_pick,
+               gp.rl_conf, gp.ml_conf, gp.ou_conf,
+               g.home_score, g.away_score,
+               blc.closing_spread,
+               blc.closing_spread_home_odds, blc.closing_spread_away_odds,
+               blc.closing_ou,
+               blc.closing_over_odds, blc.closing_under_odds,
+               blc.closing_home_ml, blc.closing_away_ml
+        FROM mlb.game_predictions gp
+        JOIN mlb.games g ON gp.game_id = g.id
+        LEFT JOIN mlb.betting_lines_consolidated blc ON gp.game_id = blc.game_id
+        WHERE g.status = 'FINAL'
+          AND g.home_score IS NOT NULL
+          AND g.away_score IS NOT NULL
+          AND gp.actual_home_runs IS NULL
+        ORDER BY gp.game_id
+        """
+    )
+
+    if not rows:
+        logger.info("  No predictions need result updates")
+        return 0
+
+    def _profit_per_100(odds: float) -> float:
+        if odds > 0:
+            return odds / 100.0
+        return 100.0 / abs(odds)
+
+    updated = 0
+    for r in rows:
+        gid = r["game_id"]
+        # Normalize types: asyncpg returns Decimal for int/float columns
+        home_score = float(r["home_score"])
+        away_score = float(r["away_score"])
+        actual_total = home_score + away_score
+        actual_margin = home_score - away_score
+        spr = float(r["closing_spread"]) if r["closing_spread"] is not None else None
+        vegas_ou = float(r["closing_ou"]) if r["closing_ou"] is not None else None
+        predicted_margin = float(r["predicted_margin"]) if r["predicted_margin"] is not None else None
+
+        # --- Run line result ---
+        rl_result = None
+        if spr is not None and predicted_margin is not None:
+            pred_home_covers = (predicted_margin + spr) > 0
+            act_home_covers = (actual_margin + spr) > 0
+            rl_diff = actual_margin + spr
+            if abs(rl_diff) < 0.005:
+                rl_result = "Push"
+            else:
+                rl_result = "Win" if pred_home_covers == act_home_covers else "Loss"
+
+        # --- OU result ---
+        ou_result = None
+        if vegas_ou is not None and r["ou_pick"] is not None:
+            pick_lower = r["ou_pick"].lower()
+            ou_picked_over = pick_lower.startswith("over")
+            ou_picked_under = pick_lower.startswith("under")
+
+            if abs(actual_total - float(vegas_ou)) < 0.5:
+                ou_result = "Push"
+            elif ou_picked_over:
+                ou_result = "Win" if actual_total > float(vegas_ou) else "Loss"
+            elif ou_picked_under:
+                ou_result = "Win" if actual_total < float(vegas_ou) else "Loss"
+
+        # --- Moneyline result ---
+        ml_result = None
+        ml_pick = r["ml_pick"]
+        if ml_pick and actual_margin is not None:
+            if actual_margin == 0:
+                ml_result = "Push"
+            elif ml_pick in ("home", "Home"):
+                ml_result = "Win" if actual_margin > 0 else "Loss"
+            elif ml_pick in ("away", "Away"):
+                ml_result = "Win" if actual_margin < 0 else "Loss"
+
+        # --- Profit calculations ---
+        def _calc_profit(result: str | None, odds: float | None) -> float | None:
+            if result is None or odds is None:
+                return None
+            if result != "Win":
+                return -100.0
+            return round(100.0 * _profit_per_100(odds), 2)
+
+        # RL odds: use the side we picked
+        rl_odds = None
+        if spr is not None and predicted_margin is not None:
+            pred_covers = (predicted_margin + spr) > 0
+            if pred_covers:
+                rl_odds = float(r["closing_spread_home_odds"]) if r["closing_spread_home_odds"] is not None else None
+            else:
+                rl_odds = float(r["closing_spread_away_odds"]) if r["closing_spread_away_odds"] is not None else None
+
+        # OU odds
+        ou_odds = None
+        if vegas_ou is not None and r["ou_pick"] is not None:
+            pick_lower = r["ou_pick"].lower()
+            if pick_lower.startswith("over"):
+                ou_odds = float(r["closing_over_odds"]) if r["closing_over_odds"] is not None else None
+            elif pick_lower.startswith("under"):
+                ou_odds = float(r["closing_under_odds"]) if r["closing_under_odds"] is not None else None
+
+        # ML odds
+        ml_odds = None
+        if ml_pick:
+            if ml_pick in ("home", "Home"):
+                ml_odds = float(r["closing_home_ml"]) if r["closing_home_ml"] is not None else None
+            elif ml_pick in ("away", "Away"):
+                ml_odds = float(r["closing_away_ml"]) if r["closing_away_ml"] is not None else None
+
+        rl_profit = _calc_profit(rl_result, rl_odds)
+        ou_profit = _calc_profit(ou_result, ou_odds)
+        ml_profit = _calc_profit(ml_result, ml_odds)
+
+        try:
+            await pg_conn.execute(
+                """
+                UPDATE mlb.game_predictions
+                SET actual_home_runs = $1,
+                    actual_away_runs = $2,
+                    actual_total     = $3,
+                    actual_margin    = $4,
+                    run_line_result  = $5,
+                    ou_result        = $6,
+                    ml_result        = $7,
+                    ats_profit       = $8,
+                    ou_profit        = $9,
+                    ml_profit        = $10
+                WHERE game_id = $11 AND actual_home_runs IS NULL
+                """,
+                home_score, away_score, actual_total, actual_margin,
+                rl_result, ou_result, ml_result,
+                rl_profit, ou_profit, ml_profit,
+                gid,
+            )
+            updated += 1
+        except Exception as e:
+            logger.error(f"  Failed to update prediction for game {gid}: {e}")
+
+    logger.info(f"  Updated {updated} predictions with actual results")
+    return updated
+
+
 if __name__ == "__main__":
     asyncio.run(main())

@@ -21,13 +21,7 @@ import numpy as np
 import pandas as pd
 import psycopg2
 import xgboost as xgb
-from sklearn.metrics import (
-    accuracy_score,
-    log_loss,
-    precision_score,
-    recall_score,
-    roc_auc_score,
-)
+from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 from app.handicapping.db_training import save_training_run, update_pkl_filename
 from app.handicapping.nfl.data_loader import (
@@ -115,8 +109,8 @@ def run_backtest(
     hyperparams : XGBoost param overrides.
     return_model : Include trained model in result.
 
-    Returns dict with: year, accuracy, auc, log_loss, precision, recall,
-    feature_importance, n_train, n_test, train_accuracy, model (optional).
+    Returns dict with: year, rmse, mae, train_rmse, train_mae,
+    feature_importance, n_train, n_test, model (optional).
     """
     t0 = time.time()
 
@@ -127,7 +121,7 @@ def run_backtest(
         logger.warning("Empty train (%d) or test (%d) for year %d", len(train_df), len(test_df), test_year)
         return {"year": test_year, "error": "insufficient data"}
 
-    target = "over_result" if ou_only else "home_ats_cover"
+    target = "home_score_margin"
     if target not in train_df.columns:
         logger.error("Target column '%s' not found — skipping year %d", target, test_year)
         return {"year": test_year, "error": f"missing target '{target}'"}
@@ -153,16 +147,25 @@ def run_backtest(
     if not feature_cols:
         return {"year": test_year, "error": "no feature columns available"}
 
-    train_df = train_df.dropna(subset=feature_cols)
-    test_df = test_df.dropna(subset=feature_cols)
+    # Fill NaN with 0 to match engine's _extract_feature_vector behavior
+    for feat in feature_cols:
+        if feat not in test_df.columns:
+            test_df[feat] = 0.0
+        test_df[feat] = test_df[feat].fillna(0.0)
+        if feat in train_df.columns:
+            train_df[feat] = train_df[feat].fillna(0.0)
+
+    # Only drop rows where target is NaN (features already filled)
+    train_df = train_df.dropna(subset=[target])
+    test_df = test_df.dropna(subset=[target])
 
     X_train, y_train = train_df[feature_cols].values, train_df[target].values
     X_test, y_test = test_df[feature_cols].values, test_df[target].values
 
     hp = hyperparams or {}
     params: Dict[str, Any] = {
-        "objective": "binary:logistic",
-        "eval_metric": "logloss",
+        "objective": "reg:squarederror",
+        "eval_metric": "rmse",
         "learning_rate": hp.get("learning_rate", DEFAULT_LEARNING_RATE),
         "max_depth": hp.get("max_depth", DEFAULT_MAX_DEPTH),
         "subsample": hp.get("subsample", DEFAULT_SUBSAMPLE),
@@ -185,20 +188,17 @@ def run_backtest(
         verbose_eval=False,
     )
 
-    y_pred_proba = model.predict(dtest)
-    y_pred = (y_pred_proba >= 0.5).astype(int)
+    y_pred_margin = model.predict(dtest)
 
     try:
-        acc = accuracy_score(y_test, y_pred)
-        auc = roc_auc_score(y_test, y_pred_proba)
-        ll = log_loss(y_test, y_pred_proba)
-        prec = precision_score(y_test, y_pred, zero_division=0)
-        rec = recall_score(y_test, y_pred, zero_division=0)
+        rmse_val = float(np.sqrt(mean_squared_error(y_test, y_pred_margin)))
+        mae_val = float(mean_absolute_error(y_test, y_pred_margin))
     except Exception:
-        acc = auc = ll = prec = rec = 0.0
+        rmse_val = mae_val = 0.0
 
-    y_train_pred = (model.predict(dtrain) >= 0.5).astype(int)
-    train_acc = accuracy_score(y_train, y_train_pred)
+    y_train_margins = model.predict(dtrain)
+    train_rmse = float(np.sqrt(mean_squared_error(y_train, y_train_margins)))
+    train_mae = float(mean_absolute_error(y_train, y_train_margins))
 
     importance = model.get_score(importance_type="gain")
     fi_sorted = sorted(
@@ -208,16 +208,14 @@ def run_backtest(
 
     result: Dict[str, Any] = {
         "year": test_year,
-        "accuracy": round(float(acc), 4),
-        "auc": round(float(auc), 4),
-        "log_loss": round(float(ll), 4),
-        "precision": round(float(prec), 4),
-        "recall": round(float(rec), 4),
+        "rmse": round(float(rmse_val), 4),
+        "mae": round(float(mae_val), 4),
+        "train_rmse": round(float(train_rmse), 4),
+        "train_mae": round(float(train_mae), 4),
         "feature_importance": fi_sorted,
         "feature_set": feature_cols,
         "n_train": len(X_train),
         "n_test": len(X_test),
-        "train_accuracy": round(float(train_acc), 4),
         "elapsed_seconds": round(time.time() - t0, 2),
         "target": target,
     }
@@ -226,8 +224,8 @@ def run_backtest(
         result["model"] = model
 
     logger.info(
-        "Year %d | acc=%.4f auc=%.4f log_loss=%.4f | train=%d test=%d %.1fs",
-        test_year, acc, auc, ll, len(X_train), len(X_test), result["elapsed_seconds"],
+        "Year %d | rmse=%.4f mae=%.4f | train=%d test=%d %.1fs",
+        test_year, result["rmse"], result["mae"], len(X_train), len(X_test), result["elapsed_seconds"],
     )
 
     return result
@@ -338,10 +336,10 @@ def run_single(
             train_years=train_seasons,
             results_json={
                 "n_train": result.get("n_train", 0),
-                "accuracy": result.get("accuracy", 0),
-                "precision": result.get("precision", 0),
-                "recall": result.get("recall", 0),
-                "f1": result.get("f1", 0),
+                "rmse": result.get("rmse", 0),
+                "mae": result.get("mae", 0),
+                "train_rmse": result.get("train_rmse", 0),
+                "train_mae": result.get("train_mae", 0),
             },
             pkl_filename="",
         )
@@ -448,7 +446,7 @@ async def train_model(
     saves models and a single training run to the database.
 
     `results_json` format matches the MLB pattern: a list of per-test-year results,
-    each containing ats and ml accuracy, feature importance, and model params.
+    each containing ats/ml accuracy, rmse/mae, feature importance, and model params.
     """
     overall_t0 = time.time()
 
@@ -465,13 +463,14 @@ async def train_model(
     df = _ensure_ats_features(df)
     df = df.sort_values(["season_year", "week"]).reset_index(drop=True)
 
-    target = "home_ats_cover"
+    target = "home_score_margin"
+    spread_col = "closing_spread"
     df_all = df.dropna(subset=[target]).copy()
 
     hp = hyperparams or {}
     params: Dict[str, Any] = {
-        "objective": "binary:logistic",
-        "eval_metric": "logloss",
+        "objective": "reg:squarederror",
+        "eval_metric": "rmse",
         "learning_rate": hp.get("learning_rate", DEFAULT_LEARNING_RATE),
         "max_depth": hp.get("max_depth", DEFAULT_MAX_DEPTH),
         "subsample": hp.get("subsample", DEFAULT_SUBSAMPLE),
@@ -538,9 +537,10 @@ async def train_model(
 
         model = xgb.train(params, dtrain, num_boost_round=n_estimators, verbose_eval=False)
 
-        # Training accuracy
-        y_pred = (model.predict(dtrain) >= 0.5).astype(int)
-        train_acc = accuracy_score(y_train, y_pred)
+        # Training metrics
+        train_preds = model.predict(dtrain)
+        train_rmse = float(np.sqrt(mean_squared_error(y_train, train_preds)))
+        train_mae = float(mean_absolute_error(y_train, train_preds))
 
         importance = model.get_score(importance_type="gain")
         total_gain = sum(importance.values()) or 1.0
@@ -556,26 +556,36 @@ async def train_model(
         ml_correct = 0
 
         if not df_test.empty and len(df_test) > 0:
-            available_test = [c for c in feature_cols if c in df_test.columns]
-            # Remove all-NaN columns
-            available_test = [c for c in available_test if df_test[c].notna().any()]
-            df_test_clean = df_test.dropna(subset=available_test)
+            # Match engine inference: use trained features, fill NaN with 0.0
+            # (engine's _extract_feature_vector does this; dropping NaN rows would
+            #  produce different accuracy than the engine's backtest on same model)
+            test_features = list(available)
+            for feat in test_features:
+                if feat not in df_test.columns:
+                    df_test[feat] = 0.0
+                df_test[feat] = df_test[feat].fillna(0.0)
 
-            if len(df_test_clean) > 0:
-                X_test = df_test_clean[available_test].values
-                y_test = df_test_clean[target].values
-                dtest = xgb.DMatrix(X_test, feature_names=available_test)
-                probs = model.predict(dtest)
-                preds = (probs >= 0.5).astype(int)
+            X_test = df_test[test_features].values
+            y_test = df_test[target].values
+            dtest = xgb.DMatrix(X_test, feature_names=test_features)
+            pred_margins = model.predict(dtest)
+            rmse_val = float(np.sqrt(mean_squared_error(y_test, pred_margins)))
+            mae_val = float(mean_absolute_error(y_test, pred_margins))
 
-                ats_total = len(y_test)
-                ats_correct = int((preds == y_test).sum())
+            ats_total = len(y_test)
+            spread_vals = df_test[spread_col].values if spread_col in df_test.columns else np.zeros(len(df_test))
+            pred_ats = ((pred_margins + spread_vals) > 0).astype(int)
+            # Recompute home_ats_cover inline to match engine's margin_vs_spread logic
+            # (same formula as data_loader: home_score - away_score + closing_spread > 0)
+            actual_ats = ((y_test + spread_vals) > 0).astype(int) if spread_col in df_test.columns else (y_test > 0).astype(int)
+            ats_correct = int((pred_ats == actual_ats).sum())
 
-                # Moneyline: model picks home team if predicted cover prob > 0.5
-                if "home_score" in df_test_clean.columns and "away_score" in df_test_clean.columns:
-                    home_won = (df_test_clean["home_score"].values > df_test_clean["away_score"].values).astype(int)
-                    ml_total = len(home_won)
-                    ml_correct = int((preds == home_won).sum())
+            # Moneyline: positive margin = home win (exclude ties)
+            pred_ml = (pred_margins > 0).astype(int)
+            actual_home_won = (y_test > 0).astype(int)
+            tie_mask = (y_test != 0)
+            ml_total = int(tie_mask.sum())
+            ml_correct = int(((pred_ml == actual_home_won) & tie_mask).sum())
 
         ats_incorrect = ats_total - ats_correct
         ats_pct = round(100 * ats_correct / ats_total, 2) if ats_total > 0 else 0.0
@@ -594,7 +604,10 @@ async def train_model(
             "name": f"{test_year} NFL ATS",
             "test_year": test_year,
             "total_games": ats_total,
-            "mae": float(ats_incorrect / max(ats_total, 1)),
+            "rmse": round(rmse_val, 4),
+            "mae": round(mae_val, 4),
+            "train_rmse": round(train_rmse, 4),
+            "train_mae": round(train_mae, 4),
             "input_features": list(available),
             "feature_importance": fi_sorted,
             "model_params": {**params, "n_estimators": n_estimators},
@@ -672,7 +685,7 @@ if __name__ == "__main__":
             if "error" in r:
                 print(f"  {r['year']}: ERROR — {r['error']}")
             else:
-                print(f"  {r['year']}: acc={r['accuracy']:.4f} auc={r['auc']:.4f} ll={r['log_loss']:.4f}  n={r['n_train']}+{r['n_test']}")
+                print(f"  {r['year']}: rmse={r['rmse']:.4f} mae={r['mae']:.4f}  n={r['n_train']}+{r['n_test']}")
 
     elif mode == "train":
         result = asyncio.run(train_model(label="nfl_cli_training"))

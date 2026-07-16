@@ -39,14 +39,14 @@ TEAM_MAP = {
     "CHO": "CHO",
     "NOP": "NOP",
     "PHX": "PHO",  # BR uses PHO
-    "UTA": "UTH",  # BR uses UTH  
+    "UTA": "UTA",  # BR uses UTH  
     "SAS": "SAS",
 }
 
 # Reverse map for ESPN teams that BR might use
 BR_TEAM = {
-    "GSW": "GSW", "NYK": "NYK", "BKN": "BRK", "CHO": "CHO",
-    "NOP": "NOP", "PHX": "PHO", "UTA": "UTH", "SAS": "SAS",
+    "ATL": "ATL", "GSW": "GSW", "NYK": "NYK", "BKN": "BRK", "CHA": "CHO",
+    "NOP": "NOP", "PHX": "PHO", "UTA": "UTA", "SAS": "SAS",
     "BOS": "BOS", "CLE": "CLE", "CHI": "CHI", "DAL": "DAL",
     "DEN": "DEN", "DET": "DET", "HOU": "HOU", "IND": "IND",
     "LAC": "LAC", "LAL": "LAL", "MEM": "MEM", "MIA": "MIA",
@@ -305,7 +305,7 @@ async def scrape_missing_games(season_year: int = 2025):
             # Build BR URL: /boxscores/YYYYMMDD{HOME}.html
             date_str = date.strftime("%Y%m%d")
             br_abbr = BR_TEAM.get(home, home)
-            url = f"https://www.basketball-reference.com/boxscores/{date_str}{br_abbr}.html"
+            url = f"https://www.basketball-reference.com/boxscores/{date_str}0{br_abbr}.html"
             
             # Respect BR
             if idx > 1:

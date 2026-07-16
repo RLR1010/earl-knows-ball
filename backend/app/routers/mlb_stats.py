@@ -927,7 +927,7 @@ async def mlb_games(
     JOIN mlb.teams at ON at.id = g.away_team_id
     JOIN mlb.seasons s ON s.id = g.season_id
     LEFT JOIN mlb.betting_lines_consolidated c ON c.game_id = g.id
-    LEFT JOIN mlb.game_predictions gp ON gp.game_id = g.id AND gp.source = 'api'
+    LEFT JOIN mlb.game_predictions gp ON gp.game_id = g.id
     WHERE {where_clause}
     ORDER BY g.date ASC
     """
@@ -1188,7 +1188,6 @@ async def mlb_game_boxscore(
     pred_r = await db.execute(
         select(MLBGamePrediction).where(
             MLBGamePrediction.game_id == game_id,
-            MLBGamePrediction.source == "api",
         )
     )
     pred = pred_r.scalar_one_or_none()
@@ -1259,9 +1258,10 @@ async def mlb_game_boxscore(
                                 "Win" if predicted_home_covers == home_covers else "Loss"
                             )
                         else:
-                            # Away covers when home doesn't cover
+                            # Away covers when home doesn't cover,
+                            # so result matches when both predicted and actual agree home doesn't cover
                             pred.run_line_result = (
-                                "Win" if predicted_home_covers != home_covers else "Loss"
+                                "Win" if predicted_home_covers == home_covers else "Loss"
                             )
                 if pred.ou_pick and vegas_ou is not None:
                     actual_total = db_home + db_away
@@ -1549,7 +1549,6 @@ async def mlb_game_prediction_stats(
     pred_r = await db.execute(
         select(MLBGamePrediction).where(
             MLBGamePrediction.game_id == game_id,
-            MLBGamePrediction.source == "api",
         )
     )
     pred = pred_r.scalar_one_or_none()

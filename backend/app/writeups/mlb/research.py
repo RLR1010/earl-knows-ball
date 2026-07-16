@@ -964,6 +964,9 @@ async def get_research_brief(
     if "error" in summary:
         return summary
 
+    # Strip actual scores — LLM must not see game results in preview
+    summary.pop("score", None)
+
     season_id = summary["season_id"]
     home_id = summary["home_team"]["id"]
     away_id = summary["away_team"]["id"]

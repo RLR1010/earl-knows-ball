@@ -82,6 +82,11 @@ interface GamePrediction {
     ou?: string;
     ml?: string;
   };
+  expected_value?: {
+    ats?: number | null;
+    ou?: number | null;
+    ml?: number | null;
+  };
   confidence?: {
     overall?: number | null;
     ats?: number | null;
@@ -110,22 +115,25 @@ function formatLineAway(spread: number | null | undefined, awayTeam: string): st
   return `${awayTeam} PK`;
 }
 
+
 function NFLPickCard({
   pred,
   homeTeam,
   awayTeam,
+  isFinal,
 }: {
   pred: GamePrediction | null;
   homeTeam: string;
   awayTeam: string;
+  isFinal?: boolean;
 }) {
   const predicted = pred?.predicted || {} as { home_score?: number; away_score?: number; total?: number; margin?: number; ats?: string; ou?: string; ml?: string };
-  const actual = pred?.actual || {} as { home_score?: number | null; away_score?: number | null; total?: number | null; margin?: number | null };
+  const actual = (pred?.actual || {}) as { home_score?: number | null; away_score?: number | null; total?: number | null; margin?: number | null };
+  const ev = pred?.expected_value;
+  const lines = pred?.line;
   const results = pred?.results || {} as { ats?: string; ou?: string; ml?: string };
-  const line = pred?.line;
-  const conf = pred?.confidence;
   const hasPrediction = predicted?.home_score != null && predicted?.away_score != null;
-  const isFinal = !!(actual.home_score != null && actual.away_score != null);
+  const gameIsFinal = isFinal ?? (actual.home_score != null && actual.away_score != null);
 
   if (!pred || !hasPrediction) {
     return (
@@ -139,24 +147,75 @@ function NFLPickCard({
     );
   }
 
-  // ── Compute spread text from pick and line data ──
-  const atsTeam = predicted.ats?.split(" ")[0] || "";
-  const atsVal = predicted.ats?.split(" ")[1] || "";
-  const ouPick = predicted.ou || "";
-  const mlPick = predicted.ml || "";
+  const renderPickCard = ({
+    type,
+    label,
+    pickText,
+    evValue,
+    result,
+    lineText,
+    borderColor,
+    bgColor,
+  }: {
+    type: string;
+    label: string;
+    pickText: string | undefined | null;
+    evValue: number | undefined | null;
+    result: string | undefined | null;
+    lineText: string | undefined | null;
+    borderColor: string;
+    bgColor: string;
+  }) => {
+    const showPick = pickText && pickText !== "N/A";
+    const isWin = result === "W" || result === "Win";
+    const isLoss = result === "L" || result === "Loss";
+    const isPush = result === "P" || result === "Push";
 
-  // ── Confidence bar colors ──
-  const confColor = (score?: number | null) =>
-    score == null ? "bg-gray-500" :
-    score >= 0.7 ? "bg-green-500" :
-    score >= 0.55 ? "bg-yellow-500" :
-    "bg-gray-500";
+    return (
+      <div className={`rounded-lg p-3 border ${borderColor} ${bgColor}`}>
+        <div className="text-[10px] text-gray-500 uppercase">{label}</div>
+        {gameIsFinal && result && result !== "N/A" ? (
+          isPush ? (
+            <div className="text-sm font-bold mt-1 text-gray-400">Push</div>
+          ) : (
+            <>
+              <div className={`text-lg font-bold mt-1 ${isWin ? "text-green-400" : "text-red-400"}`}>
+                {isWin ? "Win" : "Loss"}
+              </div>
+              <div className="flex items-center gap-2 mt-1">
+                {evValue != null && (
+                  <span className={`text-[10px] font-semibold ${evValue >= 0 ? "text-green-400" : "text-red-400"}`}>
+                    EV: {evValue >= 0 ? "+" : ""}{evValue.toFixed(1)}¢
+                  </span>
+                )}
+                <span className="text-[10px] text-gray-400">Pick: {pickText}</span>
+              </div>
+            </>
+          )
+        ) : showPick ? (
+          <>
+            <div className="text-lg font-bold mt-1 text-white">{pickText}</div>
+            {evValue != null && (
+              <span className={`text-[10px] font-semibold mt-1 inline-block ${evValue >= 0 ? "text-green-400" : "text-red-400"}`}>
+                EV: {evValue >= 0 ? "+" : ""}{evValue.toFixed(1)}¢
+              </span>
+            )}
+            <div className="text-xs text-gray-500 mt-1">{lineText || "-"}</div>
+          </>
+        ) : (
+          <div className="text-xs text-gray-400 mt-1">No {type} data</div>
+        )}
+      </div>
+    );
+  };
 
-  const confBgColor = (score?: number | null) =>
-    score == null ? "bg-gray-500/10" :
-    score >= 0.7 ? "bg-green-500/10" :
-    score >= 0.55 ? "bg-yellow-500/10" :
-    "bg-gray-500/10";
+  const mapResult = (r?: string | null) => {
+    if (!r || r === "N/A") return null;
+    if (r === "W") return "Win";
+    if (r === "L") return "Loss";
+    if (r === "P") return "Push";
+    return r;
+  };
 
   return (
     <div className="border border-white/10 rounded-xl p-4 bg-gradient-to-br from-earl-900/20 to-transparent space-y-4">
@@ -182,7 +241,7 @@ function NFLPickCard({
       )}
 
       {/* Actual score for completed games */}
-      {isFinal && (
+      {gameIsFinal && (
         <div className="text-center">
           <div className="inline-block border border-green-500/20 rounded-lg px-6 py-2 bg-green-500/5">
             <span className="text-xs text-gray-500">Actual</span>
@@ -194,70 +253,44 @@ function NFLPickCard({
               <span className="text-gray-300">{homeTeam}</span>
             </div>
             <div className="text-xs text-gray-500 mt-1">
-              Total: {actual.total} | Margin: {((actual.home_score ?? 0) - (actual.away_score ?? 0)) >= 0 ? "+" : ""}{(actual.home_score ?? 0) - (actual.away_score ?? 0)}
+              Total: {actual.total != null ? actual.total : "?"} | Margin: {actual.margin != null ? (actual.margin >= 0 ? "+" : "") + actual.margin : "?"}
             </div>
           </div>
         </div>
       )}
 
-      {/* Three pick cards: ATS, O/U, Moneyline */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-        {/* ATS */}
-        <div className={`rounded-lg p-3 border border-amber-500/40 bg-amber-500/10`}>
-          <div className="text-[10px] text-gray-500 uppercase">ATS</div>
-          {isFinal && results.ats ? (
-            <div className={`text-lg font-bold mt-1 ${results.ats === "Win" ? "text-green-400" : "text-red-400"}`}>
-              {results.ats}
-            </div>
-          ) : atsTeam ? (
-            <>
-              <div className="text-lg font-bold mt-1 text-amber-400">{atsVal ? `${atsTeam} ${atsVal}` : atsTeam}</div>
-              <ConfidenceBar score={conf?.ats ?? conf?.overall} />
-              <div className="text-xs text-gray-500 mt-1">
-                Line: {formatLineAway(line?.spread, awayTeam)} | {formatSpreadLine(line?.spread, homeTeam)}
-              </div>
-            </>
-          ) : (
-            <div className="text-xs text-gray-400 mt-2">No ATS data</div>
-          )}
-        </div>
-
-        {/* O/U */}
-        <div className={`rounded-lg p-3 border border-yellow-500/40 bg-yellow-500/10`}>
-          <div className="text-[10px] text-gray-500 uppercase">O/U {line?.over_under ?? ""}</div>
-          {isFinal && results.ou ? (
-            <div className={`text-lg font-bold mt-1 ${results.ou === "Win" ? "text-green-400" : "text-red-400"}`}>
-              {results.ou}
-            </div>
-          ) : ouPick ? (
-            <>
-              <div className="text-lg font-bold mt-1 text-yellow-400">{ouPick} {ouPick && line?.over_under ? line.over_under : ""}</div>
-              <ConfidenceBar score={conf?.ou ?? conf?.overall} />
-              <div className="text-xs text-gray-500 mt-1">
-                Predicted: {predicted.total}{line?.over_under != null ? ` | Line: ${line.over_under}` : ""}
-              </div>
-            </>
-          ) : (
-            <div className="text-xs text-gray-400 mt-2">No O/U data</div>
-          )}
-        </div>
-
-        {/* Moneyline */}
-        <div className={`rounded-lg p-3 border border-purple-500/40 bg-purple-500/10`}>
-          <div className="text-[10px] text-gray-500 uppercase">Moneyline</div>
-          {isFinal && results.ml ? (
-            <div className={`text-lg font-bold mt-1 ${results.ml === "Win" ? "text-green-400" : "text-red-400"}`}>
-              {results.ml}
-            </div>
-          ) : mlPick ? (
-            <>
-              <div className="text-lg font-bold mt-1 text-purple-400">{mlPick}</div>
-              <ConfidenceBar score={conf?.ml ?? conf?.overall} />
-            </>
-          ) : (
-            <div className="text-xs text-gray-400 mt-2">No ML data</div>
-          )}
-        </div>
+      {/* MLB-style 3-card grid */}
+      <div className="grid grid-cols-3 gap-3">
+        {renderPickCard({
+          type: "ATS",
+          label: "ATS",
+          pickText: predicted?.ats,
+          evValue: ev?.ats,
+          result: mapResult(results?.ats),
+          lineText: lines?.spread != null ? `Spread ${lines.spread >= 0 ? "+" : ""}${lines.spread}` : null,
+          borderColor: "border-blue-500/40",
+          bgColor: "bg-blue-500/10",
+        })}
+        {renderPickCard({
+          type: "O/U",
+          label: "Over/Under",
+          pickText: predicted?.ou ? `${predicted.ou} ${lines?.over_under ?? ""}` : null,
+          evValue: ev?.ou,
+          result: mapResult(results?.ou),
+          lineText: lines?.over_under != null ? `O/U ${lines.over_under}` : null,
+          borderColor: "border-yellow-500/40",
+          bgColor: "bg-yellow-500/10",
+        })}
+        {renderPickCard({
+          type: "ML",
+          label: "Moneyline",
+          pickText: predicted?.ml,
+          evValue: ev?.ml,
+          result: mapResult(results?.ml),
+          lineText: null,
+          borderColor: "border-purple-500/40",
+          bgColor: "bg-purple-500/10",
+        })}
       </div>
     </div>
   );
@@ -502,9 +535,10 @@ interface NFLGameTabsProps {
   gameId: string;
   boxscore: NFLBoxScoreData;
   prediction: GamePrediction | null;
+  isFinal?: boolean;
 }
 
-export default function NFLGameTabs({ gameId, boxscore, prediction }: NFLGameTabsProps) {
+export default function NFLGameTabs({ gameId, boxscore, prediction, isFinal }: NFLGameTabsProps) {
   const [activeTab, setActiveTab] = useState<string | null>(null);
   const [writeupData, setWriteupData] = useState<NFLWriteupData | null>(null);
   const [writeupLoading, setWriteupLoading] = useState(false);
@@ -597,7 +631,7 @@ export default function NFLGameTabs({ gameId, boxscore, prediction }: NFLGameTab
 
         {/* Earl's Picks */}
         {activeTab === "picks" && (
-          <NFLPickCard pred={prediction} homeTeam={homeTeam} awayTeam={awayTeam} />
+          <NFLPickCard pred={prediction} homeTeam={homeTeam} awayTeam={awayTeam} isFinal={isFinal} />
         )}
 
         {/* Detailed Analysis */}

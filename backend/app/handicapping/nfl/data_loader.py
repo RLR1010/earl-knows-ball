@@ -170,6 +170,16 @@ game_rest AS (
         ON hlg.game_id = g.id AND hlg.team_id = g.home_team_id
     LEFT JOIN team_schedule alg
         ON alg.game_id = g.id AND alg.team_id = g.away_team_id
+),
+-- Each team's primary home venue (most common venue for their games as home team)
+team_primary_venue AS (
+    SELECT DISTINCT ON (g.home_team_id)
+        g.home_team_id AS team_id,
+        g.venue_id
+    FROM nfl.games g
+    WHERE g.venue_id IS NOT NULL
+    GROUP BY g.home_team_id, g.venue_id
+    ORDER BY g.home_team_id, COUNT(*) DESC
 )
 SELECT
     g.id                                                   AS game_id,
@@ -215,13 +225,30 @@ SELECT
     s.year                                                 AS season_year,
     gl.has_verified_ou,
     gr.home_last_game,
-    gr.away_last_game
+    gr.away_last_game,
+    v_game.latitude                                         AS venue_lat,
+    v_game.longitude                                        AS venue_lng,
+    v_game.timezone                                         AS venue_tz,
+    v_away.latitude                                         AS away_home_lat,
+    v_away.longitude                                        AS away_home_lng,
+    v_away.timezone                                         AS away_home_tz,
+    -- Haversine: game venue to away team's home venue (~miles)
+    ROUND(3959 * 2 * ASIN(SQRT(
+        POWER(SIN(RADIANS(v_game.latitude - v_away.latitude) / 2), 2)
+        + COS(RADIANS(v_game.latitude)) * COS(RADIANS(v_away.latitude))
+        * POWER(SIN(RADIANS(v_game.longitude - v_away.longitude) / 2), 2)
+    ))::numeric, 1)                                        AS travel_miles,
+    -- Timezone diff (absolute hours)
+    ABS(COALESCE(v_game.timezone, '0')::int - COALESCE(v_away.timezone, '0')::int) AS tz_diff
 FROM nfl.games g
 JOIN nfl.teams ht ON ht.id = g.home_team_id
 JOIN nfl.teams at ON at.id = g.away_team_id
 LEFT JOIN game_lines gl ON gl.game_id = g.id
 LEFT JOIN game_rest gr ON gr.game_id = g.id
 LEFT JOIN nfl.seasons s ON s.id = g.season_id
+LEFT JOIN nfl.venues v_game ON v_game.id = g.venue_id
+LEFT JOIN team_primary_venue tpv ON tpv.team_id = g.away_team_id
+LEFT JOIN nfl.venues v_away ON v_away.id = tpv.venue_id
 WHERE g.season_id IS NOT NULL
   AND g.week IS NOT NULL
 ORDER BY g.season_id, g.week, g.date;
@@ -753,7 +780,7 @@ class NFLDataLoader:
         # 4. Always include context and target columns needed downstream
         context_cols = {
             "season_year", "home_ats_cover", "away_ats_cover",
-            "over_result", "home_score_margin",
+            "over_result", "home_score_margin", "ou_margin",
             "home_score", "away_score", "closing_ou", "closing_spread",
             "opening_ou", "opening_spread",
             "home_abbr", "away_abbr",
@@ -1076,7 +1103,9 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
         tg["ou_as_over_pct_r10"] = tg["ou_over_pct_r10"]
 
     # Embarrassed (lost by 14+)
-    tg["embarrassed"] = (tg["margin"] <= -14).astype(float)
+    tg["embarrassed"] = tg.groupby("team_id")["margin"].transform(
+        lambda s: (s.shift(1) <= -14).astype(float)
+    ).fillna(0)  # 0 = false if no prior game
     for window in [3, 5, 10]:
         tg[f"embarrassed_pct_r{window}"] = (
             tg.groupby("team_id")["embarrassed"]
@@ -1085,7 +1114,7 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
         )
 
     # Season-long ATS (expanding within each team+season)
-    tg["season_ats"] = (
+    tg["season_ats_pct"] = (
         tg.groupby(["team_id", "season_id"])["cover"]
         .transform(lambda s: s.shift(1).expanding().mean())
         .fillna(0.5)
@@ -1158,14 +1187,14 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
     away_stats = tg[tg["position"] == "away"].set_index("game_id")
 
     tg_cols = {
-        "win_pct_r5", "win_pct_r10",
-        "margin_r5", "margin_r10",
-        "cover_pct_r5", "cover_pct_r10",
+        "win_pct_r3", "win_pct_r5", "win_pct_r10",
+        "margin_r3", "margin_r5", "margin_r10",
+        "cover_pct_r3", "cover_pct_r5", "cover_pct_r10",
         "pf", "pa",
-        "ou_over_pct_r5", "ou_over_pct_r10",
-        "ou_margin_r5", "ou_margin_r10",
-        "embarrassed_pct_r5", "embarrassed_pct_r10",
-        "season_ats", "season_wins",
+        "ou_over_pct_r3", "ou_over_pct_r5", "ou_over_pct_r10",
+        "ou_margin_r3", "ou_margin_r5", "ou_margin_r10",
+        "embarrassed", "embarrassed_pct_r3", "embarrassed_pct_r5", "embarrassed_pct_r10",
+        "season_ats_pct", "season_wins",
         "ou_as_over_pct_r10",
         "win_streak", "ats_streak",
         "weighted_margin_r5",

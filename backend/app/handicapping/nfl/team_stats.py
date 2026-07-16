@@ -142,7 +142,6 @@ def compute_team_game_aggregates(
             three_and_outs       AS three_and_outs,
             interceptions_thrown AS ints_thrown
         FROM nfl.game_stats gs
-        WHERE gs.season_type = 'REG'
     ),
     team_rolling AS (
         SELECT
@@ -418,7 +417,6 @@ def get_team_stats_before_game(
         FROM nfl.game_stats
         WHERE team_abbr = '{team_abbr}'
           AND (season < {season} OR (season = {season} AND week < {week}))
-          AND season_type = 'REG'
         ORDER BY season DESC, week DESC
         LIMIT {window}
     )
@@ -495,7 +493,6 @@ def get_defensive_stats_before_game(
         FROM nfl.game_stats gs
         WHERE gs.team_abbr = '{team_abbr}'
           AND (gs.season < {season} OR (gs.season = {season} AND gs.week < {week}))
-          AND gs.season_type = 'REG'
         ORDER BY gs.season DESC, gs.week DESC
         LIMIT {window}
     ) s

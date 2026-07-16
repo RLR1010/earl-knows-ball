@@ -732,15 +732,30 @@ async def _run_mlb_stats_refresh():
                 host=parsed.hostname or "localhost",
                 port=parsed.port or 5432,
             )
-            from app.ingestion.boxscore_ingest import refresh_boxscores_for_recent_games
-            boxscore_result = await refresh_boxscores_for_recent_games(pconn)
+            from app.ingestion.boxscore_ingest import (
+                refresh_boxscores_for_recent_games,
+                update_prediction_results,
+            )
+            try:
+                boxscore_result = await refresh_boxscores_for_recent_games(pconn)
+                logger.info(f"  Boxscores: {boxscore_result['games_processed']} games, "
+                            f"{boxscore_result['batting_rows']} batting rows, "
+                            f"{boxscore_result['pitching_rows']} pitching rows, "
+                            f"{boxscore_result.get('weather_updated', 0)} weather updates")
+            except Exception as e:
+                logger.error(f"  Boxscore loading failed: {e}")
+
+            # Step 9: Update prediction results for completed games
+            # (runs independently of boxscore loading)
+            try:
+                pred_updated = await update_prediction_results(pconn)
+                logger.info(f"  Step 9: Updated {pred_updated} predictions with actual results")
+            except Exception as e:
+                logger.error(f"  Step 9 prediction result update failed: {e}")
+
             await pconn.close()
-            logger.info(f"  Boxscores: {boxscore_result['games_processed']} games, "
-                        f"{boxscore_result['batting_rows']} batting rows, "
-                        f"{boxscore_result['pitching_rows']} pitching rows, "
-                        f"{boxscore_result.get('weather_updated', 0)} weather updates")
         except Exception as e:
-            logger.error(f"  Boxscore loading failed: {e}")
+            logger.error(f"  Outer boxscore/prediction block failed: {e}")
 
         # Commit all changes (lineups, pitchers, picks)
         try:

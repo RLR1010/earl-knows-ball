@@ -272,17 +272,45 @@ This is the same format as the public article -- plain text, no JSON layer.
         return parsed
 
     def _parse_premium_response(self, raw: str) -> dict[str, str]:
-        """Parse premium response: first line = title, rest = content.
+        """Parse premium response.
 
-        Same plain-text format as the public writeup -- first line is the title,
-        everything after is the article body. No JSON handling needed."""
+        Handles two formats:
+          1. Plain text — first line = title, rest = content.
+          2. JSON-like — the LLM sometimes returns JSON despite being told not to.
+        """
         cleaned = raw.strip()
+
+        # Detect JSON-like response: starts with "title": or {
+        if cleaned.startswith('"title":') or cleaned.startswith('{'):
+            import json
+            # Try full JSON parse first
+            try:
+                parsed = json.loads(cleaned)
+                if isinstance(parsed, dict) and ("title" in parsed or "content" in parsed):
+                    t = parsed.get("title", "").strip()
+                    c = parsed.get("content", "").strip()
+                    return {"title": t, "content": c}
+            except (json.JSONDecodeError, ValueError, TypeError):
+                pass
+
+            # Fallback: manual extraction of "title" and "content" keys
+            import re
+            title_match = re.search(r'"title"\s*:\s*"(.*?)"(?:[,\n]|$)', cleaned, re.DOTALL)
+            content_match = re.search(r'"content"\s*:\s*"(.*?)"$', cleaned, re.DOTALL)
+            title = title_match.group(1).strip() if title_match else ""
+            content = content_match.group(1).strip() if content_match else cleaned
+            # Unescape internal quotes
+            title = title.replace('\\"', '"').replace('\\n', '\n')
+            content = content.replace('\\"', '"').replace('\\n', '\n')
+            return {"title": title, "content": content}
+
+        # Plain text format: first line = title, blank line, then content
         lines = cleaned.split("\n", 1)
         title = lines[0].strip().strip("#").strip() if lines else ""
         content = lines[1].strip() if len(lines) > 1 else cleaned
         return {"title": title, "content": content}
 
-    async def _call_deepseek(self, system: str, user_prompt: str) -> str | None:
+    async def _call_deepseek(self, system: str, user_prompt: str, *, max_tokens: int | None = None, reasoning: str | None = None) -> str | None:
         """Call DeepSeek via OpenAI SDK and return the raw response content.
 
         Returns *None* on failure — caller checks for None.
@@ -293,16 +321,23 @@ This is the same format as the public article -- plain text, no JSON layer.
                 base_url=f"{settings.deepseek_base_url}/v1",
             )
 
-            response = await client.chat.completions.create(
-                model=self.MODEL,
-                messages=[
+            kwargs: dict[str, Any] = {
+                "model": self.MODEL,
+                "messages": [
                     {"role": "system", "content": system},
                     {"role": "user", "content": user_prompt},
                 ],
-                temperature=self.TEMPERATURE,
-                max_tokens=self.MAX_TOKENS,
-                timeout=self.TIMEOUT,
-            )
+                "temperature": self.TEMPERATURE,
+                "max_tokens": max_tokens or self.MAX_TOKENS,
+                "timeout": self.TIMEOUT,
+            }
+            extra_body: dict[str, Any] = {}
+            if reasoning:
+                extra_body["thinking"] = {"type": "enabled"}
+                extra_body["reasoning_effort"] = reasoning
+                kwargs["extra_body"] = extra_body
+
+            response = await client.chat.completions.create(**kwargs)
 
             content = response.choices[0].message.content
             if not content or not content.strip():

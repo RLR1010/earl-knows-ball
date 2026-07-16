@@ -255,6 +255,43 @@ async def nba_game_boxscore(
             "plus_minus": ps.plus_minus,
         })
 
+    # Fetch betting lines
+    betting_lines = None
+    try:
+        from sqlalchemy import text as sa_text
+        bl_result = await db.execute(
+            sa_text("""
+                SELECT
+                    opening_spread, opening_ou,
+                    closing_spread, closing_ou,
+                    closing_home_ml, closing_away_ml,
+                    closing_spread_home_odds, closing_spread_away_odds,
+                    closing_over_odds, closing_under_odds,
+                    closing_home_implied_probability, closing_away_implied_probability
+                FROM nba.betting_lines_consolidated
+                WHERE game_id = :game_id
+            """),
+            {"game_id": game_id},
+        )
+        row = bl_result.one_or_none()
+        if row:
+            betting_lines = {
+                "opening_spread": _get_val(row.opening_spread),
+                "opening_ou": _get_val(row.opening_ou),
+                "closing_spread": _get_val(row.closing_spread),
+                "closing_ou": _get_val(row.closing_ou),
+                "closing_home_ml": _get_val(row.closing_home_ml),
+                "closing_away_ml": _get_val(row.closing_away_ml),
+                "closing_spread_home_odds": _get_val(row.closing_spread_home_odds),
+                "closing_spread_away_odds": _get_val(row.closing_spread_away_odds),
+                "closing_over_odds": _get_val(row.closing_over_odds),
+                "closing_under_odds": _get_val(row.closing_under_odds),
+                "closing_home_implied_probability": _get_val(row.closing_home_implied_probability),
+                "closing_away_implied_probability": _get_val(row.closing_away_implied_probability),
+            }
+    except Exception:
+        pass
+
     return {
         "game_id": game.id,
         "nba_game_id": game.nba_game_id,
@@ -266,6 +303,7 @@ async def nba_game_boxscore(
         "home": home_stats,
         "away": away_stats,
         "players": player_stats_list,
+        "betting_lines": betting_lines,
     }
 
 

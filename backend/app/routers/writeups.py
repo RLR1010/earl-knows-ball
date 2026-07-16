@@ -704,9 +704,13 @@ async def list_nfl_writeups(
 @router.get("/nfl/{writeup_id}")
 async def get_nfl_writeup(
     writeup_id: int,
+    tier: str = Query("premium"),  # "public" or "premium"
     db: AsyncSession = Depends(get_db),
 ):
-    """Get a specific NFL writeup by ID."""
+    """Get a specific NFL writeup by ID.
+
+    *tier* controls which content version is returned in the ``content`` field.
+    """
     row = await db.execute(
         text("""SELECT w.id, w.game_id, w.title, w.public_content, w.premium_content,
                  w.status, w.version, w.is_historical,
@@ -726,10 +730,14 @@ async def get_nfl_writeup(
         raise HTTPException(status_code=404, detail="Writeup not found")
     rb = r.get("research_brief")
     qc = r.get("quality_checks")
+    content = r["premium_content"] if tier == "premium" else r["public_content"]
     return {
-        "writeup_id": r["id"], "game_id": r["game_id"],
-        "title": r["title"], "public_content": r["public_content"],
-        "premium_content": r["premium_content"], "status": r["status"],
+        "id": r["id"], "game_id": r["game_id"],
+        "title": r["title"],
+        "content": content,
+        "public_content": r["public_content"],
+        "premium_content": r["premium_content"],
+        "status": r["status"],
         "version": r["version"], "is_historical": r["is_historical"],
         "research_brief": json.loads(rb) if isinstance(rb, str) else rb,
         "quality_checks": json.loads(qc) if isinstance(qc, str) else qc,

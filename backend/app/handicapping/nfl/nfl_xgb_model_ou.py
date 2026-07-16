@@ -192,7 +192,8 @@ def run_backtest(
     elapsed = time.time() - t0
 
     # Over/under accuracy: did model correctly predict over/under vs closing OU?
-    ou_line = test_feats["closing_ou"] if "closing_ou" in test_feats else test_feats.get("opening_ou", None)
+    # Use test_data (full DataFrame) — test_feats is only [features + target], lacks closing_ou
+    ou_line = test_data.get("closing_ou", test_data.get("opening_ou", None))
     ou_acc = None
     if ou_line is not None:
         over_correct = ((y_pred > ou_line) == (y_test > ou_line)).mean()

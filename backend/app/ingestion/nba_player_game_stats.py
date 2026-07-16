@@ -197,7 +197,8 @@ async def process_game(
     # Handle alt abbreviations
     alt_map = {"GS": "GSW", "NY": "NYK", "SA": "SAS", "NO": "NOP",
                "PHO": "PHX", "BK": "BKN", "UTAH": "UTA", "CHA": "CHO",
-               "NOH": "NOP", "NOK": "NOP", "NJ": "NJN", "SEA": "SEA", "VAN": "VAN"}
+               "NOH": "NOP", "NOK": "NOP", "NJ": "NJN", "SEA": "SEA", "VAN": "VAN",
+               "WSH": "WAS"}
     for espn_abbr, db_abbr in alt_map.items():
         if espn_abbr in abbr_to_db:
             continue

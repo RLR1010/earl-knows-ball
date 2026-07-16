@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 import psycopg2
+from psycopg2.extras import Json as PgJson
 import xgboost as xgb
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
@@ -174,46 +175,93 @@ def run_backtest(
     y_train_pred = model.predict(dtrain)
     train_mae = mean_absolute_error(y_train, y_train_pred)
 
-    # Feature importance
+    # Feature importance (normalized to 0-1)
     importance = model.get_score(importance_type="gain")
+    total_gain = sum(importance.values()) or 1.0
     fi_sorted = sorted(
-        [{"feature": k, "importance": round(v, 4)} for k, v in importance.items()],
+        [{"feature": k, "importance": round(v / total_gain, 6)} for k, v in importance.items()],
         key=lambda x: -x["importance"],
     )
 
     elapsed = time.time() - t0
 
     # Over/under accuracy: did model correctly predict over/under vs closing OU?
-    ou_line = test_feats["closing_ou"] if "closing_ou" in test_feats else test_feats.get("opening_ou", None)
-    ou_acc = None
-    if ou_line is not None:
-        over_correct = ((y_pred > ou_line) == (y_test > ou_line)).mean()
-        ou_acc = round(float(over_correct), 4)
+    # Compute with pushes (games where total == ou_line)
+    ou_line_vals = test_feats["closing_ou"] if "closing_ou" in test_feats else test_feats.get("opening_ou", None)
+    if ou_line_vals is not None:
+        ou_line_vals = ou_line_vals.values if hasattr(ou_line_vals, "values") else np.full(len(y_pred), ou_line_vals)
+        ou_total = len(y_pred)
+        ou_correct = 0
+        ou_push = 0
+        for i in range(ou_total):
+            pred_over = y_pred[i] > ou_line_vals[i]
+            actual_over = y_test[i] > ou_line_vals[i]
+            if abs(y_test[i] - ou_line_vals[i]) < 0.05:
+                ou_push += 1
+            elif pred_over == actual_over:
+                ou_correct += 1
+        ou_non_push = ou_total - ou_push
+        ou_incorrect = ou_total - ou_correct - ou_push
+        ou_pct = round(100 * ou_correct / max(ou_non_push, 1), 2)
+    else:
+        ou_total = len(y_pred)
+        ou_correct = 0
+        ou_push = 0
+        ou_non_push = ou_total
+        ou_incorrect = ou_total
+        ou_pct = 0.0
+
+    elapsed_sec = round(elapsed, 2)
 
     result: Dict[str, Any] = {
-        "year": test_year,
+        "year": int(test_year),
+        "test_year": int(test_year),
         "mae": round(float(mae), 4),
         "rmse": round(float(rmse), 4),
         "r2": round(float(r2), 4),
         "mean_actual": round(float(y_test.mean()), 2),
         "mean_predicted": round(float(y_pred.mean()), 2),
-        "ou_accuracy": ou_acc,
         "feature_importance": fi_sorted,
         "feature_set": available,
-        "n_train": len(X_train),
-        "n_test": len(X_test),
+        "n_train": int(len(X_train)),
+        "n_test": int(len(X_test)),
         "train_mae": round(float(train_mae), 4),
-        "elapsed_seconds": round(elapsed, 2),
+        "elapsed_seconds": elapsed_sec,
+        "duration_seconds": elapsed_sec,
         "target": target,
-        "n_features": len(available),
+        "n_features": int(len(available)),
+        "input_features": int(len(available)),
+        "total_games": ou_total,
+        "ou": {
+            "pct": ou_pct,
+            "push": ou_push,
+            "total": ou_total,
+            "correct": ou_correct,
+            "non_push": ou_non_push,
+            "incorrect": ou_incorrect,
+        },
+        "ou_pct": ou_pct,
+        "ou_total": ou_total,
+        "ou_correct": ou_correct,
+        "model_params": {
+            "seed": params["seed"],
+            "max_depth": params["max_depth"],
+            "objective": params["objective"],
+            "subsample": params["subsample"],
+            "verbosity": params["verbosity"],
+            "eval_metric": params["eval_metric"],
+            "n_estimators": hp.get("n_estimators", n_estimators),
+            "learning_rate": params["learning_rate"],
+            "colsample_bytree": params["colsample_bytree"],
+        },
     }
 
     if return_model:
         result["model"] = model
 
     logger.info(
-        "Year %d | MAE=%.2f RMSE=%.2f R²=%.4f OU_acc=%s | train=%d test=%d %.1fs",
-        test_year, mae, rmse, r2, ou_acc, len(X_train), len(X_test), elapsed,
+        "Year %d | ou=%.1f%% mae=%.2f rmse=%.2f r2=%.4f | train=%d test=%d %.1fs",
+        int(test_year), ou_pct, mae, rmse, r2, len(X_train), len(X_test), elapsed,
     )
 
     return result
@@ -225,7 +273,7 @@ async def run_all_years(
     limit: Optional[int] = None,
     hyperparams: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
-    """Backtest OU model every year from ``train_from`` to current."""
+    """Backtest OU model on last 2 seasons, saving to ``nba.training_runs``."""
     dl = get_data_loader(ou_only=True)
     df = dl.load_data(limit=limit)
 
@@ -237,19 +285,88 @@ async def run_all_years(
     df = _ensure_ou_features(df)
     df = df.sort_values(["season_year", "date"]).reset_index(drop=True)
 
-    test_years = sorted(df["season_year"].unique())
-    logger.info("Test years (OU): %s", test_years)
+    unique_years = sorted(df["season_year"].unique())
+    test_years = unique_years[-2:]
+    logger.info("Test years (OU): %s (all unique years: %s)", test_years, unique_years)
 
-    results: List[Dict[str, Any]] = []
+    import math
+
+    total_results: List[Dict[str, Any]] = []
     for test_year in test_years:
-        if test_year == min(test_years):
-            logger.info("Skipping first year %d (no train data before it)", test_year)
+        result = run_backtest(df, test_year, hyperparams=hyperparams, return_model=True)
+        if result.get("error"):
+            logger.warning("Error for year %d: %s", test_year, result["error"])
             continue
+        total_results.append(result)
 
-        result = run_backtest(df, test_year, hyperparams=hyperparams, return_model=False)
-        results.append(result)
+    # Save training runs
+    if total_results:
+        def _sanitize(obj):
+            if isinstance(obj, dict):
+                return {k: _sanitize(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [_sanitize(v) for v in obj]
+            elif isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
+                return None
+            elif hasattr(obj, "item"):
+                return obj.item()
+            return obj
 
-    return results
+        try:
+            results_list = [_sanitize(r) for r in total_results]
+            for r, entry in zip(total_results, results_list):
+                year = int(r["test_year"])
+                entry["name"] = f"{year} NBA OU"
+                entry.pop("model", None)
+                entry.pop("feature_set", None)
+
+            last_result = results_list[-1]
+            train_years = list(range(train_from, last_result["test_year"]))
+
+            db_run_id = save_training_run(
+                sport="nba",
+                model_type="ou",
+                test_year=last_result["test_year"],
+                train_years=train_years,
+                results_json=results_list,
+                pkl_filename="",
+            )
+            logger.info("Saved training run %s: %d years", db_run_id, len(total_results))
+
+            # Save PKL files
+            pkl_names: list[str] = []
+            for r, entry in zip(total_results, results_list):
+                model = r.get("model")
+                if model is not None:
+                    year = int(r["test_year"])
+                    pkl_name = f"{db_run_id}-{year}.pkl"
+                    pkl_path = NBA_PKL_DIR / pkl_name
+                    with open(pkl_path, "wb") as f:
+                        pickle.dump(model, f)
+                    entry["pkl_filename"] = pkl_name
+                    pkl_names.append(pkl_name)
+                    logger.info("  Saved PKL: %s", pkl_name)
+
+            if pkl_names:
+                update_pkl_filename("nba", db_run_id, ",".join(pkl_names))
+                # Update results_json with pkl_filename per year
+                import psycopg2
+                conn = psycopg2.connect("postgresql://earl:earl2025@localhost:5432/earl_knows_football")
+                cur = conn.cursor()
+                cur.execute(
+                    "UPDATE nba.training_runs SET results_json = %s WHERE training_id = %s",
+                    (PgJson(results_list), db_run_id),
+                )
+                conn.commit()
+                cur.close()
+                conn.close()
+
+        except Exception as e:
+            import traceback
+            logger.warning("Failed to save training run: %s", e)
+            traceback.print_exc()
+
+    return total_results
 
 
 # ── Run single (train all, save model) ───────────────────────────────────────────
@@ -630,7 +747,7 @@ if __name__ == "__main__":
             if "error" in r:
                 print(f"  {r['year']}: ERROR — {r['error']}")
             else:
-                print(f"  {r['year']}: MAE={r['mae']:.2f} RMSE={r['rmse']:.2f} R²={r['r2']:.4f} OU_acc={r['ou_accuracy']}  n={r['n_train']}+{r['n_test']}")
+                print(f"  {r['year']}: ou={r['ou_pct']:.1f}% mae={r['mae']:.2f} rmse={r['rmse']:.2f} r2={r['r2']:.4f}  n={r['n_train']}+{r['n_test']}")
 
     elif mode == "train":
         result = asyncio.run(train_model(label="nba_ou_cli"))

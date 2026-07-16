@@ -78,7 +78,7 @@ async def search_articles(
         embed_resp = req.post(
             "http://localhost:11434/api/embeddings",
             json={"model": "snowflake-arctic-embed2:latest", "prompt": query},
-            timeout=10,
+            timeout=30,
         )
         embed_resp.raise_for_status()
         embedding = embed_resp.json()["embedding"]

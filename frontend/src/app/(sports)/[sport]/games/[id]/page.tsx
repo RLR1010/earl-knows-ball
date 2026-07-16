@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useParams, useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { NBABoxScorePage } from "@/components/NBABoxScore";
+import NBAGameTabs from "@/components/NBAGameTabs";
 import MLBGameTabs from "@/components/MLBGameTabs";
 import NFLGameTabs, { BettingLinesCard } from "@/components/NFLGameTabs";
 
@@ -287,7 +287,7 @@ export default function GameDetailPage() {
   }
 
   if (sport === "nba") {
-    return <NBABoxScorePage gameId={gameId} />;
+    return <NBAGameTabs gameId={parseInt(gameId || "0")} />;
   }
 
   if (loading) return <div className="text-center py-12 text-gray-500">Loading...</div>;
@@ -370,6 +370,7 @@ export default function GameDetailPage() {
           gameId={gameId || ""}
           boxscore={nflBoxScore}
           prediction={predForTabs}
+          isFinal={isNflFinal}
         />
       )}
 

@@ -366,47 +366,46 @@ async def batch_predict_upcoming_games(
             over_under = _float_safe(row.get("closing_ou", row.get("over_under", 0)))
 
             # ATS prediction
-            ats_proba = 0.5
+            # ATS prediction (regression: predicted home margin, home_score - away_score)
+            ats_margin = 0.0
             if ats_model is not None:
                 feats, names = _extract_feature_vector(row, "ats")
                 if feats is not None:
                     dmat = xgb.DMatrix(feats, feature_names=names)
-                    ats_proba = float(ats_model.predict(dmat)[0])
+                    ats_margin = float(ats_model.predict(dmat)[0])
 
-            # OU prediction
-            ou_pred = None
+            # OU prediction (regression: predicts total_points directly)
+            predicted_total = None
             if ou_model is not None:
                 feats, names = _extract_feature_vector(row, "ou")
                 if feats is not None:
                     dmat = xgb.DMatrix(feats, feature_names=names)
-                    ou_pred = float(ou_model.predict(dmat)[0])
+                    predicted_total = float(ou_model.predict(dmat)[0])
 
             # Build pick card
-            pred_margin = abs(spread) * (2 * ats_proba - 1) if spread != 0 else 0
+            pred_margin = ats_margin  # direct margin prediction (home_score - away_score)
             margin_conf = round(min(0.5 + abs(pred_margin + spread) * 0.04, 0.90), 4) if spread else 0.5
 
             spread_pick = None
             if spread is not None:
-                if ats_proba > 0.5:
-                    spread_pick = "{home} {spread:.1f}".format(home=home_str, spread=spread)
+                if spread < 0:
+                    home_covers = pred_margin > abs(spread)
                 else:
-                    spread_pick = "{away} {spread:.1f}".format(away=away_str, spread=abs(spread))
+                    home_covers = pred_margin > -spread
+                spread_pick = home_str if home_covers else away_str
 
             ou_pick = None
-            if ou_pred is not None and over_under is not None:
-                ou_pick = "Over" if ou_pred > over_under else "Under"
+            if predicted_total is not None and over_under is not None:
+                ou_pick = "Over" if predicted_total > over_under else "Under"
 
-            ml_pick = home_str if ats_proba > 0.5 else away_str
+            ml_pick = home_str if pred_margin > 0 else away_str
 
             predicted_home, predicted_away = None, None
-            if ou_pred is not None and spread is not None:
-                pred_total = ou_pred
-                if ats_proba > 0.5:
-                    predicted_home = round((pred_total + pred_margin) / 2)
-                    predicted_away = round((pred_total - pred_margin) / 2)
-                else:
-                    predicted_home = round((pred_total - pred_margin) / 2)
-                    predicted_away = round((pred_total + pred_margin) / 2)
+            if predicted_total is not None and spread is not None:
+                predicted_home = round((predicted_total + pred_margin) / 2)
+                predicted_away = round((predicted_total - pred_margin) / 2)
+                if pred_margin < 0:
+                    predicted_home, predicted_away = predicted_away, predicted_home
 
             result: Dict[str, Any] = {
                 "game_id": gid,
@@ -416,8 +415,8 @@ async def batch_predict_upcoming_games(
                 "predicted_home_score": predicted_home,
                 "predicted_away_score": predicted_away,
                 "margin_conf": margin_conf,
-                "ats_prediction": ats_proba,
-                "ou_predicted_total": round(ou_pred, 2) if ou_pred is not None else None,
+                "ats_prediction": pred_margin,
+                "ou_predicted_total": round(predicted_total, 2) if predicted_total is not None else None,
                 "ou_pick": ou_pick,
                 "spread_pick": spread_pick,
                 "ml_pick": ml_pick,
@@ -455,6 +454,14 @@ async def batch_predict_upcoming_games(
 def _evaluate_year_model(year_df: pd.DataFrame, model: xgb.Booster, model_type: str) -> Dict[str, Any]:
     """Evaluate a single per-year model on a full season's games.
 
+    Both ATS and OU models are trained with reg:squarederror (regression):
+      - ATS predicts home_score_margin  (continuous margin)
+      - OU  predicts total_points       (continuous total)
+
+    For ATS the model output is a MARGIN, not a probability.
+    Convert to an ATS pick: predicted_margin + spread > 0.
+    For OU, the model output is directly the predicted total.
+
     Returns dict with accuracy (ATS) or MAE/RMSE (OU), AUC, and game-level
     predictions (list of dicts).  Matches the MLB ``backtest_season`` pattern.
     """
@@ -475,10 +482,16 @@ def _evaluate_year_model(year_df: pd.DataFrame, model: xgb.Booster, model_type: 
             spread = row.get("spread", 0) or 0
             home_score = row.get("home_score", 0) or 0
             away_score = row.get("away_score", 0) or 0
-            actual_cover = int((home_score - away_score + spread) > 0)
+            margin_vs_spread = home_score - away_score + spread
+            if margin_vs_spread == 0:
+                # Push — skip in accuracy calculation
+                continue
+            actual_cover = int(margin_vs_spread > 0)
+            # regression model outputs margin, not probability
+            pred_cover = int(prob + spread > 0)
             labels.append(actual_cover)
             total += 1
-            if int(prob > 0.5) == actual_cover:
+            if pred_cover == actual_cover:
                 correct += 1
         else:
             total_points = row.get("total_points", 0) or 0
@@ -493,13 +506,9 @@ def _evaluate_year_model(year_df: pd.DataFrame, model: xgb.Booster, model_type: 
         result["correct"] = correct
         result["n_train"] = 0
         result["n_test"] = total
-        if len(set(labels)) > 1 and len(probs) > 1:
-            try:
-                result["auc"] = round(float(roc_auc_score(labels, probs)), 4)
-            except Exception:
-                result["auc"] = None
-        else:
-            result["auc"] = None
+        # probs holds raw margin predictions — AUC doesn't apply to regression
+        # outputs, but we keep the field for consistency
+        result["auc"] = None
     elif model_type == "ou" and len(labels) > 0:
         result["mae"] = round(float(mean_absolute_error(labels, probs)), 2)
         result["rmse"] = round(float(np.sqrt(mean_squared_error(labels, probs))), 2)
@@ -531,15 +540,16 @@ async def _save_api_prediction(result: Dict[str, Any]) -> None:
         source = result.get("source", "api")
 
         predicted_total = result.get("ou_predicted_total")
-        ats_proba = result.get("ats_prediction", 0.5)
+        pred_margin = result.get("ats_prediction", 0.0)  # direct margin prediction
         spread = result.get("spread", 0) or 0
 
-        pred_margin = 2 * spread * (ats_proba - 0.5) if spread != 0 else 0
         pred_home_score = None
         pred_away_score = None
         if predicted_total is not None:
             pred_home_score = max(0, round((predicted_total + pred_margin) / 2.0))
             pred_away_score = max(0, round((predicted_total - pred_margin) / 2.0))
+            if pred_margin < 0:
+                pred_home_score, pred_away_score = pred_away_score, pred_home_score
 
         ou_pick = result.get("ou_pick")
         spread_pick = result.get("spread_pick")
@@ -662,21 +672,21 @@ async def _save_backtest_prediction(
         spread = _float_safe(row.get("closing_spread", row.get("spread", 0)))
         over_under = _float_safe(row.get("closing_ou", row.get("over_under", 0)))
 
-        # ── ATS prediction ─────────────────────────────────────────────────────
-        ats_proba = 0.5
+        # ── ATS prediction (regression: predicted home margin) ──────────────────
+        ats_margin = 0.0
         if ats_model is not None:
             feats, names = _extract_feature_vector(row, "ats")
             if feats is not None:
                 dmat = xgb.DMatrix(feats, feature_names=names)
-                ats_proba = float(ats_model.predict(dmat)[0])
+                ats_margin = float(ats_model.predict(dmat)[0])
 
-        # ── OU prediction ──────────────────────────────────────────────────────
-        ou_total = None
+        # ── OU prediction (regression: predicts total_points directly) ────────
+        predicted_total = None
         if ou_model is not None:
             feats, names = _extract_feature_vector(row, "ou")
             if feats is not None:
                 dmat = xgb.DMatrix(feats, feature_names=names)
-                ou_total = float(ou_model.predict(dmat)[0])
+                predicted_total = float(ou_model.predict(dmat)[0])
 
         # ── Actuals ─────────────────────────────────────────────────────────────
         home_score = _int_safe(row.get("home_score"))
@@ -685,28 +695,34 @@ async def _save_backtest_prediction(
         actual_margin = (home_score or 0) - (away_score or 0)
 
         # ── Picks ───────────────────────────────────────────────────────────────
-        pred_margin_pred = 2 * spread * (ats_proba - 0.5) if spread != 0 else 0
-        margin_conf = round(min(0.5 + abs(pred_margin_pred + spread) * 0.04, 0.90), 4) if spread else 0.5
-        home_fav = spread < 0
-        if home_fav:
-            spread_pick = f"{home_str} {abs(spread):.1f}"
-        else:
-            spread_pick = f"{away_str} {abs(spread):.1f}"
+        pred_margin = ats_margin  # direct margin prediction (home_score - away_score)
+        margin_conf = round(min(0.5 + abs(pred_margin + spread) * 0.04, 0.90), 4) if spread else 0.5
 
-        if ats_proba > 0.5:
-            spread_pick = home_str  # predicted to cover
-        else:
-            spread_pick = away_str
+        spread_pick = None
+        if spread is not None:
+            # Both branches: margin + spread > 0  (home covers if home score beats the spread)
+            if spread < 0:
+                home_covers = pred_margin > abs(spread)
+            else:
+                home_covers = pred_margin > -spread
+            spread_pick = home_str if home_covers else away_str
 
         ou_pick = None
-        if ou_total is not None and over_under is not None:
-            ou_pick = "Over" if ou_total > over_under else "Under"
+        if predicted_total is not None and over_under is not None:
+            ou_pick = "Over" if predicted_total > over_under else "Under"
 
-        ml_pick = home_str if ats_proba > 0.5 else away_str
+        ml_pick = home_str if pred_margin > 0 else away_str
 
         # ── Results ─────────────────────────────────────────────────────────────
-        home_covered = (home_score - away_score + spread) > 0
-        ats_result = "Win" if home_covered == (ats_proba > 0.5) else "Loss"
+        ats_result = "N/A"
+        if spread_pick and home_score is not None and away_score is not None and spread is not None:
+            margin_vs_spread = home_score - away_score + spread
+            if margin_vs_spread > 0:
+                ats_result = "Win" if spread_pick == home_str else "Loss"
+            elif margin_vs_spread == 0:
+                ats_result = "Push"
+            else:
+                ats_result = "Win" if spread_pick != home_str else "Loss"
         ou_result = None
         if actual_total > over_under:
             ou_result = "Win" if ou_pick == "Over" else "Loss"
@@ -715,7 +731,12 @@ async def _save_backtest_prediction(
         else:
             ou_result = "Push"
 
-        ml_result = "Win" if (home_score > away_score and ml_pick == home_str) or (away_score > home_score and ml_pick == away_str) else "Loss"
+        ml_result = None
+        if home_score > away_score:
+            ml_result = "Win" if ml_pick == home_str else "Loss"
+        elif away_score > home_score:
+            ml_result = "Win" if ml_pick == away_str else "Loss"
+        # else: tie → ml_result stays None (not counted as win or loss)
 
         # ── Odds from row ──────────────────────────────────────────────────────
         closing_ou = _float_safe(row.get("closing_ou", row.get("over_under", over_under)))
@@ -748,28 +769,33 @@ async def _save_backtest_prediction(
         elif ml_pick == away_abbr:
             ml_odds_value = away_ml
 
-        # ── Profit ──────────────────────────────────────────────────────────────
+        # ── Profit (per $100 stake) ──────────────────────────────────────────────
         ats_profit = None
-        if ats_odds_value and ats_result == "Win":
-            ats_profit = float(ats_odds_value) if ats_odds_value > 0 else 100.0
+        if ats_result == "Push":
+            ats_profit = 0.0
+        elif ats_result == "Win" and ats_odds_value:
+            ats_profit = round(100.0 * _profit_per_100(float(ats_odds_value)), 2)
         elif ats_result == "Loss":
-            ats_profit = -100.0 if ats_odds_value and ats_odds_value > 0 else -(abs(ats_odds_value or 100.0))
+            ats_profit = -100.0
 
         ou_profit = None
-        if ou_odds_value and ou_result == "Win":
-            ou_profit = float(ou_odds_value) if ou_odds_value > 0 else 100.0
+        if ou_result == "Push":
+            ou_profit = 0.0
+        elif ou_result == "Win" and ou_odds_value:
+            ou_profit = round(100.0 * _profit_per_100(float(ou_odds_value)), 2)
         elif ou_result == "Loss":
-            ou_profit = -100.0 if ou_odds_value and ou_odds_value > 0 else -(abs(ou_odds_value or 100.0))
+            ou_profit = -100.0
 
         ml_profit = None
-        if ml_odds_value and ml_result == "Win":
-            ml_profit = float(ml_odds_value) if ml_odds_value > 0 else 100.0
+        if ml_result == "Win" and ml_odds_value:
+            ml_profit = round(100.0 * _profit_per_100(float(ml_odds_value)), 2)
         elif ml_result == "Loss":
-            ml_profit = -100.0 if ml_odds_value and ml_odds_value > 0 else -(abs(ml_odds_value or 100.0))
+            ml_profit = -100.0
 
         # ── Raw confidence computations ───
-        ml_raw = round(min(0.5 + abs(pred_margin_pred) * 0.025, 0.92), 4)
-        ou_raw = round(min(0.5 + abs(ou_total - closing_ou) * 0.07, 0.92), 4) if (ou_total is not None and closing_ou) else 0.5
+        ml_raw = round(min(0.5 + abs(pred_margin) * 0.025, 0.92), 4)
+        ou_confidence_diff = abs(predicted_total - closing_ou) if predicted_total is not None and closing_ou else None
+        ou_raw = round(min(0.5 + ou_confidence_diff * 0.07, 0.92), 4) if ou_confidence_diff is not None else 0.5
 
         # ── Calibrated confidences ───
         ats_cal = calibrate(margin_conf, "ats", "nfl")
@@ -804,12 +830,23 @@ async def _save_backtest_prediction(
                     NFLGamePrediction.source == "backtest",
                 )
             )
+            # Compute predicted scores from model total + margin (not actual scores)
+            if predicted_total is not None:
+                _pred_h = int(round((predicted_total + pred_margin) / 2))
+                _pred_a = int(round((predicted_total - pred_margin) / 2))
+                if pred_margin < 0:
+                    _pred_h, _pred_a = _pred_a, _pred_h
+                _pred_home_score = max(0, _pred_h)
+                _pred_away_score = max(0, _pred_a)
+            else:
+                _pred_home_score = None
+                _pred_away_score = None
             rec = NFLGamePrediction(
                 game_id=game_id,
-                predicted_home_score=_int_safe(home_score),  # use actual as placeholder
-                predicted_away_score=_int_safe(away_score),
-                predicted_total=ou_total,
-                predicted_margin=pred_margin_pred,
+                predicted_home_score=_pred_home_score,
+                predicted_away_score=_pred_away_score,
+                predicted_total=predicted_total,
+                predicted_margin=pred_margin,
                 margin_conf=margin_conf,
                 ml_conf=ml_raw,
                 ou_conf=ou_raw,
@@ -853,12 +890,23 @@ async def _save_backtest_prediction(
                     NFLGamePrediction.source == "backtest",
                 )
             )
+            # Compute predicted scores from model total + margin (not actual scores)
+            if predicted_total is not None:
+                _pred_h = int(round((predicted_total + pred_margin) / 2))
+                _pred_a = int(round((predicted_total - pred_margin) / 2))
+                if pred_margin < 0:
+                    _pred_h, _pred_a = _pred_a, _pred_h
+                _pred_home_score = max(0, _pred_h)
+                _pred_away_score = max(0, _pred_a)
+            else:
+                _pred_home_score = None
+                _pred_away_score = None
             rec = NFLGamePrediction(
                 game_id=game_id,
-                predicted_home_score=_int_safe(home_score),
-                predicted_away_score=_int_safe(away_score),
-                predicted_total=ou_total,
-                predicted_margin=pred_margin_pred,
+                predicted_home_score=_pred_home_score,
+                predicted_away_score=_pred_away_score,
+                predicted_total=predicted_total,
+                predicted_margin=pred_margin,
                 margin_conf=margin_conf,
                 ml_conf=ml_raw,
                 ou_conf=ou_raw,
@@ -1015,7 +1063,8 @@ if __name__ == "__main__":
                 if "error" in r:
                     print(f"  {r['year']}: ERROR — {r['error']}")
                 else:
-                    print(f"  {r['year']}: acc={r['accuracy']:.4f} auc={r['auc']:.4f} n={r['n_train']}+{r['n_test']}")
+                    auc_str = f"auc={r['auc']:.4f}" if r.get('auc') is not None else "auc=N/A"
+                    print(f"  {r['year']}: acc={r['accuracy']:.4f} {auc_str} n={r['n_train']}+{r['n_test']}")
         if "ou_results" in results:
             print(f"OU: {len(results['ou_results'])} years")
             for r in results["ou_results"]:

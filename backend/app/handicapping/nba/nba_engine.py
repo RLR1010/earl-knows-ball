@@ -339,8 +339,8 @@ async def _build_pick_card(
 
     # Moneyline
     if home_team and away_team:
-        favorite = home_team if spread < 0 else away_team
-        underdog = away_team if spread < 0 else home_team
+        favorite = home_team if pred_margin > 0 else away_team
+        underdog = away_team if pred_margin > 0 else home_team
         # Derive ML odds from margin prediction
         ml_prob_est = 1.0 / (1.0 + 10.0 ** (-pred_margin / 10.0)) if pred_margin != 0 else 0.5
         ml_numeric = _prob_to_moneyline(ml_prob_est)

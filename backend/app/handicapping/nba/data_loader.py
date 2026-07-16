@@ -232,6 +232,8 @@ COMPUTED_FEATURES_CATALOG: Dict[str, str] = {
     "h_implied": "Home team implied win probability from moneyline",
     "a_implied": "Away team implied win probability from moneyline",
     "spread_movement": "Spread movement: opening - closing",
+    "ou_movement": "OU movement: closing - opening",
+    "over_implied_prob": "Vig-free over probability from over/under odds",
     "implied_margin": "Expected point margin from moneyline implied probability",
     "ml_spread_mismatch": "Disagreement between ML-implied margin and closing spread",
     "h_ats_wins_5": "Home team ATS wins in last 5 games",
@@ -364,6 +366,8 @@ DISPLAY_NAMES: Dict[str, str] = {
     "h_implied": "Home Implied",
     "a_implied": "Away Implied",
     "spread_movement": "Spread Movement",
+    "ou_movement": "OU Movement",
+    "over_implied_prob": "Over Implied Prob",
     "implied_margin": "Implied Margin",
     "ml_spread_mismatch": "ML-Spread Mismatch",
     "h_ats_wins_5": "Home ATS Wins L5",
@@ -670,12 +674,13 @@ class NBADataLoader:
     def load_data(
         self,
         seasons: Optional[List[int]] = None,
+        limit: Optional[int] = None,
     ) -> pd.DataFrame:
         """Load game data and apply full feature engineering.
 
         Main entry point for training pipelines.
         """
-        df = self.load_games(seasons=seasons)
+        df = self.load_games(seasons=seasons, limit=limit)
         if df.empty:
             logger.warning("No NBA games found for seasons=%s", seasons)
             return df
@@ -940,9 +945,16 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
     season_avg = team_games.groupby("season_id")["score_for"].transform("mean")
 
     for window in (10, 20):
-        opp_col = f"opp_avg_{window}"
-        team_games[opp_col] = (
+        # opp_def_avg = how many points teams typically score against this opponent (measures opponent's defense)
+        def_col = f"opp_def_avg_{window}"
+        team_games[def_col] = (
             team_games.groupby("opp_abbr")["score_for"]
+            .transform(lambda s: s.shift(1).rolling(window, min_periods=1).mean())
+        )
+        # opp_off_avg = how many points this opponent typically scores (measures opponent's offense)
+        off_col = f"opp_off_avg_{window}"
+        team_games[off_col] = (
+            team_games.groupby("opp_abbr")["score_against"]
             .transform(lambda s: s.shift(1).rolling(window, min_periods=1).mean())
         )
 
@@ -951,25 +963,27 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
         adj_off_a = f"a_adj_off_{window}"
         adj_def_a = f"a_adj_def_{window}"
 
-        opp_avg = f"opp_avg_{window}"
+        # Both anchored to season_avg (~110): higher is better for both
+        # adj_off: league avg + how much better/worse team scored vs opponent's defense
         team_games[adj_off_h] = np.where(
             team_games["is_home"] == 1,
-            team_games["score_for"] - team_games[opp_avg],
+            season_avg + (team_games["score_for"] - team_games[def_col]),
             np.nan,
         )
+        # adj_def: league avg - how much more/less team allowed vs opponent's offense
         team_games[adj_def_h] = np.where(
             team_games["is_home"] == 1,
-            season_avg - (team_games["score_against"] - team_games[opp_avg]),
+            season_avg - (team_games["score_against"] - team_games[off_col]),
             np.nan,
         )
         team_games[adj_off_a] = np.where(
             team_games["is_home"] == 0,
-            team_games["score_for"] - team_games[opp_avg],
+            season_avg + (team_games["score_for"] - team_games[def_col]),
             np.nan,
         )
         team_games[adj_def_a] = np.where(
             team_games["is_home"] == 0,
-            season_avg - (team_games["score_against"] - team_games[opp_avg]),
+            season_avg - (team_games["score_against"] - team_games[off_col]),
             np.nan,
         )
 
@@ -986,7 +1000,16 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
     nba_adv_metrics = ["ortg", "drtg", "net_rtg", "pace"]
     nba_per_poss = ["ft_rate", "efg", "threep_rate", "ast_ratio"]
 
+    team_games["won"] = (team_games["score_for"] > team_games["score_against"]).astype(int)
+
     for window in (5, 10, 20):
+        # Team-wide win count (ALL games, not split by venue)
+        win_col = f"wins_{window}"
+        team_games[win_col] = (
+            team_games.groupby("team_abbr")["won"]
+            .transform(lambda s: s.shift(1).rolling(window, min_periods=1).sum())
+        )
+
         for metric in nba_adv_metrics + nba_per_poss:
             rolling_col = f"{metric}_r{window}"
             team_games[rolling_col] = (
@@ -1025,6 +1048,12 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
         df[f"h_{metric}"] = team_games.loc[team_games["is_home"] == 1, metric].values
         df[f"a_{metric}"] = team_games.loc[team_games["is_home"] == 0, metric].values
 
+    # ── Team-wide win count (from long-form team_games, NOT venue-split) ──
+    for window in (5, 10):
+        win_col = f"wins_{window}"
+        df[f"h_{win_col}"] = team_games.loc[team_games["is_home"] == 1, win_col].values
+        df[f"a_{win_col}"] = team_games.loc[team_games["is_home"] == 0, win_col].values
+
     # ── Net Rating differential ─────────────────────────────────────
     df["net_rtg_diff_5"] = df["h_net_rtg_r5"] - df["a_net_rtg_r5"]
     df["net_rtg_diff_10"] = df["h_net_rtg_r10"] - df["a_net_rtg_r10"]
@@ -1035,29 +1064,28 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
     # ═══════════════════════════════════════════════════════════════════════════
     _star_engine = create_engine(DEFAULT_DB_URL)
     try:
-        # Identify top-3 scorers per team for seasons matching player_game_stats
+        # Identify top-3 scorers per team, per season (NOT hardcoded to one season)
         with _star_engine.connect() as _conn:
             _players_df = pd.read_sql("""
-                SELECT pss.player_id, pss.team_id, pss.points_per_game,
+                SELECT pss.player_id, pss.team_id, pss.season_id, pss.points_per_game,
                        ROW_NUMBER() OVER (
-                           PARTITION BY pss.team_id ORDER BY pss.points_per_game DESC
+                           PARTITION BY pss.team_id, pss.season_id ORDER BY pss.points_per_game DESC
                        ) AS star_rank
                 FROM nba.player_season_stats pss
-                WHERE pss.season_id = 35
-                  AND pss.games_played >= 30
+                WHERE pss.games_played >= 10
                   AND pss.team_id IS NOT NULL
             """, _conn)
 
         _star_players = _players_df[_players_df["star_rank"] <= 3].copy()
-        _star_ids = list(_star_players["player_id"].unique())
 
-        if _star_ids:
+        if len(_star_players) > 0:
+            _star_ids = list(_star_players["player_id"].unique())
             with _star_engine.connect() as _conn:
                 # Build placeholders safely
                 _placeholders = ",".join([str(pid) for pid in _star_ids])
                 _game_logs = pd.read_sql(f"""
                     SELECT pgs.player_id, pgs.game_id, pgs.team_id,
-                           pgs.points, pgs.minutes, g.date
+                           pgs.points, pgs.minutes, g.date, g.season_id
                     FROM nba.player_game_stats pgs
                     JOIN nba.games g ON pgs.game_id = g.id
                     WHERE pgs.player_id IN ({_placeholders})
@@ -1066,7 +1094,16 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
 
             _gl = _game_logs.copy()
             _gl["points"] = _gl["points"].fillna(0).astype(float)
-            _gl["minutes"] = _gl["minutes"].fillna(0).astype(int)
+            # minutes is VARCHAR — can be "32" (numeric string), "32:08" (MM:SS), "-", or NULL
+            _gl["minutes"] = (
+                _gl["minutes"]
+                .replace("-", None)
+                .fillna(0)
+                .astype(str)
+                .str.replace(r"^(\d+):(\d{2})$", lambda m: str(int(m.group(1)) + int(m.group(2)) / 60), regex=True)
+                .astype(float)
+            )
+            
 
             # Rolling 5-game PPG per player (shifted — no look-ahead bias)
             _gl["ppg_r5"] = (
@@ -1075,10 +1112,10 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
             )
             _gl["active"] = (_gl["minutes"] > 0).astype(int)
 
-            # Merge rank info
+            # Merge rank info — match by season_id so each game uses that season's top scorers
             _gl = _gl.merge(
-                _star_players[["player_id", "team_id", "star_rank"]],
-                on=["player_id", "team_id"],
+                _star_players[["player_id", "team_id", "season_id", "star_rank"]],
+                on=["player_id", "team_id", "season_id"],
                 how="left",
             )
 
@@ -1185,22 +1222,27 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
     team_games["lon"] = team_games["team_abbr"].map(
         lambda abbr: _location_cache.get(abbr, (0, 0))[1]
     )
-    team_games["home_lat"] = team_games["opp_abbr"].map(
-        lambda abbr: _location_cache.get(abbr, (0, 0))[0]
+    # Game venue: home game uses team's own city, away game uses opponent's city
+    team_games["venue_lat"] = np.where(
+        team_games["is_home"] == 1,
+        team_games["lat"],
+        team_games["opp_abbr"].map(lambda abbr: _location_cache.get(abbr, (0, 0))[0]),
     )
-    team_games["home_lon"] = team_games["opp_abbr"].map(
-        lambda abbr: _location_cache.get(abbr, (0, 0))[1]
+    team_games["venue_lon"] = np.where(
+        team_games["is_home"] == 1,
+        team_games["lon"],
+        team_games["opp_abbr"].map(lambda abbr: _location_cache.get(abbr, (0, 0))[1]),
     )
 
-    team_games["prev_home_lat"] = team_games.groupby("team_abbr")["home_lat"].shift(1)
-    team_games["prev_home_lon"] = team_games.groupby("team_abbr")["home_lon"].shift(1)
+    team_games["prev_venue_lat"] = team_games.groupby("team_abbr")["venue_lat"].shift(1)
+    team_games["prev_venue_lon"] = team_games.groupby("team_abbr")["venue_lon"].shift(1)
 
     team_games["team_travel"] = team_games.apply(
         lambda r: haversine_miles(
-            r["prev_home_lat"], r["prev_home_lon"],
-            r["home_lat"], r["home_lon"],
+            r["prev_venue_lat"], r["prev_venue_lon"],
+            r["venue_lat"], r["venue_lon"],
         )
-        if pd.notna(r["prev_home_lat"])
+        if pd.notna(r["prev_venue_lat"])
         else 0.0,
         axis=1,
     )
@@ -1232,6 +1274,7 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
     # ═══════════════════════════════════════════════════════════════════════════
 
     df["spread_movement"] = df["opening_spread"] - df["closing_spread"]
+    df["ou_movement"] = df["closing_ou"] - df["opening_ou"]
 
     def _implied_prob(moneyline: pd.Series) -> pd.Series:
         """Convert American moneyline odds to implied probability."""
@@ -1253,6 +1296,11 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
     ) * np.sign(df["h_implied"] - df["a_implied"])
 
     df["ml_spread_mismatch"] = df["implied_margin"] - df["closing_spread"].abs()
+
+    # ── Over/under implied probability (vig-free) ────────────────────────────
+    _over_ip = _implied_prob(df["over_odds"])
+    _under_ip = _implied_prob(df["under_odds"])
+    df["over_implied_prob"] = _over_ip / (_over_ip + _under_ip)
 
     # ═══════════════════════════════════════════════════════════════════════════
     #  5. Form & streaks (ATS, win counts, cover margins)
@@ -1283,24 +1331,6 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
             df.groupby(abbr_col)[margin_col]
             .transform(lambda s: s.shift(1).rolling(5, min_periods=0).mean())
         )
-
-    # Straight-up wins (home = positive margin, away = negative margin)
-    df["h_wins_5"] = (
-        df.groupby("home_abbr")["home_actual_margin"]
-        .transform(lambda s: s.shift(1).rolling(5, min_periods=0).apply(lambda x: (x > 0).sum(), raw=True))
-    )
-    df["h_wins_10"] = (
-        df.groupby("home_abbr")["home_actual_margin"]
-        .transform(lambda s: s.shift(1).rolling(10, min_periods=0).apply(lambda x: (x > 0).sum(), raw=True))
-    )
-    df["a_wins_5"] = (
-        df.groupby("away_abbr")["home_actual_margin"]
-        .transform(lambda s: s.shift(1).rolling(5, min_periods=0).apply(lambda x: (x < 0).sum(), raw=True))
-    )
-    df["a_wins_10"] = (
-        df.groupby("away_abbr")["home_actual_margin"]
-        .transform(lambda s: s.shift(1).rolling(10, min_periods=0).apply(lambda x: (x < 0).sum(), raw=True))
-    )
 
     # ── Over/under result ────────────────────────────────────────────────
     df["over_result"] = (

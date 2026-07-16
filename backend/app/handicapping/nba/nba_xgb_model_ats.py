@@ -20,6 +20,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 import psycopg2
+from psycopg2.extras import Json as PgJson
 import xgboost as xgb
 from sklearn.metrics import (
     mean_absolute_error,
@@ -193,31 +194,97 @@ def run_backtest(
     train_mae = float(mean_absolute_error(y_train, y_train_pred))
 
     importance = model.get_score(importance_type="gain")
+    total_gain = sum(importance.values()) or 1.0
     fi_sorted = sorted(
-        [{"feature": k, "importance": round(v, 4)} for k, v in importance.items()],
+        [{"feature": k, "importance": round(v / total_gain, 6)} for k, v in importance.items()],
         key=lambda x: -x["importance"],
     )
 
+    # Compute ATS and ML directional accuracy from margin predictions
+    pred_margin = y_pred
+    actual_margin = y_test
+
+    # ML accuracy: did we pick the winner correctly?
+    pred_home_wins = (pred_margin > 0).astype(int)
+    actual_home_wins = (actual_margin > 0).astype(int)
+    ml_correct = int((pred_home_wins == actual_home_wins).sum())
+    ml_total = len(y_pred)
+    ml_incorrect = ml_total - ml_correct
+
+    # ATS accuracy: did we pick the spread cover correctly?
+    # Note: DataFrame uses "spread" column (closing_spread renamed in build_features)
+    if "spread" in test_df.columns:
+        spread = test_df["spread"].values
+        pred_home_covers = (pred_margin > -spread).astype(int)
+        if "home_ats_cover" in test_df.columns:
+            actual_home_covers = test_df["home_ats_cover"].values.astype(int)
+        else:
+            actual_home_covers = actual_home_wins
+        ats_correct = int((pred_home_covers == actual_home_covers).sum())
+        ats_total = ml_total
+        ats_incorrect = ats_total - ats_correct
+    else:
+        ats_correct = ml_correct
+        ats_total = ml_total
+        ats_incorrect = ml_incorrect
+
+    elapsed = round(time.time() - t0, 2)
+
     result: Dict[str, Any] = {
-        "year": test_year,
+        "year": int(test_year),
+        "test_year": int(test_year),
         "mae": round(mae, 4),
         "rmse": round(rmse, 4),
         "r2": round(r2, 4),
         "feature_importance": fi_sorted,
         "feature_set": feature_cols,
-        "n_train": len(X_train),
-        "n_test": len(X_test),
+        "n_train": int(len(X_train)),
+        "n_test": int(len(X_test)),
         "train_mae": round(train_mae, 4),
-        "elapsed_seconds": round(time.time() - t0, 2),
+        "elapsed_seconds": elapsed,
+        "duration_seconds": elapsed,
+        "input_features": int(len(feature_cols)),
+        "total_games": int(len(y_pred)),
+        "model_params": {
+            "seed": params["seed"],
+            "max_depth": params["max_depth"],
+            "objective": params["objective"],
+            "subsample": params["subsample"],
+            "verbosity": params["verbosity"],
+            "eval_metric": params["eval_metric"],
+            "n_estimators": hp.get("n_estimators", n_estimators),
+            "learning_rate": params["learning_rate"],
+            "colsample_bytree": params["colsample_bytree"],
+        },
         "target": target,
+        "ats": {
+            "pct": round(ats_correct / ats_total * 100, 2),
+            "total": ats_total,
+            "correct": ats_correct,
+            "incorrect": ats_incorrect,
+        },
+        "ml": {
+            "pct": round(ml_correct / ml_total * 100, 2),
+            "total": ml_total,
+            "correct": ml_correct,
+            "incorrect": ml_incorrect,
+        },
+        "ats_pct": round(ats_correct / ats_total * 100, 2),
+        "ats_total": ats_total,
+        "ats_correct": ats_correct,
     }
 
     if return_model:
         result["model"] = model
 
     logger.info(
-        "Year %d | acc=%.4f auc=%.4f log_loss=%.4f | train=%d test=%d %.1fs",
-        test_year, acc, auc, ll, len(X_train), len(X_test), result["elapsed_seconds"],
+        "Year %d | ats=%.1f%% ml=%.1f%% mae=%.4f | train=%d test=%d %.1fs",
+        int(test_year),
+        result["ats_pct"],
+        result["ml"]["pct"],
+        mae,
+        len(X_train), len(X_test),
+        elapsed,
     )
 
     return result
@@ -259,26 +326,97 @@ async def run_all_years(
 
     df = _ensure_ats_features(df)
 
-    test_years = sorted(df["season_year"].unique())
-    logger.info("Test years: %s", test_years)
+    unique_years = sorted(df["season_year"].unique())
+    # Test only the last 2 years (standard default)
+    test_years = unique_years[-2:]
+    logger.info("Test years: %s (all unique years: %s)", test_years, unique_years)
 
-    results: List[Dict[str, Any]] = []
+    import math
+
+    total_results: List[Dict[str, Any]] = []
     for test_year in test_years:
-        if test_year == min(test_years):
-            logger.info("Skipping first year %d (no train data before it)", test_year)
-            continue
-
         result = run_backtest(
             df,
             test_year,
             ats_only=ats_only,
             ou_only=ou_only,
             hyperparams=hyperparams,
-            return_model=False,
+            return_model=True,
         )
-        results.append(result)
+        if result.get("error"):
+            logger.warning("Error for year %d: %s", test_year, result["error"])
+            continue
+        total_results.append(result)
 
-    return results
+    # Save training runs (matches expected results_json format)
+    if total_results:
+        def _sanitize(obj):
+            if isinstance(obj, dict):
+                return {k: _sanitize(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [_sanitize(v) for v in obj]
+            elif isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
+                return None
+            elif hasattr(obj, "item"):
+                return obj.item()
+            return obj
+
+        try:
+            results_list = [_sanitize(r) for r in total_results]
+            for r, entry in zip(total_results, results_list):
+                year = int(r["test_year"])
+                entry["name"] = f"{year} NBA ATS"
+                entry.pop("model", None)
+                entry.pop("feature_set", None)
+
+            last_result = results_list[-1]
+            train_years = list(range(train_from, last_result["test_year"]))
+
+            # Save training run first to get the training_id
+            db_run_id = save_training_run(
+                sport="nba",
+                model_type="ats",
+                test_year=last_result["test_year"],
+                train_years=train_years,
+                results_json=results_list,
+                pkl_filename="",
+            )
+            logger.info("Saved training run %s: %d years", db_run_id, len(total_results))
+
+            # Save PKL files and update pkl_filename on training run + each year entry
+            pkl_names: list[str] = []
+            for r, entry in zip(total_results, results_list):
+                model = r.get("model")
+                if model is not None:
+                    year = int(r["test_year"])
+                    pkl_name = f"{db_run_id}-{year}.pkl"
+                    pkl_path = NBA_PKL_DIR / pkl_name
+                    with open(pkl_path, "wb") as f:
+                        pickle.dump(model, f)
+                    entry["pkl_filename"] = pkl_name
+                    pkl_names.append(pkl_name)
+                    logger.info("  Saved PKL: %s", pkl_name)
+
+            if pkl_names:
+                update_pkl_filename("nba", db_run_id, ",".join(pkl_names))
+                # Update results_json in the DB with pkl_filename per year
+                import psycopg2
+                conn = psycopg2.connect("postgresql://earl:earl2025@localhost:5432/earl_knows_football")
+                cur = conn.cursor()
+                cur.execute(
+                    "UPDATE nba.training_runs SET results_json = %s WHERE training_id = %s",
+                    (PgJson(results_list), db_run_id),
+                )
+                conn.commit()
+                cur.close()
+                conn.close()
+
+        except Exception as e:
+            import traceback
+            logger.warning("Failed to save training run: %s", e)
+            traceback.print_exc()
+
+    return total_results
 
 
 # ── Run single ───────────────────────────────────────────────────────────────────
@@ -665,7 +803,7 @@ if __name__ == "__main__":
             if "error" in r:
                 print(f"  {r['year']}: ERROR — {r['error']}")
             else:
-                print(f"  {r['year']}: acc={r['accuracy']:.4f} auc={r['auc']:.4f} ll={r['log_loss']:.4f}  n={r['n_train']}+{r['n_test']}")
+                print(f"  {r['year']}: mae={r['mae']:.4f} ats={r['ats_pct']:.1f}% ml={r['ml']['pct']:.1f}%  n={r['n_train']}+{r['n_test']}")
 
     elif mode == "train":
         result = asyncio.run(train_model(label="nba_cli_training"))

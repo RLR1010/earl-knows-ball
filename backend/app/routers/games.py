@@ -423,12 +423,9 @@ async def get_nfl_prediction(
     home_abbr = home_team.scalar_one().abbreviation
     away_abbr = away_team.scalar_one().abbreviation
 
-    # Spread pick: team + margin
+    # Moneyline pick: convert team abbr to "home"/"away"
     margin = pred.predicted_margin or 0
     pick_team = pred.spread_pick or (home_abbr if margin >= 0 else away_abbr)
-    ats_pick = f"{pick_team} {margin:+.1f}"
-
-    # Moneyline pick: convert team abbr to "home"/"away"
     ml_pick = pred.ml_pick or (home_abbr if margin >= 0 else away_abbr)
     moneyline = "home" if ml_pick == home_abbr else "away"
 
@@ -456,16 +453,48 @@ async def get_nfl_prediction(
     closing_ou = float(bl.closing_ou) if bl and bl.closing_ou is not None else None
 
     # Compute predicted scores from total + margin
-    # predicted_home_score/away_score DB columns are known placeholders (actual scores)
-    # Use predicted_total + predicted_margin instead
+    # Use predicted_total + predicted_margin, with predicted_margin sign determining winner
+    # (NOT spread_pick — spread_pick is about covering the spread, not who wins outright)
     abs_margin = abs(pred.predicted_margin or 0)
     pred_total_raw = pred.predicted_total or 0
-    if pred.spread_pick and pred.spread_pick == home_abbr:
+    if pred.predicted_margin is not None and pred.predicted_margin >= 0:
         pred_home = round((pred_total_raw + abs_margin) / 2)
         pred_away = round((pred_total_raw - abs_margin) / 2)
     else:
         pred_home = round((pred_total_raw - abs_margin) / 2)
         pred_away = round((pred_total_raw + abs_margin) / 2)
+
+    # ATS pick: determined by predicted score margin vs the actual closing spread
+    pred_margin = (pred_home - pred_away) if pred_home is not None else 0
+    if closing_spread is not None and pred_home is not None:
+        # Home covers if predicted margin exceeds the spread
+        if closing_spread < 0:
+            home_covers_pred = pred_margin > abs(closing_spread)
+        else:
+            home_covers_pred = pred_margin > closing_spread
+        ats_pick_team = home_abbr if home_covers_pred else away_abbr
+        if ats_pick_team == home_abbr:
+            ats_pick = f"{ats_pick_team} {closing_spread:.1f}"
+        else:
+            ats_pick = f"{ats_pick_team} +{abs(closing_spread):.1f}"
+    else:
+        # Fallback to DB spread_pick with predicted margin
+        ats_pick_team = pred.spread_pick or (home_abbr if pred_margin >= 0 else away_abbr)
+        ats_pick = f"{ats_pick_team} {pred_margin:+.1f}"
+
+    # ATS result: computed from actual scores vs closing spread
+    actual_home = pred.actual_home_score
+    actual_away = pred.actual_away_score
+    if closing_spread is not None and actual_home is not None and actual_away is not None:
+        margin_vs_spread = actual_home - actual_away + closing_spread
+        if margin_vs_spread > 0:
+            ats_result = "Win" if ats_pick_team == home_abbr else "Loss"
+        elif margin_vs_spread == 0:
+            ats_result = "Push"
+        else:
+            ats_result = "Win" if ats_pick_team != home_abbr else "Loss"
+    else:
+        ats_result = pred.ats_result or "N/A"
 
     # Get season year
     season_year = (await db.execute(
@@ -495,9 +524,14 @@ async def get_nfl_prediction(
             "margin": (pred.actual_home_score or 0) - (pred.actual_away_score or 0) if pred.actual_home_score is not None else None,
         },
         "results": {
-            "ats": pred.ats_result or "N/A",
+            "ats": ats_result,
             "ou": pred.ou_result or "N/A",
             "ml": pred.ml_result or "N/A",
+        },
+        "expected_value": {
+            "ats": round(pred.ats_ev or 0, 1),
+            "ou": round(pred.ou_ev or 0, 1),
+            "ml": round(pred.ml_ev or 0, 1),
         },
         "confidence": {
             "overall": round(min(conf_overall, 1.0), 3),
@@ -546,8 +580,12 @@ async def get_nfl_prediction_stats(game_id: int, db: AsyncSession = Depends(get_
 
     abs_margin = abs(pred.predicted_margin or 0)
     pred_total_raw = pred.predicted_total or 0
-    pred_home = round((pred_total_raw + abs_margin) / 2)
-    pred_away = round((pred_total_raw - abs_margin) / 2)
+    if pred.predicted_margin is not None and pred.predicted_margin >= 0:
+        pred_home = round((pred_total_raw + abs_margin) / 2)
+        pred_away = round((pred_total_raw - abs_margin) / 2)
+    else:
+        pred_home = round((pred_total_raw - abs_margin) / 2)
+        pred_away = round((pred_total_raw + abs_margin) / 2)
 
     return {
         "game_id": game_id,
