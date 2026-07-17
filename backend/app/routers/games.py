@@ -5,6 +5,10 @@ from sqlalchemy.orm import joinedload
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.models import Game, Season, Team, PlayerWeeklyStats, Player, BettingLine, NFLGamePrediction
+from app.models.nba.game import NBAGame
+from app.models.nba.team import NBATeam
+from app.models.nba.season import NBASeason
+from app.models.nba.game_prediction import NBAGamePrediction
 from pydantic import BaseModel
 
 router = APIRouter()
@@ -473,10 +477,8 @@ async def get_nfl_prediction(
         else:
             home_covers_pred = pred_margin > closing_spread
         ats_pick_team = home_abbr if home_covers_pred else away_abbr
-        if ats_pick_team == home_abbr:
-            ats_pick = f"{ats_pick_team} {closing_spread:.1f}"
-        else:
-            ats_pick = f"{ats_pick_team} +{abs(closing_spread):.1f}"
+        pick_spread_value = closing_spread if ats_pick_team == home_abbr else -closing_spread
+        ats_pick = f"{ats_pick_team} {pick_spread_value:+.1f}"
     else:
         # Fallback to DB spread_pick with predicted margin
         ats_pick_team = pred.spread_pick or (home_abbr if pred_margin >= 0 else away_abbr)
@@ -505,6 +507,169 @@ async def get_nfl_prediction(
         "game_id": game_id,
         "season": season_year,
         "week": game.week or 0,
+        "home_team": home_abbr,
+        "away_team": away_abbr,
+        "date": game.date.isoformat() if game.date else None,
+        "predicted": {
+            "ats": ats_pick,
+            "ou": ou_pick,
+            "ml": ml_pick,
+            "home_score": pred_home,
+            "away_score": pred_away,
+            "total": round(pred_total_raw),
+            "margin": pred_home - pred_away,
+        },
+        "actual": {
+            "home_score": pred.actual_home_score,
+            "away_score": pred.actual_away_score,
+            "total": (pred.actual_home_score or 0) + (pred.actual_away_score or 0) if pred.actual_home_score is not None else None,
+            "margin": (pred.actual_home_score or 0) - (pred.actual_away_score or 0) if pred.actual_home_score is not None else None,
+        },
+        "results": {
+            "ats": ats_result,
+            "ou": pred.ou_result or "N/A",
+            "ml": pred.ml_result or "N/A",
+        },
+        "expected_value": {
+            "ats": round(pred.ats_ev or 0, 1),
+            "ou": round(pred.ou_ev or 0, 1),
+            "ml": round(pred.ml_ev or 0, 1),
+        },
+        "confidence": {
+            "overall": round(min(conf_overall, 1.0), 3),
+            "ats": round(min(conf_at, 1.0), 3),
+            "ou": round(min(conf_ou, 1.0), 3),
+            "ml": round(min(conf_ml, 1.0), 3),
+        },
+        "line": {
+            "spread": closing_spread,
+            "over_under": closing_ou,
+        },
+    }
+
+
+@router.get("/handicapping/nba/predictions/{game_id}")
+async def get_nba_prediction(
+    game_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """Get NBA game prediction for the Earl's Picks tab."""
+    result = await db.execute(
+        select(NBAGamePrediction)
+        .where(NBAGamePrediction.game_id == game_id)
+        .order_by(NBAGamePrediction.id.desc())
+        .limit(1)
+    )
+    pred = result.scalar_one_or_none()
+    if pred is None:
+        return {"detail": "No prediction found"}
+
+    # Get teams for context
+    game_result = await db.execute(select(NBAGame).where(NBAGame.id == game_id))
+    game = game_result.scalar_one_or_none()
+    if game is None:
+        return {"detail": "Game not found"}
+
+    home_team_result = await db.execute(select(NBATeam).where(NBATeam.id == game.home_team_id))
+    home_team = home_team_result.scalar_one_or_none()
+    away_team_result = await db.execute(select(NBATeam).where(NBATeam.id == game.away_team_id))
+    away_team = away_team_result.scalar_one_or_none()
+
+    home_abbr = home_team.abbreviation if home_team else f"Team_{game.home_team_id}"
+    away_abbr = away_team.abbreviation if away_team else f"Team_{game.away_team_id}"
+
+    # Predicted scores
+    pred_home = round(pred.predicted_home_score or 0, 1)
+    pred_away = round(pred.predicted_away_score or 0, 1)
+    pred_margin = round(pred.predicted_margin or (pred_home - pred_away), 1)
+    pred_total_raw = (pred.predicted_home_score or 0) + (pred.predicted_away_score or 0)
+
+    # Get closing line from betting_lines_consolidated
+    closing_line_result = await db.execute(
+        text("""
+            SELECT closing_spread, closing_ou
+            FROM nba.betting_lines_consolidated
+            WHERE game_id = :gid
+            LIMIT 1
+        """),
+        {"gid": game_id},
+    )
+    closing_row = closing_line_result.fetchone()
+    closing_spread = float(closing_row[0]) if closing_row and closing_row[0] is not None else None
+    closing_ou = float(closing_row[1]) if closing_row and closing_row[1] is not None else None
+
+    # ATS pick
+    ats_pick_team = None
+    if pred.spread_pick:
+        try:
+            ats_pick_team_id = int(pred.spread_pick)
+            team_result = await db.execute(select(NBATeam).where(NBATeam.id == ats_pick_team_id))
+            ats_team = team_result.scalar_one_or_none()
+            ats_pick_team = ats_team.abbreviation if ats_team else str(ats_pick_team_id)
+        except (ValueError, TypeError):
+            ats_pick_team = str(pred.spread_pick)
+
+    if ats_pick_team and closing_spread is not None:
+        if closing_spread < 0:
+            home_covers_pred = pred_margin > abs(closing_spread)
+        else:
+            home_covers_pred = pred_margin > closing_spread
+        ats_pick_team = home_abbr if home_covers_pred else away_abbr
+        pick_spread_value = closing_spread if ats_pick_team == home_abbr else -closing_spread
+        ats_pick = f"{ats_pick_team} {pick_spread_value:+.1f}"
+    else:
+        ats_pick_team = ats_pick_team or (home_abbr if pred_margin >= 0 else away_abbr)
+        ats_pick = f"{ats_pick_team} {pred_margin:+.1f}"
+
+    # OU pick
+    if pred.ou_pick and closing_ou is not None:
+        if str(pred.ou_pick).upper() in ("OVER", "O"):
+            ou_pick = "Over"
+        else:
+            ou_pick = "Under"
+    else:
+        ou_pick = "Over" if pred_total_raw > (closing_ou or 250) else "Under"
+
+    # ML pick
+    ml_pick_team = None
+    if pred.ml_pick:
+        try:
+            ml_pick_team_id = int(pred.ml_pick)
+            team_result = await db.execute(select(NBATeam).where(NBATeam.id == ml_pick_team_id))
+            ml_team = team_result.scalar_one_or_none()
+            ml_pick_team = ml_team.abbreviation if ml_team else str(ml_pick_team_id)
+        except (ValueError, TypeError):
+            ml_pick_team = str(pred.ml_pick)
+    ml_pick = ml_pick_team or (home_abbr if pred_margin >= 0 else away_abbr)
+
+    # Confidence
+    conf_at = pred.margin_conf or pred.ats_conf_cal or 0
+    conf_ou = pred.ou_conf or pred.ou_conf_cal or 0
+    conf_ml = pred.ml_conf or pred.ml_conf_cal or 0
+    conf_overall = (conf_at + conf_ou + conf_ml) / 3 if (conf_at + conf_ou + conf_ml) > 0 else 0
+
+    # ATS result
+    actual_home = pred.actual_home_score
+    actual_away = pred.actual_away_score
+    if closing_spread is not None and actual_home is not None and actual_away is not None:
+        margin_vs_spread = (actual_home - actual_away) + closing_spread
+        if margin_vs_spread > 0:
+            ats_result = "Win" if ats_pick_team == home_abbr else "Loss"
+        elif margin_vs_spread == 0:
+            ats_result = "Push"
+        else:
+            ats_result = "Win" if ats_pick_team != home_abbr else "Loss"
+    else:
+        ats_result = pred.ats_result or "N/A"
+
+    # Get season year
+    season_year = (await db.execute(
+        select(NBASeason.year).where(NBASeason.id == game.season_id)
+    )).scalar() or 0
+
+    return {
+        "game_id": game_id,
+        "season": season_year,
         "home_team": home_abbr,
         "away_team": away_abbr,
         "date": game.date.isoformat() if game.date else None,
@@ -598,6 +763,63 @@ async def get_nfl_prediction_stats(game_id: int, db: AsyncSession = Depends(get_
         "actual": {
             "home_score": pred.actual_home_score,
             "away_score": pred.actual_away_score,
+        },
+        "features": features or {},
+        "splits": splits or {},
+        "home_stats": home_stats or {},
+        "away_stats": away_stats or {},
+        "situational": situational or {},
+    }
+
+
+@router.get("/handicapping/nba/prediction-stats/{game_id}")
+async def get_nba_prediction_stats(game_id: int, db: AsyncSession = Depends(get_db)):
+    """Return detailed prediction stats for an NBA game: features, splits, situational data."""
+    result = await db.execute(
+        select(NBAGamePrediction).where(NBAGamePrediction.game_id == game_id).limit(1)
+    )
+    pred = result.scalar_one_or_none()
+    if not pred:
+        return {"detail": "No prediction found for this game"}
+
+    def _safe_json(val):
+        if val is None:
+            return None
+        if isinstance(val, str):
+            try:
+                return json.loads(val)
+            except (json.JSONDecodeError, TypeError):
+                return None
+        return val
+
+    features = _safe_json(pred.features_json)
+    splits = _safe_json(pred.splits_json)
+    home_stats = _safe_json(pred.home_stats_json)
+    away_stats = _safe_json(pred.away_stats_json)
+    situational = _safe_json(pred.situational_json)
+
+    abs_margin = abs(pred.predicted_margin or 0)
+    pred_total_raw = pred.predicted_total or 0
+    if pred.predicted_margin is not None and pred.predicted_margin >= 0:
+        pred_home = round((pred_total_raw + abs_margin) / 2, 1)
+        pred_away = round((pred_total_raw - abs_margin) / 2, 1)
+    else:
+        pred_home = round((pred_total_raw - abs_margin) / 2, 1)
+        pred_away = round((pred_total_raw + abs_margin) / 2, 1)
+
+    return {
+        "game_id": game_id,
+        "predicted": {
+            "home_score": pred_home,
+            "away_score": pred_away,
+            "total": round(pred_total_raw, 1),
+            "margin": round(pred.predicted_margin or 0, 1),
+        },
+        "actual": {
+            "home_score": pred.actual_home_score,
+            "away_score": pred.actual_away_score,
+            "total": pred.actual_total,
+            "margin": pred.actual_margin,
         },
         "features": features or {},
         "splits": splits or {},

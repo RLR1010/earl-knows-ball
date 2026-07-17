@@ -137,12 +137,9 @@ function NFLPickCard({
 
   if (!pred || !hasPrediction) {
     return (
-      <div className="border border-white/10 rounded-xl p-6 bg-gradient-to-br from-earl-900/20 to-transparent">
-        <div className="text-xs text-gray-500 uppercase tracking-wider mb-3">Earl's Picks</div>
-        <div className="text-center py-8">
-          <div className="text-gray-500 text-sm">No picks available for this game yet</div>
-          <div className="text-gray-600 text-xs mt-2">Picks are generated closer to game time</div>
-        </div>
+      <div className="text-center py-12">
+        <div className="text-gray-500 text-sm">No picks available for this game yet</div>
+        <div className="text-gray-600 text-xs mt-2">Picks are generated closer to game time</div>
       </div>
     );
   }
@@ -188,7 +185,7 @@ function NFLPickCard({
                     EV: {evValue >= 0 ? "+" : ""}{evValue.toFixed(1)}¢
                   </span>
                 )}
-                <span className="text-[10px] text-gray-400">Pick: {pickText}</span>
+                <span className="text-gray-400">Pick: {pickText}</span>
               </div>
             </>
           )
@@ -218,43 +215,21 @@ function NFLPickCard({
   };
 
   return (
-    <div className="border border-white/10 rounded-xl p-4 bg-gradient-to-br from-earl-900/20 to-transparent space-y-4">
-      <div className="text-xs text-gray-500 uppercase tracking-wider">Earl's Picks</div>
+    <div className="space-y-4">
 
       {/* Predicted score */}
       {predicted.home_score != null && (
         <div className="text-center">
-          <div className="inline-block border border-white/10 rounded-lg px-6 py-2 bg-white/5">
-            <span className="text-xs text-gray-500">Predicted</span>
-            <div className="text-lg font-bold tracking-tight">
-              <span className="text-gray-300">{awayTeam}</span>
-              <span className="text-white mx-2">{predicted.away_score}</span>
-              <span className="text-gray-600">@</span>
-              <span className="text-white mx-2">{predicted.home_score}</span>
-              <span className="text-gray-300">{homeTeam}</span>
-            </div>
-            <div className="text-xs text-gray-500 mt-1">
-              Total: {predicted.total && predicted.total !== 0 ? predicted.total : "?"} | Margin: {(predicted.home_score ?? 0) - (predicted.away_score ?? 0) >= 0 ? "+" : ""}{(predicted.home_score ?? 0) - (predicted.away_score ?? 0)}
-            </div>
+          <div className="text-sm text-gray-500 mb-1">Predicted</div>
+          <div className="text-2xl font-bold tracking-tight">
+            <span className="text-gray-300">{awayTeam}</span>
+            <span className="text-white mx-2">{predicted.away_score}</span>
+            <span className="text-gray-600">@</span>
+            <span className="text-white mx-2">{predicted.home_score}</span>
+            <span className="text-gray-300">{homeTeam}</span>
           </div>
-        </div>
-      )}
-
-      {/* Actual score for completed games */}
-      {gameIsFinal && (
-        <div className="text-center">
-          <div className="inline-block border border-green-500/20 rounded-lg px-6 py-2 bg-green-500/5">
-            <span className="text-xs text-gray-500">Actual</span>
-            <div className="text-lg font-bold tracking-tight">
-              <span className="text-gray-300">{awayTeam}</span>
-              <span className="text-white mx-2">{actual.away_score}</span>
-              <span className="text-gray-600">@</span>
-              <span className="text-white mx-2">{actual.home_score}</span>
-              <span className="text-gray-300">{homeTeam}</span>
-            </div>
-            <div className="text-xs text-gray-500 mt-1">
-              Total: {actual.total != null ? actual.total : "?"} | Margin: {actual.margin != null ? (actual.margin >= 0 ? "+" : "") + actual.margin : "?"}
-            </div>
+          <div className="text-sm text-gray-500 mt-1">
+            Total: {predicted.total && predicted.total !== 0 ? predicted.total : "?"} | Margin: {(predicted.home_score ?? 0) - (predicted.away_score ?? 0) >= 0 ? "+" : ""}{(predicted.home_score ?? 0) - (predicted.away_score ?? 0)}
           </div>
         </div>
       )}
@@ -262,8 +237,8 @@ function NFLPickCard({
       {/* MLB-style 3-card grid */}
       <div className="grid grid-cols-3 gap-3">
         {renderPickCard({
-          type: "ATS",
-          label: "ATS",
+          type: "Spread",
+          label: "Spread",
           pickText: predicted?.ats,
           evValue: ev?.ats,
           result: mapResult(results?.ats),
@@ -476,24 +451,26 @@ export function BettingLinesCard({
   homeTeam,
   awayTeam,
   spread,
+  spread_home_odds,
+  spread_away_odds,
   over_under,
+  over_odds,
+  under_odds,
   homeML,
   awayML,
 }: {
   homeTeam: string;
   awayTeam: string;
   spread: number | null | undefined;
+  spread_home_odds?: number | null;
+  spread_away_odds?: number | null;
   over_under: number | null | undefined;
+  over_odds?: number | null;
+  under_odds?: number | null;
   homeML?: number | null;
   awayML?: number | null;
 }) {
   if (spread == null && over_under == null && homeML == null && awayML == null) return null;
-
-  const spreadStr = spread != null
-    ? (spread >= 0
-        ? `${homeTeam} +${spread} | ${awayTeam} -${spread}`
-        : `${homeTeam} ${spread} | ${awayTeam} +${Math.abs(spread)}`)
-    : "-";
 
   return (
     <div className="border border-white/10 rounded-xl p-4 bg-white/5">
@@ -504,8 +481,10 @@ export function BettingLinesCard({
           <div className="text-[10px] text-gray-500 uppercase">Spread</div>
           <div className="text-sm mt-1">
             <span className="text-earl-400">{awayTeam}</span> {spread != null ? (spread < 0 ? `+${Math.abs(spread)}` : `-${spread}`) : "-"}
+            <span className="text-gray-500 text-xs ml-1">({formatOdds(spread_away_odds ?? -110)})</span>
             <span className="text-gray-600 mx-2">|</span>
             <span className="text-gray-400">{homeTeam}</span> {spread != null ? (spread < 0 ? `${spread}` : `+${spread}`) : "-"}
+            <span className="text-gray-500 text-xs ml-1">({formatOdds(spread_home_odds ?? -110)})</span>
           </div>
         </div>
 
@@ -519,14 +498,25 @@ export function BettingLinesCard({
 
         {/* Over/Under */}
         <div className="text-center p-3 rounded-lg bg-white/[0.03]">
-          <div className="text-[10px] text-gray-500 uppercase">Total</div>
+          <div className="text-[10px] text-gray-500 uppercase">Over / Under</div>
           <div className="text-sm mt-1">
-            {over_under != null ? `O/U ${over_under}` : "-"}
+            {over_under != null ? (
+              <>
+                O/U {over_under}
+                <span className="text-gray-500 text-xs ml-2 font-normal">Over {formatOdds(over_odds ?? -110)}</span>
+                <span className="text-gray-500 text-xs ml-1 font-normal">| Under {formatOdds(under_odds ?? -110)}</span>
+              </>
+            ) : "-"}
           </div>
         </div>
       </div>
     </div>
   );
+}
+
+function formatOdds(odds: number): string {
+  if (odds > 0) return `+${odds}`;
+  return `${odds}`;
 }
 
 // ── Main NFLGameTabs Component ─────────────────────────────────
@@ -582,8 +572,10 @@ export default function NFLGameTabs({ gameId, boxscore, prediction, isFinal }: N
 
   return (
     <div className="mt-6">
+      {/* Tabs Container */}
+      <div className="border border-white/10 rounded-xl bg-gradient-to-br from-blue-900/20 to-transparent mt-4">
       {/* Tab Buttons */}
-      <div className="flex border-b border-white/10 mb-6">
+      <div className="flex border-b border-white/10">
         {tabs.map(tab => (
           <button
             key={tab.key}
@@ -600,7 +592,7 @@ export default function NFLGameTabs({ gameId, boxscore, prediction, isFinal }: N
       </div>
 
       {/* Tab Content */}
-      <div className="min-h-[200px]">
+      <div className="p-4 min-h-[200px]">
         {/* Box Score */}
         {activeTab === "boxscore" && (
           <NFLBoxScoreContent
@@ -662,6 +654,7 @@ export default function NFLGameTabs({ gameId, boxscore, prediction, isFinal }: N
           <DetailedStatsTab gameId={gameId} boxscore={boxscore} />
         )}
       </div>
+      </div>
     </div>
   );
 }
@@ -672,7 +665,6 @@ function DetailedStatsTab({ gameId, boxscore }: { gameId: string; boxscore: NFLB
   const [statsData, setStatsData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
-  const [featuresOpen, setFeaturesOpen] = useState(false);
 
   const game = boxscore.game;
   const homeTeam = game.home_team;
@@ -684,290 +676,286 @@ function DetailedStatsTab({ gameId, boxscore }: { gameId: string; boxscore: NFLB
     setError(false);
     fetch(`/api/handicapping/nfl/prediction-stats/${gameId}`)
       .then(res => {
-        if (!res.ok) throw new Error('Failed to fetch');
+        if (!res.ok) throw new Error("Failed to fetch");
         return res.json();
       })
-      .then(data => {
+      .then((data) => {
         setStatsData(data);
         setLoading(false);
       })
-      .catch(err => {
+      .catch((err) => {
         console.error(err);
         setError(true);
         setLoading(false);
       });
   }, [gameId]);
 
-  const featureDisplayNames: Record<string, string> = {
-    spread: 'Spread',
-    opening_spread: 'Opening Spread',
-    opening_ou: 'Opening O/U',
-    home_ats_streak: 'Home ATS Streak',
-    away_ats_streak: 'Away ATS Streak',
-    home_ml_streak: 'Home ML Streak',
-    away_ml_streak: 'Away ML Streak',
-    home_ou_streak: 'Home O/U Streak',
-    away_ou_streak: 'Away O/U Streak',
-    home_ats_pct_r10: 'Home ATS% (L10)',
-    away_ats_pct_r10: 'Away ATS% (L10)',
-    home_ml_pct_r10: 'Home Win% (L10)',
-    away_ml_pct_r10: 'Away Win% (L10)',
-    rest_days_home: 'Home Rest Days',
-    rest_days_away: 'Away Rest Days',
-    home_points_scored_pg: 'Home PPG',
-    home_points_allowed_pg: 'Home OPPG',
-    away_points_scored_pg: 'Away PPG',
-    away_points_allowed_pg: 'Away OPPG',
-    home_off_rush_ypg: 'Home Rush YPG',
-    home_off_pass_ypg: 'Home Pass YPG',
-    home_off_total_ypg: 'Home Total YPG',
-    home_def_rush_ypg: 'Home Def Rush YPG',
-    home_def_pass_ypg: 'Home Def Pass YPG',
-    home_def_total_ypg: 'Home Def Total YPG',
-    away_off_rush_ypg: 'Away Rush YPG',
-    away_off_pass_ypg: 'Away Pass YPG',
-    away_off_total_ypg: 'Away Total YPG',
-    away_def_rush_ypg: 'Away Def Rush YPG',
-    away_def_pass_ypg: 'Away Def Pass YPG',
-    away_def_total_ypg: 'Away Def Total YPG',
-    home_dvoa_total: 'Home Total DVOA',
-    home_dvoa_offense: 'Home Off DVOA',
-    home_dvoa_defense: 'Home Def DVOA',
-    away_dvoa_total: 'Away Total DVOA',
-    away_dvoa_offense: 'Away Off DVOA',
-    away_dvoa_defense: 'Away Def DVOA',
-    home_ats_pct: 'Home ATS%',
-    away_ats_pct: 'Away ATS%',
-    home_ml_pct: 'Home Win%',
-    away_ml_pct: 'Away Win%',
-    home_ou_over_pct: 'Home O/U Over%',
-    away_ou_over_pct: 'Away O/U Over%',
-    implied_home_ml: 'Implied Home ML',
-    implied_away_ml: 'Implied Away ML',
-    implied_total: 'Implied Total',
-    implied_spread: 'Implied Spread',
-    home_implied_win_pct: 'Home Implied Win%',
-    away_implied_win_pct: 'Away Implied Win%',
-    div_game: 'Division Game',
-    dome: 'Dome Game',
-    grass: 'Grass',
-    home_rookie_qb: 'Home Rookie QB',
-    away_rookie_qb: 'Away Rookie QB',
-    short_week_home: 'Home Short Week',
-    short_week_away: 'Away Short Week',
-  };
-
-  function getFeatureCategory(key: string): string {
-    if (key.startsWith('home_') || key.startsWith('away_')) return 'team';
-    if (key.includes('spread') || key.includes('ou') || key.includes('_ats_') || key.includes('_ml_') || key.startsWith('implied')) return 'betting';
-    if (key.startsWith('opening')) return 'opening';
-    return 'other';
-  }
-
-  function getDotColor(key: string): string {
-    const cat = getFeatureCategory(key);
-    switch (cat) {
-      case 'team': return '#22c55e';
-      case 'betting': return '#3b82f6';
-      case 'opening': return '#f59e0b';
-      default: return '#6b7280';
-    }
-  }
-
-  function formatFeatureValue(value: any): string {
-    if (value == null) return '-';
-    if (typeof value === 'boolean') return value ? 'Yes' : 'No';
-    if (typeof value === 'number') {
-      if (Number.isInteger(value)) return value.toString();
-      return value.toFixed(2);
-    }
-    return String(value);
-  }
-
   if (loading) {
     return (
-      <div className="text-center py-8">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-emerald-500 mx-auto"></div>
-        <div className="text-gray-500 text-sm mt-2">Loading prediction data...</div>
+      <div className="flex items-center justify-center py-12">
+        <div className="text-gray-500 text-sm">Loading prediction data...</div>
       </div>
     );
   }
 
   if (error || !statsData) {
     return (
-      <div className="text-center py-8">
-        <div className="text-gray-500">Prediction stats not available yet.</div>
-        <div className="text-gray-600 text-xs mt-1">Data loads closer to game time.</div>
-        {boxscore?.home_stats && boxscore?.away_stats && (
-          <div className="mt-4">
-            <TeamStatsTable
-              homeStats={boxscore.home_stats}
-              awayStats={boxscore.away_stats}
-              homeTeam={homeTeam}
-              awayTeam={awayTeam}
-            />
-          </div>
-        )}
+      <div className="flex items-center justify-center py-12">
+        <div className="text-gray-500 text-sm">No prediction data available for this game.</div>
       </div>
     );
   }
 
-  const ps = statsData;
-  const isFinal = game.home_score != null && game.away_score != null;
-  const features = ps.features || ps.all_features || ps.model_features || {};
-  const splits = ps.splits || ps.betting_trends || {};
-  const situational = ps.situational || ps.situational_data || {};
+  // ── Parse data sources ──────────────────────────────────────────────────
+  const features = statsData.features || {};
+  const homeStats = statsData.home_stats || {};
+  const awayStats = statsData.away_stats || {};
+  const situational = statsData.situational || {};
+  const splits = statsData.splits || {};
+  const predicted = statsData.predicted || {};
+  const actual = statsData.actual || {};
 
-  return (
-    <div className="space-y-6">
-      {/* Prediction Summary */}
-      {ps.predicted && (ps.predicted.home_score != null || ps.predicted.away_score != null) && (
-        <div>
-          <h3 className="text-xs text-gray-500 uppercase tracking-wider mb-2">Prediction Summary</h3>
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-            <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-xl p-3 text-center">
-              <div className="text-gray-500 text-xs mb-1">{awayTeam}</div>
-              <div className="text-lg font-bold text-emerald-400">{ps.predicted.away_score != null ? Number(ps.predicted.away_score).toFixed(1) : '-'}</div>
-            </div>
-            <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-xl p-3 text-center">
-              <div className="text-gray-500 text-xs mb-1">{homeTeam}</div>
-              <div className="text-lg font-bold text-emerald-400">{ps.predicted.home_score != null ? Number(ps.predicted.home_score).toFixed(1) : '-'}</div>
-            </div>
-            <div className="bg-blue-500/10 border border-blue-500/30 rounded-xl p-3 text-center">
-              <div className="text-gray-500 text-xs mb-1">Total</div>
-              <div className="text-lg font-bold text-blue-400">{ps.predicted.total != null ? Number(ps.predicted.total).toFixed(1) : '-'}</div>
-            </div>
-            <div className="bg-purple-500/10 border border-purple-500/30 rounded-xl p-3 text-center">
-              <div className="text-gray-500 text-xs mb-1">Margin</div>
-              <div className="text-lg font-bold text-purple-400">{ps.predicted.margin != null ? (ps.predicted.margin > 0 ? '+' : '') + Number(ps.predicted.margin).toFixed(1) : '-'}</div>
-            </div>
+  // ── Rich value extractor ─────────────────────────────────────────────────
+  interface FeatureInfo { displayValue: string; displayName: string; description?: string; }
+  function getInfo(val: any, fallbackKey?: string): FeatureInfo {
+    if (val !== null && typeof val === "object" && "value" in val) {
+      const raw = val.value;
+      const dv = raw !== null && raw !== undefined
+        ? (typeof raw === "number"
+            ? (Number.isInteger(raw) ? raw.toLocaleString() : raw.toFixed(4))
+            : String(raw))
+        : "—";
+      const dn = val.display_name || fallbackKey || "";
+      return { displayValue: dv, displayName: dn, description: val.description };
+    }
+    const raw = val;
+    const dv = raw !== null && raw !== undefined
+      ? (typeof raw === "number"
+          ? (Number.isInteger(raw) ? raw.toLocaleString() : raw.toFixed(2))
+          : String(raw))
+      : "—";
+    return { displayValue: dv, displayName: fallbackKey || "", description: undefined };
+  }
+
+  function keyToLabel(k: string): string {
+    return k
+      .replace(/_/g, " ")
+      .replace(/\b\w/g, (c) => c.toUpperCase());
+  }
+
+  // ── StatRow: label + value + CSS-only tooltip ───────────────────────────
+  const StatRow = ({
+    label,
+    value,
+    description,
+    valueClass,
+  }: {
+    label: string;
+    value: string;
+    description?: string;
+    valueClass?: string;
+  }) => (
+    <div className="group relative flex items-center justify-between px-2 py-1 rounded hover:bg-white/[0.03] transition-colors">
+      <span
+        className={`text-gray-400 truncate text-[11px] ${
+          description ? "cursor-help border-b border-dotted border-gray-600/40 hover:border-gray-400" : ""
+        }`}
+      >
+        {label}
+      </span>
+      <span className={`text-white text-[11px] font-medium tabular-nums ${valueClass || ""}`}>
+        {value}
+      </span>
+      {description && (
+        <div className="absolute z-50 bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block">
+          <div className="bg-gray-900 border border-gray-700 rounded-lg shadow-xl px-3 py-2 w-64">
+            <div className="text-gray-100 text-[11px] font-semibold mb-1">{label}</div>
+            <p className="text-gray-400 text-[10px] leading-relaxed">{description}</p>
+          </div>
+          <div className="flex justify-center -mt-px">
+            <div className="w-0 h-0 border-l-[5px] border-r-[5px] border-t-[5px] border-transparent border-t-gray-700"></div>
           </div>
         </div>
       )}
+    </div>
+  );
 
-      {/* Home/Away Team Stats */}
-      {boxscore?.home_stats && boxscore?.away_stats && (
-        <div>
-          <h3 className="text-xs text-gray-500 uppercase tracking-wider mb-2">Team Stats</h3>
-          <TeamStatsTable
-            homeStats={boxscore.home_stats}
-            awayStats={boxscore.away_stats}
-            homeTeam={homeTeam}
-            awayTeam={awayTeam}
-          />
-        </div>
-      )}
+  // ── SectionHeader ───────────────────────────────────────────────────────
+  const SectionHeader = ({ title }: { title: string }) => (
+    <div className="flex items-center gap-2 mb-3">
+      <span className="text-gray-500 text-[10px] uppercase tracking-[0.12em] font-semibold">{title}</span>
+      <div className="flex-1 h-px bg-gradient-to-r from-gray-700/60 to-transparent" />
+    </div>
+  );
 
-      {/* Splits / Betting Trends */}
-      {Object.keys(splits).length > 0 && (
-        <div>
-          <h3 className="text-xs text-gray-500 uppercase tracking-wider mb-3">Betting Splits & Trends</h3>
-          <div className="overflow-x-auto">
-            <table className="w-full text-xs">
-              <thead>
-                <tr className="bg-white/[0.03] text-gray-500 uppercase tracking-wider">
-                  <th className="text-left py-2 px-3 w-2/5"></th>
-                  <th className="text-center py-2 px-3 w-3/10">{awayTeam}</th>
-                  <th className="text-center py-2 px-3 w-3/10">{homeTeam}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {Object.entries(splits).map(([key, val], idx) => {
-                  const displayName = featureDisplayNames[key] || key.split('_').map((w: string) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
-                  if (typeof val !== 'object' || val === null) {
-                    return (
-                      <tr key={idx} className="border-t border-white/5">
-                        <td className="py-2 px-3 text-gray-400">{displayName}</td>
-                        <td className="py-2 px-3 text-center text-white" colSpan={2}>{formatFeatureValue(val)}</td>
-                      </tr>
-                    );
-                  }
-                  const obj = val as Record<string, any>;
-                  return (
-                    <tr key={idx} className="border-t border-white/5">
-                      <td className="py-2 px-3 text-gray-400">{displayName}</td>
-                      <td className="py-2 px-3 text-center text-white">{obj.away != null || obj.away_value != null ? formatFeatureValue(obj.away ?? obj.away_value) : '-'}</td>
-                      <td className="py-2 px-3 text-center text-white">{obj.home != null || obj.home_value != null ? formatFeatureValue(obj.home ?? obj.home_value) : '-'}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
+  // ── Render stat section (handles plain + rich dict values) ──────────────
+  function renderStatSection(data: Record<string, any>, gridCols: string) {
+    const entries = Object.entries(data);
+    if (entries.length === 0) return null;
+    return (
+      <div className={`grid ${gridCols} gap-x-3 gap-y-0.5`}>
+        {entries.map(([key, val]) => {
+          const info = getInfo(val, keyToLabel(key));
+          return (
+            <StatRow
+              key={key}
+              label={info.displayName || keyToLabel(key)}
+              value={info.displayValue}
+              description={info.description}
+            />
+          );
+        })}
+      </div>
+    );
+  }
 
-      {/* All Model Features */}
-      {Object.keys(features).length > 0 && (
-        <div>
-          <button
-            onClick={() => setFeaturesOpen(!featuresOpen)}
-            className="flex items-center gap-2 text-xs text-gray-400 hover:text-white transition-colors"
-          >
-            <svg className={`w-3 h-3 transition-transform ${featuresOpen ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-            </svg>
-            All Model Features ({Object.keys(features).length})
-          </button>
-          {featuresOpen && (
-            <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 max-h-96 overflow-y-auto">
-              {Object.entries(features).map(([key, val], idx) => {
-                const displayName = featureDisplayNames[key] || key.split('_').map((w: string) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
-                return (
-                  <div key={idx} className="flex items-center gap-2 bg-white/[0.03] rounded-lg px-3 py-2">
-                    <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: getDotColor(key) }} />
-                    <span className="text-gray-300 text-xs flex-1">{displayName}</span>
-                    <span className="text-white text-xs font-medium">{formatFeatureValue(val)}</span>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Situational Data */}
-      {Object.keys(situational).length > 0 && (
-        <div>
-          <h3 className="text-xs text-gray-500 uppercase tracking-wider mb-3">Situational</h3>
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-            {Object.entries(situational).map(([key, val], idx) => {
-              const displayName = key.split('_').map((w: string) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+  // ── Features section ────────────────────────────────────────────────────
+  function renderFeatures() {
+    const entries = Object.entries(features);
+    if (entries.length === 0) return null;
+    return (
+      <div>
+        <SectionHeader title="All Model Features" />
+        <div className="max-h-96 overflow-y-auto rounded-lg border border-gray-700/30 bg-black/20 p-2">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-x-3 gap-y-0.5">
+            {entries.map(([key, val]) => {
+              const info = getInfo(val, keyToLabel(key));
               return (
-                <div key={idx} className="bg-white/[0.03] rounded-lg px-3 py-2">
-                  <div className="text-[10px] text-gray-500">{displayName}</div>
-                  <div className="text-white text-sm font-medium mt-0.5">{formatFeatureValue(val)}</div>
-                </div>
+                <StatRow
+                  key={key}
+                  label={info.displayName || keyToLabel(key)}
+                  value={info.displayValue}
+                  description={info.description}
+                />
               );
             })}
           </div>
         </div>
-      )}
+      </div>
+    );
+  }
 
-      {/* Actual Final Score */}
-      {isFinal && (
-        <div>
-          <h3 className="text-xs text-gray-500 uppercase tracking-wider mb-2">Final Score</h3>
-          <div className="grid grid-cols-4 gap-3">
-            <div className="bg-white/5 rounded-lg p-3 text-center">
-              <div className="text-gray-500 text-xs mb-1">{awayTeam}</div>
-              <div className="text-lg font-bold text-white">{game.away_score}</div>
-            </div>
-            <div className="bg-white/5 rounded-lg p-3 text-center">
-              <div className="text-gray-500 text-xs mb-1">{homeTeam}</div>
-              <div className="text-lg font-bold text-white">{game.home_score}</div>
-            </div>
-            <div className="bg-white/5 rounded-lg p-3 text-center">
-              <div className="text-gray-500 text-xs mb-1">Total</div>
-              <div className="text-lg font-bold text-white">{Number(game.home_score!) + Number(game.away_score!)}</div>
-            </div>
-            <div className="bg-white/5 rounded-lg p-3 text-center">
-              <div className="text-gray-500 text-xs mb-1">Margin</div>
-              <div className="text-lg font-bold text-white">{Number(game.home_score!) - Number(game.away_score!)}</div>
-            </div>
+  // ── Splits section ──────────────────────────────────────────────────────
+  function renderSplits() {
+    const entries = Object.entries(splits);
+    if (entries.length === 0) return null;
+    return (
+      <div>
+        <SectionHeader title="Splits / Betting Lines" />
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-x-3 gap-y-0.5">
+          {entries.map(([key, val]) => {
+            const info = getInfo(val, keyToLabel(key));
+            return (
+              <StatRow
+                key={key}
+                label={info.displayName || keyToLabel(key)}
+                value={info.displayValue}
+                description={info.description}
+              />
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
+  // ── PredCard for predictions summary ────────────────────────────────────
+  function PredCard({ label, value, iconClass, tooltip }: {
+    label: string; value: string; iconClass: string; tooltip: string;
+  }) {
+    return (
+      <div className={`group/pred relative rounded-lg bg-gradient-to-br ${iconClass} p-3 text-center`}>
+        <div className="text-gray-500 text-[10px] uppercase tracking-wide mb-1">{label}</div>
+        <div className="text-lg font-bold text-white">{value}</div>
+        <div className="absolute z-50 bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover/pred:block">
+          <div className="bg-gray-900 border border-gray-700 rounded-lg shadow-xl px-3 py-2 w-52 text-center">
+            <div className="text-gray-100 text-[11px] font-semibold mb-1">{label}</div>
+            <p className="text-gray-400 text-[10px] leading-relaxed">{tooltip}</p>
+          </div>
+          <div className="flex justify-center -mt-px">
+            <div className="w-0 h-0 border-l-[5px] border-r-[5px] border-t-[5px] border-transparent border-t-gray-700" />
           </div>
         </div>
+      </div>
+    );
+  }
+
+  // ── Build section entry counts ──────────────────────────────────────────
+  const homeEntries = Object.entries(homeStats);
+  const awayEntries = Object.entries(awayStats);
+  const sitEntries = Object.entries(situational);
+
+  // ── Render ──────────────────────────────────────────────────────────────
+  return (
+    <div className="space-y-6 text-xs">
+      {/* Predictions Summary */}
+      <div>
+        <SectionHeader title="Predictions Summary" />
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <PredCard
+            label="Home Score Estimate"
+            value={predicted.home_score?.toFixed(1) ?? "—"}
+            iconClass="from-earl-500/10 to-transparent border border-earl-500/20"
+            tooltip={actual.home_score != null
+              ? `Model estimate for the home team's final score — Actual: ${actual.home_score}`
+              : "Model estimate for the home team's final score"}
+          />
+          <PredCard
+            label="Away Score Estimate"
+            value={predicted.away_score?.toFixed(1) ?? "—"}
+            iconClass="from-cyan-500/10 to-transparent border border-cyan-500/20"
+            tooltip={actual.away_score != null
+              ? `Model estimate for the away team's final score — Actual: ${actual.away_score}`
+              : "Model estimate for the away team's final score"}
+          />
+          <PredCard
+            label="Total Estimate"
+            value={predicted.total?.toFixed(1) ?? "—"}
+            iconClass="from-purple-500/10 to-transparent border border-purple-500/20"
+            tooltip={actual.total != null
+              ? `Model estimate for total combined score — Actual: ${actual.total}`
+              : "Model estimate for total combined score"}
+          />
+          <PredCard
+            label="Margin Estimate"
+            value={predicted.margin?.toFixed(1) ?? "—"}
+            iconClass="from-amber-500/10 to-transparent border border-amber-500/20"
+            tooltip={actual.margin != null
+              ? `Model estimate for point differential (home - away) — Actual: ${actual.margin > 0 ? "+" : ""}${actual.margin}`
+              : "Model estimate for point differential (home - away)"}
+          />
+        </div>
+      </div>
+
+      {/* Home Team Stats */}
+      {homeEntries.length > 0 && (
+        <div>
+          <SectionHeader title="Home Team Stats" />
+          {renderStatSection(homeStats, "grid-cols-2 md:grid-cols-3")}
+        </div>
       )}
+
+      {/* Away Team Stats */}
+      {awayEntries.length > 0 && (
+        <div>
+          <SectionHeader title="Away Team Stats" />
+          {renderStatSection(awayStats, "grid-cols-2 md:grid-cols-3")}
+        </div>
+      )}
+
+      {/* Game Context / Situational */}
+      {sitEntries.length > 0 && (
+        <div>
+          <SectionHeader title="Game Context / Situational" />
+          {renderStatSection(situational, "grid-cols-2 md:grid-cols-3")}
+        </div>
+      )}
+
+      {/* Splits / Betting Lines */}
+      {renderSplits()}
+
+      {/* All Model Features */}
+      {renderFeatures()}
     </div>
   );
 }

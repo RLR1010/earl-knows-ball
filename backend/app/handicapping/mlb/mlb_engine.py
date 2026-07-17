@@ -35,34 +35,103 @@ from app.handicapping.calibrate_confidence import calibrate
 from app.models.mlb.consolidated import MLBBettingLineConsolidated
 
 # ── Cached pick-card feature names ──
-_PICK_CARD_FEATURES: Optional[set] = None
+_PICK_CARD_FEATURE_METADATA: Optional[Dict[str, Dict[str, str]]] = None
 
-async def _load_pick_card_feature_names(db) -> set:
-    """Lazy-load the set of feature names where pick_card = true."""
-    global _PICK_CARD_FEATURES
-    if _PICK_CARD_FEATURES is not None:
-        return _PICK_CARD_FEATURES
-    result = await db.execute(text("SELECT name FROM mlb.features WHERE pick_card = true"))
-    _PICK_CARD_FEATURES = set(r[0] for r in result.fetchall())
-    return _PICK_CARD_FEATURES
+async def _load_pick_card_feature_metadata(db) -> Dict[str, Dict[str, str]]:
+    """Lazy-load pick_card=true feature metadata: {name: {display_name, description}}."""
+    global _PICK_CARD_FEATURE_METADATA
+    if _PICK_CARD_FEATURE_METADATA is not None:
+        return _PICK_CARD_FEATURE_METADATA
+    result = await db.execute(
+        text(
+            "SELECT name, display_name, description "
+            "FROM mlb.features WHERE pick_card = true"
+        )
+    )
+    _PICK_CARD_FEATURE_METADATA = {
+        r[0]: {
+            "display_name": r[1] or r[0],
+            "description": r[2] or "",
+        }
+        for r in result.fetchall()
+    }
+    return _PICK_CARD_FEATURE_METADATA
 
 
-import math
-
-def _extract_pick_card_features(row, feature_names: set) -> str:
-    """Return JSON string of pick_card feature values from a DataFrame row.
-    Ensures NaN/Inf floats are converted to None to keep stored JSON valid.
+def _extract_pick_card_features(row, feature_metadata: Dict[str, Dict[str, str]]) -> str:
+    """Return JSON string of pick_card feature values enriched with display_name
+    and description from mlb.features.
     """
     def _sanitize(v):
         if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
             return None
         return v
-    features = {
-        name: _sanitize(row.get(name))
-        for name in feature_names
-        if name in row.index or name in row
-    }
+
+    features = {}
+    for name, meta in feature_metadata.items():
+        if name in row.index or name in row:
+            value = _sanitize(row.get(name))
+            if value is not None:
+                features[name] = {
+                    "value": value,
+                    "display_name": meta["display_name"],
+                    "description": meta["description"],
+                }
     return json.dumps(features, default=str)
+
+
+# ── Builder key → feature name mappings for enrichment ──
+_HOME_STATS_FEATURE_MAP = {
+    "runs_scored_avg": "h_rf_avg",
+    "runs_allowed_avg": "h_ra_avg",
+    "park_factor": "park_factor",
+}
+
+_AWAY_STATS_FEATURE_MAP = {
+    "runs_scored_avg": "a_rf_avg",
+    "runs_allowed_avg": "a_ra_avg",
+    "park_factor": "park_factor",
+}
+
+_SITUATIONAL_FEATURE_MAP = {
+    "rest_home": "rest_h",
+    "rest_away": "rest_a",
+    "rest_diff": "rest_diff",
+    "travel_miles": "travel_miles",
+    "tz_diff": "tz_diff",
+    "is_division": "is_div",
+    "rest_home_hours": "rest_h_hours",
+    "rest_away_hours": "rest_a_hours",
+    "rest_diff_hours": "rest_diff_hours",
+    "wind_calculated": "wind_calculated",
+    "temperature": "temperature",
+    "wind_speed": "wind_speed",
+    "wind_direction": "wind_direction",
+    "weather_condition": "weather_condition",
+    "surface": "surface",
+    "venue": "venue",
+}
+
+
+def _enrich_dict_with_metadata(
+    d: dict, key_map: dict, metadata: Dict[str, Dict[str, str]] | None,
+) -> dict:
+    """Replace flat values with ``{value, display_name, description}`` for every
+    key in *d* that appears in *key_map* and has an entry in *metadata*."""
+    if not metadata:
+        return d
+    result = dict(d)
+    for k, feat_name in key_map.items():
+        if k in result and feat_name in metadata:
+            meta = metadata[feat_name]
+            result[k] = {
+                "value": d[k],
+                "display_name": meta["display_name"],
+                "description": meta["description"],
+            }
+    return result
+
+
 from app.models.mlb.game_prediction import MLBGamePrediction
 
 logger = logging.getLogger("earl.mlb_handicapping")
@@ -292,7 +361,7 @@ async def batch_predict_upcoming_games(
             pred_over = pred_total > (total or 8.5) if total else True
             pred_home_wins = pred_margin > 0
 
-            pic_feats = await _load_pick_card_feature_names(db)  # lazy-cached
+            pic_feats = await _load_pick_card_feature_metadata(db)  # lazy-cached
             await _save_api_prediction(
                 db=db,
                 row=row_s,
@@ -304,7 +373,7 @@ async def batch_predict_upcoming_games(
                 pred_home_covers=pred_home_covers,
                 pred_over=pred_over,
                 pred_home_wins=pred_home_wins,
-                pick_card_features=pic_feats,
+                pick_card_features_meta=pic_feats,
             )
 
             pick_results.append(
@@ -335,7 +404,7 @@ async def _save_api_prediction(
     pred_home_covers: bool,
     pred_over: bool,
     pred_home_wins: bool,
-    pick_card_features: set | None = None,
+    pick_card_features_meta: Dict[str, Dict[str, str]] | None = None,
 ) -> int:
     """Save a live (pre-game) prediction to ``mlb.game_predictions``.
 
@@ -408,6 +477,8 @@ async def _save_api_prediction(
     ))
     await db.flush()
 
+    _row_dict = dict(row)
+
     gp = MLBGamePrediction(
         game_id=int(gid),
         predicted_home_runs=predicted_home_score,
@@ -429,11 +500,26 @@ async def _save_api_prediction(
         ats_odds=int(round(rl_odds)),
         ou_odds=int(round(ou_odds)),
         ml_odds=int(round(ml_odds)),
-        home_stats_json=json.dumps(_build_mlb_home_stats(dict(row))),
-        away_stats_json=json.dumps(_build_mlb_away_stats(dict(row))),
-        situational_json=json.dumps(_build_mlb_situational(dict(row))),
-        splits_json=json.dumps(_build_mlb_splits(dict(row))),
-        features_json=_extract_pick_card_features(row, pick_card_features) if pick_card_features else None,
+        home_stats_json=json.dumps(
+            _enrich_dict_with_metadata(
+                _build_mlb_home_stats(_row_dict),
+                _HOME_STATS_FEATURE_MAP, pick_card_features_meta,
+            )
+        ),
+        away_stats_json=json.dumps(
+            _enrich_dict_with_metadata(
+                _build_mlb_away_stats(_row_dict),
+                _AWAY_STATS_FEATURE_MAP, pick_card_features_meta,
+            )
+        ),
+        situational_json=json.dumps(
+            _enrich_dict_with_metadata(
+                _build_mlb_situational(_row_dict),
+                _SITUATIONAL_FEATURE_MAP, pick_card_features_meta,
+            )
+        ),
+        splits_json=json.dumps(_build_mlb_splits(_row_dict)),
+        features_json=_extract_pick_card_features(row, pick_card_features_meta) if pick_card_features_meta else None,
         source="api",
         created_at=now,
     )
@@ -559,13 +645,13 @@ async def backtest_season(
             ml_l += 1
 
         # ── Save predictions to game_predictions ──
-        pick_card_feats = await _load_pick_card_feature_names(db)
+        pick_card_feats = await _load_pick_card_feature_metadata(db)
         saved += await _save_backtest_prediction(
             db, row, year,
             home_score, away_score, spread, total,
             pred_margin, pred_total, pred_home_covers, pred_over, pred_home_wins,
             home_covers, actual_over, home_wins,
-            pick_card_features=pick_card_feats,
+            pick_card_features_meta=pick_card_feats,
         )
 
     await db.commit()
@@ -719,7 +805,7 @@ async def _save_backtest_prediction(
     pred_margin: float, pred_total: float,
     pred_home_covers: bool, pred_over: bool, pred_home_wins: bool,
     home_covers: bool, actual_over: bool, home_wins: bool,
-    pick_card_features: set | None = None,
+    pick_card_features_meta: Dict[str, Dict[str, str]] | None = None,
 ) -> int:
     """Save a single game\'s prediction to ``mlb.game_predictions``.
 
@@ -813,6 +899,8 @@ async def _save_backtest_prediction(
         rl_pick_str = f"{away_team} {away_run_line_val:+g}"
 
     # Remove old prediction for this game+source pair, then insert fresh
+    _row_dict = dict(row)
+
     gp = MLBGamePrediction(
         game_id=int(gid),
         predicted_home_runs=predicted_home_score,
@@ -844,11 +932,26 @@ async def _save_backtest_prediction(
         ats_ev=ats_ev,
         ou_ev=ou_ev,
         ml_ev=ml_ev,
-        home_stats_json=json.dumps(_build_mlb_home_stats(dict(row))),
-        away_stats_json=json.dumps(_build_mlb_away_stats(dict(row))),
-        situational_json=json.dumps(_build_mlb_situational(dict(row))),
-        splits_json=json.dumps(_build_mlb_splits(dict(row))),
-        features_json=_extract_pick_card_features(row, pick_card_features) if pick_card_features else None,
+        home_stats_json=json.dumps(
+            _enrich_dict_with_metadata(
+                _build_mlb_home_stats(_row_dict),
+                _HOME_STATS_FEATURE_MAP, pick_card_features_meta,
+            )
+        ),
+        away_stats_json=json.dumps(
+            _enrich_dict_with_metadata(
+                _build_mlb_away_stats(_row_dict),
+                _AWAY_STATS_FEATURE_MAP, pick_card_features_meta,
+            )
+        ),
+        situational_json=json.dumps(
+            _enrich_dict_with_metadata(
+                _build_mlb_situational(_row_dict),
+                _SITUATIONAL_FEATURE_MAP, pick_card_features_meta,
+            )
+        ),
+        splits_json=json.dumps(_build_mlb_splits(_row_dict)),
+        features_json=_extract_pick_card_features(row, pick_card_features_meta) if pick_card_features_meta else None,
         source="backtest",
         created_at=now,
     )

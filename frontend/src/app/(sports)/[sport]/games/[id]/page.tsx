@@ -261,9 +261,13 @@ export default function GameDetailPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // NBA data
+  const [nbaPrediction, setNbaPrediction] = useState<GamePrediction | null>(null);
+  const [nbaGameLine, setNbaGameLine] = useState<{ spread: number | null; over_under: number | null } | null>(null);
+
   // NFL data fetching
   useEffect(() => {
-    if (!gameId || !isNfl) { if (!isNfl) setLoading(false); return; }
+    if (!gameId || !isNfl) { if (!isNfl) return; }
     const gid = parseInt(gameId);
     Promise.all([
       fetch(`/api/games/${gid}/box-score`).then(r => r.json()).catch(() => null),
@@ -281,13 +285,46 @@ export default function GameDetailPage() {
     }).catch(() => setLoading(false));
   }, [gameId, isNfl]);
 
+  // NBA data fetching
+  useEffect(() => {
+    if (!gameId || sport !== "nba") return;
+    const gid = parseInt(gameId);
+    Promise.all([
+      fetch(`/api/handicapping/nba/predictions/${gid}`).then(r => r.json()).catch(() => null),
+      fetch(`/api/nba/games/${gid}`).then(r => r.json()).catch(() => null),
+    ]).then(([pred, game]) => {
+      if (pred?.game_id) setNbaPrediction(pred as GamePrediction);
+      if (game?.spread != null) setNbaGameLine({ spread: game.spread, over_under: game.over_under });
+      else if (pred?.line?.spread != null) setNbaGameLine(pred.line);
+    });
+  }, [gameId, sport]);
+
   // MLB: show classic boxscore page
   if (sport === "mlb") {
-    return <MLBClassicPage gameId={gameId} />;
+    return <MLBClassicPage gameId={gameId} backHref={backHref} />;
   }
 
   if (sport === "nba") {
-    return <NBAGameTabs gameId={parseInt(gameId || "0")} />;
+    const nbaPredForTabs = nbaPrediction || (nbaGameLine ? ({
+      game_id: parseInt(gameId || "0"),
+      season: 0, week: 0,
+      home_team: "",
+      away_team: "",
+      date: null,
+      predicted: { home_score: 0, away_score: 0, total: 0, margin: 0 },
+      actual: { home_score: 0, away_score: 0, total: 0, margin: 0 },
+      results: { ats: "N/A", ou: "N/A", ml: "N/A" },
+      confidence: { overall: null, ats: null, ou: null, ml: null },
+      line: nbaGameLine,
+    }) as unknown as GamePrediction : null);
+    return (
+      <div>
+        <NBAGameTabs gameId={parseInt(gameId || "0")} prediction={nbaPredForTabs} />
+        <div className="text-center pt-4">
+          <Link href={backHref} className="text-sm text-earl-400 hover:text-earl-300 transition">← Back to Schedule</Link>
+        </div>
+      </div>
+    );
   }
 
   if (loading) return <div className="text-center py-12 text-gray-500">Loading...</div>;
@@ -390,7 +427,7 @@ interface MLBBoxScoreResponse {
   lineups: { home: {order:number;name:string;position:string;stats?:{avg?:string;era?:string;ops?:string}}[]; away: {order:number;name:string;position:string;stats?:{avg?:string;era?:string;ops?:string}}[] } | null;
 }
 
-function MLBClassicPage({ gameId }: { gameId: string | undefined }) {
+function MLBClassicPage({ gameId, backHref }: { gameId: string | undefined; backHref: string }) {
   const [data, setData] = useState<MLBBoxScoreResponse | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -444,7 +481,7 @@ function MLBClassicPage({ gameId }: { gameId: string | undefined }) {
   function formatOdds(odds: number | null) { if (!odds) return "-"; return odds > 0 ? `+${odds}` : `${odds}`; }
 
   return (
-    <div className="max-w-6xl mx-auto space-y-6">
+    <div className="max-w-4xl mx-auto space-y-6">
       {/* Scoreboard */}
       <div className="border border-white/10 rounded-xl p-6 bg-gradient-to-r from-white/5 to-white/0 text-center">
         <span className={`text-sm font-bold ${badge.cls}`}>{badge.label}</span>
@@ -484,10 +521,6 @@ function MLBClassicPage({ gameId }: { gameId: string | undefined }) {
           <div className="text-xs text-gray-500 uppercase tracking-wider mb-3">Betting Lines</div>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div className="text-center p-3 rounded-lg bg-white/[0.03]">
-              <div className="text-[10px] text-gray-500 uppercase">Moneyline</div>
-              <div className="text-sm mt-1"><span className="text-earl-400">{game.away_team}</span> {formatOdds(betting_lines[0]?.away_moneyline)}<span className="text-gray-600 mx-2">|</span><span className="text-gray-400">{game.home_team}</span> {formatOdds(betting_lines[0]?.home_moneyline)}</div>
-            </div>
-            <div className="text-center p-3 rounded-lg bg-white/[0.03]">
               <div className="text-[10px] text-gray-500 uppercase">Run Line</div>
               <div className="text-sm mt-1">
                 {betting_lines[0]?.spread != null ? (
@@ -502,13 +535,17 @@ function MLBClassicPage({ gameId }: { gameId: string | undefined }) {
               </div>
             </div>
             <div className="text-center p-3 rounded-lg bg-white/[0.03]">
+              <div className="text-[10px] text-gray-500 uppercase">Moneyline</div>
+              <div className="text-sm mt-1"><span className="text-earl-400">{game.away_team}</span> {formatOdds(betting_lines[0]?.away_moneyline)}<span className="text-gray-600 mx-2">|</span><span className="text-gray-400">{game.home_team}</span> {formatOdds(betting_lines[0]?.home_moneyline)}</div>
+            </div>
+            <div className="text-center p-3 rounded-lg bg-white/[0.03]">
               <div className="text-[10px] text-gray-500 uppercase">Over/Under</div>
               <div className="text-sm mt-1 font-semibold">
                 {betting_lines[0]?.over_under != null ? (
                   <>
                     O/U {betting_lines[0].over_under}
                     <span className="text-gray-500 text-xs ml-2 font-normal">Over {formatOdds(betting_lines[0]?.over_odds ?? -110)}</span>
-                    <span className="text-gray-500 text-xs ml-2 font-normal">Under {formatOdds(betting_lines[0]?.under_odds ?? -110)}</span>
+                    <span className="text-gray-500 text-xs ml-1 font-normal">| Under {formatOdds(betting_lines[0]?.under_odds ?? -110)}</span>
                   </>
                 ) : "-"}
               </div>
@@ -562,7 +599,7 @@ function MLBClassicPage({ gameId }: { gameId: string | undefined }) {
           linescore={linescore}
         />
 
-      <div className="text-center"><Link href="/mlb/schedule" className="text-sm text-earl-400 hover:text-earl-300 transition">← Back to Schedule</Link></div>
+      <div className="text-center"><Link href={backHref} className="text-sm text-earl-400 hover:text-earl-300 transition">← Back to Schedule</Link></div>
     </div>
   );
 }

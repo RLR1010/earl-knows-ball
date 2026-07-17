@@ -480,221 +480,264 @@ export default function MLBGameTabs({ gameId, pickCard, game, formatOdds, boxsco
     }
 
     const ps = predictionStats;
-    // Parse features_json if it's a string (safety net for unparsed API responses)
-    const featuresJson = typeof ps.features_json === "string" ? JSON.parse(ps.features_json) : (ps.features_json || {});
 
-    const displayNames: Record<string, string> = {
-      home_era: "Home ERA", away_era: "Away ERA",
-      home_era_r5: "Home ERA (L5)", away_era_r5: "Away ERA (L5)",
-      home_era_r10: "Home ERA (L10)", away_era_r10: "Away ERA (L10)",
-      home_runs_scored_avg: "Home Runs/G", away_runs_scored_avg: "Away Runs/G",
-      home_runs_scored_avg_r5: "Home Runs/G (L5)", away_runs_scored_avg_r5: "Away Runs/G (L5)",
-      home_runs_scored_avg_r10: "Home Runs/G (L10)", away_runs_scored_avg_r10: "Away Runs/G (L10)",
-      home_runs_allowed_avg: "Home Runs Allowed/G", away_runs_allowed_avg: "Away Runs Allowed/G",
-      home_batting_avg: "Home AVG", away_batting_avg: "Away AVG",
-      home_ops: "Home OPS", away_ops: "Away OPS",
-      home_pitcher_era: "SP ERA", away_pitcher_era: "Opp SP ERA",
-      home_pitcher_fip: "SP FIP", away_pitcher_fip: "Opp SP FIP",
-      home_pitcher_xfip: "SP xFIP", away_pitcher_xfip: "Opp SP xFIP",
-      home_pitcher_k9: "SP K/9", away_pitcher_k9: "Opp SP K/9",
-      home_pitcher_bb9: "SP BB/9", away_pitcher_bb9: "Opp SP BB/9",
-      home_pitcher_whip: "SP WHIP", away_pitcher_whip: "Opp SP WHIP",
-      home_pitcher_war: "SP WAR", away_pitcher_war: "Opp SP WAR",
-      home_bullpen_era: "BP ERA", away_bullpen_era: "Opp BP ERA",
-      home_bullpen_fip: "BP FIP", away_bullpen_fip: "Opp BP FIP",
-      home_bullpen_whip: "BP WHIP", away_bullpen_whip: "Opp BP WHIP",
-      home_rest: "Home Rest Days", away_rest: "Away Rest Days",
-      is_dome: "Dome", is_division: "Division Game",
-      combo_era_r10: "Combo ERA (L10)", combo_era_r10_diff: "ERA Diff (L10)",
-      combo_runs_r10: "Combo Runs (L10)", combo_runs_r10_diff: "Runs Diff (L10)",
-      ou_line: "OU Line",
-      w: "Wins", l: "Losses", win_pct: "Win %",
-      runs_scored_per_game: "Runs/G", runs_allowed_per_game: "Runs Allowed/G",
-      run_diff_per_game: "Run Diff/G",
-      last_10_w: "L10 Wins", last_10_l: "L10 Losses",
-      streak: "Streak",
-      home_w: "Home Wins", home_l: "Home Losses", home_win_pct: "Home Win %",
-      away_w: "Away Wins", away_l: "Away Losses", away_win_pct: "Away Win %",
-    };
-
-    const featureDefs: Record<string, string> = {
-      home_era: "Earned Run Average (season)",
-      away_era: "Opponent Earned Run Average (season)",
-      home_ops: "On-base + Slugging Percentage",
-      away_ops: "Opponent OPS",
-      home_pitcher_era: "Starting Pitcher ERA",
-      home_pitcher_fip: "Fielding Independent Pitching",
-      home_pitcher_xfip: "Expected FIP",
-      home_pitcher_k9: "Strikeouts per 9 innings",
-      home_pitcher_bb9: "Walks per 9 innings",
-      home_pitcher_whip: "Walks + Hits per Inning Pitched",
-      home_pitcher_war: "Wins Above Replacement",
-      combo_era_r10_diff: "Home ERA minus Away ERA (last 10)",
-      combo_runs_r10_diff: "Home Runs minus Away Runs (last 10)",
-    };
-
-    // Team Stats Section
+    // Parse all JSON columns (safety net for unparsed API responses)
+    const parseSafe = (v: any) => (typeof v === "string" ? JSON.parse(v) : (v || {}));
+    const featuresJson = parseSafe(ps.features_json);
     const hs = ps.home_stats_json || {};
     const as = ps.away_stats_json || {};
     const sit = ps.situational_json || {};
     const spl = ps.splits_json || {};
 
-    return (
-      <div className="space-y-6 text-xs">
-        {/* Predictions Summary */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          <div className="bg-white/5 rounded-lg p-3 text-center">
-            <div className="text-gray-500 mb-1">Home Run Estimate</div>
-            <div className="text-lg font-bold text-white">{ps.predicted_home_runs?.toFixed(1)}</div>
-          </div>
-          <div className="bg-white/5 rounded-lg p-3 text-center">
-            <div className="text-gray-500 mb-1">Away Run Estimate</div>
-            <div className="text-lg font-bold text-white">{ps.predicted_away_runs?.toFixed(1)}</div>
-          </div>
-          <div className="bg-white/5 rounded-lg p-3 text-center">
-            <div className="text-gray-500 mb-1">Predicted Total</div>
-            <div className="text-lg font-bold text-white">{ps.predicted_total?.toFixed(1)}</div>
-          </div>
-          <div className="bg-white/5 rounded-lg p-3 text-center">
-            <div className="text-gray-500 mb-1">Margin</div>
-            <div className="text-lg font-bold text-white">{ps.predicted_margin != null ? (ps.predicted_margin > 0 ? '+' : '') + ps.predicted_margin.toFixed(1) : '-'}</div>
-          </div>
-        </div>
+    // ── Rich value extractor ─────────────────────────────────────────────────
+    // Values can be plain (string/number) or dict {value, display_name, description}
+    interface FeatureInfo { displayValue: string; displayName: string; description?: string; }
+    function getInfo(val: any, fallbackKey?: string): FeatureInfo {
+      if (val !== null && typeof val === "object" && "value" in val) {
+        const raw = val.value;
+        const dv = raw !== null && raw !== undefined
+          ? (typeof raw === "number"
+              ? (Number.isInteger(raw) ? raw.toLocaleString() : raw.toFixed(4))
+              : String(raw))
+          : "—";
+        const dn = val.display_name || fallbackKey || "";
+        return { displayValue: dv, displayName: dn, description: val.description };
+      }
+      const raw = val;
+      const dv = raw !== null && raw !== undefined
+        ? (typeof raw === "number"
+            ? (Number.isInteger(raw) ? raw.toLocaleString() : raw.toFixed(2))
+            : String(raw))
+        : "—";
+      return { displayValue: dv, displayName: fallbackKey || "", description: undefined };
+    }
 
-        {/* Probabilities */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          {ps.home_win_prob != null && (
-            <div className="bg-white/5 rounded-lg p-3 text-center">
-              <div className="text-gray-500 mb-1">Home Win %</div>
-              <div className="text-lg font-bold text-earl-400">{(ps.home_win_prob * 100).toFixed(0)}%</div>
-            </div>
-          )}
-          {ps.over_prob != null && (
-            <div className="bg-white/5 rounded-lg p-3 text-center">
-              <div className="text-gray-500 mb-1">Over %</div>
-              <div className="text-lg font-bold text-earl-400">{(ps.over_prob * 100).toFixed(0)}%</div>
-            </div>
-          )}
-          {ps.home_spread_cover_prob != null && (
-            <div className="bg-white/5 rounded-lg p-3 text-center">
-              <div className="text-gray-500 mb-1">Home Cover %</div>
-              <div className="text-lg font-bold text-earl-400">{(ps.home_spread_cover_prob * 100).toFixed(0)}%</div>
-            </div>
-          )}
-          {ps.away_spread_cover_prob != null && (
-            <div className="bg-white/5 rounded-lg p-3 text-center">
-              <div className="text-gray-500 mb-1">Away Cover %</div>
-              <div className="text-lg font-bold text-earl-400">{(ps.away_spread_cover_prob * 100).toFixed(0)}%</div>
-            </div>
-          )}
-        </div>
+    // Convert snake_case key to a readable label (fallback when no display_name)
+    function keyToLabel(k: string): string {
+      return k
+        .replace(/_/g, " ")
+        .replace(/\b\w/g, (c) => c.toUpperCase());
+    }
 
-        {/* Team Stats */}
-        {hs && Object.keys(hs).length > 0 && (
-          <div>
-            <div className="text-gray-500 uppercase tracking-wider mb-2">Home Team Stats</div>
-            <div className="grid grid-cols-3 md:grid-cols-4 gap-x-4 gap-y-1">
-              {Object.entries(hs).map(([key, val]) => (
-                <div key={key} className="flex justify-between">
-                  <span className="text-gray-500">{displayNames[key] || key}:</span>
-                  <span className="text-white">{(val as any)?.toFixed?.(2) ?? String(val)}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
+    // ── StatRow: a row with label, value, and CSS-only tooltip ────────────────
+    const StatRow = ({
+      label,
+      value,
+      description,
+      valueClass,
+    }: {
+      label: string;
+      value: string;
+      description?: string;
+      valueClass?: string;
+    }) => (
+      <div className="group relative flex items-center justify-between px-2 py-1 rounded hover:bg-white/[0.03] transition-colors">
+        {/* Label with dotted underline hinting at tooltip */}
+        <span
+          className={`text-gray-400 truncate text-[11px] ${
+            description ? "cursor-help border-b border-dotted border-gray-600/40 hover:border-gray-400" : ""
+          }`}
+        >
+          {label}
+        </span>
+        <span className={`text-white text-[11px] font-medium tabular-nums ${valueClass || ""}`}>
+          {value}
+        </span>
 
-        {as && Object.keys(as).length > 0 && (
-          <div>
-            <div className="text-gray-500 uppercase tracking-wider mb-2">Away Team Stats</div>
-            <div className="grid grid-cols-3 md:grid-cols-4 gap-x-4 gap-y-1">
-              {Object.entries(as).map(([key, val]) => (
-                <div key={key} className="flex justify-between">
-                  <span className="text-gray-500">{displayNames[key] || key}:</span>
-                  <span className="text-white">{(val as any)?.toFixed?.(2) ?? String(val)}</span>
-                </div>
-              ))}
+        {/* Tooltip — appears on hover, arrow pointing up */}
+        {description && (
+          <div className="absolute z-50 bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block">
+            <div className="bg-gray-900 border border-gray-700 rounded-lg shadow-xl px-3 py-2 w-64">
+              <div className="text-gray-100 text-[11px] font-semibold mb-1">{label}</div>
+              <p className="text-gray-400 text-[10px] leading-relaxed">{description}</p>
             </div>
-          </div>
-        )}
-
-        {/* Situational */}
-        {sit && Object.keys(sit).length > 0 && (
-          <div>
-            <div className="text-gray-500 uppercase tracking-wider mb-2">Situational</div>
-            <div className="grid grid-cols-2 md:grid-cols-3 gap-x-4 gap-y-1">
-              {Object.entries(sit).map(([key, val]) => (
-                <div key={key} className="flex justify-between">
-                  <span className="text-gray-500">{displayNames[key] || key}:</span>
-                  <span className="text-white">{(val as any)?.toFixed?.(2) ?? String(val)}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Splits / Betting Trends */}
-        {spl && Object.keys(spl).length > 0 && (
-          <div>
-            <div className="text-gray-500 uppercase tracking-wider mb-2">Splits / Betting Trends</div>
-            <div className="grid grid-cols-2 md:grid-cols-3 gap-x-4 gap-y-1">
-              {Object.entries(spl).map(([key, val]) => (
-                <div key={key} className="flex justify-between">
-                  <span className="text-gray-500">{displayNames[key] || key}:</span>
-                  <span className="text-white">{(val as any)?.toFixed?.(2) ?? String(val)}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* All Features */}
-        {featuresJson && Object.keys(featuresJson).length > 0 && (
-          <div>
-            <div className="text-gray-500 uppercase tracking-wider mb-2">All Model Features</div>
-            <div className="max-h-96 overflow-y-auto">
-              <div className="grid grid-cols-2 md:grid-cols-3 gap-x-4 gap-y-1">
-                {Object.entries(featuresJson).map(([key, val]) => (
-                  <div key={key} className="flex justify-between">
-                    <span className="text-gray-500" title={featureDefs[key] || ""}>
-                      {displayNames[key] || key}
-                    </span>
-                    <span className="text-white">{(val as any)?.toFixed?.(4) ?? String(val)}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Actual Results (if game is over) */}
-        {(ps.actual_home_runs != null || ps.actual_away_runs != null) && (
-          <div className="mt-4 pt-4 border-t border-white/10">
-            <div className="text-gray-500 uppercase tracking-wider mb-2">Actual Results</div>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-              <div className="bg-white/5 rounded-lg p-3 text-center">
-                <div className="text-gray-500 mb-1">Home Runs</div>
-                <div className="text-lg font-bold text-white">{ps.actual_home_runs ?? "-"}</div>
-              </div>
-              <div className="bg-white/5 rounded-lg p-3 text-center">
-                <div className="text-gray-500 mb-1">Away Runs</div>
-                <div className="text-lg font-bold text-white">{ps.actual_away_runs ?? "-"}</div>
-              </div>
-              <div className="bg-white/5 rounded-lg p-3 text-center">
-                <div className="text-gray-500 mb-1">Actual Total</div>
-                <div className="text-lg font-bold text-white">{ps.actual_total ?? "-"}</div>
-              </div>
-              <div className="bg-white/5 rounded-lg p-3 text-center">
-                <div className="text-gray-500 mb-1">Margin</div>
-                <div className="text-lg font-bold text-white">{ps.actual_margin != null ? (ps.actual_margin > 0 ? '+' : '') + ps.actual_margin.toFixed(0) : "-"}</div>
-              </div>
+            {/* Arrow */}
+            <div className="flex justify-center -mt-px">
+              <div className="w-0 h-0 border-l-[5px] border-r-[5px] border-t-[5px] border-transparent border-t-gray-700"></div>
             </div>
           </div>
         )}
       </div>
     );
-  }
 
+    // ── Section header with gradient separator ───────────────────────────────
+    const SectionHeader = ({ title }: { title: string }) => (
+      <div className="flex items-center gap-2 mb-3">
+        <span className="text-gray-500 text-[10px] uppercase tracking-[0.12em] font-semibold">{title}</span>
+        <div className="flex-1 h-px bg-gradient-to-r from-gray-700/60 to-transparent" />
+      </div>
+    );
+
+    // ── Render a stat section (handles both plain and rich value dicts) ───────
+    function renderStatSection(data: Record<string, any>, gridCols: string) {
+      const entries = Object.entries(data);
+      if (entries.length === 0) return null;
+      return (
+        <div className={`grid ${gridCols} gap-x-3 gap-y-0.5`}>
+          {entries.map(([key, val]) => {
+            const info = getInfo(val, keyToLabel(key));
+            return (
+              <StatRow
+                key={key}
+                label={info.displayName || keyToLabel(key)}
+                value={info.displayValue}
+                description={info.description}
+              />
+            );
+          })}
+        </div>
+      );
+    }
+
+    // ── Feature section renderer (rich {value, display_name, description}) ────
+    function renderFeatures() {
+      const entries = Object.entries(featuresJson);
+      if (entries.length === 0) return null;
+      return (
+        <div>
+          <SectionHeader title="All Model Features" />
+          <div className="max-h-96 overflow-y-auto rounded-lg border border-gray-700/30 bg-black/20 p-2">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-x-3 gap-y-0.5">
+              {entries.map(([key, val]) => {
+                const info = getInfo(val, keyToLabel(key));
+                return (
+                  <StatRow
+                    key={key}
+                    label={info.displayName || keyToLabel(key)}
+                    value={info.displayValue}
+                    description={info.description}
+                  />
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // ── Splits renderer (display_name may be embedded or flat) ────────────────
+    function renderSplits() {
+      const entries = Object.entries(spl);
+      if (entries.length === 0) return null;
+      return (
+        <div>
+          <SectionHeader title="Splits / Betting Lines" />
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-x-3 gap-y-0.5">
+            {entries.map(([key, val]) => {
+              const info = getInfo(val, keyToLabel(key));
+              return (
+                <StatRow
+                  key={key}
+                  label={info.displayName || keyToLabel(key)}
+                  value={info.displayValue}
+                  description={info.description}
+                />
+              );
+            })}
+          </div>
+        </div>
+      );
+    }
+
+    // ── Predictions summary card with embedded tooltip ────────────────────────
+    function PredCard({ label, value, iconClass, tooltip }: {
+      label: string; value: string; iconClass: string; tooltip: string;
+    }) {
+      return (
+        <div className={`group/pred relative rounded-lg bg-gradient-to-br ${iconClass} p-3 text-center`}>
+          <div className="text-gray-500 text-[10px] uppercase tracking-wide mb-1">{label}</div>
+          <div className="text-lg font-bold text-white">{value}</div>
+          <div className="absolute z-50 bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover/pred:block">
+            <div className="bg-gray-900 border border-gray-700 rounded-lg shadow-xl px-3 py-2 w-52 text-center">
+              <div className="text-gray-100 text-[11px] font-semibold mb-1">{label}</div>
+              <p className="text-gray-400 text-[10px] leading-relaxed">{tooltip}</p>
+            </div>
+            <div className="flex justify-center -mt-px">
+              <div className="w-0 h-0 border-l-[5px] border-r-[5px] border-t-[5px] border-transparent border-t-gray-700" />
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // ── Build component tree ─────────────────────────────────────────────────
+    const homeEntries = Object.entries(hs);
+    const awayEntries = Object.entries(as);
+    const sitEntries = Object.entries(sit);
+
+    return (
+      <div className="space-y-6 text-xs">
+        {/* ── Predictions Summary ── */}
+        <div>
+          <SectionHeader title="Predictions Summary" />
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <PredCard
+              label="Home Run Estimate"
+              value={ps.predicted_home_runs?.toFixed(1)}
+              iconClass="from-earl-500/10 to-transparent border border-earl-500/20"
+              tooltip={game.home_score != null
+                ? `Model estimate for the home team's final run total — Actual: ${game.home_score}`
+                : "Model estimate for the home team's final run total"}
+            />
+            <PredCard
+              label="Away Run Estimate"
+              value={ps.predicted_away_runs?.toFixed(1)}
+              iconClass="from-cyan-500/10 to-transparent border border-cyan-500/20"
+              tooltip={game.away_score != null
+                ? `Model estimate for the away team's final run total — Actual: ${game.away_score}`
+                : "Model estimate for the away team's final run total"}
+            />
+            {ps.home_spread_cover_prob != null && (
+              <PredCard
+                label="Home Cover %"
+                value={`${(ps.home_spread_cover_prob * 100).toFixed(0)}%`}
+                iconClass="from-green-500/10 to-transparent border border-green-500/20"
+                tooltip="Probability the home team covers the run line spread"
+              />
+            )}
+            {ps.away_spread_cover_prob != null && (
+              <PredCard
+                label="Away Cover %"
+                value={`${(ps.away_spread_cover_prob * 100).toFixed(0)}%`}
+                iconClass="from-blue-500/10 to-transparent border border-blue-500/20"
+                tooltip="Probability the away team covers the run line spread"
+              />
+            )}
+          </div>
+        </div>
+
+        {/* ── Home Team Stats ── */}
+        {homeEntries.length > 0 && (
+          <div>
+            <SectionHeader title="Home Team Stats" />
+            {renderStatSection(hs, "grid-cols-2 md:grid-cols-3")}
+          </div>
+        )}
+
+        {/* ── Away Team Stats ── */}
+        {awayEntries.length > 0 && (
+          <div>
+            <SectionHeader title="Away Team Stats" />
+            {renderStatSection(as, "grid-cols-2 md:grid-cols-3")}
+          </div>
+        )}
+
+        {/* ── Game Context / Situational ── */}
+        {sitEntries.length > 0 && (
+          <div>
+            <SectionHeader title="Game Context / Situational" />
+            {renderStatSection(sit, "grid-cols-2 md:grid-cols-3")}
+          </div>
+        )}
+
+        {/* ── Splits / Betting Lines ── */}
+        {renderSplits()}
+
+        {/* ── All Model Features ── */}
+        {renderFeatures()}
+      </div>
+    );
+  }
   function renderEarlsPicks() {
     const isFinal = !!(game.home_score != null && game.away_score != null);
 

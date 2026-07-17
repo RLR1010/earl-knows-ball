@@ -64,9 +64,9 @@ _async_sessionmaker = None
 # ── Pick-card feature extraction ────────────────────────────────────────────────
 
 
-def _extract_pick_card_features(row, feature_names: set) -> str:
-    """Return JSON string of pick_card feature values from a DataFrame row.
-    Ensures NaN/Inf floats are converted to None to keep stored JSON valid.
+def _extract_pick_card_features(row, feature_metadata: Dict[str, Dict[str, str]]) -> str:
+    """Return JSON string of pick_card feature values enriched with display_name
+    and description from nfl.features.
     """
 
     def _sanitize(v):
@@ -74,11 +74,16 @@ def _extract_pick_card_features(row, feature_names: set) -> str:
             return None
         return v
 
-    features = {
-        name: _sanitize(row.get(name))
-        for name in feature_names
-        if name in row.index or name in row
-    }
+    features = {}
+    for name, meta in feature_metadata.items():
+        if name in row.index or name in row:
+            value = _sanitize(row.get(name))
+            if value is not None:
+                features[name] = {
+                    "value": value,
+                    "display_name": meta["display_name"],
+                    "description": meta["description"],
+                }
     return json.dumps(features, default=str)
 
 
@@ -156,26 +161,89 @@ def _load_model_for_year(model_type: str, year: int) -> Optional[xgb.Booster]:
 
 _FEATURES_CACHE_ATS: Optional[List[str]] = None
 _FEATURES_CACHE_OU: Optional[List[str]] = None
-_PICK_CARD_FEATURES: Optional[List[str]] = None
+_PICK_CARD_FEATURE_METADATA: Optional[Dict[str, Dict[str, str]]] = None
 
 
-def _load_pick_card_feature_names() -> set:
-    """Return the set of feature names where pick_card = TRUE in nfl.features.
+def _load_pick_card_feature_metadata() -> Dict[str, Dict[str, str]]:
+    """Return pick_card feature metadata: {name: {display_name, description}}.
 
     Cached module-level so the DB is hit only once per process.
     """
-    global _PICK_CARD_FEATURES
-    if _PICK_CARD_FEATURES is not None:
-        return set(_PICK_CARD_FEATURES)
+    global _PICK_CARD_FEATURE_METADATA
+    if _PICK_CARD_FEATURE_METADATA is not None:
+        return _PICK_CARD_FEATURE_METADATA
     conn = psycopg2.connect(DB_DSN)
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT name FROM nfl.features WHERE pick_card = TRUE")
-            names = [r[0] for r in cur.fetchall()]
-            _PICK_CARD_FEATURES = names
-            return set(names)
+            cur.execute(
+                "SELECT name, display_name, description "
+                "FROM nfl.features WHERE pick_card = TRUE"
+            )
+            _PICK_CARD_FEATURE_METADATA = {
+                r[0]: {"display_name": r[1] or r[0], "description": r[2] or ""}
+                for r in cur.fetchall()
+            }
+            return _PICK_CARD_FEATURE_METADATA
     finally:
         conn.close()
+
+
+# ── Builder key → feature name mappings for enrichment ──
+_NFL_HOME_STATS_FEATURE_MAP = {
+    "points_for": "hpf",
+    "points_against": "hpa",
+    "win_pct_r5": "home_win_pct_r5",
+    "margin_r5": "home_margin_r3",
+    "margin_r10": "home_margin_r10",
+    "cover_pct_r5": "home_cover_pct_r5",
+    "season_ats_pct": "home_season_ats_pct",
+    "embarrassed": "home_embarrassed",
+    "rest_days": "home_rest_days",
+}
+
+_NFL_AWAY_STATS_FEATURE_MAP = {
+    "points_for": "apf",
+    "points_against": "apa",
+    "win_pct_r5": "away_win_pct_r5",
+    "margin_r5": "away_margin_r3",
+    "margin_r10": "away_margin_r10",
+    "cover_pct_r5": "away_cover_pct_r5",
+    "season_ats_pct": "away_season_ats_pct",
+    "embarrassed": "away_embarrassed",
+    "rest_days": "away_rest_days",
+}
+
+_NFL_SITUATIONAL_FEATURE_MAP = {
+    "travel_miles": "travel_miles",
+    "tz_diff": "tz_diff",
+    "dome": "is_dome",
+    "rest": "rest_diff",
+    "is_division": "is_div",
+    "weather": "weather_condition",
+    "wind": "wind",
+    "venue": "venue",
+    "surface": "surface",
+    "roof_type": "roof_type",
+}
+
+
+def _enrich_dict_with_metadata(
+    d: dict, key_map: dict, metadata: Dict[str, Dict[str, str]] | None,
+) -> dict:
+    """Replace flat values with ``{value, display_name, description}`` for every
+    key in *d* that appears in *key_map* and has an entry in *metadata*."""
+    if not metadata:
+        return d
+    result = dict(d)
+    for k, feat_name in key_map.items():
+        if k in result and feat_name in metadata:
+            meta = metadata[feat_name]
+            result[k] = {
+                "value": d[k],
+                "display_name": meta["display_name"],
+                "description": meta["description"],
+            }
+    return result
 
 
 def _get_features(model_type: str) -> List[str]:
@@ -429,10 +497,20 @@ async def batch_predict_upcoming_games(
                 "under_odds": _float_safe(row.get("under_odds")),
             }
             # Enrich with handicapper info
+            pc_feats = _load_pick_card_feature_metadata()
             result.update({
-                "home_stats": _build_nfl_home_stats(row),
-                "away_stats": _build_nfl_away_stats(row),
-                "situational": _build_nfl_situational(row),
+                "home_stats": _enrich_dict_with_metadata(
+                    _build_nfl_home_stats(row),
+                    _NFL_HOME_STATS_FEATURE_MAP, pc_feats,
+                ),
+                "away_stats": _enrich_dict_with_metadata(
+                    _build_nfl_away_stats(row),
+                    _NFL_AWAY_STATS_FEATURE_MAP, pc_feats,
+                ),
+                "situational": _enrich_dict_with_metadata(
+                    _build_nfl_situational(row),
+                    _NFL_SITUATIONAL_FEATURE_MAP, pc_feats,
+                ),
                 "splits": _build_nfl_splits(row),
                 "home_abbr": home_str,
                 "away_abbr": away_str,
@@ -440,7 +518,6 @@ async def batch_predict_upcoming_games(
             # Calibrated confidence
             # Calibrated confidences computed in _save_api_prediction via calibrate()
             # Features for pick-card
-            pc_feats = _load_pick_card_feature_names()
             result["features"] = json.loads(_extract_pick_card_features(row, pc_feats))
 
             # Save to DB if a session was provided (API pattern)
@@ -812,14 +889,23 @@ async def _save_backtest_prediction(
         ou_ev = _ev(ou_cal, ou_odds_value) if ou_odds_value else None
 
         # ── Handicapper info ────────────────────────────────────────────────────
-        home_stats = _build_nfl_home_stats(row)
-        away_stats = _build_nfl_away_stats(row)
-        situational = _build_nfl_situational(row)
+        pc_feats = _load_pick_card_feature_metadata()
+        home_stats = _enrich_dict_with_metadata(
+            _build_nfl_home_stats(row),
+            _NFL_HOME_STATS_FEATURE_MAP, pc_feats,
+        )
+        away_stats = _enrich_dict_with_metadata(
+            _build_nfl_away_stats(row),
+            _NFL_AWAY_STATS_FEATURE_MAP, pc_feats,
+        )
+        situational = _enrich_dict_with_metadata(
+            _build_nfl_situational(row),
+            _NFL_SITUATIONAL_FEATURE_MAP, pc_feats,
+        )
         splits = _build_nfl_splits(row)
 
-        # Features JSON — use pick_card feature names for prediction-time values
-        pick_card_feats = _load_pick_card_feature_names()
-        features_json_str = _extract_pick_card_features(row, pick_card_feats)
+        # Features JSON — pick_card feature values enriched with display_name/description
+        features_json_str = _extract_pick_card_features(row, pc_feats)
 
         # ── Save via ORM ────────────────────────────────────────────────────────
         if sync_sesh is not None:

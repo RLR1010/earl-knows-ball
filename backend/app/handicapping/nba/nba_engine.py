@@ -71,9 +71,9 @@ _async_sessionmaker = None
 # ── Pick-card feature extraction ────────────────────────────────────────────────
 
 
-def _extract_pick_card_features(row, feature_names: set) -> str:
-    """Return JSON string of pick_card feature values from a DataFrame row.
-    Ensures NaN/Inf floats are converted to None to keep stored JSON valid.
+def _extract_pick_card_features(row, feature_metadata: Dict[str, Dict[str, str]]) -> str:
+    """Return JSON string of pick_card feature values enriched with display_name
+    and description from nba.features.
     """
 
     def _sanitize(v):
@@ -81,12 +81,123 @@ def _extract_pick_card_features(row, feature_names: set) -> str:
             return None
         return v
 
-    features = {
-        name: _sanitize(row.get(name))
-        for name in feature_names
-        if name in row.index or name in row
-    }
+    features = {}
+    for name, meta in feature_metadata.items():
+        if name in row.index or name in row:
+            value = _sanitize(row.get(name))
+            if value is not None:
+                features[name] = {
+                    "value": value,
+                    "display_name": meta["display_name"],
+                    "description": meta["description"],
+                }
     return json.dumps(features, default=str)
+
+
+# ── Pick-card feature metadata (cached from nba.features) ──
+_PICK_CARD_FEATURE_METADATA: Optional[Dict[str, Dict[str, str]]] = None
+
+
+def _load_pick_card_feature_metadata() -> Dict[str, Dict[str, str]]:
+    """Return pick_card feature metadata: {name: {display_name, description}}.
+
+    Cached module-level so the DB is hit only once per process.
+    """
+    global _PICK_CARD_FEATURE_METADATA
+    if _PICK_CARD_FEATURE_METADATA is not None:
+        return _PICK_CARD_FEATURE_METADATA
+    conn = psycopg2.connect(DB_DSN)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT name, display_name, description "
+                "FROM nba.features WHERE pick_card = TRUE"
+            )
+            _PICK_CARD_FEATURE_METADATA = {
+                r[0]: {"display_name": r[1] or r[0], "description": r[2] or ""}
+                for r in cur.fetchall()
+            }
+            return _PICK_CARD_FEATURE_METADATA
+    finally:
+        conn.close()
+
+
+def _enrich_dict_with_metadata(
+    d: dict, key_map: dict, metadata: Dict[str, Dict[str, str]] | None,
+) -> dict:
+    """Replace flat values with ``{value, display_name, description}`` for every
+    key in *d* that appears in *key_map* and has an entry in *metadata*."""
+    if not metadata:
+        return d
+    result = dict(d)
+    for k, feat_name in key_map.items():
+        if k in result and feat_name in metadata:
+            meta = metadata[feat_name]
+            result[k] = {
+                "value": d[k],
+                "display_name": meta["display_name"],
+                "description": meta["description"],
+            }
+    return result
+
+
+# ── Builder key → feature name mappings for enrichment ──
+_NBA_HOME_STATS_FEATURE_MAP = {
+    "ortg_r10": "h_ortg_r10",
+    "drtg_r10": "h_drtg_r10",
+    "net_rtg_r10": "h_net_rtg_r10",
+    "pace_r10": "h_pace_r10",
+    "adj_off_r10": "h_adj_off_10",
+    "adj_def_r10": "h_adj_def_10",
+    "ats_wins_r10": "h_ats_wins_10",
+    "ats_margin_r10": "h_ats_margin_10",
+    "wins_r10": "h_wins_10",
+    "ou_wins_r10": "h_ou_wins_10",
+    "ou_margin_r5": "h_ou_margin_5",
+    "ft_rate_r10": "h_ft_rate_r10",
+    "three_in_four": "h_three_in_four",
+    "implied_prob": "h_implied",
+    "rest_days": "rest_h",
+    "is_b2b": "home_b2b",
+}
+
+_NBA_AWAY_STATS_FEATURE_MAP = {
+    "ortg_r10": "a_ortg_r10",
+    "drtg_r10": "a_drtg_r10",
+    "net_rtg_r10": "a_net_rtg_r10",
+    "pace_r10": "a_pace_r10",
+    "adj_off_r10": "a_adj_off_10",
+    "adj_def_r10": "a_adj_def_10",
+    "ats_wins_r10": "a_ats_wins_10",
+    "ats_margin_r10": "a_ats_margin_10",
+    "wins_r10": "a_wins_10",
+    "ou_wins_r10": "a_ou_wins_10",
+    "ou_margin_r5": "a_ou_margin_5",
+    "ft_rate_r10": "a_ft_rate_r10",
+    "three_in_four": "a_three_in_four",
+    "implied_prob": "a_implied",
+    "rest_days": "rest_a",
+    "is_b2b": "away_b2b",
+}
+
+_NBA_SITUATIONAL_FEATURE_MAP = {
+    "rest_days_home": "rest_h",
+    "rest_days_away": "rest_a",
+    "rest_diff": "rest_diff",
+    "home_b2b": "home_b2b",
+    "away_b2b": "away_b2b",
+    "travel_miles": "travel_miles",
+    "season_week": "season_week",
+    "two_games_today": "two_games",
+}
+
+_NBA_SPLITS_FEATURE_MAP = {
+    "closing_spread": "closing_spread",
+    "opening_spread": "opening_spread",
+    "spread_movement": "spread_movement",
+    "closing_ou": "closing_ou",
+    "opening_ou": "opening_ou",
+}
 
 
 def _get_async_session() -> async_sessionmaker:
@@ -735,21 +846,8 @@ async def _save_api_prediction(
         pred_away_score = max(0.0, round((float(predicted_total) - float(predicted_margin)) / 2.0, 1))
 
     # \u2500\u2500 Feature JSON \u2500\u2500
-    features_ats_json = pick_card.get("features_ats_json")
-    if not features_ats_json:
-        ats_feats = _get_features("ats")
-        features_ats_json = _extract_pick_card_features(row, set(ats_feats))
-    features_ou_json = pick_card.get("features_ou_json")
-    if not features_ou_json:
-        ou_feats = _get_features("ou")
-        features_ou_json = _extract_pick_card_features(row, set(ou_feats))
-
-    features_dict = {}
-    if features_ats_json:
-        features_dict["ats"] = features_ats_json if isinstance(features_ats_json, dict) else json.loads(features_ats_json)
-    if features_ou_json:
-        features_dict["ou"] = features_ou_json if isinstance(features_ou_json, dict) else json.loads(features_ou_json)
-    features_json_str = json.dumps(features_dict, default=str) if features_dict else None
+    pc_feats = _load_pick_card_feature_metadata()
+    features_json_str = _extract_pick_card_features(row, pc_feats) or None
 
     # \u2500\u2500 Handicapper info \u2500\u2500
     def _load_or_dumps(val: Any) -> Optional[str]:
@@ -968,32 +1066,38 @@ async def _save_backtest_prediction(
         elif ml_result == "Loss":
             ml_profit = -100.0
         # ── Handicapper info (best-effort; row may lack display columns) ──
+        pc_feats = _load_pick_card_feature_metadata()
         try:
-            home_stats = _build_nba_home_stats(row)
+            home_stats = _enrich_dict_with_metadata(
+                _build_nba_home_stats(row),
+                _NBA_HOME_STATS_FEATURE_MAP, pc_feats,
+            )
         except Exception:
             home_stats = json.dumps({"team": str(row.get("home_team_id", ""))})
         try:
-            away_stats = _build_nba_away_stats(row)
+            away_stats = _enrich_dict_with_metadata(
+                _build_nba_away_stats(row),
+                _NBA_AWAY_STATS_FEATURE_MAP, pc_feats,
+            )
         except Exception:
             away_stats = json.dumps({"team": str(row.get("away_team_id", ""))})
         try:
-            situational = _build_nba_situational(row)
+            situational = _enrich_dict_with_metadata(
+                _build_nba_situational(row),
+                _NBA_SITUATIONAL_FEATURE_MAP, pc_feats,
+            )
         except Exception:
             situational = json.dumps({})
         try:
-            splits = _build_nba_splits(row)
+            splits = _enrich_dict_with_metadata(
+                _build_nba_splits(row),
+                _NBA_SPLITS_FEATURE_MAP, pc_feats,
+            )
         except Exception:
             splits = json.dumps({})
 
-        # ── Features JSON ────────────────────────────────────────────────────
-        ats_feats = _get_features("ats") if callable(_get_features) else []
-        ou_feats = _get_features("ou") if callable(_get_features) else []
-        features_dict = {}
-        if ats_features and ats_features[0] is not None and all(f in row.index for f in ats_feats if isinstance(f, str)):
-            features_dict["ats"] = {f: _float_safe(row[f]) for f in ats_feats if isinstance(f, str)}
-        if ou_features and ou_features[0] is not None and all(f in row.index for f in ou_feats):
-            features_dict["ou"] = {f: _float_safe(row[f]) for f in ou_feats}
-        features_json_str = json.dumps(features_dict, default=str) if features_dict else None
+        # ── Features JSON (enriched from nba.features WHERE pick_card = true) ──
+        features_json_str = _extract_pick_card_features(row, pc_feats) or None
 
         # ── Predicted scores & confidence ────────────────────────────────────
         predicted_margin = ats_proba  # ATS regression model outputs margin (home_score - away_score) directly
@@ -1102,9 +1206,9 @@ async def _save_backtest_prediction(
 
 
 
-def _build_nba_home_stats(row: pd.Series) -> str:
-    """Build home_stats_json for handicap info using NBA data loader columns."""
-    return json.dumps({
+def _build_nba_home_stats(row: pd.Series) -> dict:
+    """Build home_stats dict for handicap info using NBA data loader columns."""
+    return {
         "team": _str_safe(row.get("home_team")),
         "abbreviation": _str_safe(row.get("home_abbr")),
         "ortg_r10": _float_safe(row.get("h_ortg_r10")),
@@ -1126,12 +1230,12 @@ def _build_nba_home_stats(row: pd.Series) -> str:
         "implied_prob": _float_safe(row.get("h_implied")),
         "rest_days": _float_safe(row.get("rest_h")),
         "is_b2b": bool(row.get("home_b2b", 0)),
-    })
+    }
 
 
-def _build_nba_away_stats(row: pd.Series) -> str:
-    """Build away_stats_json for handicap info using NBA data loader columns."""
-    return json.dumps({
+def _build_nba_away_stats(row: pd.Series) -> dict:
+    """Build away_stats dict for handicap info using NBA data loader columns."""
+    return {
         "team": _str_safe(row.get("away_team")),
         "abbreviation": _str_safe(row.get("away_abbr")),
         "ortg_r10": _float_safe(row.get("a_ortg_r10")),
@@ -1153,12 +1257,12 @@ def _build_nba_away_stats(row: pd.Series) -> str:
         "implied_prob": _float_safe(row.get("a_implied")),
         "rest_days": _float_safe(row.get("rest_a")),
         "is_b2b": bool(row.get("away_b2b", 0)),
-    })
+    }
 
 
-def _build_nba_situational(row: pd.Series) -> str:
-    """Build situational_json for handicap info using NBA data loader columns."""
-    return json.dumps({
+def _build_nba_situational(row: pd.Series) -> dict:
+    """Build situational dict for handicap info using NBA data loader columns."""
+    return {
         "rest_days_home": _float_safe(row.get("rest_h")),
         "rest_days_away": _float_safe(row.get("rest_a")),
         "rest_diff": _float_safe(row.get("rest_diff")),
@@ -1170,12 +1274,12 @@ def _build_nba_situational(row: pd.Series) -> str:
         "is_division_game": False,
         "season_week": _float_safe(row.get("season_week")),
         "two_games_today": bool(row.get("two_games", 0)),
-    })
+    }
 
 
-def _build_nba_splits(row: pd.Series) -> str:
-    """Build splits_json for handicap info using NBA data loader columns."""
-    return json.dumps({
+def _build_nba_splits(row: pd.Series) -> dict:
+    """Build splits dict for handicap info using NBA data loader columns."""
+    return {
         "closing_spread": _float_safe(row.get("closing_spread")),
         "opening_spread": _float_safe(row.get("opening_spread")),
         "spread_movement": _float_safe(row.get("spread_movement")),
@@ -1191,7 +1295,7 @@ def _build_nba_splits(row: pd.Series) -> str:
         "away_ats_cover_pct_r10": _calc_pct(row.get("a_ats_wins_10"), 10),
         "home_ou_over_pct_r10": _calc_pct(row.get("h_ou_wins_10"), 10),
         "away_ou_over_pct_r10": _calc_pct(row.get("a_ou_wins_10"), 10),
-    })
+    }
 
 
 # ── Safe casting helpers ──────────────────────────────────────────────────────────
