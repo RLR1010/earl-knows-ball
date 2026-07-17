@@ -3,7 +3,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 
-const SPORTS = ["mlb", "nfl"] as const;
+const SPORTS = ["mlb", "nfl", "nba"] as const;
 type Sport = (typeof SPORTS)[number];
 
 /* ─────────────────────────────────────────────
@@ -304,10 +304,10 @@ export default function AdminContent() {
     }
   }, [daysOffset, sport]);
 
-  // ── On mount / sport change: snap to nearest game for NFL ──
+  // ── On mount / sport change: snap to nearest game ──
 
   useEffect(() => {
-    if (sport === "nfl") {
+    if (sport === "nfl" || sport === "nba") {
       // Find the next upcoming game and snap to it
       const today = new Date().toLocaleDateString("en-CA");
       fetchNearestGame(today, "next").then((date) => {
@@ -317,6 +317,19 @@ export default function AdminContent() {
               (1000 * 60 * 60 * 24)
           );
           setDaysOffset(diff);
+        } else {
+          // No next game — try previous
+          fetchNearestGame(today, "prev").then((prevDate) => {
+            if (prevDate) {
+              const diff = Math.round(
+                (new Date(prevDate).getTime() - new Date(new Date().toDateString()).getTime()) /
+                  (1000 * 60 * 60 * 24)
+              );
+              setDaysOffset(diff);
+            } else {
+              setDaysOffset(0);
+            }
+          });
         }
       });
     } else {

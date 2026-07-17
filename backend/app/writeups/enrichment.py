@@ -47,12 +47,16 @@ async def enrich_writeup_context(
           article_count: int — how many articles were found
           search_queries: list[str] — what queries were run
     """
-    # ── 1. Search window: 7 days before game ────────────────
-    # Use datetime for proper asyncpg type handling (published_at is timestamptz)
+    # ── 1. Search window: articles published before game time ──
+    # Only use pre-game articles — no recaps or post-game analysis
     if isinstance(game_date, datetime):
-        date_to = game_date.replace(hour=23, minute=59, second=59, microsecond=999999)
+        date_to = game_date  # Only articles published BEFORE game start
     else:
+        # Combine with end of day — no tz info, but game_date was date-only
         date_to = datetime.combine(game_date, datetime.max.time())
+    # Ensure timezone-aware (use UTC as reference)
+    if isinstance(date_to, datetime) and date_to.tzinfo is None:
+        date_to = date_to.replace(tzinfo=timezone.utc)
     date_from = date_to - timedelta(days=7)
 
     # ── 2. Build search queries ─────────────────────────────
@@ -65,9 +69,16 @@ async def enrich_writeup_context(
             f"{away_team} baseball latest",
         ]
     else:
+        date_query = ""
+        if isinstance(game_date, (datetime,)):
+            date_query = game_date.strftime(" %B %Y")
+        elif isinstance(game_date, str):
+            date_query = f" {game_date[:7]}"
+
         queries = [
-            f"{home_team} {away_team} preview",
-            f"{home_team} {away_team} injury report",
+            f"{home_team} {away_team}{date_query} game preview",
+            f"{home_team} {away_team}{date_query} injury report",
+            f"{home_team} {away_team}{date_query} betting odds",
             f"{home_team} news",
             f"{away_team} news",
         ]
@@ -98,6 +109,20 @@ async def enrich_writeup_context(
         import asyncio
         await asyncio.sleep(0.1)
 
+    # Sort by proximity to game time — closest published first
+    def _sort_key(article: dict) -> float:
+        pub_str = article.get("published_at", "")
+        if pub_str:
+            try:
+                pub_dt = datetime.fromisoformat(pub_str)
+            except (ValueError, TypeError):
+                return float("inf")
+            # Ensure both are tz-aware for comparison
+            pub_dt = pub_dt.replace(tzinfo=timezone.utc) if pub_dt.tzinfo is None else pub_dt
+            return abs((pub_dt - date_to).total_seconds())
+        return float("inf")
+
+    all_articles.sort(key=_sort_key)
     all_articles = all_articles[:12]  # cap at 12 articles
 
     if not all_articles:
@@ -179,6 +204,14 @@ async def _call_deepseek_enrichment(
         "You are a sports research analyst. Your job is to scan recent articles "
         "about two teams and find information that would be genuinely useful for "
         "writing a game preview article.\n\n"
+        "ARTICLE TIMING: These articles were all published BEFORE this game. "
+        "They are sorted by proximity to game time (closest first). "
+        "Prioritize articles published closest to game time as they have the most "
+        "current information.\n\n"
+        "PLAYOFF/SERIES CONTEXT: If these teams face each other multiple times "
+        "(e.g. a playoff series), use the article's content and date to determine "
+        "which specific game it refers to. Only include information that pertains "
+        "to THIS game on THIS date — not earlier games in the series.\n\n"
         "Focus on:\n"
         "- Key injuries or lineup changes\n"
         "- Recent form / streaks (wins, losses, hot/cold players)\n"

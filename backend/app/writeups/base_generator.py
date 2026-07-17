@@ -215,7 +215,7 @@ This is the same format as the public article -- plain text, no JSON layer.
 
         # ---- 2A. Public call — stripped research, no betting data ----
         stripped = dict(research)
-        for key in ("betting_lines", "predictions", "home_splits", "away_splits"):
+        for key in ("betting_lines", "predictions", "model_predictions", "home_splits", "away_splits"):
             stripped.pop(key, None)
 
         public_system = self.public_system_prompt(is_historical)

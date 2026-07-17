@@ -61,14 +61,20 @@ async def search_articles(
     embed_table = cfg.get("embed_table", "article_embeddings")
     article_table = cfg.get("article_table", "articles")
 
-    # Build WHERE clause for date range
+    # Build WHERE clause for date range — use full ISO timestamps for precision
     # NOTE: sport column doesn't exist on articles tables (they're schema-specific)
     where_sql = "WHERE 1=1"
     if date_from:
-        dttm_from: str = date_from.strftime("%Y-%m-%d") if isinstance(date_from, datetime) else str(date_from)
+        if isinstance(date_from, datetime) and date_from.tzinfo:
+            dttm_from = date_from.strftime("%Y-%m-%d %H:%M:%S%z")
+        else:
+            dttm_from = date_from.strftime("%Y-%m-%d") if isinstance(date_from, datetime) else str(date_from)
         where_sql += f" AND a.published_at >= '{dttm_from}'"
     if date_to:
-        dttm_to: str = date_to.strftime("%Y-%m-%d") if isinstance(date_to, datetime) else str(date_to)
+        if isinstance(date_to, datetime) and date_to.tzinfo:
+            dttm_to = date_to.strftime("%Y-%m-%d %H:%M:%S%z")
+        else:
+            dttm_to = date_to.strftime("%Y-%m-%d") if isinstance(date_to, datetime) else str(date_to)
         where_sql += f" AND a.published_at <= '{dttm_to}'"
 
     # Try vector search via Ollama embedding
@@ -119,7 +125,7 @@ async def search_articles(
                 else f"# {title}"
             )
             pub_date = row.get("published_at")
-            pub_date_str = pub_date.strftime("%Y-%m-%d") if pub_date else ""
+            pub_date_str = pub_date.isoformat() if pub_date else ""
 
             articles.append({
                 "text": text_content[:1500],
@@ -144,10 +150,16 @@ async def search_articles(
         where_sql_keyword = "WHERE 1=1"
         # sport column doesn't exist on articles (tables are schema-specific)
         if date_from:
-            dttm_from_2: str = date_from.strftime("%Y-%m-%d") if isinstance(date_from, datetime) else str(date_from)
+            if isinstance(date_from, datetime) and date_from.tzinfo:
+                dttm_from_2 = date_from.strftime("%Y-%m-%d %H:%M:%S%z")
+            else:
+                dttm_from_2 = date_from.strftime("%Y-%m-%d") if isinstance(date_from, datetime) else str(date_from)
             where_sql_keyword += f" AND {article_table}.published_at >= '{dttm_from_2}'"
         if date_to:
-            dttm_to_2: str = date_to.strftime("%Y-%m-%d") if isinstance(date_to, datetime) else str(date_to)
+            if isinstance(date_to, datetime) and date_to.tzinfo:
+                dttm_to_2 = date_to.strftime("%Y-%m-%d %H:%M:%S%z")
+            else:
+                dttm_to_2 = date_to.strftime("%Y-%m-%d") if isinstance(date_to, datetime) else str(date_to)
             where_sql_keyword += f" AND {article_table}.published_at <= '{dttm_to_2}'"
 
         sql_kw = text(
@@ -184,14 +196,14 @@ async def search_articles(
                 else f"# {title}"
             )
             pub_date = row.get("published_at")
-            date_str = pub_date.strftime("%Y-%m-%d") if pub_date else ""
+            pub_date_str = pub_date.isoformat() if pub_date else ""
 
             articles.append({
                 "text": text_content[:1500],
                 "title": title,
                 "source_name": source,
                 "distance": 0,
-                "published_at": date_str,
+                "published_at": pub_date_str,
             })
 
         return articles

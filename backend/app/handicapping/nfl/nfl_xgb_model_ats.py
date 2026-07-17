@@ -71,7 +71,13 @@ def _ensure_ats_features(df: pd.DataFrame) -> pd.DataFrame:
 
     for feat in ats_features:
         if feat not in df.columns:
-            df[feat] = float("nan")
+            # Fill missing with 0 (neutral for tree models) instead of NaN.
+            # NaN would trigger dropna() and drop rows — or erase the entire
+            # dataset if the column is entirely missing.  The engine's
+            # _extract_feature_vector fills NaN with 0.0, so we must match.
+            df[feat] = 0.0
+        elif df[feat].isna().all():
+            df[feat] = df[feat].fillna(0.0)
 
     return df
 

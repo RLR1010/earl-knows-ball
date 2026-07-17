@@ -12,6 +12,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.writeups.mlb.generator import MLBWriteupGenerator
+from app.writeups.nfl.generator import NFLWriteupGenerator
+from app.writeups.nba.generator import NBAGameWriteupGenerator
 
 logger = logging.getLogger("writeups")
 router = APIRouter(prefix="/writeups", tags=["writeups"])
@@ -46,11 +48,18 @@ async def get_public_writeup(
     as_of_dt = dt_module.fromisoformat(as_of_date) if as_of_date else None
 
     # Pick the right generator for the sport
-    from app.writeups.mlb.research import get_public_research_brief
-
     if sport == "mlb":
+        from app.writeups.mlb.research import get_public_research_brief
         research_fn = get_public_research_brief
         generator_cls = MLBWriteupGenerator
+    elif sport == "nfl":
+        from app.writeups.nfl.research import get_public_research_brief
+        research_fn = get_public_research_brief
+        generator_cls = NFLWriteupGenerator
+    elif sport == "nba":
+        from app.writeups.nba.research import get_public_research_brief
+        research_fn = get_public_research_brief
+        generator_cls = NBAGameWriteupGenerator
     else:
         raise HTTPException(status_code=400, detail=f"Unknown sport: {sport}")
 
@@ -824,4 +833,391 @@ async def update_nfl_writeup_status(
     await db.commit()
     return {"id": writeup_id, "status": status, "ok": True}
 
+
+# ══════════════════════════════════════════════
+# NBA — writeups
+# ══════════════════════════════════════════════
+
+
+@router.get("/nba/games")
+async def list_nba_games_for_content(
+    from_date: Optional[str] = Query(None, alias="from"),
+    to_date: Optional[str] = Query(None, alias="to"),
+    season_year: Optional[int] = Query(None),
+    limit: int = Query(50, le=200),
+    db: AsyncSession = Depends(get_db),
+):
+    """List NBA games for the content admin."""
+    filters: list[str] = []
+    params: dict = {}
+
+    if season_year:
+        filters.append("s.year = :syear")
+        params["syear"] = season_year
+    if from_date:
+        filters.append("g.date::date >= :from_d")
+        try:
+            from datetime import date as _date_type
+            params["from_d"] = _date_type.fromisoformat(str(from_date))
+        except (ValueError, TypeError):
+            params["from_d"] = str(from_date)
+    if to_date:
+        filters.append("g.date::date <= :to_d")
+        try:
+            from datetime import date as _date_type
+            params["to_d"] = _date_type.fromisoformat(str(to_date))
+        except (ValueError, TypeError):
+            params["to_d"] = str(to_date)
+
+    where_clause = " AND ".join(filters) if filters else "TRUE"
+
+    query = f"""
+        SELECT
+            g.id,
+            g.date,
+            ht.name AS home_team,
+            ht.abbreviation AS home_abbr,
+            at.name AS away_team,
+            at.abbreviation AS away_abbr,
+            CAST(g.status AS text) AS game_status,
+            g.home_score,
+            g.away_score,
+            w.id AS writeup_id,
+            w.status AS writeup_status
+        FROM nba.games g
+        JOIN nba.teams ht ON g.home_team_id = ht.id
+        JOIN nba.teams at ON g.away_team_id = at.id
+        JOIN nba.seasons s ON g.season_id = s.id
+        LEFT JOIN nba.game_writeups w ON w.game_id = g.id
+        WHERE {where_clause}
+        ORDER BY g.date ASC
+        LIMIT :lim
+    """
+    params["lim"] = limit
+    result = await db.execute(text(query), params)
+    rows = result.fetchall()
+    return [
+        {
+            "id": r[0],
+            "date": str(r[1]) if r[1] else "",
+            "home_team": r[2],
+            "home_abbr": r[3],
+            "away_team": r[4],
+            "away_abbr": r[5],
+            "status": r[6],
+            "home_score": r[7],
+            "away_score": r[8],
+            "writeup_id": r[9],
+            "writeup_status": r[10],
+        }
+        for r in rows
+    ]
+
+
+@router.get("/nba/nearest-game")
+async def nba_nearest_game_date(
+    date: Optional[str] = Query(None),
+    db: AsyncSession = Depends(get_db),
+):
+    """Find nearest NBA game dates — prev_date (most recent before target)
+    and next_date (first after target). Returns {prev_date, next_date}.
+    """
+    if date:
+        try:
+            target_dt = datetime.strptime(date, "%Y-%m-%d").date()
+        except ValueError:
+            target_dt = datetime.now(timezone.utc).date()
+    else:
+        target_dt = datetime.now(timezone.utc).date()
+
+    # Most recent game day BEFORE target (any status)
+    prev_result = await db.execute(
+        text("""
+            SELECT DISTINCT g.date::date AS d
+            FROM nba.games g
+            WHERE g.date::date < :target
+            ORDER BY d DESC
+            LIMIT 1
+        """),
+        {"target": target_dt},
+    )
+    prev_row = prev_result.fetchone()
+
+    # First game day AFTER target (any status)
+    next_result = await db.execute(
+        text("""
+            SELECT DISTINCT g.date::date AS d
+            FROM nba.games g
+            WHERE g.date::date >= :target
+            ORDER BY d ASC
+            LIMIT 1
+        """),
+        {"target": target_dt},
+    )
+    next_row = next_result.fetchone()
+
+    return {
+        "prev_date": str(prev_row[0]) if prev_row else None,
+        "next_date": str(next_row[0]) if next_row else None,
+    }
+
+
+# ── Preview (simulate generation without saving) ──────────────
+
+
+@router.post("/nba/preview/{game_id}")
+async def preview_nba_writeup(
+    game_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """Preview NBA write-up research data without saving."""
+    gen = NBAGameWriteupGenerator()
+    gen._db = db
+    research = await gen.research_brief(game_id)
+    if "error" in research:
+        raise HTTPException(status_code=404, detail=research["error"])
+    return {"research_brief": research}
+
+
+@router.post("/nba/preview-public/{game_id}")
+async def preview_nba_public_writeup(
+    game_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """Preview public NBA write-up research data without saving."""
+    gen = NBAGameWriteupGenerator()
+    gen._db = db
+    research = await gen.research_brief(game_id)
+    if "error" in research:
+        raise HTTPException(status_code=404, detail=research["error"])
+    return {"research_brief": research}
+
+
+# ── Generation ──────────────────────────────────────────────────
+
+
+@router.post("/nba/generate/{game_id}")
+async def generate_nba_writeup(
+    game_id: int,
+    historical: bool = Query(False),
+    db: AsyncSession = Depends(get_db),
+):
+    """Generate and store a premium NBA write-up."""
+    gen = NBAGameWriteupGenerator()
+    writeup, qc_results = await gen.generate(db, game_id, is_historical=historical)
+    if "error" in writeup:
+        raise HTTPException(status_code=502, detail=writeup["error"])
+    writeup_id = await gen.store(game_id, writeup, qc_results, db=db)
+    return {"id": writeup_id, "status": "created"}
+
+
+@router.post("/nba/generate-public/{game_id}")
+async def generate_nba_public_writeup(
+    game_id: int,
+    historical: bool = Query(False),
+    db: AsyncSession = Depends(get_db),
+):
+    """Generate and store a public NBA write-up."""
+    gen = NBAGameWriteupGenerator()
+    gen._db = db
+    research = await gen.get_public_research(game_id)
+    writeup, qc_results = await gen.generate_public(game_id, research, is_historical=historical)
+    if "error" in writeup:
+        raise HTTPException(status_code=502, detail=writeup["error"])
+    writeup_id = await gen.store(game_id, writeup, qc_results, db=db)
+    return {"id": writeup_id, "status": "created"}
+
+
+# ── List / Get ─────────────────────────────────────────────────
+
+
+@router.get("/nba/writeups")
+async def list_nba_writeups(
+    status: Optional[str] = Query(None),
+    limit: int = Query(50, le=200),
+    db: AsyncSession = Depends(get_db),
+):
+    """List NBA write-ups."""
+    filters = []
+    params: dict = {}
+    if status:
+        filters.append("w.status = :status")
+        params["status"] = status
+    where = " AND ".join(filters) if filters else "TRUE"
+    result = await db.execute(
+        text(f"""
+            SELECT w.id, w.game_id, w.title, w.status, w.version,
+                   w.created_at, w.updated_at, w.published_at,
+                   g.date, ht.name AS home, ht.abbreviation AS home_abbr,
+                   at.name AS away, at.abbreviation AS away_abbr
+            FROM nba.game_writeups w
+            JOIN nba.games g ON w.game_id = g.id
+            JOIN nba.teams ht ON g.home_team_id = ht.id
+            JOIN nba.teams at ON g.away_team_id = at.id
+            WHERE {where}
+            ORDER BY COALESCE(w.published_at, w.created_at) DESC
+            LIMIT :lim
+        """),
+        {**params, "lim": limit},
+    )
+    rows = result.fetchall()
+    return [
+        {
+            "id": r[0],
+            "game_id": r[1],
+            "title": r[2],
+            "status": r[3],
+            "version": r[4],
+            "created_at": str(r[5]) if r[5] else "",
+            "updated_at": str(r[6]) if r[6] else "",
+            "published_at": str(r[7]) if r[7] else "",
+            "game_date": str(r[8])[:10] if r[8] else "",
+            "home_team": r[9],
+            "home_abbr": r[10],
+            "away_team": r[11],
+            "away_abbr": r[12],
+        }
+        for r in rows
+    ]
+
+
+@router.get("/nba/{writeup_id}")
+async def get_nba_writeup(
+    writeup_id: int,
+    tier: str = Query("premium"),  # "public" or "premium"
+    db: AsyncSession = Depends(get_db),
+):
+    """Get a specific NBA write-up by ID. Matches MLB pattern for frontend compatibility."""
+    result = await db.execute(
+        text("""
+            SELECT w.id, w.game_id, w.title, w.public_content, w.premium_content,
+                   w.status, w.version, w.is_historical, w.generated_by,
+                   w.total_tokens, w.published_at, w.created_at, w.updated_at,
+                   w.research_brief, w.quality_checks,
+                   g.date, ht.name AS home, ht.abbreviation AS home_abbr,
+                   at.name AS away, at.abbreviation AS away_abbr
+            FROM nba.game_writeups w
+            JOIN nba.games g ON w.game_id = g.id
+            JOIN nba.teams ht ON g.home_team_id = ht.id
+            JOIN nba.teams at ON g.away_team_id = at.id
+            WHERE w.id = :wid
+        """),
+        {"wid": writeup_id},
+    )
+    row = result.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Write-up not found")
+
+    content = row[4] if tier == "premium" else row[3]
+
+    return {
+        "id": row[0],
+        "game_id": row[1],
+        "title": row[2],
+        "content": content,
+        "matchup": f"{row[18]} @ {row[16]}",
+        "status": row[5],
+        "version": row[6],
+        "is_historical": row[7],
+        "generated_by": row[8],
+        "total_tokens": row[9],
+        "published_at": str(row[10]) if row[10] else "",
+        "created_at": str(row[11]) if row[11] else "",
+        "updated_at": str(row[12]) if row[12] else "",
+        "research_brief": json.loads(row[13]) if isinstance(row[13], str) else row[13],
+        "quality_checks": json.loads(row[14]) if isinstance(row[14], str) else row[14],
+        "game_date": str(row[15])[:10] if row[15] else "",
+        "home_team": row[16],
+        "home_abbr": row[17],
+        "away_team": row[18],
+        "away_abbr": row[19],
+    }
+
+
+@router.get("/nba/game/{game_id}")
+async def get_nba_writeup_by_game_id(
+    game_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """Get the NBA write-up for a specific game."""
+    result = await db.execute(
+        text("""
+            SELECT w.id, w.game_id, w.title, w.public_content, w.premium_content,
+                   w.status, w.version
+            FROM nba.game_writeups w
+            WHERE w.game_id = :gid
+            ORDER BY w.created_at DESC
+            LIMIT 1
+        """),
+        {"gid": game_id},
+    )
+    row = result.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="No write-up found for this game")
+    return {
+        "id": row[0],
+        "game_id": row[1],
+        "title": row[2],
+        "public_content": row[3],
+        "premium_content": row[4],
+        "status": row[5],
+        "version": row[6],
+    }
+
+
+@router.patch("/nba/{writeup_id}")
+async def update_nba_writeup(
+    writeup_id: int,
+    title: Optional[str] = Query(None),
+    public_content: Optional[str] = Query(None),
+    premium_content: Optional[str] = Query(None),
+    research_brief: Optional[str] = Query(None),
+    quality_checks: Optional[str] = Query(None),
+    db: AsyncSession = Depends(get_db),
+):
+    """Update an NBA write-up."""
+    updates: list[str] = []
+    params: dict = {"wid": writeup_id}
+    if title is not None:
+        updates.append("title = :title")
+        params["title"] = title
+    if public_content is not None:
+        updates.append("public_content = :pc")
+        params["pc"] = public_content
+    if premium_content is not None:
+        updates.append("premium_content = :prc")
+        params["prc"] = premium_content
+    if research_brief is not None:
+        updates.append("research_brief = :rb::jsonb")
+        params["rb"] = research_brief
+    if quality_checks is not None:
+        updates.append("quality_checks = :qc::jsonb")
+        params["qc"] = quality_checks
+    if not updates:
+        raise HTTPException(status_code=400, detail="No fields to update")
+    updates.append("version = version + 1")
+    updates.append("updated_at = NOW()")
+    set_clause = ", ".join(updates)
+    await db.execute(text(f"UPDATE nba.game_writeups SET {set_clause} WHERE id = :wid"), params)
+    await db.commit()
+    return {"id": writeup_id, "updated": True}
+
+
+@router.patch("/nba/{writeup_id}/status")
+async def update_nba_writeup_status(
+    writeup_id: int,
+    status: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Update the status of an NBA writeup."""
+    valid = ("draft", "review", "published", "archived")
+    if status not in valid:
+        raise HTTPException(status_code=400, detail=f"Invalid status. Must be one of {valid}")
+    published_clause = ", published_at = NOW()" if status == "published" else ""
+    await db.execute(
+        text(f"UPDATE nba.game_writeups SET status = :status{published_clause}, updated_at = NOW() WHERE id = :wid"),
+        {"wid": writeup_id, "status": status},
+    )
+    await db.commit()
+    return {"id": writeup_id, "status": status, "ok": True}
 

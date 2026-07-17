@@ -8,6 +8,7 @@ from .betting_line import NBABettingLine
 from .dfs_salary import NBADfsSalary
 from .player_game_stats import NBAPlayerGameStats
 from .game_prediction import NBAGamePrediction
+from .writeup import NBAGameWriteup
 
 __all__ = [
     "NBATeam",
@@ -21,4 +22,5 @@ __all__ = [
     "NBABettingLine",
     "NBADfsSalary",
     "NBAGamePrediction",
+    "NBAGameWriteup",
 ]
