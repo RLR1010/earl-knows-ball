@@ -87,6 +87,8 @@ Return ONLY valid JSON with the following fields:
 
 {tense_note}
 
+CONTENT FORMATTING: Use markdown inside both content fields. `##` headings to organize sections, `**` for emphasis, simple markdown tables for stat comparisons, bullet lists for key points. Keep it article-like — no blockquotes, no emoji, no chat-style formatting.
+
 Return valid JSON only. No markdown fences. No extra text."""
 
     def public_system_prompt(self, is_historical: bool = False) -> str:
@@ -129,7 +131,7 @@ This is a game preview — not a betting analysis. Write in the style of a well-
 
 {tense_note}
 
-Write your article below. Start with the title on its own line (preceded by ##), then the article body."""
+FORMATTING: This renders as a web article via markdown. Use `##` for the title on line 1. Use `##` section headers to organize the body. Use `**` for emphasis sparingly. Simple markdown tables are fine for comparing stats. Bullet lists work for key points. Keep it article-like — no blockquotes, no emoji, no chat-style formatting."""
 
     def premium_system_prompt(self, is_historical: bool = False) -> str:
         """System prompt for the premium-only (insider) writeup.
@@ -171,16 +173,19 @@ What to include:
 - If you cannot think of genuinely premium-worthy content, focus on one key angle and explain it exhaustively
 - Premium content should feel like you're giving the reader a real edge they can't get elsewhere
 
-OUTPUT FORMAT (CRITICAL): Start your response with the article TITLE on its own line.
-Then a blank line. Then the full article content as plain text paragraphs.
-No JSON, no markdown, no special formatting. Just a title line, blank line, then the article.
+OUTPUT FORMAT: Start with the article TITLE on its own line (use `##` as a heading).
+Then a blank line. Then the full article formatted in markdown.
+This renders as a web article, so use markdown appropriate for publishing:
+- `##` section headers to organize the analysis
+- `**` for emphasis on key numbers/angles
+- Simple markdown tables for stat comparisons or line movement data
+- Bullet lists for key points
+- Keep it article-like — no blockquotes, no emoji, no chat-style formatting
 
 Example:
-The Javier Conundrum: Why This Astros-Rangers Matchup Screams Texas
+## The Javier Conundrum
 
 On paper, this looks like a battle of two middling AL West teams with losing June records...
-
-This is the same format as the public article -- plain text, no JSON layer.
 {tense_note}"""
 
     # ── Generation ──────────────────────────────────────────

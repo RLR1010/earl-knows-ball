@@ -112,7 +112,7 @@ Cover these angles in the article:
 
 Write with the voice of a sharp handicapper — analytical, confident, data-driven. Pull specific numbers from the research data. Explain WHY the numbers support your read.
 
-OUTPUT FORMAT (CRITICAL): Start your response with the article TITLE on its own line. Then a blank line. Then the full article content as plain text paragraphs with line breaks between paragraphs. No JSON, no markdown, no special formatting. Just a title line, blank line, then the article."""
+FORMATTING: Start with the article TITLE on its own line (use `##` as a heading). Then a blank line. Then the full article formatted in markdown. Use `##` section headers to organize the analysis. Use `**` for emphasis on key numbers/angles. Simple markdown tables are fine for stat comparisons or line movement data. Bullet lists work for key points in moderation. Keep it article-like — no blockquotes, no emoji, no chat-style formatting."""
 
     def public_system_prompt(self, is_historical: bool = False) -> str:
         tense = (
@@ -139,7 +139,7 @@ IMPORTANT RULES:
 - Keep it to 300-450 words.
 - Be informative and entertaining. No hype or clichés.
 
-Write your article below. Start with the title on its own plain line, then the article body. Do not use any markdown, hashtags, asterisks, or special formatting."""
+FORMATTING: Use `##` for the title on line 1. Use `##` section headers to organize the analysis. Use `**` for emphasis sparingly. Simple markdown tables are fine for comparing stats. Bullet lists work for key points. Keep it article-like — no blockquotes, no emoji, no chat-style formatting."""
 
     # ── Message building ────────────────────────────────────
 

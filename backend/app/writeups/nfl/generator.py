@@ -47,15 +47,15 @@ The article must cover:
 Write with the voice of a sharp handicapper — analytical, confident, data-driven. Pull specific numbers from the research data (yards per game, turnover margins, pace metrics). Explain WHY the numbers support your read.
 
 ⚠️ HUMAN VOICE DIRECTIVES (CRITICAL):
-The article content must read like a real human sports handicapper wrote it — natural, flowing prose, not AI-generated text. Absolutely NO bullet points, numbered lists, dashes, asterisks, or any structured formatting in the article body. NO bold, italics, markdown, or special characters in the prose — just plain natural text. Vary sentence length and structure and avoid repetitive patterns that sound like AI. Write in paragraphs, not structured sections with subheadings beyond the title. No robotic formulas like "Let's break down..." or "Here's a deep dive..." — write naturally. This should read as if a seasoned handicapper sat down and wrote their analysis, not a language model.
+The article content must read like a real human sports handicapper wrote it — natural, flowing prose, not AI-generated text. Vary sentence length and structure. Avoid robotic formulas like "Let's break down..." or "Here's a deep dive..." — write naturally. This should read as if a seasoned handicapper sat down and wrote their analysis, not a language model.
+
+FORMATTING: This renders as a web article via markdown. Use `##` section headers to organize the analysis. Use `**` for emphasis on key numbers/angles. Simple markdown tables are fine for stat comparisons or line movement data. Bullet lists work for key points in moderation. Keep it article-like — no blockquotes, no emoji, no chat-style formatting.
 
 Output format (preferred): Return valid JSON with these keys:
   - "title": A punchy, engaging title for the premium section (include team names, max ~80 chars)
-  - "content": The full premium article content — natural flowing paragraphs, no structured formatting
+  - "content": The full premium article content formatted in markdown
 
-If you cannot return JSON, write the article directly starting with the title on its own plain line. JSON is preferred but article text is acceptable.
-
-No markdown fences, no hash signs, no special formatting whatsoever.
+If you cannot return JSON, write the article starting with `## Title` on line 1, then the markdown body.
 {tense_note}"""
 
     def public_system_prompt(self, is_historical: bool = False) -> str:
@@ -74,9 +74,9 @@ Write about:
 - What to expect: style of game, key matchups on the field
 
 ⚠️ HUMAN VOICE DIRECTIVES (CRITICAL):
-Write like a real human sports journalist — natural, flowing prose, not an AI-generated article. Absolutely NO bullet points, numbered lists, dashes, asterisks, or any structured formatting in the article body whatsoever. NO bold, italics, markdown, or special characters in the prose — just plain natural text. Vary sentence length and structure and avoid repetitive patterns that scream "AI wrote this." Write in paragraphs, not structured sections with headings beyond the title. No robotic formulas like "Let's break down..." or "Here's what you need to know..." — write naturally. This should read as if a beat writer pounded it out on their laptop, not a language model.
+Write like a real human sports journalist — natural, flowing prose, not an AI-generated article. Vary sentence length and structure. No robotic formulas like "Let's break down..." or "Here's what you need to know..." — write naturally. This should read as if a beat writer pounded it out on their laptop, not a language model.
 
-Write your article below. Start with the title on its own plain line, then the article body. Do not use any markdown, hashtags, asterisks, or special formatting.
+FORMATTING: This renders as a web article via markdown. Use `##` for the title on line 1. Use `##` section headers to organize the body. Use `**` for emphasis sparingly. Simple markdown tables are fine for comparing stats. Bullet lists work for key points. Keep it article-like — no blockquotes, no emoji, no chat-style formatting.
 {tense_note}"""
 
     async def generate(
