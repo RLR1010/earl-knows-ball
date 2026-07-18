@@ -435,7 +435,7 @@ export default function MLBGameTabs({ gameId, pickCard, game, formatOdds, boxsco
     }
 
     return (
-      <div className="prose prose-invert prose-sm max-w-none">
+      <div className="writeup-content">
         {writeup.title && (
           <div className="text-sm font-semibold text-white mb-3">{writeup.title}</div>
         )}
@@ -461,7 +461,7 @@ export default function MLBGameTabs({ gameId, pickCard, game, formatOdds, boxsco
     }
 
     return (
-      <div className="prose prose-invert prose-sm max-w-none">
+      <div className="writeup-content">
         {writeup.title && (
           <div className="text-sm font-semibold text-white mb-3">{writeup.title}</div>
         )}

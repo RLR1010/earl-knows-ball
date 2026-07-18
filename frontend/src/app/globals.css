@@ -1,18 +1,52 @@
 @import "tailwindcss";
-@plugin "@tailwindcss/typography";
 
-/* Markdown table styling for writeups */
-.prose table {
-  @apply w-full border-collapse;
+/* Writeup / markdown article styling */
+.writeup-content h2 {
+  font-size: 1.25rem;
+  font-weight: 700;
+  margin: 1.5rem 0 0.75rem;
+  color: #f0f0f0;
 }
-.prose th {
-  @apply border border-gray-600 px-3 py-2 text-left text-xs font-semibold uppercase tracking-wider text-gray-300;
+.writeup-content h3 {
+  font-size: 1.1rem;
+  font-weight: 600;
+  margin: 1.25rem 0 0.5rem;
+  color: #e0e0e0;
 }
-.prose td {
-  @apply border border-gray-600 px-3 py-2 text-sm;
+.writeup-content p {
+  margin: 0.75rem 0;
+  line-height: 1.7;
 }
-.prose tr:nth-child(even) {
-  @apply bg-gray-800/50;
+.writeup-content table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1rem 0;
+}
+.writeup-content th {
+  border: 1px solid #52525b;
+  padding: 0.5rem 0.75rem;
+  text-align: left;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #b0b0b0;
+}
+.writeup-content td {
+  border: 1px solid #52525b;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.875rem;
+}
+.writeup-content tr:nth-child(even) {
+  background: rgba(255, 255, 255, 0.03);
+}
+.writeup-content ol,
+.writeup-content ul {
+  margin: 0.75rem 0;
+  padding-left: 1.5rem;
+}
+.writeup-content li {
+  margin: 0.25rem 0;
 }
 
 @theme {

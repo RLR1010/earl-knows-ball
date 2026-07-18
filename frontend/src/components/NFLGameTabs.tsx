@@ -612,7 +612,7 @@ export default function NFLGameTabs({ gameId, boxscore, prediction, isFinal }: N
             {writeupLoading ? (
               <div className="text-sm text-gray-500 animate-pulse">Loading preview...</div>
             ) : writeupData?.has_writeup && writeupData.public_content ? (
-              <div className="prose prose-sm prose-invert max-w-none">
+              <div className="writeup-content">
                 <ReactMarkdown remarkPlugins={[remarkGfm]}>
                   {writeupData.public_content}
                 </ReactMarkdown>
@@ -641,7 +641,7 @@ export default function NFLGameTabs({ gameId, boxscore, prediction, isFinal }: N
                 {writeupData.title && (
                   <h3 className="text-lg font-bold text-white mb-3">{writeupData.title}</h3>
                 )}
-                <div className="prose prose-sm prose-invert max-w-none">
+                <div className="writeup-content">
                   <ReactMarkdown remarkPlugins={[remarkGfm]}>
                     {writeupData.premium_content}
                   </ReactMarkdown>
