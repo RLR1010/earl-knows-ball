@@ -6,13 +6,16 @@ from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 from app.core.config import settings
 
 database_url = settings.database_url
-logger = logging.getLogger("uvicorn")
+logger = logging.getLogger("earl.database")
 
 # Create async engine with search_path set for all connections
 async_engine = create_async_engine(
     database_url,
     connect_args={"server_settings": {"search_path": "nfl, public"}},
-    pool_pre_ping=False,
+    pool_pre_ping=True,
+    pool_recycle=300,
+    pool_size=20,
+    max_overflow=10,
 )
 
 async_session = async_sessionmaker(async_engine, expire_on_commit=False)
@@ -23,7 +26,10 @@ sync_url = database_url.replace("+asyncpg", "+psycopg2")
 sync_options = "-c search_path='nfl, public'"
 engine = create_engine(
     sync_url,
-    pool_pre_ping=False,
+    pool_pre_ping=True,
+    pool_recycle=300,
+    pool_size=10,
+    max_overflow=5,
     connect_args={"options": sync_options},
 )
 

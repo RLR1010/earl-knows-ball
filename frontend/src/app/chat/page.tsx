@@ -1,6 +1,9 @@
 "use client";
 import { useState, useRef, useEffect } from "react";
 
+import ReactMarkdown, { type Components } from "react-markdown";
+import remarkGfm from "remark-gfm";
+
 type Sport = "nfl" | "nba" | "mlb";
 
 interface Message {
@@ -20,10 +23,13 @@ const SPORT_EMOJIS: Record<Sport, string> = {
   mlb: "⚾",
 };
 
+// Direct backend URL — Next.js proxy buffers streaming responses (GZIPs them,
+// waits for entire stream). CORS is wide-open so direct calls work fine.
+const API_HOST = "http://localhost:8001";
 const SPORT_CHAT_ENDPOINTS: Record<Sport, string> = {
-  nfl: "/api/chat",
-  nba: "/api/chat/nba",
-  mlb: "/api/chat/mlb",
+  nfl: `${API_HOST}/chat`,
+  nba: `${API_HOST}/chat/nba`,
+  mlb: `${API_HOST}/chat/mlb`,
 };
 
 const SPORT_WELCOME: Record<Sport, string> = {
@@ -38,6 +44,68 @@ const SPORT_PLACEHOLDERS: Record<Sport, string> = {
   mlb: "Ask about MLB bets, DFS stacks, or matchups...",
 };
 
+const markdownComponents: Components = {
+  table({ children }) {
+    return (
+      <div className="overflow-x-auto my-3">
+        <table className="w-full text-xs border-collapse">{children}</table>
+      </div>
+    );
+  },
+  thead({ children }) {
+    return <thead className="bg-white/10">{children}</thead>;
+  },
+  th({ children }) {
+    return (
+      <th className="px-3 py-2 text-left font-semibold text-earl-300 border-b border-white/10">
+        {children}
+      </th>
+    );
+  },
+  td({ children }) {
+    return <td className="px-3 py-1.5 border-b border-white/5">{children}</td>;
+  },
+  h1({ children }) {
+    return <h1 className="text-base font-bold text-gray-100 mt-4 mb-1">{children}</h1>;
+  },
+  h2({ children }) {
+    return <h2 className="text-sm font-bold text-gray-100 mt-4 mb-1">{children}</h2>;
+  },
+  h3({ children }) {
+    return <h3 className="text-sm font-semibold text-gray-100 mt-3 mb-1">{children}</h3>;
+  },
+  hr() {
+    return <hr className="border-white/10 my-4" />;
+  },
+  ul({ children }) {
+    return <ul className="list-disc list-inside space-y-1 my-2">{children}</ul>;
+  },
+  ol({ children }) {
+    return <ol className="list-decimal list-inside space-y-1 my-2">{children}</ol>;
+  },
+  p({ children }) {
+    return <p className="mb-2 last:mb-0">{children}</p>;
+  },
+  strong({ children }) {
+    return <strong className="text-gray-100 font-semibold">{children}</strong>;
+  },
+  code({ children, className, ...props }) {
+    const isInline = !className;
+    if (isInline) {
+      return (
+        <code className="bg-white/10 px-1 rounded text-xs" {...props}>
+          {children}
+        </code>
+      );
+    }
+    return (
+      <pre className="bg-black/40 rounded-lg p-3 my-3 overflow-x-auto text-xs">
+        <code {...props}>{children}</code>
+      </pre>
+    );
+  },
+};
+
 export default function ChatPage() {
   const [sport, setSport] = useState<Sport>("nfl");
   const [messages, setMessages] = useState<Record<Sport, Message[]>>({
@@ -47,6 +115,7 @@ export default function ChatPage() {
   });
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [statusText, setStatusText] = useState<string | null>(null);
   const [conversationIds, setConversationIds] = useState<Record<Sport, string | null>>({
     nfl: null,
     nba: null,
@@ -57,6 +126,7 @@ export default function ChatPage() {
   const [password, setPassword] = useState("");
   const [showLogin, setShowLogin] = useState(true);
   const bottomRef = useRef<HTMLDivElement>(null);
+const statusRef = useRef<HTMLSpanElement>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -108,7 +178,13 @@ export default function ChatPage() {
       [sport]: [...prev[sport], { role: "user", content: userMsg }],
     }));
     setLoading(true);
+    setStatusText("Asking Earl...");
+    // Yield so React commits the loading card to the DOM before fetch starts.
+    // Otherwise statusRef.current won't exist when SSE status events arrive.
+    await new Promise((r) => setTimeout(r, 0));
 
+    // Track via mutation so finally block can check without scope issues
+    const gotAnswer = { value: false };
     try {
       const endpoint = SPORT_CHAT_ENDPOINTS[sport];
       const res = await fetch(endpoint, {
@@ -123,7 +199,22 @@ export default function ChatPage() {
         }),
       });
 
+      if (res.status === 401) {
+        localStorage.removeItem("earl_token");
+        setToken(null);
+        setStatusText(null);
+        setMessages((prev) => ({
+          ...prev,
+          [sport]: [
+            ...prev[sport],
+            { role: "assistant", content: "🔑 Session expired. Please log in again." },
+          ],
+        }));
+        return;
+      }
+
       if (res.status === 403) {
+        setStatusText(null);
         setMessages((prev) => ({
           ...prev,
           [sport]: [
@@ -134,21 +225,85 @@ export default function ChatPage() {
         return;
       }
 
-      const data = await res.json();
-      if (data.conversation_id) {
-        setConversationIds((prev) => ({ ...prev, [sport]: data.conversation_id }));
+      if (!res.ok) {
+        setStatusText(null);
+        setMessages((prev) => ({
+          ...prev,
+          [sport]: [...prev[sport], { role: "assistant", content: "Sorry, I hit an error. Try again." }],
+        }));
+        return;
       }
-      setMessages((prev) => ({
-        ...prev,
-        [sport]: [...prev[sport], { role: "assistant", content: data.response }],
-      }));
+
+      // --- SSE streaming ---
+      const reader = res.body?.getReader();
+      if (!reader) throw new Error("No response body");
+
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        // Normalize \r\n to \n — sse-starlette uses \r\n by default
+        buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n");
+
+        // Process complete SSE events (delimited by \n\n)
+        const parts = buffer.split("\n\n");
+        buffer = parts.pop() || "";
+
+        for (const part of parts) {
+          if (!part.startsWith("data: ")) continue;
+
+          try {
+            const data = JSON.parse(part.slice(6));
+
+            if (data.type === "conv_id") {
+              setConversationIds((prev) => ({ ...prev, [sport]: data.id }));
+            } else if (data.type === "status") {
+              // Write directly to the DOM — bypasses React batching
+              if (statusRef.current) statusRef.current.textContent = data.message;
+              // Wait 50ms so the browser paints and the user can read it.
+              await new Promise((r) => setTimeout(r, 50));
+            } else if (data.type === "answer") {
+              gotAnswer.value = true;
+              setStatusText(null);
+              setMessages((prev) => ({
+                ...prev,
+                [sport]: [...prev[sport], { role: "assistant", content: data.content }],
+              }));
+              setLoading(false);
+            }
+          } catch {
+            // Skip malformed SSE lines
+          }
+        }
+      }
+
+      if (!gotAnswer.value) {
+        setMessages((prev) => ({
+          ...prev,
+          [sport]: [
+            ...prev[sport],
+            { role: "assistant", content: "I was researching your question but hit a snag. Could you try rephrasing?" },
+          ],
+        }));
+        setLoading(false);
+        setStatusText(null);
+      }
     } catch {
+      setStatusText(null);
+      setLoading(false);
       setMessages((prev) => ({
         ...prev,
         [sport]: [...prev[sport], { role: "assistant", content: "Sorry, I hit an error. Try again." }],
       }));
     } finally {
-      setLoading(false);
+      // If error but we got an answer, keep loading already cleared by answer handler
+      if (!gotAnswer.value) {
+        setLoading(false);
+        setStatusText(null);
+      }
     }
   }
 
@@ -250,18 +405,27 @@ export default function ChatPage() {
                   Earl ({SPORT_NAMES[sport]})
                 </span>
               )}
-              {m.content}
+              <ReactMarkdown
+                remarkPlugins={[remarkGfm]}
+                components={markdownComponents}
+              >
+                {m.content}
+              </ReactMarkdown>
             </div>
           </div>
         ))}
-        {loading && (
+
+        {loading && statusText && (
           <div className="flex justify-start">
-            <div className="bg-white/10 rounded-2xl rounded-bl-md px-4 py-3">
-              <span className="text-earl-400 text-sm">Earl is thinking</span>
-              <span className="animate-pulse">...</span>
+            <div className="max-w-[80%] rounded-2xl px-4 py-3 text-sm bg-white/10 text-gray-400 rounded-bl-md">
+              <div className="flex items-center gap-2">
+                <span className="w-2 h-2 bg-earl-400 rounded-full animate-pulse" />
+                <span className="italic" ref={statusRef}>{statusText}</span>
+              </div>
             </div>
           </div>
         )}
+
         <div ref={bottomRef} />
       </div>
 

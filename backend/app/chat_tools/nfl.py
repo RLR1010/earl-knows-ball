@@ -587,7 +587,7 @@ async def _get_injuries(db: AsyncSession, args: dict) -> dict:
             "injury": row.injury_type,
             "practice_status": row.practice_status,
             "game_status": row.game_status,
-            "updated": str(row.updated) if row.updated else None,
+            "updated": str(row.date_reported) if row.date_reported else None,
         })
     return {"injuries": injuries}
 
@@ -748,28 +748,22 @@ async def _get_dfs_salaries(db: AsyncSession, args: dict) -> dict:
 async def _get_game_prediction(db: AsyncSession, args: dict) -> dict:
     gid = args["game_id"]
 
+    # game_predictions has game_id -> nfl.games.id, which has home/away_team_id -> nfl.teams.id
     sql = text("""
-        SELECT gp.*, ht.name AS home_name, at2.name AS away_name
+        SELECT gp.*, ht.name AS home_name, at.name AS away_name
         FROM nfl.game_predictions gp
-        JOIN nfl.teams ht ON LOWER(ht.abbreviation) = LOWER(SPLIT_PART(gp.home_team, ' ', -1))
-        JOIN nfl.teams at2 ON LOWER(at2.abbreviation) = LOWER(SPLIT_PART(gp.away_team, ' ', -1))
+        JOIN nfl.games g ON g.id = gp.game_id
+        JOIN nfl.teams ht ON ht.id = g.home_team_id
+        JOIN nfl.teams at ON at.id = g.away_team_id
         WHERE gp.game_id = :gid
         LIMIT 1
     """)
     r = await db.execute(sql, {"gid": gid})
     row = r.mappings().first()
     if not row:
-        # Try without team join
-        sql2 = text("SELECT * FROM nfl.game_predictions WHERE game_id = :gid")
-        r2 = await db.execute(sql2, {"gid": gid})
-        row = r2.mappings().first()
-        if not row:
-            return {"error": f"No prediction found for game {gid}"}
-        home_name = row.home_team
-        away_name = row.away_team
-    else:
-        home_name = row.home_name
-        away_name = row.away_name
+        return {"error": f"No prediction found for game {gid}"}
+    home_name = row.home_name
+    away_name = row.away_name
 
     pred = {
         "game_id": gid,

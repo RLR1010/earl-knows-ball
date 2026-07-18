@@ -97,6 +97,9 @@ async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
     if not user or not pwd_context.verify(req.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
+    if not user or not pwd_context.verify(req.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+
     # Update last login
     user.last_login_at = datetime.now(timezone.utc)
     await db.commit()

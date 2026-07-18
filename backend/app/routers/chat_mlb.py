@@ -1,12 +1,12 @@
-"""MLB chat endpoint with tool-calling research and enrichment.
+"""MLB chat endpoint with tool-calling research and SSE streaming.
 
-This replaces the old httpx-based chat with a DeepSeek function-calling approach:
 1. User sends a question with conversation history.
-2. DeepSeek researches by calling MLB database tools (team stats, standings, etc.).
-3. After research, enrichment searches pgvector articles and gets a relevance summary.
-4. If enrichment found useful info, DeepSeek generates the final answer with everything.
+2. DeepSeek researches by calling MLB database tools (team stats, standings, etc.),
+   with status updates streamed to the client.
+3. After research, enrichment searches pgvector articles for additional context.
+4. The final answer is streamed as an SSE event.
 
-Uses AsyncOpenAI (OpenAI Python SDK) like the writeup system, not raw httpx.
+Uses the same ToolChatEngine pattern as NFL (/chat) and NBA (/chat/nba).
 """
 
 import json
@@ -16,6 +16,8 @@ from zoneinfo import ZoneInfo
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException
+from sse_starlette.sse import EventSourceResponse
+from openai import AsyncOpenAI
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -33,27 +35,29 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # ---------------------------------------------------------------------------
-# System prompt extras
+# System prompt extra
 # ---------------------------------------------------------------------------
 
-MLB_SYSTEM_EXTRA = """You cover all 30 MLB teams. The current 2026 season is in progress.
+MLB_SYSTEM_EXTRA = """You cover all 30 MLB teams. The current MLB season is in progress.
 
 Key MLB handicapping angles:
-- Starting pitcher matchup is the single most important factor for any game
-- Bullpen usage and fatigue matter, especially in series
-- Park factors affect scoring (Coors Field, Yankee Stadium short porch, etc.)
-- Weather (wind, temperature) affects the over/under significantly in outdoor parks
-- Division rivalries tend to produce tighter, lower-scoring games
-- Day games after night games create rest and travel considerations
-- Home/road splits can be dramatic for some teams
-- A team's record in 1-run games and extra-innings tells you about their bullpen and luck
+- Pitching matchup is the single most important factor — starting pitcher quality and bullpen depth drive game outcomes
+- Home/away splits matter more in baseball than any other sport (ballpark factors, travel, familiarity)
+- Ballpark factors significantly affect totals — some parks are hitter-friendly (Coors, Great American, Camden), others are pitcher-friendly (Petco, T-Mobile, Citi Field)
+- Weather (wind direction/speed, temperature, humidity, rain) dramatically affects MLB totals — wind blowing out increases scoring, cold dampens offense, rain creates slicker conditions for fielders
+- Bullpen usage and fatigue matter — teams that overuse their bullpen in consecutive games are vulnerable
+- Left/righty splits are crucial for specific batter-pitcher matchups
+- Days off affect pitcher rest and bullpen availability
+- Divisional opponents face each other 19 times — familiarity helps hitters against known pitchers
+- Day games after night games affect offense (hitters see the ball worse in afternoon sun)
+- The run line (+1.5 for dogs, -1.5 for favorites) is often more valuable than moneyline for heavy favorites
+- First five innings (F5) bets reduce bullpen volatility
+- Streaks and hot/cold periods in baseball are real but overvalued by the market
+- Umpire strike zone tendencies affect pitcher performance
+- Temperature affects ball travel distance and pitcher grip (colder = lower scoring)
 
-When discussing betting lines, always reference:
-- Run line (spread) with odds
-- Moneyline with prices
-- Game total (over/under)
-
-Always use the tools to research before answering. Get specific stats and numbers."""
+Follow the handicapper info mandate: every answer must cover both sides of the matchup
+and include situational factors (rest, venue, weather, bullpen)."""
 
 # ---------------------------------------------------------------------------
 # Chat engine singleton
@@ -90,141 +94,159 @@ class ChatMLBResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Endpoint
+# Endpoint (SSE streaming)
 # ---------------------------------------------------------------------------
 
 
-@router.post("/chat/mlb", response_model=ChatMLBResponse)
+@router.post("/chat/mlb")
 async def chat_mlb(
     request: ChatMLBRequest,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Chat with Earl about MLB. Research is handled via tool calling so
-    DeepSeek decides what data to look up before answering."""
+    """Chat with Earl about MLB — SSE streaming with status updates."""
 
-    conv_id = request.conversation_id
-    start_time = datetime.now(timezone.utc)
+    async def event_stream():
+        answer = ""
+        try:
+            # --- Step 1: Build messages with conversation history ---
+            messages = [
+                {"role": "system", "content": mlb_chat_engine.system_prompt},
+            ]
 
-    try:
-        # --- Step 1: Build messages with conversation history ---
-        messages = [
-            {"role": "system", "content": mlb_chat_engine.system_prompt},
-        ]
-
-        if conv_id:
-            # Load last N messages for context
-            stmt = (
-                select(ChatHistory)
-                .where(
-                    ChatHistory.conversation_id == conv_id,
-                    ChatHistory.user_id == current_user.id,
+            if request.conversation_id:
+                stmt = (
+                    select(ChatHistory)
+                    .where(
+                        ChatHistory.conversation_id == request.conversation_id,
+                        ChatHistory.user_id == current_user.id,
+                    )
+                    .order_by(ChatHistory.created_at.asc())
                 )
-                .order_by(ChatHistory.created_at.asc())
+                result = await db.execute(stmt)
+                history = result.scalars().all()
+                for h in history[-20:]:
+                    if h.role in ("user", "assistant"):
+                        messages.append({"role": h.role, "content": h.message})
+                conv_id = request.conversation_id
+            else:
+                conv_id = str(uuid4())
+
+            # Add time-contextualized question
+            central_now = datetime.now(ZoneInfo("America/Chicago"))
+            time_context = central_now.strftime("%A, %B %d, %Y at %I:%M %p %Z").replace(" 0", " ")
+            messages.append({
+                "role": "user",
+                "content": f"[Central US time: {time_context}]\n\n{request.message}",
+            })
+
+            user_id = current_user.id
+
+            logger.info(
+                "MLB chat: user=%s conv=%s msg=%s",
+                current_user.id, conv_id, request.message[:80],
             )
-            result = await db.execute(stmt)
-            history = result.scalars().all()
-            # Include only user/assistant messages (not tool calls)
-            for h in history[-20:]:  # last 20 messages
-                if h.role in ("user", "assistant"):
-                    messages.append({"role": h.role, "content": h.message})
-        else:
-            conv_id = str(uuid4())
 
-        # Add the current question with timezone context
-        central_now = datetime.now(ZoneInfo("America/Chicago"))
-        time_context = central_now.strftime("%A, %B %d, %Y at %I:%M %p %Z").replace(" 0", " ")
-        user_msg = {
-            "role": "user",
-            "content": f"[Central US time: {time_context}]\n\n{request.message}",
-        }
-        messages.append(user_msg)
+            # Send conv_id so the frontend can track the conversation
+            yield {"data": json.dumps({"type": "conv_id", "id": conv_id, "user_id": str(user_id)}, ensure_ascii=False)}
 
-        # --- Step 2: Research & Answer via tool calling ---
-        logger.info(
-            "MLB chat: user=%s conv=%s msg=%s",
-            current_user.id, conv_id, request.message[:80],
-        )
+            # --- Step 2: Research phase (streaming status) ---
+            async for event_type, data in mlb_chat_engine.research_and_answer_stream(
+                db, messages, max_turns=6
+            ):
+                if event_type == "status":
+                    yield {"data": json.dumps({"type": "status", "message": data}, ensure_ascii=False)}
+                elif event_type == "answer":
+                    answer = data
 
-        answer = await mlb_chat_engine.research_and_answer(db, messages, max_turns=6)
+            # --- Step 3: Enrichment (if enabled) ---
+            if request.include_enrichment:
+                yield {"data": json.dumps({"type": "status", "message": "Searching for relevant articles..."}, ensure_ascii=False)}
+                enrichment_text = await ToolChatEngine.run_enrichment(
+                    db=db,
+                    question=request.message,
+                    sport="mlb",
+                    top_k=8,
+                )
+                if enrichment_text and "No relevant information" not in enrichment_text:
+                    yield {"data": json.dumps({"type": "status", "message": "Polishing with article insights..."}, ensure_ascii=False)}
+                    try:
+                        client = AsyncOpenAI(
+                            api_key=settings.deepseek_api_key,
+                            base_url=f"{settings.deepseek_base_url.rstrip('/')}/v1",
+                            timeout=30.0,
+                        )
+                        final_response = await client.chat.completions.create(
+                            model=settings.deepseek_model,
+                            messages=[
+                                {"role": "system", "content": mlb_chat_engine.system_prompt},
+                                {"role": "user", "content": (
+                                    f"Original question: {request.message}\n\n"
+                                    f"--- KEY DATA FROM TOOL RESEARCH ---\n"
+                                    f"{answer}\n\n"
+                                    f"--- ADDITIONAL CONTEXT FROM RECENT ARTICLES ---\n"
+                                    f"{enrichment_text}\n\n"
+                                    f"Using the researched data AND the article enrichment above, "
+                                    f"provide your final handicapping answer. Be concise and specific."
+                                )},
+                            ],
+                            temperature=0.3,
+                            max_tokens=2048,
+                        )
+                        refined = final_response.choices[0].message.content or ""
+                        if refined:
+                            answer = refined
+                            logger.info("Enrichment refinement completed successfully")
+                        else:
+                            logger.warning("Enrichment refinement returned empty")
+                    except Exception as enrich_err:
+                        logger.exception("Enrichment final generation failed: %s", enrich_err)
 
-        # --- Step 3: Enrichment (if enabled) ---
-        if request.include_enrichment:
-            enrichment_text = await ToolChatEngine.run_enrichment(
-                db=db,
-                question=request.message,
+            # --- Step 4: Save conversation history ---
+            now = datetime.now(timezone.utc)
+            db.add(ChatHistory(
+                conversation_id=conv_id,
+                user_id=user_id,
                 sport="mlb",
-                top_k=8,
-            )
-            if enrichment_text and "No relevant information" not in enrichment_text:
-                logger.info("Enrichment found relevant info — generating refined answer")
-                try:
-                    from openai import AsyncOpenAI
-                    client = AsyncOpenAI(
-                        api_key=settings.deepseek_api_key,
-                        base_url=f"{settings.deepseek_base_url.rstrip('/')}/v1",
-                        timeout=30.0,
-                    )
-                    final_response = await client.chat.completions.create(
-                        model=settings.deepseek_model,
-                        messages=[
-                            {"role": "system", "content": mlb_chat_engine.system_prompt},
-                            {"role": "user", "content": (
-                                f"Original question: {request.message}\n\n"
-                                f"--- KEY DATA FROM TOOL RESEARCH ---\n"
-                                f"{answer}\n\n"
-                                f"--- ADDITIONAL CONTEXT FROM RECENT ARTICLES ---\n"
-                                f"{enrichment_text}\n\n"
-                                f"Using the researched data AND the article enrichment above, "
-                                f"provide your final handicapping answer. Be concise and specific."
-                            )},
-                        ],
-                        temperature=0.3,
-                        max_tokens=2048,
-                    )
-                    refined = final_response.choices[0].message.content or ""
-                    if refined:
-                        answer = refined
-                        logger.info("Enrichment refinement completed successfully")
-                    else:
-                        logger.warning("Enrichment refinement returned empty")
-                except Exception as enrich_err:
-                    logger.exception("Enrichment final generation failed: %s", enrich_err)
-                    # Fall back to the research-only answer
+                role="user",
+                message=request.message,
+                created_at=now,
+            ))
+            db.add(ChatHistory(
+                conversation_id=conv_id,
+                user_id=user_id,
+                sport="mlb",
+                role="assistant",
+                message=answer,
+                created_at=now,
+            ))
+            await db.commit()
 
-        # --- Step 4: Save conversation history ---
-        now = datetime.now(timezone.utc)
+            # --- Send final answer ---
+            yield {"data": json.dumps({"type": "answer", "content": answer}, ensure_ascii=False)}
+            yield {"data": json.dumps({"type": "done"}, ensure_ascii=False)}
 
-        # Save the user message
-        db.add(ChatHistory(
-            conversation_id=conv_id,
-            user_id=current_user.id,
-            sport="mlb",
-            role="user",
-            message=request.message,
-            created_at=now,
-        ))
-        # Save the assistant response
-        db.add(ChatHistory(
-            conversation_id=conv_id,
-            user_id=current_user.id,
-            sport="mlb",
-            role="assistant",
-            message=answer,
-            created_at=now,
-        ))
-        await db.commit()
+        except Exception as e:
+            logger.exception("MLB chat error for user %s: %s", current_user.id, e)
+            if not answer:
+                yield {
+                    "data": json.dumps({
+                        "type": "answer",
+                        "content": "I was researching your question but hit a snag. Could you try rephrasing?",
+                    }, ensure_ascii=False),
+                }
+            else:
+                yield {"data": json.dumps({"type": "answer", "content": answer}, ensure_ascii=False)}
+            yield {"data": json.dumps({"type": "done"}, ensure_ascii=False)}
 
-        # Rough token estimate
-        total_tokens = len(request.message.split()) + len(answer.split())
-        total_tokens *= 2  # rough multiplier for tool call tokens
+    return EventSourceResponse(
+        event_stream(),
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Connection": "keep-alive",
+        },
+        ping=5,
+    )
 
-        return ChatMLBResponse(
-            response=answer,
-            conversation_id=conv_id,
-            tokens_used=total_tokens,
-        )
 
-    except Exception as e:
-        logger.exception("MLB chat error for user %s: %s", current_user.id, e)
-        raise HTTPException(status_code=500, detail="Internal error processing chat.")
+__all__ = ["router"]

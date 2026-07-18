@@ -6,7 +6,7 @@ tools to query the database) and optionally enrichment (vector search + summary)
 
 import json
 import logging
-from typing import Any, Callable
+from typing import Any, AsyncGenerator, Callable
 
 from openai import AsyncOpenAI
 
@@ -33,7 +33,10 @@ CRITICAL RULES:
 - NEVER recommend parlays or same-game parlays — they're sucker bets with
   terrible expected value and not a smart wagering strategy.
 - NEVER suggest chasing losses or increasing bet size after a loss.
-- Use plain text only. No markdown formatting, no asterisks.
+- Format responses with clean Markdown for readability: use **bold** for emphasis,
+  # or ## for section headers, | tables | for structured data, --- for section
+  breaks, lists for bullets, and use emojis as section markers.
+- NEVER use *** (triple asterisks). Use **bold** (double asterisks) instead.
 - Be direct and opinionated, but back it up with data.
 - Keep responses concise — a few focused paragraphs.
 - If you don't have data for something, say so.
@@ -165,6 +168,165 @@ class ToolChatEngine:
             logger.warning("research_and_answer error: %s", e)
             return f"I was researching your question but hit a snag. Here's what I know so far:\n\n{original_answer}"
 
+
+    @staticmethod
+    def _describe_tool(tool_call: Any) -> str:
+        """Generate a human-readable status message from a tool call."""
+        try:
+            args = json.loads(tool_call.function.arguments)
+        except (json.JSONDecodeError, TypeError):
+            args = {}
+
+        name = tool_call.function.name
+
+        # Extract a team/player name for personalization
+        subject = (
+            args.get("team_name")
+            or args.get("team")
+            or args.get("home_team")
+            or args.get("away_team")
+            or args.get("player_name")
+            or args.get("first_name")
+            or args.get("query", "")
+        )
+
+        # Map tool names to natural language descriptions
+        verb_map = {
+            "search_teams": ("Looking up team info", subject),
+            "get_team_info": ("Getting team info", subject),
+            "get_team_stats": ("Checking team stats", subject),
+            "get_team_batting_stats": ("Checking batting stats", subject),
+            "get_team_pitching_stats": ("Checking pitching stats", subject),
+            "get_standings": ("Checking standings", ""),
+            "get_todays_games": ("Looking at today's games", ""),
+            "get_week_games": ("Looking at this week's games", ""),
+            "get_game_info": ("Getting game details", ""),
+            "get_head_to_head": ("Checking head-to-head history", subject),
+            "get_injuries": ("Pulling injury reports", subject),
+            "get_depth_chart": ("Checking depth charts", subject),
+            "get_player_stats": ("Looking up player stats", subject),
+            "get_player_weekly_log": ("Checking weekly logs", subject),
+            "get_dfs_salaries": ("Checking DFS salaries", ""),
+            "get_game_prediction": ("Running model predictions", ""),
+            "get_team_schedule": ("Looking up the schedule", subject),
+            "get_team_splits": ("Checking team splits", subject),
+            "search_articles": ("Searching for news", subject if subject else ""),
+            "get_player_game_logs": ("Checking game logs", subject),
+        }
+
+        verb, subject = verb_map.get(name, (f"Running {name.replace('_', ' ')}", ""))
+        if subject:
+            return f"{verb} for {subject}..."
+        return f"{verb}..."
+
+    async def research_and_answer_stream(
+        self,
+        db: Any,
+        messages: list[dict],
+        max_turns: int = 15,
+    ) -> AsyncGenerator[tuple[str, str], None]:
+        """
+        Same as research_and_answer but yields (type, data) tuples for SSE streaming.
+
+        Yields:
+            ("status", message) — progress update for the user
+            ("answer", text) — final answer
+        """
+        original_answer = ""
+        try:
+            client = AsyncOpenAI(
+                api_key=settings.deepseek_api_key,
+                base_url=f"{settings.deepseek_base_url.rstrip('/')}/v1",
+                timeout=45.0,
+            )
+
+            yield ("status", "Researching your question...")
+
+            # First call with tools available
+            response = await client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                tools=self.tools,
+                tool_choice="auto",
+            )
+
+            assistant_msg = response.choices[0].message
+            self._append_assistant(messages, assistant_msg)
+
+            turns = 0
+            while assistant_msg.tool_calls and turns < max_turns:
+                turns += 1
+                logger.info(
+                    "Tool call round %d/%d: %d tool(s)",
+                    turns, max_turns, len(assistant_msg.tool_calls),
+                )
+
+                # Execute each tool call
+                for tool_call in assistant_msg.tool_calls:
+                    yield ("status", self._describe_tool(tool_call))
+                    try:
+                        result = await self.executor(db, tool_call)
+                        content = json.dumps(result, default=str)
+                    except Exception as e:
+                        logger.exception("Tool execution failed: %s", e)
+                        content = json.dumps({"error": str(e)})
+
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "content": content,
+                    })
+
+                # Next turn
+                yield ("status", "Thinking about what I found...")
+                response = await client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    tools=self.tools,
+                    tool_choice="auto",
+                )
+                assistant_msg = response.choices[0].message
+                self._append_assistant(messages, assistant_msg)
+
+            # If DeepSeek still wants to call tools (hit max_turns), force a final answer
+            if not assistant_msg.content and assistant_msg.tool_calls:
+                logger.info("Hit max_turns with pending tool calls — forcing final answer")
+                yield ("status", "One more thing...")
+                for tool_call in assistant_msg.tool_calls:
+                    try:
+                        result = await self.executor(db, tool_call)
+                        content = json.dumps(result, default=str)
+                    except Exception as e:
+                        logger.exception("Tool execution failed: %s", e)
+                        content = json.dumps({"error": str(e)})
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "content": content,
+                    })
+                messages.append({"role": "user", "content": "You have all the data you need. Provide your final answer now based on ALL the information you have gathered. Be thorough and cite specific stats, matchups, and trends. Do not call any more tools."})
+                response = await client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    temperature=0.3,
+                    max_tokens=2048,
+                    tool_choice="none",
+                )
+                assistant_msg = response.choices[0].message
+
+            yield ("status", "Drafting your breakdown...")
+            original_answer = assistant_msg.content or ""
+            if not original_answer:
+                original_answer = "I gathered information about this matchup but ran into an issue generating a full breakdown."
+            yield ("answer", original_answer)
+
+        except Exception as e:
+            logger.exception("research_and_answer_stream error: %s", e, exc_info=True)
+            if original_answer:
+                yield ("status", "Drafting from what I found...")
+                yield ("answer", original_answer)
+            else:
+                yield ("answer", f"I was researching your question but ran into an error. Let me summarize what I found.")
 
     @staticmethod
     def _extract_tool_results(messages: list[dict]) -> str:
