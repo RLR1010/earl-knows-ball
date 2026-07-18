@@ -12,7 +12,7 @@ logger = logging.getLogger("uvicorn")
 async_engine = create_async_engine(
     database_url,
     connect_args={"server_settings": {"search_path": "nfl, public"}},
-    pool_pre_ping=True,
+    pool_pre_ping=False,
 )
 
 async_session = async_sessionmaker(async_engine, expire_on_commit=False)
@@ -23,7 +23,7 @@ sync_url = database_url.replace("+asyncpg", "+psycopg2")
 sync_options = "-c search_path='nfl, public'"
 engine = create_engine(
     sync_url,
-    pool_pre_ping=True,
+    pool_pre_ping=False,
     connect_args={"options": sync_options},
 )
 
