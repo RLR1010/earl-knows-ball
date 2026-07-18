@@ -112,7 +112,13 @@ Cover these angles in the article:
 
 Write with the voice of a sharp handicapper — analytical, confident, data-driven. Pull specific numbers from the research data. Explain WHY the numbers support your read.
 
-FORMATTING: Start with the article TITLE on its own line (use `##` as a heading). Then a blank line. Then the full article formatted in markdown. Use `##` section headers to organize the analysis. Use `**` for emphasis on key numbers/angles. Simple markdown tables are fine for stat comparisons or line movement data. Bullet lists work for key points in moderation. Keep it article-like — no blockquotes, no emoji, no chat-style formatting."""
+FORMATTING: Start with the article TITLE on its own line (use `##` as a heading). Then a blank line. Then the full article formatted in markdown. Use `##` section headers to organize the analysis. Use `**` for emphasis on key numbers/angles. For tables, use proper pipe-and-dash markdown syntax with a separator row:
+
+| Player | PTS | REB | AST | FG% |
+|--------|-----|-----|-----|-----|
+| Luka Dončić | 34.5 | 9.2 | 8.7 | 48.1 |
+
+Bullet lists work for key points in moderation. Keep it article-like — no blockquotes, no emoji, no chat-style formatting."""
 
     def public_system_prompt(self, is_historical: bool = False) -> str:
         tense = (
@@ -139,7 +145,13 @@ IMPORTANT RULES:
 - Keep it to 300-450 words.
 - Be informative and entertaining. No hype or clichés.
 
-FORMATTING: Use `##` for the title on line 1. Use `##` section headers to organize the analysis. Use `**` for emphasis sparingly. Simple markdown tables are fine for comparing stats. Bullet lists work for key points. Keep it article-like — no blockquotes, no emoji, no chat-style formatting."""
+FORMATTING: Use `##` for the title on line 1. Use `##` section headers to organize the analysis. Use `**` for emphasis sparingly. For tables, use proper pipe-and-dash markdown syntax with a separator row:
+
+| Player | PTS | REB | AST | FG% |
+|--------|-----|-----|-----|-----|
+| Luka Dončić | 34.5 | 9.2 | 8.7 | 48.1 |
+
+Bullet lists work for key points. Keep it article-like — no blockquotes, no emoji, no chat-style formatting."""
 
     # ── Message building ────────────────────────────────────
 

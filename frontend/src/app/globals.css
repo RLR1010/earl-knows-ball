@@ -1,4 +1,19 @@
 @import "tailwindcss";
+@plugin "@tailwindcss/typography";
+
+/* Markdown table styling for writeups */
+.prose table {
+  @apply w-full border-collapse;
+}
+.prose th {
+  @apply border border-gray-600 px-3 py-2 text-left text-xs font-semibold uppercase tracking-wider text-gray-300;
+}
+.prose td {
+  @apply border border-gray-600 px-3 py-2 text-sm;
+}
+.prose tr:nth-child(even) {
+  @apply bg-gray-800/50;
+}
 
 @theme {
   --color-earl-50: #f0f7ff;

@@ -87,7 +87,13 @@ Return ONLY valid JSON with the following fields:
 
 {tense_note}
 
-CONTENT FORMATTING: Use markdown inside both content fields. `##` headings to organize sections, `**` for emphasis, simple markdown tables for stat comparisons, bullet lists for key points. Keep it article-like — no blockquotes, no emoji, no chat-style formatting.
+CONTENT FORMATTING: Use markdown inside both content fields. `##` headings to organize sections, `**` for emphasis, bullet lists for key points. For tables, use proper pipe-and-dash markdown syntax with a separator row:
+
+| Pitcher | Record | ERA | WHIP |
+|---------|--------|-----|------|
+| Gavin Williams (R) | 10-4 | 3.81 | 1.15 |
+
+Keep it article-like — no blockquotes, no emoji, no chat-style formatting.
 
 Return valid JSON only. No markdown fences. No extra text."""
 
@@ -131,7 +137,13 @@ This is a game preview — not a betting analysis. Write in the style of a well-
 
 {tense_note}
 
-FORMATTING: This renders as a web article via markdown. Use `##` for the title on line 1. Use `##` section headers to organize the body. Use `**` for emphasis sparingly. Simple markdown tables are fine for comparing stats. Bullet lists work for key points. Keep it article-like — no blockquotes, no emoji, no chat-style formatting."""
+FORMATTING: This renders as a web article via markdown. Use `##` for the title on line 1. Use `##` section headers to organize the body. Use `**` for emphasis sparingly. For tables, use proper pipe-and-dash markdown syntax with a separator row:
+
+| Pitcher | Record | ERA | WHIP |
+|---------|--------|-----|------|
+| Gavin Williams (R) | 10-4 | 3.81 | 1.15 |
+
+Bullet lists work for key points. Keep it article-like — no blockquotes, no emoji, no chat-style formatting."""
 
     def premium_system_prompt(self, is_historical: bool = False) -> str:
         """System prompt for the premium-only (insider) writeup.
@@ -178,7 +190,10 @@ Then a blank line. Then the full article formatted in markdown.
 This renders as a web article, so use markdown appropriate for publishing:
 - `##` section headers to organize the analysis
 - `**` for emphasis on key numbers/angles
-- Simple markdown tables for stat comparisons or line movement data
+- Tables using proper pipe-and-dash markdown syntax with a separator row:
+  | Pitcher | Record | ERA | WHIP |
+  |---------|--------|-----|------|
+  | Gavin Williams (R) | 10-4 | 3.81 | 1.15 |
 - Bullet lists for key points
 - Keep it article-like — no blockquotes, no emoji, no chat-style formatting
 

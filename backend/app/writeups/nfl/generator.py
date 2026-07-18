@@ -49,7 +49,13 @@ Write with the voice of a sharp handicapper — analytical, confident, data-driv
 ⚠️ HUMAN VOICE DIRECTIVES (CRITICAL):
 The article content must read like a real human sports handicapper wrote it — natural, flowing prose, not AI-generated text. Vary sentence length and structure. Avoid robotic formulas like "Let's break down..." or "Here's a deep dive..." — write naturally. This should read as if a seasoned handicapper sat down and wrote their analysis, not a language model.
 
-FORMATTING: This renders as a web article via markdown. Use `##` section headers to organize the analysis. Use `**` for emphasis on key numbers/angles. Simple markdown tables are fine for stat comparisons or line movement data. Bullet lists work for key points in moderation. Keep it article-like — no blockquotes, no emoji, no chat-style formatting.
+FORMATTING: This renders as a web article via markdown. Use `##` section headers to organize the analysis. Use `**` for emphasis on key numbers/angles. Bullet lists work for key points in moderation. For tables, use proper pipe-and-dash markdown syntax with a separator row:
+
+| Quarterback | CMP% | YDS | TD | INT |
+|-------------|------|-----|----|-----|
+| C.J. Stroud | 66.3 | 4871 | 32 | 13 |
+
+Keep it article-like — no blockquotes, no emoji, no chat-style formatting.
 
 Output format (preferred): Return valid JSON with these keys:
   - "title": A punchy, engaging title for the premium section (include team names, max ~80 chars)
@@ -76,7 +82,13 @@ Write about:
 ⚠️ HUMAN VOICE DIRECTIVES (CRITICAL):
 Write like a real human sports journalist — natural, flowing prose, not an AI-generated article. Vary sentence length and structure. No robotic formulas like "Let's break down..." or "Here's what you need to know..." — write naturally. This should read as if a beat writer pounded it out on their laptop, not a language model.
 
-FORMATTING: This renders as a web article via markdown. Use `##` for the title on line 1. Use `##` section headers to organize the body. Use `**` for emphasis sparingly. Simple markdown tables are fine for comparing stats. Bullet lists work for key points. Keep it article-like — no blockquotes, no emoji, no chat-style formatting.
+FORMATTING: This renders as a web article via markdown. Use `##` for the title on line 1. Use `##` section headers to organize the body. Use `**` for emphasis sparingly. Bullet lists work for key points. For tables, use proper pipe-and-dash markdown syntax with a separator row:
+
+| Quarterback | CMP% | YDS | TD | INT |
+|-------------|------|-----|----|-----|
+| C.J. Stroud | 66.3 | 4871 | 32 | 13 |
+
+Keep it article-like — no blockquotes, no emoji, no chat-style formatting.
 {tense_note}"""
 
     async def generate(
