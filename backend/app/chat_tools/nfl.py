@@ -22,8 +22,12 @@ def _today_chicago() -> date:
 
 
 async def _resolve_season_year(db: AsyncSession) -> int:
-    """Return the year of the most recent NFL season."""
-    r = await db.execute(text("SELECT MAX(year) FROM nfl.seasons"))
+    """Return the year of the most recent completed NFL season."""
+    r = await db.execute(text(
+        "SELECT MAX(s.year) FROM nfl.seasons s "
+        "JOIN nfl.games g ON g.season_id = s.id "
+        "WHERE g.status = 'FINAL'"
+    ))
     val = r.scalar_one_or_none()
     if val is None:
         raise ValueError("No NFL seasons found")
@@ -279,12 +283,14 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "search_articles",
-            "description": "Search NFL news articles by keyword. Returns titles, summaries, source, dates.",
+            "description": "Search NFL news articles by semantic similarity. Filters by date range when provided. Returns titles, summaries, source, dates.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "query": {"type": "string", "description": "Search query (team name, player name, topic)"},
                     "limit": {"type": "integer", "description": "Max articles (default 5, max 10)"},
+                    "date_from": {"type": "string", "description": "Earliest publish date (ISO: YYYY-MM-DD), inclusive from midnight UTC. Example: 2025-09-01"},
+                    "date_to": {"type": "string", "description": "Latest publish date (ISO: YYYY-MM-DD), inclusive through end of day UTC. Example: 2025-12-31"},
                 },
                 "required": ["query"],
             },
@@ -635,7 +641,7 @@ async def _get_player_stats(db: AsyncSession, args: dict) -> dict:
             COUNT(*) AS games_played,
             COALESCE(SUM(pass_yards), 0) AS pass_yds,
             COALESCE(SUM(pass_tds), 0) AS pass_td,
-            COALESCE(SUM(interceptions), 0) AS ints,
+            COALESCE(SUM(pass_int), 0) AS ints,
             COALESCE(SUM(rush_attempts), 0) AS rush_att,
             COALESCE(SUM(rush_yards), 0) AS rush_yds,
             COALESCE(SUM(rush_tds), 0) AS rush_td,
@@ -785,25 +791,46 @@ async def _get_game_prediction(db: AsyncSession, args: dict) -> dict:
 
 
 async def _search_articles(db: AsyncSession, args: dict) -> dict:
-    query = args.get("query", "")
-    lim = min(args.get("limit", 5), 10)
+    """Search NFL articles via pgvector semantic search with optional date filter."""
+    from app.ingestion.pgvector_search import search_articles
 
-    sql = text("""
-        SELECT title, excerpt, source_name, published_at
-        FROM nfl.articles
-        WHERE body ILIKE :q OR title ILIKE :q
-        ORDER BY published_at DESC LIMIT :lim
-    """)
-    r = await db.execute(sql, {"q": f"%{query}%", "lim": lim})
-    articles = []
-    for row in r.mappings():
-        articles.append({
-            "title": row.title,
-            "excerpt": row.excerpt,
-            "source": row.source_name,
-            "published": str(row.published_at) if row.published_at else None,
+    query = args.get("query", "")
+    limit = min(args.get("limit", 5), 10)
+
+    # Convert string dates to UTC-aware datetimes for inclusive range
+    raw_from = args.get("date_from")
+    raw_to = args.get("date_to")
+    date_from = None
+    date_to = None
+    if raw_from:
+        try:
+            date_from = datetime.fromisoformat(raw_from).replace(
+                hour=0, minute=0, second=0, tzinfo=dt_timezone.utc
+            )
+        except (ValueError, TypeError):
+            pass
+    if raw_to:
+        try:
+            # End of day UTC so the full final day is included
+            date_to = datetime.fromisoformat(raw_to).replace(
+                hour=23, minute=59, second=59, tzinfo=dt_timezone.utc
+            )
+        except (ValueError, TypeError):
+            pass
+
+    articles = await search_articles(
+        db, query, sport="nfl", top_k=limit,
+        date_from=date_from, date_to=date_to,
+    )
+    results = []
+    for a in articles:
+        results.append({
+            "title": a.get("title", ""),
+            "excerpt": (a.get("text", "") or "")[:500],
+            "source": a.get("source_name", "Unknown"),
+            "published": a.get("published_at", ""),
         })
-    return {"articles": articles}
+    return {"articles": results}
 
 
 async def _get_team_schedule(db: AsyncSession, args: dict) -> dict:

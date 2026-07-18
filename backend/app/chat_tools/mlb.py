@@ -233,7 +233,7 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "search_articles",
-            "description": "Search for relevant news articles using semantic search. Returns article titles and summaries.",
+            "description": "Search for relevant news articles using semantic search. Filters by date range when provided. Returns article titles and summaries.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -244,6 +244,14 @@ TOOL_DEFINITIONS = [
                     "limit": {
                         "type": "integer",
                         "description": "Maximum number of articles to return (default 8, max 15)",
+                    },
+                    "date_from": {
+                        "type": "string",
+                        "description": "Earliest publish date (ISO: YYYY-MM-DD), inclusive from midnight UTC. Example: 2025-09-01",
+                    },
+                    "date_to": {
+                        "type": "string",
+                        "description": "Latest publish date (ISO: YYYY-MM-DD), inclusive through end of day UTC. Example: 2025-12-31",
                     },
                 },
                 "required": ["query"],
@@ -959,13 +967,37 @@ async def _get_team_splits(db: AsyncSession, args: dict) -> dict:
 
 
 async def _search_articles_tool(db: AsyncSession, args: dict) -> list[dict]:
-    """Search for articles via pgvector."""
+    """Search for articles via pgvector with optional date filter."""
     from app.ingestion.pgvector_search import search_articles
 
     query = args.get("query", "")
     limit = min(args.get("limit", 8), 15)
 
-    articles = await search_articles(db, query, top_k=limit, sport="mlb")
+    # Convert string dates to UTC-aware datetimes for inclusive range
+    raw_from = args.get("date_from")
+    raw_to = args.get("date_to")
+    date_from = None
+    date_to = None
+    if raw_from:
+        try:
+            date_from = datetime.fromisoformat(raw_from).replace(
+                hour=0, minute=0, second=0, tzinfo=dt_timezone.utc
+            )
+        except (ValueError, TypeError):
+            pass
+    if raw_to:
+        try:
+            # End of day UTC so the full final day is included
+            date_to = datetime.fromisoformat(raw_to).replace(
+                hour=23, minute=59, second=59, tzinfo=dt_timezone.utc
+            )
+        except (ValueError, TypeError):
+            pass
+
+    articles = await search_articles(
+        db, query, top_k=limit, sport="mlb",
+        date_from=date_from, date_to=date_to,
+    )
     return [
         {
             "title": a.get("title", "Untitled"),

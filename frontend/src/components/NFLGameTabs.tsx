@@ -1,6 +1,8 @@
 "use client";
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 // ── Types ─────────────────────────────────────────────────────
 
@@ -610,8 +612,10 @@ export default function NFLGameTabs({ gameId, boxscore, prediction, isFinal }: N
             {writeupLoading ? (
               <div className="text-sm text-gray-500 animate-pulse">Loading preview...</div>
             ) : writeupData?.has_writeup && writeupData.public_content ? (
-              <div className="prose prose-sm prose-invert max-w-none whitespace-pre-wrap">
-                {writeupData.public_content}
+              <div className="prose prose-sm prose-invert max-w-none">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                  {writeupData.public_content}
+                </ReactMarkdown>
               </div>
             ) : (
               <div className="text-sm text-gray-500 text-center py-8">
@@ -637,8 +641,10 @@ export default function NFLGameTabs({ gameId, boxscore, prediction, isFinal }: N
                 {writeupData.title && (
                   <h3 className="text-lg font-bold text-white mb-3">{writeupData.title}</h3>
                 )}
-                <div className="prose prose-sm prose-invert max-w-none whitespace-pre-wrap">
-                  {writeupData.premium_content}
+                <div className="prose prose-sm prose-invert max-w-none">
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                    {writeupData.premium_content}
+                  </ReactMarkdown>
                 </div>
               </>
             ) : (

@@ -2,6 +2,8 @@
 
 import { useState, useEffect, useRef } from "react";
 import Link from "next/link";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 interface NBABoxScoreData {
   game_id: number;
@@ -312,7 +314,9 @@ export default function NBAGameTabs({ gameId, prediction }: NBAGameTabsProps) {
         {writeup.title && (
           <div className="text-sm font-semibold text-white mb-3">{writeup.title}</div>
         )}
-        <div className="text-gray-300 leading-relaxed whitespace-pre-wrap">{content}</div>
+        <div className="text-gray-300 leading-relaxed">
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+        </div>
       </div>
     );
   };
@@ -359,7 +363,9 @@ export default function NBAGameTabs({ gameId, prediction }: NBAGameTabsProps) {
         {writeup.title && (
           <div className="text-sm font-semibold text-white mb-3">{writeup.title}</div>
         )}
-        <div className="text-gray-300 leading-relaxed whitespace-pre-wrap">{content}</div>
+        <div className="text-gray-300 leading-relaxed">
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+        </div>
       </div>
     );
   };

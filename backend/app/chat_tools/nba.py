@@ -225,12 +225,14 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "search_articles",
-            "description": "Search NBA news articles by keyword. Returns titles, summaries, source, dates.",
+            "description": "Search NBA news articles by semantic similarity. Filters by date range when provided. Returns titles, summaries, source, dates.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "query": {"type": "string", "description": "Search query (team name, player name, topic)"},
                     "limit": {"type": "integer", "description": "Max articles (default 5, max 10)"},
+                    "date_from": {"type": "string", "description": "Earliest publish date (ISO: YYYY-MM-DD), inclusive from midnight UTC. Example: 2025-09-01"},
+                    "date_to": {"type": "string", "description": "Latest publish date (ISO: YYYY-MM-DD), inclusive through end of day UTC. Example: 2025-12-31"},
                 },
                 "required": ["query"],
             },
@@ -629,25 +631,46 @@ async def _get_game_prediction(db: AsyncSession, args: dict) -> dict:
 
 
 async def _search_articles(db: AsyncSession, args: dict) -> dict:
-    query = args.get("query", "")
-    lim = min(args.get("limit", 5), 10)
+    """Search NBA articles via pgvector semantic search with optional date filter."""
+    from app.ingestion.pgvector_search import search_articles
 
-    sql = text("""
-        SELECT title, excerpt, source_name, published_at
-        FROM nba.articles
-        WHERE body ILIKE :q OR title ILIKE :q
-        ORDER BY published_at DESC LIMIT :lim
-    """)
-    r = await db.execute(sql, {"q": f"%{query}%", "lim": lim})
-    articles = []
-    for row in r.mappings():
-        articles.append({
-            "title": row.title,
-            "excerpt": row.excerpt,
-            "source": row.source_name,
-            "published": str(row.published_at) if row.published_at else None,
+    query = args.get("query", "")
+    limit = min(args.get("limit", 5), 10)
+
+    # Convert string dates to UTC-aware datetimes for inclusive range
+    raw_from = args.get("date_from")
+    raw_to = args.get("date_to")
+    date_from = None
+    date_to = None
+    if raw_from:
+        try:
+            date_from = datetime.fromisoformat(raw_from).replace(
+                hour=0, minute=0, second=0, tzinfo=dt_timezone.utc
+            )
+        except (ValueError, TypeError):
+            pass
+    if raw_to:
+        try:
+            # End of day UTC so the full final day is included
+            date_to = datetime.fromisoformat(raw_to).replace(
+                hour=23, minute=59, second=59, tzinfo=dt_timezone.utc
+            )
+        except (ValueError, TypeError):
+            pass
+
+    articles = await search_articles(
+        db, query, sport="nba", top_k=limit,
+        date_from=date_from, date_to=date_to,
+    )
+    results = []
+    for a in articles:
+        results.append({
+            "title": a.get("title", ""),
+            "excerpt": (a.get("text", "") or "")[:500],
+            "source": a.get("source_name", "Unknown"),
+            "published": a.get("published_at", ""),
         })
-    return {"articles": articles}
+    return {"articles": results}
 
 
 async def _get_team_schedule(db: AsyncSession, args: dict) -> dict:

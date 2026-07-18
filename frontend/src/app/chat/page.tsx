@@ -263,8 +263,8 @@ const statusRef = useRef<HTMLSpanElement>(null);
             } else if (data.type === "status") {
               // Write directly to the DOM — bypasses React batching
               if (statusRef.current) statusRef.current.textContent = data.message;
-              // Wait 50ms so the browser paints and the user can read it.
-              await new Promise((r) => setTimeout(r, 50));
+              // Wait 500ms so each status text is readable before the next.
+              await new Promise((r) => setTimeout(r, 500));
             } else if (data.type === "answer") {
               gotAnswer.value = true;
               setStatusText(null);
