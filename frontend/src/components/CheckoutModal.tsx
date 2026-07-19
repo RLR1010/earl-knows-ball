@@ -1,7 +1,12 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { loadStripe } from "@stripe/stripe-js";
+
+declare global {
+  interface Window {
+    Stripe: (key: string) => any;
+  }
+}
 
 interface CheckoutModalProps {
   clientSecret: string;
@@ -14,36 +19,43 @@ export default function CheckoutModal({
   onClose,
   onComplete,
 }: CheckoutModalProps) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const checkoutRef = useRef<any>(null);
+  const checkoutRef = useRef<HTMLDivElement>(null);
   const [status, setStatus] = useState<"loading" | "ready" | "complete" | "error">(
     "loading"
   );
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    let mounted = true;
+    let destroyed = false;
+    let checkoutInstance: any = null;
 
-    async function mountCheckout() {
+    async function init() {
       const key = process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY;
       if (!key) {
         setError("Stripe is not configured");
         return;
       }
 
-      const stripe = await loadStripe(key);
-      if (!stripe || !containerRef.current || !mounted) return;
+      // Wait for Stripe.js to load from CDN
+      if (!window.Stripe) {
+        await new Promise<void>((resolve, reject) => {
+          const script = document.createElement("script");
+          script.src = "https://js.stripe.com/v3/";
+          script.onload = () => resolve();
+          script.onerror = () => reject(new Error("Failed to load Stripe.js"));
+          document.head.appendChild(script);
+        });
+      }
+
+      if (destroyed) return;
 
       try {
-        checkoutRef.current = await stripe.createEmbeddedCheckoutPage({
+        const stripe = window.Stripe(key);
+        checkoutInstance = await stripe.initEmbeddedCheckout({
           clientSecret,
           onComplete: () => {
-            if (mounted) {
-              try {
-                checkoutRef.current?.unmount();
-              } catch {}
+            if (!destroyed) {
               setStatus("complete");
-              // Navigate to profile after brief pause (Stripe will also redirect)
               setTimeout(() => {
                 window.location.href = "/profile?subscription=success";
               }, 2000);
@@ -51,23 +63,27 @@ export default function CheckoutModal({
           },
         });
 
-        checkoutRef.current.mount(containerRef.current);
-        if (mounted) setStatus("ready");
+        if (!destroyed && checkoutRef.current) {
+          checkoutInstance.mount(checkoutRef.current);
+          setStatus("ready");
+        }
       } catch (err: any) {
-        if (mounted) {
+        if (!destroyed) {
           setError(err.message || "Failed to load checkout");
           setStatus("error");
         }
       }
     }
 
-    mountCheckout();
+    init();
 
     return () => {
-      mounted = false;
-      try {
-        checkoutRef.current?.destroy();
-      } catch {}
+      destroyed = true;
+      if (checkoutInstance) {
+        try {
+          checkoutInstance.destroy();
+        } catch {}
+      }
     };
   }, [clientSecret]);
 
@@ -97,7 +113,7 @@ export default function CheckoutModal({
           )}
 
           {status === "ready" && (
-            <div ref={containerRef} className="min-h-[450px]" />
+            <div ref={checkoutRef} className="min-h-[450px]" />
           )}
 
           {status === "complete" && (
@@ -112,7 +128,9 @@ export default function CheckoutModal({
                 Your membership is now active. Enjoy the full Earl Knows Ball experience!
               </p>
               <button
-                onClick={onComplete}
+                onClick={() => {
+                  window.location.href = "/profile?subscription=success";
+                }}
                 className="bg-earl-400 hover:bg-amber-400 text-black font-semibold px-8 py-3 rounded-lg transition"
               >
                 Go to Profile
@@ -127,7 +145,7 @@ export default function CheckoutModal({
               </svg>
               <p className="text-red-400 mb-4">{error || "Failed to load checkout"}</p>
               <p className="text-gray-500 text-sm mb-4">
-                Try using the hosted checkout instead.
+                Try the hosted checkout instead.
               </p>
               <button
                 onClick={onClose}
