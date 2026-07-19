@@ -168,7 +168,7 @@ async def create_checkout_session(
             },
         }
 
-        if req.ui_mode == "embedded":
+        if req.ui_mode == "embedded_page":
             # Embedded Checkout — renders in-page modal
             session_kwargs["ui_mode"] = "embedded_page"
             session_kwargs["return_url"] = f"{settings.base_url}/profile?subscription=success"
