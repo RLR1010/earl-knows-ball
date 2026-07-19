@@ -28,7 +28,7 @@ export default function PricingPage() {
   const [plans, setPlans] = useState<Plan[]>([]);
   const [loadingPlans, setLoadingPlans] = useState(true);
   const [checkingOut, setCheckingOut] = useState<string | null>(null);
-  const [checkoutSecret, setCheckoutSecret] = useState<string | null>(null);
+  const [checkoutUrl, setCheckoutUrl] = useState<string | null>(null);
   const [checkoutError, setCheckoutError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -59,7 +59,7 @@ export default function PricingPage() {
           plan_id: planId,
           success_url: `${window.location.origin}/profile?subscription=success`,
           cancel_url: `${window.location.origin}/pricing`,
-          ui_mode: "embedded_page",
+          ui_mode: "hosted",
         }),
       });
 
@@ -70,12 +70,8 @@ export default function PricingPage() {
 
       const data = await res.json();
 
-      if (data.client_secret) {
-        // Open embedded checkout in modal
-        setCheckoutSecret(data.client_secret);
-      } else if (data.url) {
-        // Fallback: redirect to Stripe Checkout
-        window.location.href = data.url;
+      if (data.url) {
+        setCheckoutUrl(data.url);
       } else {
         throw new Error(data.message || "No checkout session returned");
       }
@@ -87,12 +83,12 @@ export default function PricingPage() {
   };
 
   const handleCheckoutClose = () => {
-    setCheckoutSecret(null);
+    setCheckoutUrl(null);
     setCheckoutError(null);
   };
 
   const handleCheckoutComplete = () => {
-    setCheckoutSecret(null);
+    setCheckoutUrl(null);
     window.location.href = "/profile";
   };
 
@@ -107,9 +103,9 @@ export default function PricingPage() {
   return (
     <div className="min-h-screen bg-neutral-950">
       {/* Checkout Modal */}
-      {checkoutSecret && (
+      {checkoutUrl && (
         <CheckoutModal
-          clientSecret={checkoutSecret}
+          checkoutUrl={checkoutUrl}
           onClose={handleCheckoutClose}
           onComplete={handleCheckoutComplete}
         />
