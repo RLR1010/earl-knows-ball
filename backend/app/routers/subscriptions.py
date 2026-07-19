@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
-from sqlalchemy import select
+from sqlalchemy import select, func, case
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel
 from typing import Optional
@@ -119,8 +119,7 @@ async def create_checkout_session(
 ):
     """Create a Stripe Checkout Session for subscription purchase.
     Falls back to mock mode when Stripe is not configured."""
-    auth = request.headers.get("authorization", "")
-    user = await get_token_user(auth, db)
+    user = await get_current_user(request, db)
 
     # Get plan
     result = await db.execute(
@@ -214,8 +213,14 @@ async def stripe_webhook(request: Request, db: AsyncSession = Depends(get_db)):
         except json.JSONDecodeError:
             return JSONResponse(status_code=400, content={"error": "Invalid JSON"})
 
-    event_type = event.get("type", event.get("type", ""))
-    data_object = event.get("data", {}).get("object", event)
+    # Normalize Stripe objects to plain dicts for uniform .get() access
+    if hasattr(event, "to_dict"):
+        raw = event.to_dict()
+        event_type = raw.get("type", "")
+        data_object = raw.get("data", {}).get("object", raw)
+    else:
+        event_type = event.get("type", "")
+        data_object = event.get("data", {}).get("object", event)
 
     logger.info(f"Stripe webhook: {event_type}")
 
@@ -293,6 +298,7 @@ async def _handle_checkout_completed(session: dict, db: AsyncSession):
             current_period_end=period_end,
             stripe_subscription_id=stripe_sub_id,
             stripe_customer_id=customer_id,
+            cancel_at_period_end=session.get("cancel_at_period_end", False),
         )
         db.add(sub)
 
@@ -328,6 +334,8 @@ async def _handle_subscription_updated(subscription: dict, db: AsyncSession):
         return
 
     sub.status = status
+    if "cancel_at_period_end" in subscription:
+        sub.cancel_at_period_end = bool(subscription["cancel_at_period_end"])
     if subscription.get("current_period_start"):
         sub.current_period_start = datetime.fromtimestamp(
             subscription["current_period_start"], tz=timezone.utc
@@ -345,14 +353,25 @@ async def _handle_subscription_updated(subscription: dict, db: AsyncSession):
             subscription["trial_end"], tz=timezone.utc
         )
 
-    # Sync user tier
+    # Sync user tier — only downgrade if no other active subscriptions exist
     user_result = await db.execute(select(User).where(User.id == sub.user_id))
     user = user_result.scalar_one_or_none()
     if user:
         if status == "active":
             user.subscription_tier = "premium"
         elif status in ("canceled", "past_due", "incomplete_expired", "unpaid"):
-            user.subscription_tier = "free"
+            # Check if user has any other active subscription before downgrading
+            active_count = await db.scalar(
+                select(func.count()).select_from(UserSubscription).where(
+                    UserSubscription.user_id == user.id,
+                    UserSubscription.stripe_subscription_id != stripe_sub_id,
+                    UserSubscription.status.in_(["active", "trialing", "incomplete"])
+                )
+            )
+            if not active_count:
+                user.subscription_tier = "free"
+            else:
+                logger.info(f"User {user.id} has {active_count} other active subscription(s); not downgrading")
 
     await db.commit()
 
@@ -372,12 +391,24 @@ async def _handle_subscription_deleted(subscription: dict, db: AsyncSession):
 
     sub.status = "canceled"
     sub.canceled_at = datetime.now(timezone.utc)
+    sub.cancel_at_period_end = False
 
-    # Reset user tier
+    # Reset user tier — only downgrade if no other active subscriptions exist
     user_result = await db.execute(select(User).where(User.id == sub.user_id))
     user = user_result.scalar_one_or_none()
     if user:
-        user.subscription_tier = "free"
+        active_count = await db.scalar(
+            select(func.count()).select_from(UserSubscription).where(
+                UserSubscription.user_id == user.id,
+                UserSubscription.stripe_subscription_id != stripe_sub_id,
+                UserSubscription.status.in_(["active", "trialing", "incomplete"])
+            )
+        )
+        if not active_count:
+            user.subscription_tier = "free"
+            logger.info(f"Downgraded user {user.id} to free (no remaining active subscriptions)")
+        else:
+            logger.info(f"User {user.id} has {active_count} other active subscription(s); keeping tier")
 
     await db.commit()
 
@@ -455,18 +486,43 @@ async def get_my_subscription(
     db: AsyncSession = Depends(get_db),
 ):
     """Get the current user's subscription status."""
-    auth = request.headers.get("authorization", "")
-    user = await get_token_user(auth, db)
+    user = await get_current_user(request, db)
 
     result = await db.execute(
         select(UserSubscription)
         .where(UserSubscription.user_id == user.id)
-        .order_by(UserSubscription.created_at.desc())
+        .order_by(
+            case(
+                (UserSubscription.status.in_(["active", "trialing", "incomplete"]), 0),
+                else_=1
+            ),
+            UserSubscription.created_at.desc()
+        )
         .limit(1)
     )
     sub = result.scalar_one_or_none()
 
     if not sub:
+        # Fall back to user's subscription_tier for accounts upgraded outside user_subscriptions
+        if user.subscription_tier and user.subscription_tier != "free":
+            return SubscriptionStatus(
+                has_active=True,
+                subscription={
+                    "id": None,
+                    "status": "active",
+                    "plan": {
+                        "name": user.subscription_tier.replace("_", " ").title(),
+                        "price_cents": None,
+                        "interval": None,
+                        "features": [],
+                    },
+                    "current_period_start": None,
+                    "current_period_end": None,
+                    "canceled_at": None,
+                    "cancel_at_period_end": False,
+                    "trial_end": None,
+                },
+            )
         return SubscriptionStatus(
             has_active=False,
             subscription=None,
@@ -494,11 +550,16 @@ async def get_my_subscription(
         "current_period_start": sub.current_period_start.isoformat() if sub.current_period_start else None,
         "current_period_end": sub.current_period_end.isoformat() if sub.current_period_end else None,
         "canceled_at": sub.canceled_at.isoformat() if sub.canceled_at else None,
+        "cancel_at_period_end": sub.cancel_at_period_end,
         "trial_end": sub.trial_end.isoformat() if sub.trial_end else None,
     }
 
+    has_active = sub.status in ("active", "trialing") or (
+        sub.status == "incomplete" and sub.current_period_end and sub.current_period_end > datetime.now(timezone.utc)
+    )
+
     return SubscriptionStatus(
-        has_active=sub.status == "active" or sub.status == "trialing",
+        has_active=has_active,
         subscription=sub_data,
     )
 
@@ -511,8 +572,7 @@ async def cancel_subscription(
     db: AsyncSession = Depends(get_db),
 ):
     """Cancel the current user's active subscription."""
-    auth = request.headers.get("authorization", "")
-    user = await get_token_user(auth, db)
+    user = await get_current_user(request, db)
 
     result = await db.execute(
         select(UserSubscription)
@@ -526,6 +586,11 @@ async def cancel_subscription(
     sub = result.scalar_one_or_none()
 
     if not sub:
+        # User may have subscription_tier set directly without user_subscriptions record
+        if user.subscription_tier and user.subscription_tier != "free":
+            user.subscription_tier = "free"
+            await db.commit()
+            return {"status": "canceled", "message": "Subscription canceled."}
         raise HTTPException(status_code=404, detail="No active subscription found")
 
     if _stripe_available() and sub.stripe_subscription_id:
@@ -535,11 +600,11 @@ async def cancel_subscription(
                 sub.stripe_subscription_id,
                 cancel_at_period_end=True,
             )
-            sub.canceled_at = datetime.now(timezone.utc)
         except Exception as e:
             logger.error(f"Stripe cancel error: {e}")
             raise HTTPException(status_code=500, detail="Failed to cancel with payment processor")
 
+    sub.cancel_at_period_end = True
     sub.canceled_at = datetime.now(timezone.utc)
     await db.commit()
 
@@ -554,8 +619,7 @@ async def get_payment_history(
     db: AsyncSession = Depends(get_db),
 ):
     """Return payment history for the authenticated user."""
-    auth = request.headers.get("authorization", "")
-    user = await get_token_user(auth, db)
+    user = await get_current_user(request, db)
 
     result = await db.execute(
         select(Payment)

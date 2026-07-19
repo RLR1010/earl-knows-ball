@@ -65,6 +65,10 @@ export default function ProfilePage() {
   const [payments, setPayments] = useState<PaymentRecord[]>([]);
   const [paymentsLoading, setPaymentsLoading] = useState(true);
   const [paymentsError, setPaymentsError] = useState("");
+  const [subscription, setSubscription] = useState<any>(null);
+  const [subLoading, setSubLoading] = useState(true);
+  const [cancelling, setCancelling] = useState(false);
+  const [cancelMessage, setCancelMessage] = useState<string | null>(null);
 
   useEffect(() => {
     if (!authLoading && !user) {
@@ -81,6 +85,33 @@ export default function ProfilePage() {
       .catch((err) => setPaymentsError(err?.message || "Failed to load payment history"))
       .finally(() => setPaymentsLoading(false));
   }, [user]);
+
+  useEffect(() => {
+    if (!user) return;
+    setSubLoading(true);
+    api.subscriptions
+      .my()
+      .then((data) => setSubscription(data))
+      .catch(() => setSubscription({ has_active: false, subscription: null }))
+      .finally(() => setSubLoading(false));
+  }, [user]);
+
+  const handleCancel = async () => {
+    if (!window.confirm("Are you sure you want to cancel your subscription? You will retain access until the end of the current billing period.")) return;
+    setCancelling(true);
+    setCancelMessage(null);
+    try {
+      const result = await api.subscriptions.cancel();
+      setCancelMessage("Subscription canceled. Access continues until the end of the current billing period.");
+      // Refresh subscription status
+      const data = await api.subscriptions.my();
+      setSubscription(data);
+    } catch (err: any) {
+      setCancelMessage(err?.message || "Failed to cancel subscription");
+    } finally {
+      setCancelling(false);
+    }
+  };
 
   if (authLoading) {
     return (
@@ -150,6 +181,50 @@ export default function ProfilePage() {
               <p className="text-sm text-green-400">
                 ✓ Premium features unlocked
               </p>
+
+              {/* Subscription plan details */}
+              {subLoading ? (
+                <div className="flex items-center gap-2 text-sm text-gray-400">
+                  <div className="animate-spin rounded-full h-3 w-3 border-b-2 border-green-500" />
+                  Loading subscription details…
+                </div>
+              ) : subscription?.subscription ? (
+                <div className="space-y-2 pt-2 border-t border-gray-800">
+                  <div className="flex justify-between">
+                    <span className="text-gray-400">Renewal Date</span>
+                    <span className="text-white">
+                      {formatDate(subscription.subscription.current_period_end)}
+                    </span>
+                  </div>
+                  {subscription.subscription.cancel_at_period_end && (
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">Status</span>
+                      <span className="text-yellow-400">Cancels on {formatDate(subscription.subscription.current_period_end)}</span>
+                    </div>
+                  )}
+                  {subscription.subscription.cancel_at_period_end && (
+                    <p className="text-xs text-gray-500 mt-1">
+                      Your subscription will end at the close of the current billing period. No further charges.
+                    </p>
+                  )}
+                </div>
+              ) : null}
+
+              {/* Cancel button */}
+              {subscription?.has_active && !subscription?.subscription?.cancel_at_period_end && (
+                <div className="pt-2">
+                  <button
+                    onClick={handleCancel}
+                    disabled={cancelling}
+                    className="text-sm text-red-400 hover:text-red-300 underline underline-offset-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {cancelling ? "Cancelling…" : "Cancel Subscription"}
+                  </button>
+                  {cancelMessage && (
+                    <p className="text-sm text-yellow-400 mt-2">{cancelMessage}</p>
+                  )}
+                </div>
+              )}
             </div>
           )}
         </section>
