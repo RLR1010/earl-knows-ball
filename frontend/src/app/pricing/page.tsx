@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import CheckoutModal from "@/components/CheckoutModal";
 
 interface Plan {
   id: string;
@@ -15,8 +16,6 @@ interface Plan {
   features: string[];
   is_active: boolean;
   sort_order: number;
-  stripe_price_id: string | null;
-  stripe_product_id: string | null;
 }
 
 const formatPrice = (cents: number, currency: string, interval: string) => {
@@ -27,23 +26,25 @@ const formatPrice = (cents: number, currency: string, interval: string) => {
 
 export default function PricingPage() {
   const [plans, setPlans] = useState<Plan[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loadingPlans, setLoadingPlans] = useState(true);
   const [checkingOut, setCheckingOut] = useState<string | null>(null);
+  const [checkoutSecret, setCheckoutSecret] = useState<string | null>(null);
+  const [checkoutError, setCheckoutError] = useState<string | null>(null);
 
   useEffect(() => {
     fetch("/api/subscriptions/plans")
       .then((r) => r.json())
       .then((data) => setPlans(data.sort((a: Plan, b: Plan) => a.sort_order - b.sort_order)))
       .catch(console.error)
-      .finally(() => setLoading(false));
+      .finally(() => setLoadingPlans(false));
   }, []);
 
   const handleSubscribe = async (planId: string) => {
     setCheckingOut(planId);
+    setCheckoutError(null);
     try {
       const token = localStorage.getItem("earl_token");
       if (!token) {
-        // Redirect to login with return URL
         window.location.href = `/auth?redirect=/pricing&plan=${planId}`;
         return;
       }
@@ -58,6 +59,7 @@ export default function PricingPage() {
           plan_id: planId,
           success_url: `${window.location.origin}/profile?subscription=success`,
           cancel_url: `${window.location.origin}/pricing`,
+          ui_mode: "embedded_page",
         }),
       });
 
@@ -68,20 +70,33 @@ export default function PricingPage() {
 
       const data = await res.json();
 
-      // If we got a URL back (whether mock or real), redirect
-      if (data.url) {
+      if (data.client_secret) {
+        // Open embedded checkout in modal
+        setCheckoutSecret(data.client_secret);
+      } else if (data.url) {
+        // Fallback: redirect to Stripe Checkout
         window.location.href = data.url;
       } else {
-        alert(data.message || "Something went wrong");
+        throw new Error(data.message || "No checkout session returned");
       }
     } catch (e: any) {
-      alert(e.message);
+      setCheckoutError(e.message);
     } finally {
       setCheckingOut(null);
     }
   };
 
-  if (loading) {
+  const handleCheckoutClose = () => {
+    setCheckoutSecret(null);
+    setCheckoutError(null);
+  };
+
+  const handleCheckoutComplete = () => {
+    setCheckoutSecret(null);
+    window.location.href = "/profile";
+  };
+
+  if (loadingPlans) {
     return (
       <div className="min-h-screen bg-neutral-950 flex items-center justify-center">
         <div className="text-earl-400 text-lg animate-pulse">Loading plans...</div>
@@ -91,6 +106,15 @@ export default function PricingPage() {
 
   return (
     <div className="min-h-screen bg-neutral-950">
+      {/* Checkout Modal */}
+      {checkoutSecret && (
+        <CheckoutModal
+          clientSecret={checkoutSecret}
+          onClose={handleCheckoutClose}
+          onComplete={handleCheckoutComplete}
+        />
+      )}
+
       {/* Hero */}
       <div className="max-w-6xl mx-auto px-4 pt-20 pb-12 text-center">
         <h1 className="text-4xl md:text-5xl font-bold text-white mb-4">
@@ -165,12 +189,19 @@ export default function PricingPage() {
                       : "bg-neutral-800 text-white hover:bg-neutral-700 disabled:bg-neutral-800/50"
                   }`}
                 >
-                  {checkingOut === plan.id ? "Redirecting..." : "Subscribe Now"}
+                  {checkingOut === plan.id ? "Opening checkout..." : "Subscribe Now"}
                 </button>
               </div>
             );
           })}
         </div>
+
+        {/* Error state */}
+        {checkoutError && (
+          <div className="text-center mt-4">
+            <p className="text-red-400 text-sm">{checkoutError}</p>
+          </div>
+        )}
 
         {/* Already have an account? */}
         <p className="text-center text-gray-500 text-sm mt-8">

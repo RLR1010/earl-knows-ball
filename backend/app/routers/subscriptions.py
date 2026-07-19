@@ -41,10 +41,12 @@ class CheckoutRequest(BaseModel):
     plan_id: str
     success_url: Optional[str] = None
     cancel_url: Optional[str] = None
+    ui_mode: str = "hosted"  # "hosted" (redirect) or "embedded_page" (modal)
 
 
 class CheckoutResponse(BaseModel):
     url: str | None = None
+    client_secret: str | None = None
     mock: bool = False
     message: str = ""
 
@@ -149,26 +151,36 @@ async def create_checkout_session(
         cancel_url = req.cancel_url or f"{settings.base_url}/subscriptions/cancel"
 
         # Build checkout session
-        session = stripe.checkout.Session.create(
-            customer=customer_id,
-            mode="subscription",
-            line_items=[{"price": plan.stripe_price_id, "quantity": 1}],
-            success_url=success_url,
-            cancel_url=cancel_url,
-            metadata={
+        session_kwargs = {
+            "customer": customer_id,
+            "mode": "subscription",
+            "line_items": [{"price": plan.stripe_price_id, "quantity": 1}],
+            "metadata": {
                 "user_id": user.id,
                 "plan_id": plan.id,
             },
-            subscription_data={
+            "subscription_data": {
                 "metadata": {
                     "user_id": user.id,
                     "plan_id": plan.id,
                 },
                 "trial_period_days": plan.trial_days or None,
             },
-        )
+        }
 
-        return CheckoutResponse(url=session.url)
+        if req.ui_mode == "embedded_page":
+            # Embedded Checkout — renders in-page modal
+            return_url = f"{req.success_url or settings.base_url}/profile?subscription=success"
+            session_kwargs["ui_mode"] = "embedded_page"
+            session_kwargs["return_url"] = return_url
+            session = stripe.checkout.Session.create(**session_kwargs)
+            return CheckoutResponse(client_secret=session.client_secret)
+        else:
+            # Hosted Checkout — redirect to Stripe
+            session_kwargs["success_url"] = success_url
+            session_kwargs["cancel_url"] = cancel_url
+            session = stripe.checkout.Session.create(**session_kwargs)
+            return CheckoutResponse(url=session.url)
 
     except Exception as e:
         logger.error(f"Stripe checkout error: {e}")
