@@ -265,8 +265,6 @@ async def ingest_nba_dfs(
     return {"status": "ok", **result}
 
 
-@router.post("/ingest/articles/nba/rss")
-
 @router.post("/ingest/nba/players")
 async def ingest_nba_players(
     db: AsyncSession = Depends(get_db),
@@ -275,6 +273,9 @@ async def ingest_nba_players(
     from app.ingestion.nba_players import ingest_rosters
     result = await ingest_rosters(db)
     return {"status": "ok", **result}
+
+
+@router.post("/ingest/articles/nba/rss")
 async def ingest_nba_rss_articles(
     max_per_feed: int = Query(20, description="Max articles per feed"),
     skip_older_than_days: int = Query(30, description="Skip articles older than N days"),
