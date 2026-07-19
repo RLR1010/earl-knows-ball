@@ -118,13 +118,6 @@ export interface Article {
   published_at?: string;
 }
 
-// ── Auth helpers ───────────────────────────────────────────────
-
-function authHeaders(): HeadersInit {
-  const token = typeof window !== "undefined" ? localStorage.getItem("earl_token") : null;
-  return token ? { Authorization: `Bearer ${token}` } : {};
-}
-
 // ── Admin API ─────────────────────────────────────────────────
 
 export interface DashboardStats {
@@ -270,17 +263,21 @@ export const api = {
 
   // Auth
   auth: {
-    login: (email: string, password: string) =>
-      fetchAPI<{ access_token: string }>("/auth/login", {
+    sendCode: (email: string) =>
+      fetchAPI<{ message: string }>("/auth/send-code", {
         method: "POST",
-        body: JSON.stringify({ email, password }),
+        body: JSON.stringify({ email }),
       }),
-    register: (email: string, password: string, display_name?: string) =>
-      fetchAPI<{ access_token: string }>("/auth/register", {
+    verifyCode: (email: string, code: string) =>
+      fetchAPI<{ user: any; token: string; message: string }>("/auth/verify-code", {
         method: "POST",
-        body: JSON.stringify({ email, password, display_name }),
+        body: JSON.stringify({ email, code }),
       }),
-    me: () => fetchAPI<any>("/auth/me", { headers: authHeaders() }),
+    me: () => fetchAPI<any>("/auth/me"),
+    logout: () =>
+      fetchAPI<{ message: string }>("/auth/logout", {
+        method: "POST",
+      }),
   },
 
   // Articles
@@ -291,69 +288,69 @@ export const api = {
 
   // Admin
   admin: {
-    stats: () => fetchAPI<DashboardStats>("/api/admin/stats", { headers: authHeaders() }),
+    stats: () => fetchAPI<DashboardStats>("/api/admin/stats", {} ),
     users: {
       list: (params?: { search?: string; tier?: string }) => {
         const q = new URLSearchParams();
         if (params?.search) q.set("search", params.search);
         if (params?.tier) q.set("tier", params.tier);
-        return fetchAPI<AdminUser[]>(`/api/admin/users?${q}`, { headers: authHeaders() });
+        return fetchAPI<AdminUser[]>(`/api/admin/users?${q}`, {} );
       },
-      get: (id: string) => fetchAPI<AdminUser>(`/api/admin/users/${id}`, { headers: authHeaders() }),
+      get: (id: string) => fetchAPI<AdminUser>(`/api/admin/users/${id}`, {} ),
       update: (id: string, data: any) =>
         fetchAPI<AdminUser>(`/api/admin/users/${id}`, {
           method: "PATCH",
-          headers: { ...authHeaders(), "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify(data),
         }),
       delete: (id: string) =>
-        fetchAPI<void>(`/api/admin/users/${id}`, { method: "DELETE", headers: authHeaders() }),
+        fetchAPI<void>(`/api/admin/users/${id}`, { method: "DELETE",  }),
     },
     plans: {
-      list: () => fetchAPI<SubscriptionPlan[]>("/api/admin/plans", { headers: authHeaders() }),
-      get: (id: string) => fetchAPI<SubscriptionPlan>(`/api/admin/plans/${id}`, { headers: authHeaders() }),
+      list: () => fetchAPI<SubscriptionPlan[]>("/api/admin/plans", {} ),
+      get: (id: string) => fetchAPI<SubscriptionPlan>(`/api/admin/plans/${id}`, {} ),
       create: (data: any) =>
         fetchAPI<SubscriptionPlan>("/api/admin/plans", {
           method: "POST",
-          headers: { ...authHeaders(), "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify(data),
         }),
       update: (id: string, data: any) =>
         fetchAPI<SubscriptionPlan>(`/api/admin/plans/${id}`, {
           method: "PATCH",
-          headers: { ...authHeaders(), "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify(data),
         }),
       delete: (id: string) =>
-        fetchAPI<void>(`/api/admin/plans/${id}`, { method: "DELETE", headers: authHeaders() }),
+        fetchAPI<void>(`/api/admin/plans/${id}`, { method: "DELETE",  }),
     },
     subscriptions: {
       list: (status?: string) => {
         const q = status ? `?status_filter=${status}` : "";
-        return fetchAPI<UserSubscription[]>(`/api/admin/subscriptions${q}`, { headers: authHeaders() });
+        return fetchAPI<UserSubscription[]>(`/api/admin/subscriptions${q}`, {} );
       },
       get: (id: string) =>
-        fetchAPI<UserSubscription>(`/api/admin/subscriptions/${id}`, { headers: authHeaders() }),
+        fetchAPI<UserSubscription>(`/api/admin/subscriptions/${id}`, {} ),
       update: (id: string, data: any) =>
         fetchAPI<UserSubscription>(`/api/admin/subscriptions/${id}`, {
           method: "PATCH",
-          headers: { ...authHeaders(), "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify(data),
         }),
     },
     payments: {
       list: (status?: string) => {
         const q = status ? `?status_filter=${status}` : "";
-        return fetchAPI<Payment[]>(`/api/admin/payments${q}`, { headers: authHeaders() });
+        return fetchAPI<Payment[]>(`/api/admin/payments${q}`, {} );
       },
-      get: (id: string) => fetchAPI<Payment>(`/api/admin/payments/${id}`, { headers: authHeaders() }),
+      get: (id: string) => fetchAPI<Payment>(`/api/admin/payments/${id}`, {} ),
     },
     // MLB model features + training
     features: {
       get: (sport: string) =>
         fetchAPI<{ features: Array<{name: string; description: string; display_name: string | null; is_trainable: boolean; current_ou: boolean; current_ats: boolean}> }>(
           `/admin/features/${sport}`,
-          { headers: authHeaders() }
+          {} 
         ),
     },
     training: {
@@ -362,14 +359,14 @@ export const api = {
           `/admin/train-new/${sport}/${modelType}`,
           {
             method: "POST",
-            headers: { ...authHeaders(), "Content-Type": "application/json" },
+            headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ features }),
           }
         ),
       getRuns: (sport: string, modelType: string) =>
         fetchAPI<any[]>(
           `/admin/training-runs/${sport}/${modelType}`,
-          { headers: authHeaders() }
+          {} 
         ),
     },
   },
@@ -377,17 +374,16 @@ export const api = {
   // Subscriptions (public)
   subscriptions: {
     plans: () => fetchAPI<SubscriptionPlan[]>("/api/subscriptions/plans"),
-    my: () => fetchAPI<any>("/api/subscriptions/my", { headers: authHeaders() }),
+    my: () => fetchAPI<any>("/api/subscriptions/my", {} ),
     checkout: (planId: string, successUrl?: string, cancelUrl?: string) =>
       fetchAPI<{ url: string | null; mock: boolean; message: string }>("/api/subscriptions/checkout", {
         method: "POST",
-        headers: { ...authHeaders(), "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ plan_id: planId, success_url: successUrl, cancel_url: cancelUrl }),
       }),
     cancel: () =>
       fetchAPI<{ status: string; message: string }>("/api/subscriptions/cancel", {
         method: "POST",
-        headers: authHeaders(),
       }),
     payments: (params?: { limit?: number; offset?: number }) => {
       const q = new URLSearchParams();
@@ -395,7 +391,7 @@ export const api = {
       if (params?.offset) q.set("offset", String(params.offset));
       return fetchAPI<PaymentRecord[]>(
         `/api/subscriptions/payments?${q}`,
-        { headers: authHeaders() }
+        {} 
       );
     },
   },
@@ -425,4 +421,4 @@ export function formatOverUnder(ou: number | null | undefined): string {
 }
 
 // Re-export helpers
-export { authHeaders };
+

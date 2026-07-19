@@ -2,8 +2,8 @@
 const nextConfig = {
   async rewrites() {
     return [
-      // Auth routes (frontend calls /auth/login, backend serves /login)
-      { source: "/api/auth/:path*", destination: "http://localhost:8001/:path*" },
+      // Auth routes (frontend calls /api/auth/send-code, backend serves /auth/send-code)
+      { source: "/api/auth/:path*", destination: "http://localhost:8001/auth/:path*" },
       // API routes with /api prefix (admin, articles, subscriptions)
       { source: "/api/admin/:path*", destination: "http://localhost:8001/api/admin/:path*" },
       { source: "/api/articles/:path*", destination: "http://localhost:8001/api/articles/:path*" },
@@ -15,7 +15,7 @@ const nextConfig = {
       { source: "/api/writeups/:path*", destination: "http://localhost:8001/writeups/:path*" },
       // All other /api calls get the prefix stripped (teams, players, games, chat, etc.)
       { source: "/api/:path*", destination: "http://localhost:8001/:path*" },
-      { source: "/auth/:path*", destination: "http://localhost:8001/:path*" },
+      { source: "/auth/:path*", destination: "http://localhost:8001/auth/:path*" },
       { source: "/health", destination: "http://localhost:8001/health" },
     ];
   },

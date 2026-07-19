@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { useRouter, usePathname } from "next/navigation";
+import { useAuth } from "@/lib/auth-context";
 
 const NAV_ITEMS = [
   { label: "Dashboard", path: "/admin", icon: "📊" },
@@ -20,39 +21,11 @@ const NAV_ITEMS = [
 ];
 
 export default function AdminLayout({ children }: { children: React.ReactNode }) {
-  const [isAdmin, setIsAdmin] = useState<boolean | null>(null);
-  const [loading, setLoading] = useState(true);
+  const { user, loading } = useAuth();
   const router = useRouter();
   const pathname = usePathname();
 
-  useEffect(() => {
-    const checkAdmin = async () => {
-      const token = localStorage.getItem("earl_token");
-      if (!token) {
-        setIsAdmin(false);
-        setLoading(false);
-        return;
-      }
-
-      try {
-        const res = await fetch("/auth/me", {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        if (!res.ok) throw new Error("Not authorized");
-        const user = await res.json();
-        if (!user.is_admin) {
-          setIsAdmin(false);
-        } else {
-          setIsAdmin(true);
-        }
-      } catch {
-        setIsAdmin(false);
-      } finally {
-        setLoading(false);
-      }
-    };
-    checkAdmin();
-  }, []);
+  const isAdmin = user?.is_admin === true;
 
   useEffect(() => {
     if (!loading && !isAdmin) {

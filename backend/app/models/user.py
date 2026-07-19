@@ -10,7 +10,7 @@ class User(Base):
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     email = Column(String(255), unique=True, nullable=False, index=True)
-    password_hash = Column(String(255), nullable=False)
+    password_hash = Column(String(255), nullable=True)  # nullable — no longer used, legacy only
     display_name = Column(String(100), nullable=True)
     subscription_tier = Column(String(20), default="free")  # free, premium, ultimate
     is_active = Column(Boolean, default=True)
@@ -19,3 +19,7 @@ class User(Base):
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     last_login_at = Column(DateTime(timezone=True), nullable=True)
     stripe_customer_id = Column(String(100), nullable=True)
+
+    # Passwordless login fields
+    login_code_hash = Column(String(255), nullable=True)
+    login_code_expires_at = Column(DateTime(timezone=True), nullable=True)

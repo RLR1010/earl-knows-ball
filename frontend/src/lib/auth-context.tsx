@@ -13,9 +13,9 @@ import { api, type UserProfile } from "./api";
 interface AuthContextValue {
   user: UserProfile | null;
   loading: boolean;
-  login: (email: string, password: string) => Promise<void>;
-  register: (email: string, password: string, display_name?: string) => Promise<void>;
-  logout: () => void;
+  sendCode: (email: string) => Promise<{ message: string }>;
+  verifyCode: (email: string, code: string) => Promise<UserProfile>;
+  logout: () => Promise<void>;
   refresh: () => Promise<void>;
 }
 
@@ -26,18 +26,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
 
   const refresh = useCallback(async () => {
-    const token = localStorage.getItem("earl_token");
-    if (!token) {
-      setUser(null);
-      setLoading(false);
-      return;
-    }
     try {
       const profile = await api.auth.me();
       setUser(profile);
     } catch {
-      // Token expired or invalid
-      localStorage.removeItem("earl_token");
+      // Not logged in — that's fine
       setUser(null);
     } finally {
       setLoading(false);
@@ -48,25 +41,33 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     refresh();
   }, [refresh]);
 
-  const login = useCallback(async (email: string, password: string) => {
-    const result = await api.auth.login(email, password);
-    localStorage.setItem("earl_token", result.access_token);
-    await refresh();
-  }, [refresh]);
+  const sendCode = useCallback(async (email: string) => {
+    const result = await api.auth.sendCode(email);
+    return result;
+  }, []);
 
-  const register = useCallback(async (email: string, password: string, display_name?: string) => {
-    const result = await api.auth.register(email, password, display_name);
-    localStorage.setItem("earl_token", result.access_token);
-    await refresh();
-  }, [refresh]);
+  const verifyCode = useCallback(async (email: string, code: string) => {
+    const result = await api.auth.verifyCode(email, code);
+    setUser(result.user);
+    // Save token to localStorage for backward compat (admin pages, etc.)
+    if (result.token) {
+      localStorage.setItem("earl_token", result.token);
+    }
+    return result.user;
+  }, []);
 
-  const logout = useCallback(() => {
+  const logout = useCallback(async () => {
+    try {
+      await api.auth.logout();
+    } catch {
+      // Even if the API call fails, clear local state
+    }
     localStorage.removeItem("earl_token");
     setUser(null);
   }, []);
 
   return (
-    <AuthContext.Provider value={{ user, loading, login, register, logout, refresh }}>
+    <AuthContext.Provider value={{ user, loading, sendCode, verifyCode, logout, refresh }}>
       {children}
     </AuthContext.Provider>
   );

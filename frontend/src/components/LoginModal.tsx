@@ -1,9 +1,8 @@
 "use client";
 
-import { useState, type FormEvent, useEffect } from "react";
+import { useState, type FormEvent, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import { useAuth } from "@/lib/auth-context";
-import Link from "next/link";
 
 interface LoginModalProps {
   open: boolean;
@@ -11,29 +10,69 @@ interface LoginModalProps {
 }
 
 export default function LoginModal({ open, onClose }: LoginModalProps) {
-  const { login } = useAuth();
+  const { sendCode, verifyCode } = useAuth();
   const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
+  const [code, setCode] = useState("");
+  const [step, setStep] = useState<"email" | "code">("email");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [mounted, setMounted] = useState(false);
+  const codeInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     setMounted(true);
   }, []);
 
-  const handleSubmit = async (e: FormEvent) => {
+  // Focus code input when step changes
+  useEffect(() => {
+    if (step === "code" && codeInputRef.current) {
+      codeInputRef.current.focus();
+    }
+  }, [step]);
+
+  // Reset when modal opens
+  useEffect(() => {
+    if (open) {
+      setEmail("");
+      setCode("");
+      setStep("email");
+      setError("");
+      setBusy(false);
+    }
+  }, [open]);
+
+  const handleSendCode = async (e: FormEvent) => {
     e.preventDefault();
     setError("");
     setBusy(true);
     try {
-      await login(email, password);
-      onClose();
+      await sendCode(email);
+      setStep("code");
     } catch (err: any) {
-      setError(err?.message || "Login failed. Check your credentials.");
+      setError(err?.message || "Failed to send code. Check your email address.");
     } finally {
       setBusy(false);
     }
+  };
+
+  const handleVerifyCode = async (e: FormEvent) => {
+    e.preventDefault();
+    setError("");
+    setBusy(true);
+    try {
+      await verifyCode(email, code);
+      onClose();
+    } catch (err: any) {
+      setError(err?.message || "Invalid or expired code.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleCodeInput = (value: string) => {
+    // Only allow digits, max 6
+    const digits = value.replace(/\D/g, "").slice(0, 6);
+    setCode(digits);
   };
 
   const handleKeyDown = (e: KeyboardEvent) => {
@@ -67,7 +106,9 @@ export default function LoginModal({ open, onClose }: LoginModalProps) {
         >
           <div className="bg-gray-900 border border-gray-700 rounded-lg p-6 shadow-2xl">
             <div className="flex items-center justify-between mb-6">
-              <h2 className="text-xl font-bold text-white">Sign In</h2>
+              <h2 className="text-xl font-bold text-white">
+                {step === "email" ? "Sign In" : "Check Your Email"}
+              </h2>
               <button
                 type="button"
                 onClick={onClose}
@@ -79,52 +120,95 @@ export default function LoginModal({ open, onClose }: LoginModalProps) {
               </button>
             </div>
 
-            <form onSubmit={handleSubmit} className="space-y-4">
-              {error && (
-                <div className="bg-red-900/40 border border-red-700 text-red-300 text-sm rounded px-3 py-2">
-                  {error}
+            {step === "email" && (
+              <form onSubmit={handleSendCode} className="space-y-4">
+                <p className="text-sm text-gray-400">
+                  Enter your email address and we&apos;ll send you a login code. No password needed.
+                </p>
+
+                {error && (
+                  <div className="bg-red-900/40 border border-red-700 text-red-300 text-sm rounded px-3 py-2">
+                    {error}
+                  </div>
+                )}
+
+                <div>
+                  <label htmlFor="email" className="block text-sm font-medium text-gray-300 mb-1">
+                    Email
+                  </label>
+                  <input
+                    id="email"
+                    type="email"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-green-500"
+                    placeholder="you@example.com"
+                    required
+                    autoFocus
+                  />
                 </div>
-              )}
 
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-1">Email</label>
-                <input
-                  type="email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-green-500"
-                  placeholder="you@example.com"
-                  required
-                />
-              </div>
+                <button
+                  type="submit"
+                  disabled={busy}
+                  className="w-full bg-green-600 hover:bg-green-500 disabled:opacity-50 text-white font-semibold py-2 rounded transition-colors"
+                >
+                  {busy ? "Sending code…" : "Send Login Code"}
+                </button>
+              </form>
+            )}
 
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-1">Password</label>
-                <input
-                  type="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-green-500"
-                  placeholder="••••••••"
-                  required
-                />
-              </div>
+            {step === "code" && (
+              <form onSubmit={handleVerifyCode} className="space-y-4">
+                <p className="text-sm text-gray-400">
+                  We sent a 6-digit code to <strong className="text-white">{email}</strong>.
+                </p>
 
-              <button
-                type="submit"
-                disabled={busy}
-                className="w-full bg-green-600 hover:bg-green-500 disabled:opacity-50 text-white font-semibold py-2 rounded transition-colors"
-              >
-                {busy ? "Signing in…" : "Sign In"}
-              </button>
-            </form>
+                {error && (
+                  <div className="bg-red-900/40 border border-red-700 text-red-300 text-sm rounded px-3 py-2">
+                    {error}
+                  </div>
+                )}
 
-            <p className="mt-4 text-sm text-gray-400 text-center">
-              Don&apos;t have an account?{" "}
-              <Link href="/register" onClick={onClose} className="text-green-400 hover:underline">
-                Register
-              </Link>
-            </p>
+                <div>
+                  <label htmlFor="code" className="block text-sm font-medium text-gray-300 mb-1">
+                    Login Code
+                  </label>
+                  <input
+                    ref={codeInputRef}
+                    id="code"
+                    type="text"
+                    inputMode="numeric"
+                    autoComplete="one-time-code"
+                    value={code}
+                    onChange={(e) => handleCodeInput(e.target.value)}
+                    className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-white text-center text-2xl tracking-[0.5em] placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-green-500"
+                    placeholder="••••••"
+                    required
+                  />
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={busy || code.length !== 6}
+                  className="w-full bg-green-600 hover:bg-green-500 disabled:opacity-50 text-white font-semibold py-2 rounded transition-colors"
+                >
+                  {busy ? "Verifying…" : "Verify & Sign In"}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setStep("email");
+                    setError("");
+                    setCode("");
+                  }}
+                  className="w-full text-sm text-gray-400 hover:text-white transition-colors"
+                >
+                  ← Use a different email
+                </button>
+              </form>
+            )}
           </div>
         </div>
       </div>
