@@ -170,9 +170,8 @@ async def create_checkout_session(
 
         if req.ui_mode == "embedded_page":
             # Embedded Checkout — renders in-page modal
-            return_url = f"{req.success_url or settings.base_url}/profile?subscription=success"
             session_kwargs["ui_mode"] = "embedded_page"
-            session_kwargs["return_url"] = return_url
+            session_kwargs["return_url"] = f"{settings.base_url}/profile?subscription=success"
             session = stripe.checkout.Session.create(**session_kwargs)
             return CheckoutResponse(client_secret=session.client_secret)
         else:

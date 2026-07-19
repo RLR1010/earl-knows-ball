@@ -28,7 +28,7 @@ export default function PricingPage() {
   const [plans, setPlans] = useState<Plan[]>([]);
   const [loadingPlans, setLoadingPlans] = useState(true);
   const [checkingOut, setCheckingOut] = useState<string | null>(null);
-  const [checkoutUrl, setCheckoutUrl] = useState<string | null>(null);
+  const [checkoutSecret, setCheckoutSecret] = useState<string | null>(null);
   const [checkoutError, setCheckoutError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -59,7 +59,7 @@ export default function PricingPage() {
           plan_id: planId,
           success_url: `${window.location.origin}/checkout/success`,
           cancel_url: `${window.location.origin}/pricing`,
-          ui_mode: "hosted",
+          ui_mode: "embedded_page",
         }),
       });
 
@@ -70,8 +70,11 @@ export default function PricingPage() {
 
       const data = await res.json();
 
-      if (data.url) {
-        setCheckoutUrl(data.url);
+      if (data.client_secret) {
+        setCheckoutSecret(data.client_secret);
+      } else if (data.url) {
+        // Fallback: hosted checkout
+        window.location.href = data.url;
       } else {
         throw new Error(data.message || "No checkout session returned");
       }
@@ -83,12 +86,12 @@ export default function PricingPage() {
   };
 
   const handleCheckoutClose = () => {
-    setCheckoutUrl(null);
+    setCheckoutSecret(null);
     setCheckoutError(null);
   };
 
   const handleCheckoutComplete = () => {
-    setCheckoutUrl(null);
+    setCheckoutSecret(null);
     window.location.href = "/profile";
   };
 
@@ -102,10 +105,10 @@ export default function PricingPage() {
 
   return (
     <div className="min-h-screen bg-neutral-950">
-      {/* Checkout Modal */}
-      {checkoutUrl && (
+      {/* Stripe Embedded Checkout Modal */}
+      {checkoutSecret && (
         <CheckoutModal
-          checkoutUrl={checkoutUrl}
+          clientSecret={checkoutSecret}
           onClose={handleCheckoutClose}
           onComplete={handleCheckoutComplete}
         />
