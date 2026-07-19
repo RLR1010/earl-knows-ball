@@ -40,32 +40,36 @@ export default function CheckoutModal({
     popupRef.current = popup;
     setStatus("waiting");
 
-    // Poll for the popup to close (user completed checkout or cancelled)
+    // Listen for postMessage from the success popup page
+    const handleMessage = (e: MessageEvent) => {
+      if (e.data?.type === "stripe_checkout_complete") {
+        clearInterval(pollRef.current);
+        setStatus("complete");
+      }
+    };
+    window.addEventListener("message", handleMessage);
+
+    // Poll for the popup to close (fallback if postMessage fails)
     pollRef.current = setInterval(() => {
       if (popup.closed) {
         clearInterval(pollRef.current);
+        window.removeEventListener("message", handleMessage);
 
-        // Check if subscription was updated by checking URL params
-        // (popup would have redirected to /profile?subscription=success)
-        const params = new URLSearchParams(window.location.search);
-        if (params.get("subscription") === "success") {
-          setStatus("complete");
-        } else {
-          // Refresh subscription status from API
-          checkSubscriptionStatus().then((isPremium) => {
-            if (isPremium) {
-              setStatus("complete");
-            } else {
-              // User might have cancelled or failed — just close
-              onClose();
-            }
-          });
-        }
+        // Check subscription status from API
+        checkSubscriptionStatus().then((isPremium) => {
+          if (isPremium) {
+            setStatus("complete");
+          } else {
+            // User might have cancelled or failed — just close
+            onClose();
+          }
+        });
       }
     }, 500);
 
     return () => {
       clearInterval(pollRef.current);
+      window.removeEventListener("message", handleMessage);
       if (popupRef.current && !popupRef.current.closed) {
         popupRef.current.close();
       }

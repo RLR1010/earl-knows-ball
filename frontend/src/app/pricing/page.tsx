@@ -57,7 +57,7 @@ export default function PricingPage() {
         },
         body: JSON.stringify({
           plan_id: planId,
-          success_url: `${window.location.origin}/profile?subscription=success`,
+          success_url: `${window.location.origin}/checkout/success`,
           cancel_url: `${window.location.origin}/pricing`,
           ui_mode: "hosted",
         }),
