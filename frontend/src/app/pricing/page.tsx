@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import CheckoutModal from "@/components/CheckoutModal";
+import { useRouter } from "next/navigation";
 
 interface Plan {
   id: string;
@@ -25,11 +25,9 @@ const formatPrice = (cents: number, currency: string, interval: string) => {
 };
 
 export default function PricingPage() {
+  const router = useRouter();
   const [plans, setPlans] = useState<Plan[]>([]);
   const [loadingPlans, setLoadingPlans] = useState(true);
-  const [checkingOut, setCheckingOut] = useState<string | null>(null);
-  const [checkoutSecret, setCheckoutSecret] = useState<string | null>(null);
-  const [checkoutError, setCheckoutError] = useState<string | null>(null);
 
   useEffect(() => {
     fetch("/api/subscriptions/plans")
@@ -39,60 +37,13 @@ export default function PricingPage() {
       .finally(() => setLoadingPlans(false));
   }, []);
 
-  const handleSubscribe = async (planId: string) => {
-    setCheckingOut(planId);
-    setCheckoutError(null);
-    try {
-      const token = localStorage.getItem("earl_token");
-      if (!token) {
-        window.location.href = `/auth?redirect=/pricing&plan=${planId}`;
-        return;
-      }
-
-      const res = await fetch("/api/subscriptions/checkout", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          plan_id: planId,
-          success_url: `${window.location.origin}/checkout/success`,
-          cancel_url: `${window.location.origin}/pricing`,
-          ui_mode: "embedded_page",
-        }),
-      });
-
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.detail || "Checkout failed");
-      }
-
-      const data = await res.json();
-
-      if (data.client_secret) {
-        setCheckoutSecret(data.client_secret);
-      } else if (data.url) {
-        // Fallback: hosted checkout
-        window.location.href = data.url;
-      } else {
-        throw new Error(data.message || "No checkout session returned");
-      }
-    } catch (e: any) {
-      setCheckoutError(e.message);
-    } finally {
-      setCheckingOut(null);
+  const handleSubscribe = (planId: string) => {
+    const token = localStorage.getItem("earl_token");
+    if (!token) {
+      router.push(`/auth?redirect=/pricing&plan=${planId}`);
+      return;
     }
-  };
-
-  const handleCheckoutClose = () => {
-    setCheckoutSecret(null);
-    setCheckoutError(null);
-  };
-
-  const handleCheckoutComplete = () => {
-    setCheckoutSecret(null);
-    window.location.href = "/profile";
+    router.push(`/checkout?plan=${planId}`);
   };
 
   if (loadingPlans) {
@@ -105,15 +56,6 @@ export default function PricingPage() {
 
   return (
     <div className="min-h-screen bg-neutral-950">
-      {/* Stripe Embedded Checkout Modal */}
-      {checkoutSecret && (
-        <CheckoutModal
-          clientSecret={checkoutSecret}
-          onClose={handleCheckoutClose}
-          onComplete={handleCheckoutComplete}
-        />
-      )}
-
       {/* Hero */}
       <div className="max-w-6xl mx-auto px-4 pt-20 pb-12 text-center">
         <h1 className="text-4xl md:text-5xl font-bold text-white mb-4">
@@ -181,26 +123,14 @@ export default function PricingPage() {
 
                 <button
                   onClick={() => handleSubscribe(plan.id)}
-                  disabled={checkingOut === plan.id}
-                  className={`w-full py-3 rounded-lg font-semibold text-sm transition ${
-                    isAnnual
-                      ? "bg-earl-400 text-black hover:bg-amber-400 disabled:bg-earl-400/50"
-                      : "bg-neutral-800 text-white hover:bg-neutral-700 disabled:bg-neutral-800/50"
-                  }`}
+                  className="w-full py-3 rounded-lg font-semibold text-sm transition bg-earl-400 text-black hover:bg-amber-400"
                 >
-                  {checkingOut === plan.id ? "Opening checkout..." : "Subscribe Now"}
+                  Subscribe Now
                 </button>
               </div>
             );
           })}
         </div>
-
-        {/* Error state */}
-        {checkoutError && (
-          <div className="text-center mt-4">
-            <p className="text-red-400 text-sm">{checkoutError}</p>
-          </div>
-        )}
 
         {/* Already have an account? */}
         <p className="text-center text-gray-500 text-sm mt-8">
