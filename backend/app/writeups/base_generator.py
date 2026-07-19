@@ -116,7 +116,7 @@ Return valid JSON only. No markdown fences. No extra text."""
 
         return f"""You are a baseball writer for Earl Knows Ball, a sports analysis site. Write a game preview/article for the general public.
 
-Length: 1200-2000 words.
+Length: 800-1000 words.
 
 Focus on:
 - Game narrative and stakes (division race, wild card implications, streaks)
@@ -166,13 +166,13 @@ Bullet lists work for key points. Keep it article-like — no blockquotes, no em
 
 Write an exclusive insider analysis article for PAYING SUBSCRIBERS. This is a full article, not a short snippet.
 
-Length: 1600-3200 words — be detailed and comprehensive.
+Length: 1200-1600 words — be detailed and comprehensive.
 
 What to include:
 - Advanced stats breakdown and key matchup analysis
 - In-depth handicapping angles with historical context
 - Betting trends, line movement analysis, and what it means
-- Model predictions and probabilities (if available in the data below)
+- CRITICAL: Use Earl's MODEL PREDICTIONS from the "--- MODEL PREDICTIONS ---" section below as your FOUNDATION for picks. Lead with: "Earl's model says..." or "Our model sees edge on..." Do NOT recommend the opposite side.
 - Explicit betting recommendations where supported by the data
 - Why the public is wrong vs right
 - Proprietary handicapping insights that give the reader a real edge
@@ -241,7 +241,7 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
         public_system = self.public_system_prompt(is_historical)
         public_prompt = self._build_messages(stripped)
 
-        raw_public = await self._call_deepseek(public_system, public_prompt, max_tokens=2000, reasoning="high")
+        raw_public = await self._call_deepseek(public_system, public_prompt, max_tokens=4096, reasoning="high")
         if raw_public is None:
             return {"error": "DeepSeek API call failed for public section"}
 
@@ -254,7 +254,7 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
         premium_system = self.premium_system_prompt(is_historical)
         premium_prompt = self._build_messages(research)
 
-        raw_premium = await self._call_deepseek(premium_system, premium_prompt, max_tokens=3000, reasoning="high")
+        raw_premium = await self._call_deepseek(premium_system, premium_prompt, max_tokens=6144, reasoning="high")
         if raw_premium is None:
             logger.warning("premium LLM call failed for game %s — using fallback", game_id)
             premium_content = "Premium content unavailable — API call failed."
@@ -481,6 +481,19 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
                     lines.append(f"  {k}: {v}")
             else:
                 lines.append(f"  {venue}")
+
+        if predictions := research.get("predictions"):
+            lines.append("\n--- MODEL PREDICTIONS ---")
+            if isinstance(predictions, dict):
+                for key, value in predictions.items():
+                    if isinstance(value, dict):
+                        lines.append(f"  [{key}]")
+                        for k, v in value.items():
+                            lines.append(f"    {k}: {v}")
+                    else:
+                        lines.append(f"  {key}: {value}")
+            else:
+                lines.append(f"  {predictions}")
 
         if narrative_data := research.get("narrative_data"):
             lines.append("\n--- NARRATIVE / CONTEXT ---")

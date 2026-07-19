@@ -201,6 +201,32 @@ export interface Payment {
   created_at: string | null;
 }
 
+export interface UserProfile {
+  id: string;
+  email: string;
+  display_name: string | null;
+  subscription_tier: string;
+  is_admin: boolean;
+  email_verified: boolean;
+  created_at: string | null;
+  last_login_at: string | null;
+  stripe_customer_id: string | null;
+}
+
+export interface PaymentRecord {
+  id: string;
+  user_id: string;
+  user_email: string;
+  user_name: string | null;
+  subscription_id: string | null;
+  amount_cents: number;
+  currency: string;
+  status: string;
+  description: string | null;
+  stripe_invoice_id: string | null;
+  created_at: string | null;
+}
+
 export const api = {
   // Teams
   teams: {
@@ -363,6 +389,15 @@ export const api = {
         method: "POST",
         headers: authHeaders(),
       }),
+    payments: (params?: { limit?: number; offset?: number }) => {
+      const q = new URLSearchParams();
+      if (params?.limit) q.set("limit", String(params.limit));
+      if (params?.offset) q.set("offset", String(params.offset));
+      return fetchAPI<PaymentRecord[]>(
+        `/api/subscriptions/payments?${q}`,
+        { headers: authHeaders() }
+      );
+    },
   },
 
 };

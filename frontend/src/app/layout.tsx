@@ -2,6 +2,9 @@
 
 import { usePathname } from "next/navigation";
 import "./globals.css";
+import { AuthProvider } from "@/lib/auth-context";
+import HeaderUserArea from "@/components/HeaderUserArea";
+import Footer from "@/components/Footer";
 
 type Sport = "nfl" | "nba" | "mlb";
 
@@ -38,8 +41,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   const pathname = usePathname();
   const activeSport = getActiveSport(pathname);
 
-  // Don't show sport chrome on landing, chat, login, register
-  const hideSportChrome = ["/chat", "/login", "/register"].some((p) => pathname.startsWith(p));
+  // Don't show sport chrome on landing, chat, login, register, profile
+  const hideSportChrome = ["/chat", "/login", "/register", "/profile"].some((p) => pathname.startsWith(p));
   // But still show sport selector on those pages (just no sub-nav highlighting)
 
   const isLanding = pathname === "/";
@@ -57,7 +60,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           rel="stylesheet"
         />
       </head>
-      <body className="min-h-screen bg-[#0a0a0f] text-[#e5e5e5]">
+      <body className="min-h-screen flex flex-col bg-[#0a0a0f] text-[#e5e5e5]">
+        <AuthProvider>
         <header className="sticky top-0 z-50">
           {/* ── Top Nav ──────────────────────────────────────────── */}
           <div className="border-b border-white/10 bg-black/50 backdrop-blur-sm">
@@ -98,9 +102,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                     AI Chat
                   </a>
                 )}
-                <a href="/login" className="hover:text-earl-400 transition">
-                  Login
-                </a>
+                <HeaderUserArea />
               </div>
             </div>
           </div>
@@ -138,9 +140,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         </header>
 
         {/* ── Main Content ───────────────────────────────────────── */}
-        <main className={activeSport && !hideSportChrome ? "max-w-7xl mx-auto px-4 py-6" : ""}>
+        <main className={`flex-1 ${activeSport && !hideSportChrome ? "max-w-7xl mx-auto px-4 py-6" : ""}`}>
           {children}
         </main>
+        <Footer />
+        </AuthProvider>
       </body>
     </html>
   );

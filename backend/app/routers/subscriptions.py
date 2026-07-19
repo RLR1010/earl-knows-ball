@@ -533,3 +533,40 @@ async def cancel_subscription(
     await db.commit()
 
     return {"status": "canceled", "message": "Subscription will end at the current billing period"}
+
+
+@router.get("/payments", status_code=200)
+async def get_payment_history(
+    request: Request,
+    limit: int = 50,
+    offset: int = 0,
+    db: AsyncSession = Depends(get_db),
+):
+    """Return payment history for the authenticated user."""
+    auth = request.headers.get("authorization", "")
+    user = await get_token_user(auth, db)
+
+    result = await db.execute(
+        select(Payment)
+        .where(Payment.user_id == user.id)
+        .order_by(Payment.created_at.desc())
+        .offset(offset)
+        .limit(limit)
+    )
+    payments = result.scalars().all()
+    return [
+        {
+            "id": p.id,
+            "user_id": p.user_id,
+            "user_email": user.email,
+            "user_name": user.display_name,
+            "subscription_id": p.subscription_id,
+            "amount_cents": p.amount_cents,
+            "currency": p.currency,
+            "status": p.status,
+            "description": p.description,
+            "stripe_invoice_id": p.stripe_invoice_id,
+            "created_at": p.created_at.isoformat() if p.created_at else None,
+        }
+        for p in payments
+    ]
