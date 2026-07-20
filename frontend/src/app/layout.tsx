@@ -140,7 +140,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         </header>
 
         {/* ── Main Content ───────────────────────────────────────── */}
-        <main className={`flex-1 ${activeSport && !hideSportChrome ? "max-w-7xl mx-auto px-4 py-6" : ""}`}>
+        <main className={`flex-1 w-full ${activeSport && !hideSportChrome ? "max-w-7xl mx-auto px-4 py-6" : ""}`}>
           {children}
         </main>
         <Footer />
