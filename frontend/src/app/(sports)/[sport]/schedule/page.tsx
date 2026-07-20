@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import * as React from "react";
 import { useParams, useSearchParams, useRouter } from "next/navigation";
 import Link from "next/link";
@@ -188,6 +188,22 @@ function NBASchedule({ sport }: { sport: string }) {
   const seasonFirst = nbaFirstGame(year);
   const seasonLast = nbaLastGame(year);
 
+  // Auto-search: find nearest date with games when initial date has none
+  // MAX_SEARCH_DAYS limits iterations per direction to prevent infinite loops
+  const MAX_SEARCH_DAYS = 60;
+  const autoSearchRef = useRef<'idle' | 'forward' | 'backward' | 'done'>('idle');
+  const originalDateRef = useRef(selectedDate);
+  const searchCountRef = useRef(0);
+
+  // Start auto-search on mount if no date was explicitly in the URL
+  useEffect(() => {
+    if (!searchParams.get('date')) {
+      autoSearchRef.current = 'forward';
+    } else {
+      autoSearchRef.current = 'done';
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Sync URL when year or date changes
   useEffect(() => {
     const params = new URLSearchParams(searchParams.toString());
@@ -208,6 +224,51 @@ function NBASchedule({ sport }: { sport: string }) {
       .finally(() => setLoading(false));
   }, [year, selectedDate]);
 
+  // Auto-search effect: when games load empty and auto-search is active, advance to next/prev date
+  useEffect(() => {
+    if (autoSearchRef.current === 'done' || loading) return;
+
+    if (games.length === 0 && !loading) {
+      searchCountRef.current += 1;
+      if (searchCountRef.current > MAX_SEARCH_DAYS) {
+        autoSearchRef.current = 'done';
+        return;
+      }
+
+      if (autoSearchRef.current === 'forward') {
+        const next = new Date(selectedDate + 'T12:00:00Z');
+        next.setDate(next.getDate() + 1);
+        const nextStr = next.toISOString().slice(0, 10);
+        if (nextStr > seasonLast) {
+          // Forward exhausted, try backward from original date
+          autoSearchRef.current = 'backward';
+          searchCountRef.current = 0;
+          const prev = new Date(originalDateRef.current + 'T12:00:00Z');
+          prev.setDate(prev.getDate() - 1);
+          const prevStr = prev.toISOString().slice(0, 10);
+          if (prevStr < seasonFirst) {
+            autoSearchRef.current = 'done';
+          } else {
+            setSelectedDate(prevStr);
+          }
+        } else {
+          setSelectedDate(nextStr);
+        }
+      } else if (autoSearchRef.current === 'backward') {
+        const prev = new Date(selectedDate + 'T12:00:00Z');
+        prev.setDate(prev.getDate() - 1);
+        const prevStr = prev.toISOString().slice(0, 10);
+        if (prevStr < seasonFirst) {
+          autoSearchRef.current = 'done';
+        } else {
+          setSelectedDate(prevStr);
+        }
+      }
+    } else if (games.length > 0) {
+      autoSearchRef.current = 'done';
+    }
+  }, [year, selectedDate, loading, games, seasonFirst, seasonLast]);
+
   // Auto-poll live scores for today
   useEffect(() => {
     if (!isCurrentYear || selectedDate !== todayStr()) return;
@@ -222,6 +283,7 @@ function NBASchedule({ sport }: { sport: string }) {
   }, [isCurrentYear, selectedDate]);
 
   function goDay(delta: number) {
+    autoSearchRef.current = 'done';
     const d = new Date(selectedDate + "T12:00:00-06:00");
     d.setDate(d.getDate() + delta);
     const offset = d.getTimezoneOffset();
@@ -240,11 +302,10 @@ function NBASchedule({ sport }: { sport: string }) {
   });
 
   return (
-    <div className="space-y-6">
+    <>
       <h1 className="font-display text-4xl font-bold">NBA Schedule</h1>
 
-      {/* Season selector */}
-      <div className="flex flex-wrap items-center gap-3">
+      <div className="flex items-center gap-3">
         <select
           value={year}
           onChange={e => setYear(Number(e.target.value))}
@@ -254,21 +315,16 @@ function NBASchedule({ sport }: { sport: string }) {
             <option key={y} value={y} className="text-black">{y}-{y + 1} Season</option>
           ))}
         </select>
-      </div>
 
-      {/* Date navigation */}
-      <div className="flex items-center gap-3 flex-wrap">
         <button
           onClick={() => goDay(-1)}
           className="px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-sm text-gray-300 hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed transition"
-        >
-          ← Previous Day
-        </button>
+        >←</button>
 
         <input
           type="date"
           value={selectedDate}
-          onChange={e => setSelectedDate(e.target.value)}
+          onChange={e => { autoSearchRef.current = 'done'; setSelectedDate(e.target.value); }}
           min={seasonFirst}
           max={seasonLast}
           className="px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-sm text-white focus:outline-none focus:border-earl-500 [color-scheme:dark]"
@@ -276,23 +332,18 @@ function NBASchedule({ sport }: { sport: string }) {
 
         {isCurrentYear && (
           <button
-            onClick={() => setSelectedDate(todayStr())}
+            onClick={() => { autoSearchRef.current = 'forward'; originalDateRef.current = todayStr(); setSelectedDate(todayStr()); }}
             className="px-3 py-1.5 rounded-lg bg-earl-600/20 border border-earl-500/30 text-xs text-earl-400 hover:bg-earl-600/30 transition"
-          >
-            Today
-          </button>
+          >Today</button>
         )}
 
         <button
           onClick={() => goDay(1)}
           className="px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-sm text-gray-300 hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed transition"
-        >
-          Next Day →
-        </button>
+        >→</button>
       </div>
 
-      {/* Date header */}
-      <p className="text-lg text-gray-300 font-medium">{dateLabel}</p>
+      <p className="text-lg text-gray-300 font-medium mb-4">{dateLabel}</p>
 
       {/* Games list */}
       {loading ? (
@@ -300,7 +351,7 @@ function NBASchedule({ sport }: { sport: string }) {
       ) : games.length === 0 ? (
         <div className="text-center py-12 text-gray-500">No games scheduled for this date.</div>
       ) : (
-        <div className="space-y-3">
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
           {games.map((g) => {
             const badge = statusBadge(g.status);
             const isFinal = g.status.toLowerCase() === "final";
@@ -312,77 +363,34 @@ function NBASchedule({ sport }: { sport: string }) {
               <Link
                 key={g.id}
                 href={`/${sport}/games/${g.id}?year=${year}&date=${selectedDate}`}
-                className="block border border-white/10 rounded-xl p-4 bg-white/5 hover:bg-white/10 transition"
+                className="block border border-white/10 rounded-xl p-3 bg-white/5 hover:bg-white/10 transition text-center"
               >
-                <div className="flex items-center justify-between">
-                  {/* Away team */}
-                  <div className="flex-1 text-right">
-                    <span className={`text-lg font-semibold ${awayWon ? "text-earl-400" : "text-gray-300"}`}>
-                      {g.away_team}
-                    </span>
-                    {isFinal && (
-                      <span className="ml-3 text-xl font-bold text-white">{g.away_score}</span>
-                    )}
-                    {isLive && g.away_score !== null && (
-                      <span className="ml-3 text-xl font-bold text-red-400">{g.away_score}</span>
-                    )}
-                  </div>
+                <div className="flex items-center justify-center gap-1.5 text-lg">
+                  {g.away_team && getTeamLogoUrl(g.away_team, "nba") && <Image src={getTeamLogoUrl(g.away_team, "nba")!} alt={g.away_team} width={20} height={20} className="object-contain shrink-0" unoptimized />}
+                  <div className={`font-semibold ${awayWon ? "text-earl-400" : "text-gray-300"}`}>{g.away_team ?? ""}</div>
 
-                  {/* Center: status / time */}
-                  <div className="mx-6 text-center min-w-[100px]">
-                    <div className={`text-xs font-bold ${badge.cls}`}>{badge.label}</div>
-                    {!isFinal && !isLive && (
-                      <div className="text-xs text-gray-500">{formatTime(g.date)}</div>
-                    )}
-                    {!isFinal && g.venue && (
-                      <div className="text-[10px] text-gray-600 truncate max-w-[120px]">{g.venue}</div>
-                    )}
-                  </div>
+                  {isFinal && <span className="font-bold text-white">{g.away_score}</span>}
+                  {isLive && g.away_score !== null && <span className="font-bold text-red-400">{g.away_score}</span>}
 
-                  {/* Home team */}
-                  <div className="flex-1 text-left">
-                    <span className={`text-lg font-semibold ${homeWon ? "text-earl-400" : "text-gray-300"}`}>
-                      {g.home_team}
-                    </span>
-                    {isFinal && (
-                      <span className="ml-3 text-xl font-bold text-white">{g.home_score}</span>
-                    )}
-                    {isLive && g.home_score !== null && (
-                      <span className="ml-3 text-xl font-bold text-red-400">{g.home_score}</span>
-                    )}
-                  </div>
+                  <span className="text-gray-500 font-medium">@</span>
+
+                  {isFinal && <span className="font-bold text-white">{g.home_score}</span>}
+                  {isLive && g.home_score !== null && <span className="font-bold text-red-400">{g.home_score}</span>}
+
+                  <div className={`font-semibold ${homeWon ? "text-earl-400" : "text-gray-300"}`}>{g.home_team ?? ""}</div>
+                  {g.home_team && getTeamLogoUrl(g.home_team, "nba") && <Image src={getTeamLogoUrl(g.home_team, "nba")!} alt={g.home_team} width={20} height={20} className="object-contain shrink-0" unoptimized />}
                 </div>
 
-                {/* Betting Line */}
-                {g.spread != null && (
-                  <div className="mt-3 text-center">
-                    <span className="inline-block px-4 py-1.5 rounded-lg bg-gradient-to-r from-earl-700/30 via-earl-600/40 to-earl-700/30 border border-earl-500/40 text-sm font-bold tracking-wide">
-                      <span className="text-earl-300">{formatSpreadAway(g.spread, g.away_team)}</span>
-                      <span className="mx-3 text-gray-600">|</span>
-                      <span className="text-earl-400">{formatSpread(g.spread, g.home_team)}</span>
-                      {g.over_under != null && (
-                        <>
-                          <span className="mx-3 text-gray-600">|</span>
-                          <span className="text-gray-200">O/U {g.over_under}</span>
-                        </>
-                      )}
-                    </span>
-                  </div>
-                )}
-
-                {/* Bottom row */}
-                <div className="flex justify-between mt-2 text-[10px] text-gray-600">
-                  <span>{g.venue || ""}</span>
-                  {g.attendance && (
-                    <span>Att: {g.attendance.toLocaleString()}</span>
-                  )}
+                <div className="mt-1.5">
+                  <span className={`text-[10px] font-bold uppercase tracking-wider ${badge.cls}`}>{badge.label}</span>
+                  {!isFinal && !isLive && <div className="text-xs text-gray-500 mt-1">{formatTime(g.date)}</div>}
                 </div>
               </Link>
             );
           })}
         </div>
       )}
-    </div>
+    </>
   );
 }
 
@@ -406,6 +414,22 @@ function MLBSchedule({ sport }: { sport: string }) {
   const seasonFirst = mlbOpeningDay(year);
   const seasonLast = mlbLastDay(year);
 
+  // Auto-search: find nearest date with games when initial date has none
+  // MAX_SEARCH_DAYS limits iterations per direction to prevent infinite loops
+  const MAX_SEARCH_DAYS = 60;
+  const autoSearchRef = useRef<'idle' | 'forward' | 'backward' | 'done'>('idle');
+  const originalDateRef = useRef(selectedDate);
+  const searchCountRef = useRef(0);
+
+  // Start auto-search on mount if no date was explicitly in the URL
+  useEffect(() => {
+    if (!searchParams.get('date')) {
+      autoSearchRef.current = 'forward';
+    } else {
+      autoSearchRef.current = 'done';
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Sync URL when year or date changes
   useEffect(() => {
     const params = new URLSearchParams(searchParams.toString());
@@ -424,6 +448,50 @@ function MLBSchedule({ sport }: { sport: string }) {
       .finally(() => setLoading(false));
   }, [year, selectedDate]);
 
+  // Auto-search effect: when games load empty and auto-search is active, advance to next/prev date
+  useEffect(() => {
+    if (autoSearchRef.current === 'done' || loading) return;
+
+    if (games.length === 0 && !loading) {
+      searchCountRef.current += 1;
+      if (searchCountRef.current > MAX_SEARCH_DAYS) {
+        autoSearchRef.current = 'done';
+        return;
+      }
+
+      if (autoSearchRef.current === 'forward') {
+        const next = new Date(selectedDate + 'T12:00:00Z');
+        next.setDate(next.getDate() + 1);
+        const nextStr = next.toISOString().slice(0, 10);
+        if (nextStr > seasonLast) {
+          autoSearchRef.current = 'backward';
+          searchCountRef.current = 0;
+          const prev = new Date(originalDateRef.current + 'T12:00:00Z');
+          prev.setDate(prev.getDate() - 1);
+          const prevStr = prev.toISOString().slice(0, 10);
+          if (prevStr < seasonFirst) {
+            autoSearchRef.current = 'done';
+          } else {
+            setSelectedDate(prevStr);
+          }
+        } else {
+          setSelectedDate(nextStr);
+        }
+      } else if (autoSearchRef.current === 'backward') {
+        const prev = new Date(selectedDate + 'T12:00:00Z');
+        prev.setDate(prev.getDate() - 1);
+        const prevStr = prev.toISOString().slice(0, 10);
+        if (prevStr < seasonFirst) {
+          autoSearchRef.current = 'done';
+        } else {
+          setSelectedDate(prevStr);
+        }
+      }
+    } else if (games.length > 0) {
+      autoSearchRef.current = 'done';
+    }
+  }, [year, selectedDate, loading, games, seasonFirst, seasonLast]);
+
   useEffect(() => {
     if (!isCurrentYear || selectedDate !== todayStr()) return;
     const interval = setInterval(() => {
@@ -437,6 +505,7 @@ function MLBSchedule({ sport }: { sport: string }) {
   }, [isCurrentYear, selectedDate]);
 
   function goDay(delta: number) {
+    autoSearchRef.current = 'done';
     const d = new Date(selectedDate + "T12:00:00-05:00");
     d.setDate(d.getDate() + delta);
     const offset = d.getTimezoneOffset();
@@ -455,10 +524,10 @@ function MLBSchedule({ sport }: { sport: string }) {
   });
 
   return (
-    <div className="space-y-6">
+    <>
       <h1 className="font-display text-4xl font-bold">MLB Schedule</h1>
 
-      <div className="flex flex-wrap items-center gap-3">
+      <div className="flex items-center gap-3">
         <select
           value={year}
           onChange={e => setYear(Number(e.target.value))}
@@ -468,30 +537,28 @@ function MLBSchedule({ sport }: { sport: string }) {
             <option key={y} value={y} className="text-black">{y} Season</option>
           ))}
         </select>
-      </div>
 
-      <div className="flex items-center gap-3 flex-wrap">
         <button onClick={() => goDay(-1)}
           className="px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-sm text-gray-300 hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed transition"
-        >← Previous Day</button>
+        >←</button>
 
-        <input type="date" value={selectedDate} onChange={e => setSelectedDate(e.target.value)}
+        <input type="date" value={selectedDate} onChange={e => { autoSearchRef.current = 'done'; setSelectedDate(e.target.value); }}
           min={seasonFirst} max={seasonLast}
           className="px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-sm text-white focus:outline-none focus:border-earl-500 [color-scheme:dark]"
         />
 
         {isCurrentYear && (
-          <button onClick={() => setSelectedDate(todayStr())}
+          <button onClick={() => { autoSearchRef.current = 'forward'; originalDateRef.current = todayStr(); setSelectedDate(todayStr()); }}
             className="px-3 py-1.5 rounded-lg bg-earl-600/20 border border-earl-500/30 text-xs text-earl-400 hover:bg-earl-600/30 transition"
           >Today</button>
         )}
 
         <button onClick={() => goDay(1)}
           className="px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-sm text-gray-300 hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed transition"
-        >Next Day →</button>
+        >→</button>
       </div>
 
-      <p className="text-lg text-gray-300 font-medium">{dateLabel}</p>
+      <p className="text-lg text-gray-300 font-medium mb-4">{dateLabel}</p>
 
       {loading ? (
         <div className="text-center py-12 text-gray-500">Loading...</div>
@@ -512,8 +579,8 @@ function MLBSchedule({ sport }: { sport: string }) {
               >
                 {/* Matchup header: [logo] AWAY [score] @ [score] HOME [logo] */}
                 <div className="flex items-center justify-center gap-1.5 text-lg">
-                  {getTeamLogoUrl(g.away_team, "mlb") && <Image src={getTeamLogoUrl(g.away_team, "mlb")!} alt={g.away_team} width={20} height={20} className="object-contain shrink-0" unoptimized />}
-                  <div className={`font-semibold ${awayWon ? "text-earl-400" : "text-gray-300"}`}>{g.away_team}</div>
+                  {g.away_team && getTeamLogoUrl(g.away_team, "mlb") && <Image src={getTeamLogoUrl(g.away_team, "mlb")!} alt={g.away_team} width={20} height={20} className="object-contain shrink-0" unoptimized />}
+                  <div className={`font-semibold ${awayWon ? "text-earl-400" : "text-gray-300"}`}>{g.away_team ?? ""}</div>
 
                   {isFinal && <span className="font-bold text-white">{g.away_score}</span>}
                   {isLive && g.away_score !== null && <span className="font-bold text-red-400">{g.away_score}</span>}
@@ -523,8 +590,8 @@ function MLBSchedule({ sport }: { sport: string }) {
                   {isFinal && <span className="font-bold text-white">{g.home_score}</span>}
                   {isLive && g.home_score !== null && <span className="font-bold text-red-400">{g.home_score}</span>}
 
-                  <div className={`font-semibold ${homeWon ? "text-earl-400" : "text-gray-300"}`}>{g.home_team}</div>
-                  {getTeamLogoUrl(g.home_team, "mlb") && <Image src={getTeamLogoUrl(g.home_team, "mlb")!} alt={g.home_team} width={20} height={20} className="object-contain shrink-0" unoptimized />}
+                  <div className={`font-semibold ${homeWon ? "text-earl-400" : "text-gray-300"}`}>{g.home_team ?? ""}</div>
+                  {g.home_team && getTeamLogoUrl(g.home_team, "mlb") && <Image src={getTeamLogoUrl(g.home_team, "mlb")!} alt={g.home_team} width={20} height={20} className="object-contain shrink-0" unoptimized />}
                 </div>
 
                 {/* Status/time */}
@@ -543,33 +610,30 @@ function MLBSchedule({ sport }: { sport: string }) {
                 {!isFinal && g.venue && <div className="text-[10px] text-gray-600 truncate mt-1 px-2">{g.venue}</div>}
                 {g.day_night && !isFinal && <div className="text-[10px] text-gray-600">{g.day_night}</div>}
 
-                {/* Betting line */}
-                {g.spread != null && (
+                {/* Betting line row */}
+                {g.spread != null && g.over_under != null && (
                   <div className="mt-2 pt-2 border-t border-white/10 text-xs">
-                    <span className="text-earl-300">{formatSpreadAway(g.spread, g.away_team)}</span>
+                    <span className="text-earl-300">{formatSpreadAway(g.spread, g.away_team || "")}</span>
                     <span className="mx-2 text-gray-700">|</span>
-                    <span className="text-earl-400">{formatSpread(g.spread, g.home_team)}</span>
+                    <span className="text-earl-400">{formatSpread(g.spread, g.home_team || "")}</span>
                     {g.over_under != null && <><span className="mx-2 text-gray-700">|</span><span className="text-gray-400">{formatOverUnder(g.over_under)}</span></>}
                   </div>
                 )}
 
-                {/* Prediction badges — RL | OU | ML */}
-                {(g.pred_ml_result || g.pred_rl_result || g.pred_ou_result) && (
-                  <div className="mt-2 pt-2 border-t border-white/10 flex items-center justify-center gap-2">
+                {/* Prediction badges row */}
+                {(g.pred_rl_result != null || g.pred_ou_result != null || g.pred_ml_result != null) && (
+                  <div className="mt-1.5 flex flex-wrap items-center justify-center gap-1">
                     {predBadge("RL", g.pred_rl_result)}
                     {predBadge("OU", g.pred_ou_result)}
                     {predBadge("ML", g.pred_ml_result)}
                   </div>
                 )}
-
-                {/* Attendance */}
-                {isFinal && g.attendance && <div className="text-[10px] text-gray-600 mt-1">{g.attendance.toLocaleString()} att</div>}
               </Link>
             );
           })}
         </div>
       )}
-    </div>
+    </>
   );
 }
 
@@ -645,47 +709,59 @@ function NFLSchedule({ sport }: { sport: string }) {
 
       {loading ? (
         <div className="text-center py-12 text-gray-500">Loading...</div>
+      ) : games.length === 0 ? (
+        <div className="text-center py-12 text-gray-500">No games found for this week.</div>
       ) : (
-        <div className="space-y-3">
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
           {games.map((g) => {
-            const isFinal = g.status === "final";
+            const badge = statusBadge(g.status);
+            const isFinal = g.status.toLowerCase() === "final";
+            const isLive = g.status.toLowerCase() === "in_progress";
+            const homeWon = isFinal && g.home_score! > g.away_score!;
+            const awayWon = isFinal && g.away_score! > g.home_score!;
+
             return (
               <Link key={g.id} href={`/${sport}/games/${g.id}?year=${seasonYear}&week=${week}`}
-                className="block border border-white/10 rounded-xl p-4 bg-white/5 hover:bg-white/10 transition"
+                className="block border border-white/10 rounded-xl p-3 bg-white/5 hover:bg-white/10 transition text-center"
               >
-                <div className="flex items-center justify-between">
-                  <div className="flex-1 text-right">
-                    <span className={`text-lg font-semibold ${isFinal && g.away_score! > g.home_score! ? "text-earl-400" : "text-gray-300"}`}>{g.away_team}</span>
-                    {isFinal && <span className="ml-3 text-xl font-bold text-white">{g.away_score}</span>}
-                  </div>
-                  <div className="mx-6 text-center min-w-[80px]">
-                    <div className="text-xs text-gray-500">{isFinal ? "FINAL" : formatDate(g.date)}</div>
-                    {!isFinal && <div className="text-xs text-gray-600">Week {week}</div>}
-                  </div>
-                  <div className="flex-1 text-left">
-                    <span className={`text-lg font-semibold ${isFinal && g.home_score! > g.away_score! ? "text-earl-400" : "text-gray-300"}`}>{g.home_team}</span>
-                    {isFinal && <span className="ml-3 text-xl font-bold text-white">{g.home_score}</span>}
-                  </div>
+                {/* Matchup header: [logo] AWAY [score] @ [score] HOME [logo] */}
+                <div className="flex items-center justify-center gap-1.5 text-lg">
+                  {g.away_team && getTeamLogoUrl(g.away_team, "nfl") && <Image src={getTeamLogoUrl(g.away_team, "nfl")!} alt={g.away_team} width={20} height={20} className="object-contain shrink-0" unoptimized />}
+                  <div className={`font-semibold ${awayWon ? "text-earl-400" : "text-gray-300"}`}>{g.away_team ?? ""}</div>
+
+                  {isFinal && <span className="font-bold text-white">{g.away_score}</span>}
+                  {isLive && g.away_score !== null && <span className="font-bold text-red-400">{g.away_score}</span>}
+
+                  <span className="text-gray-500 font-medium">@</span>
+
+                  {isFinal && <span className="font-bold text-white">{g.home_score}</span>}
+                  {isLive && g.home_score !== null && <span className="font-bold text-red-400">{g.home_score}</span>}
+
+                  <div className={`font-semibold ${homeWon ? "text-earl-400" : "text-gray-300"}`}>{g.home_team ?? ""}</div>
+                  {g.home_team && getTeamLogoUrl(g.home_team, "nfl") && <Image src={getTeamLogoUrl(g.home_team, "nfl")!} alt={g.home_team} width={20} height={20} className="object-contain shrink-0" unoptimized />}
                 </div>
+
+                {/* Status/time */}
+                <div className="mt-1.5">
+                  <span className={`text-[10px] font-bold uppercase tracking-wider ${badge.cls}`}>{badge.label}</span>
+                  {!isFinal && !isLive && <div className="text-xs text-gray-500 mt-1">{formatTime(g.date)}</div>}
+                </div>
+
+                {/* Venue */}
+                {!isFinal && g.venue && <div className="text-[10px] text-gray-600 truncate mt-1 px-2">{g.venue}</div>}
+
+                {/* Betting line */}
                 {g.spread != null && (
-                  <div className="mt-3 text-center">
-                    <span className="inline-block px-4 py-1.5 rounded-lg bg-gradient-to-r from-earl-700/30 via-earl-600/40 to-earl-700/30 border border-earl-500/40 text-sm font-bold tracking-wide">
-                      <span className="text-earl-300">{formatSpreadAway(g.spread, g.away_team || "")}</span>
-                      <span className="mx-3 text-gray-600">|</span>
-                      <span className="text-earl-400">{formatSpread(g.spread, g.home_team || "")}</span>
-                      {g.over_under != null && <>
-                        <span className="mx-3 text-gray-600">|</span>
-                        <span className="text-gray-200">{formatOverUnder(g.over_under)}</span>
-                      </>}
-                    </span>
+                  <div className="mt-2 pt-2 border-t border-white/10 text-xs">
+                    <span className="text-earl-300">{formatSpreadAway(g.spread, g.away_team || "")}</span>
+                    <span className="mx-2 text-gray-700">|</span>
+                    <span className="text-earl-400">{formatSpread(g.spread, g.home_team || "")}</span>
+                    {g.over_under != null && <><span className="mx-2 text-gray-700">|</span><span className="text-gray-400">{formatOverUnder(g.over_under)}</span></>}
                   </div>
                 )}
               </Link>
             );
           })}
-          {games.length === 0 && (
-            <div className="text-center py-12 text-gray-500">No games found for this week.</div>
-          )}
         </div>
       )}
     </>
@@ -700,7 +776,7 @@ export default function SchedulePage() {
   const sport = params?.sport || "nfl";
 
   return (
-    <div className="space-y-6">
+    <>
       {sport === "mlb" ? (
         <MLBSchedule sport={sport} />
       ) : sport === "nba" ? (
@@ -708,6 +784,6 @@ export default function SchedulePage() {
       ) : (
         <NFLSchedule sport={sport} />
       )}
-    </div>
+    </>
   );
 }
