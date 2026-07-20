@@ -227,6 +227,16 @@ export interface TokenUsageResponse {
   percent_used: number | null;
 }
 
+export interface TokenHistoryEntry {
+  period: string;
+  tokens_used: number;
+  token_limit: number | null;
+}
+
+export interface TokenHistoryResponse {
+  periods: TokenHistoryEntry[];
+}
+
 export const api = {
   // Teams
   teams: {
@@ -290,6 +300,7 @@ export const api = {
   // Token Usage
   tokenUsage: {
     my: () => fetchAPI<TokenUsageResponse>("/api/users/me/token-usage"),
+    history: () => fetchAPI<TokenHistoryResponse>("/api/users/me/token-history"),
   },
 
   // Admin

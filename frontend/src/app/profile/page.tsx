@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useAuth } from "@/lib/auth-context";
-import { api, type PaymentRecord, type TokenUsageResponse } from "@/lib/api";
+import { api, type PaymentRecord, type TokenUsageResponse, type TokenHistoryResponse } from "@/lib/api";
 import { useRouter } from "next/navigation";
 
 function formatCents(cents: number, currency: string) {
@@ -71,6 +71,7 @@ export default function ProfilePage() {
   const [cancelMessage, setCancelMessage] = useState<string | null>(null);
   const [tokenUsage, setTokenUsage] = useState<TokenUsageResponse | null>(null);
   const [tokenUsageLoading, setTokenUsageLoading] = useState(false);
+  const [tokenHistory, setTokenHistory] = useState<TokenHistoryResponse | null>(null);
 
   useEffect(() => {
     if (!authLoading && !user) {
@@ -99,12 +100,20 @@ export default function ProfilePage() {
   }, [user]);
 
   useEffect(() => {
-    if (!user || !("premium" === user.subscription_tier || "ultimate" === user.subscription_tier)) return;
+    if (!user || !(user.subscription_tier?.startsWith("premium"))) return;
     setTokenUsageLoading(true);
-    api.tokenUsage
-      .my()
-      .then(setTokenUsage)
-      .catch(() => setTokenUsage(null))
+    Promise.all([
+      api.tokenUsage.my(),
+      api.tokenUsage.history(),
+    ])
+      .then(([usage, history]) => {
+        setTokenUsage(usage);
+        setTokenHistory(history);
+      })
+      .catch(() => {
+        setTokenUsage(null);
+        setTokenHistory(null);
+      })
       .finally(() => setTokenUsageLoading(false));
   }, [user]);
 
@@ -242,36 +251,86 @@ export default function ProfilePage() {
         </section>
 
         {/* Token Usage */}
-        {tokenUsage && tokenUsage.token_limit && (
+        {(tokenUsage && tokenUsage.token_limit) || tokenHistory?.periods?.length ? (
           <section className="bg-gray-900 border border-gray-800 rounded-lg p-6">
             <h2 className="text-lg font-semibold mb-4">Chat Token Usage</h2>
-            <div className="space-y-3">
-              <div className="flex justify-between text-sm">
-                <span className="text-gray-400">This Month</span>
-                <span className="text-white font-medium">
-                  {tokenUsage.tokens_used.toLocaleString()} / {tokenUsage.token_limit.toLocaleString()} tokens
-                </span>
+
+            {/* Current period progress */}
+            {tokenUsage && tokenUsage.token_limit && (
+              <div className="mb-6 space-y-2">
+                <div className="flex justify-between text-sm">
+                  <span className="text-gray-400">Current Period</span>
+                  <span className="text-white font-medium">
+                    {tokenUsage.tokens_used.toLocaleString()} / {tokenUsage.token_limit.toLocaleString()} tokens
+                  </span>
+                </div>
+                <div className="w-full bg-gray-800 rounded-full h-3 overflow-hidden">
+                  <div
+                    className={`h-full rounded-full transition-all ${
+                      (tokenUsage.percent_used || 0) >= 90
+                        ? "bg-red-500"
+                        : (tokenUsage.percent_used || 0) >= 70
+                        ? "bg-yellow-500"
+                        : "bg-green-500"
+                    }`}
+                    style={{ width: `${Math.min((tokenUsage.percent_used || 0), 100)}%` }}
+                  />
+                </div>
+                {tokenUsage.percent_used !== null && (
+                  <p className="text-xs text-gray-500">
+                    {tokenUsage.percent_used.toFixed(1)}% used
+                  </p>
+                )}
               </div>
-              <div className="w-full bg-gray-800 rounded-full h-3 overflow-hidden">
-                <div
-                  className={`h-full rounded-full transition-all ${
-                    (tokenUsage.percent_used || 0) >= 90
-                      ? "bg-red-500"
-                      : (tokenUsage.percent_used || 0) >= 70
-                      ? "bg-yellow-500"
-                      : "bg-green-500"
-                  }`}
-                  style={{ width: `${Math.min((tokenUsage.percent_used || 0), 100)}%` }}
-                />
+            )}
+
+            {/* Usage history chart */}
+            {tokenHistory && tokenHistory.periods.length >= 1 && (
+              <div>
+                <h3 className="text-sm font-medium text-gray-300 mb-3">Monthly Usage</h3>
+                <div className="flex items-end gap-3 h-32">
+                  {(() => {
+                    const maxVal = Math.max(
+                      ...tokenHistory.periods.map((p) => p.tokens_used),
+                      1
+                    );
+                    return tokenHistory.periods.map((entry, i) => {
+                      const pct = (entry.tokens_used / maxVal) * 100;
+                      const barPct = Math.max(pct, 4); // min 4% for visibility
+                      const isLatest = i === tokenHistory.periods.length - 1;
+                      return (
+                        <div key={entry.period} className="flex-1 flex flex-col items-center gap-1 h-full justify-end">
+                          <span className="text-[10px] text-gray-500 leading-none">
+                            {entry.tokens_used.toLocaleString()}
+                          </span>
+                          <div
+                            className={`w-full rounded-t transition-all ${
+                              isLatest ? "bg-earl-500" : "bg-blue-500/60"
+                            }`}
+                            style={{ height: `${barPct}%` }}
+                            title={`${entry.tokens_used.toLocaleString()} tokens`}
+                          />
+                          <span className="text-[10px] text-gray-500 leading-none whitespace-nowrap">
+                            {new Date(entry.period + "T00:00:00").toLocaleDateString("en-US", {
+                              month: "short",
+                            })}
+                          </span>
+                        </div>
+                      );
+                    });
+                  })()}
+                </div>
               </div>
-              {tokenUsage.percent_used !== null && (
-                <p className="text-xs text-gray-500">
-                  {tokenUsage.percent_used.toFixed(1)}% used — resets at the start of next month
-                </p>
-              )}
+            )}
+          </section>
+        ) : tokenUsageLoading ? (
+          <section className="bg-gray-900 border border-gray-800 rounded-lg p-6">
+            <h2 className="text-lg font-semibold mb-4">Chat Token Usage</h2>
+            <div className="flex justify-center py-4">
+              <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-green-500" />
             </div>
           </section>
-        )}
+        ) : null}
 
         {/* Payment History */}
         <section className="bg-gray-900 border border-gray-800 rounded-lg p-6">

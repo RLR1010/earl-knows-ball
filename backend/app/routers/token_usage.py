@@ -28,6 +28,20 @@ class TokenUsageResponse(BaseModel):
     percent_used: Optional[float] = None
 
 
+class TokenHistoryEntry(BaseModel):
+    """One period's token usage."""
+
+    period: str  # ISO date of period start
+    tokens_used: int
+    token_limit: Optional[int] = None
+
+
+class TokenHistoryResponse(BaseModel):
+    """Breakdown of token usage over recent periods."""
+
+    periods: list[TokenHistoryEntry]
+
+
 @router.get("/token-usage", response_model=TokenUsageResponse)
 async def get_token_usage(
     user: User = Depends(get_current_user),
@@ -57,6 +71,46 @@ async def get_token_usage(
         token_limit=token_limit,
         percent_used=percent_used,
     )
+
+
+@router.get("/token-history", response_model=TokenHistoryResponse)
+async def get_token_history(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return token usage for recent periods."""
+    limit_val = user.monthly_token_limit
+
+    result = await db.execute(
+        select(UserTokenUsage)
+        .where(UserTokenUsage.user_id == user.id)
+        .order_by(UserTokenUsage.month.desc())
+        .limit(6)
+    )
+    rows = result.scalars().all()
+
+    periods = [
+        TokenHistoryEntry(
+            period=r.month.isoformat(),
+            tokens_used=r.tokens_used,
+            token_limit=limit_val,
+        )
+        for r in rows
+    ]
+
+    # If we have no data at all, include a "current period" entry with 0 usage
+    if not periods:
+        current = date.today()
+        periods.append(
+            TokenHistoryEntry(
+                period=current.isoformat(),
+                tokens_used=0,
+                token_limit=limit_val,
+            )
+        )
+
+    periods.reverse()  # oldest first
+    return TokenHistoryResponse(periods=periods)
 
 
 # ── Admin endpoints ──────────────────────────────────────────────────────
