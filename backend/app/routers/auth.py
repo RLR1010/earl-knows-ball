@@ -59,6 +59,7 @@ class UserResponse(BaseModel):
     display_name: str | None = None
     subscription_tier: str = "free"
     is_admin: bool = False
+    monthly_token_limit: int | None = None
     is_active: bool = True
     email_verified: bool = False
     created_at: datetime | None = None
@@ -140,6 +141,7 @@ def _serialize_user(user: User) -> dict:
         "is_admin": user.is_admin,
         "is_active": user.is_active,
         "email_verified": user.email_verified,
+        "monthly_token_limit": user.monthly_token_limit,
         "created_at": user.created_at.isoformat() if user.created_at else None,
         "last_login_at": user.last_login_at.isoformat() if user.last_login_at else None,
     }
