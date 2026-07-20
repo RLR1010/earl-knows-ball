@@ -345,6 +345,45 @@ async def nba_games(
     return [dict(r) for r in result.mappings().all()]
 
 
+@router.get("/nba/games/nearest-date")
+async def nba_nearest_date(
+    year: int = Query(...),
+    date: str = Query(...),
+    db: AsyncSession = Depends(get_db),
+):
+    given_date = datetime.date.fromisoformat(date)
+
+    # Try forward first
+    forward_sql = """
+    SELECT DISTINCT (g.date AT TIME ZONE 'America/Chicago')::date AS game_date
+    FROM nba.games g
+    JOIN nba.seasons s ON s.id = g.season_id
+    WHERE s.year = :year AND (g.date AT TIME ZONE 'America/Chicago')::date > :date
+    ORDER BY game_date ASC
+    LIMIT 1
+    """
+    result = await db.execute(text(forward_sql), {"year": year, "date": given_date})
+    row = result.fetchone()
+    if row:
+        return {"date": row[0].isoformat()}
+
+    # Nothing forward, try backward (most recent past date)
+    backward_sql = """
+    SELECT DISTINCT (g.date AT TIME ZONE 'America/Chicago')::date AS game_date
+    FROM nba.games g
+    JOIN nba.seasons s ON s.id = g.season_id
+    WHERE s.year = :year AND (g.date AT TIME ZONE 'America/Chicago')::date < :date
+    ORDER BY game_date DESC
+    LIMIT 1
+    """
+    result = await db.execute(text(backward_sql), {"year": year, "date": given_date})
+    row = result.fetchone()
+    if row:
+        return {"date": row[0].isoformat()}
+
+    return {"date": None}
+
+
 @router.get("/nba/players/{player_id}/profile")
 async def nba_player_profile(player_id: int, db: AsyncSession = Depends(get_db)):
     """Return full NBA player profile: bio + season stats."""

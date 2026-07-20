@@ -14,7 +14,7 @@ from app.handicapping.mlb.mlb_splits import MLBSplitAnalyzer
 from app.handicapping.mlb.mlb_situational import MLBSituationalAnalyzer
 import math
 
-router = APIRouter(prefix="/api")
+router = APIRouter()
 
 
 # ── MLB Team Roster ────────────────────────────────────────────────
@@ -1010,6 +1010,45 @@ async def mlb_games(
         pass
 
     return games_list
+
+
+@router.get("/mlb/games/nearest-date")
+async def mlb_nearest_date(
+    year: int = Query(...),
+    date: str = Query(...),
+    db: AsyncSession = Depends(get_db),
+):
+    given_date = datetime.date.fromisoformat(date)
+
+    # Try forward first
+    forward_sql = """
+    SELECT DISTINCT (g.date AT TIME ZONE 'America/Chicago')::date AS game_date
+    FROM mlb.games g
+    JOIN mlb.seasons s ON s.id = g.season_id
+    WHERE s.year = :year AND (g.date AT TIME ZONE 'America/Chicago')::date > :date
+    ORDER BY game_date ASC
+    LIMIT 1
+    """
+    result = await db.execute(text(forward_sql), {"year": year, "date": given_date})
+    row = result.fetchone()
+    if row:
+        return {"date": row[0].isoformat()}
+
+    # Nothing forward, try backward (most recent past date)
+    backward_sql = """
+    SELECT DISTINCT (g.date AT TIME ZONE 'America/Chicago')::date AS game_date
+    FROM mlb.games g
+    JOIN mlb.seasons s ON s.id = g.season_id
+    WHERE s.year = :year AND (g.date AT TIME ZONE 'America/Chicago')::date < :date
+    ORDER BY game_date DESC
+    LIMIT 1
+    """
+    result = await db.execute(text(backward_sql), {"year": year, "date": given_date})
+    row = result.fetchone()
+    if row:
+        return {"date": row[0].isoformat()}
+
+    return {"date": None}
 
 
 def _sanitize_json(obj):
