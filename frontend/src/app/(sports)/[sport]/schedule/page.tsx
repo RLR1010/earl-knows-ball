@@ -190,6 +190,7 @@ function NBASchedule({ sport }: { sport: string }) {
 
   // Auto-search: when initial date has no games, query the DB for nearest date with games
   const autoSearchRef = useRef<'idle' | 'done'>('idle');
+  const cancelSearchRef = useRef(false);
 
   // Start auto-search on mount if no date was explicitly in the URL
   useEffect(() => {
@@ -226,18 +227,29 @@ function NBASchedule({ sport }: { sport: string }) {
 
     if (games.length === 0 && !loading) {
       autoSearchRef.current = 'done';
-      fetch(`/api/nba/games/nearest-date?year=${year}&date=${encodeURIComponent(selectedDate)}`)
-        .then(r => r.json())
-        .then((res: { date: string | null }) => {
-          if (res.date) {
-            setSelectedDate(res.date);
-          }
-        })
-        .catch(() => {});
+      cancelSearchRef.current = false;
+      findNearestGame(year, selectedDate, sport);
     } else if (games.length > 0) {
       autoSearchRef.current = 'done';
     }
-  }, [year, selectedDate, loading, games, seasonFirst, seasonLast]);
+  }, [year, selectedDate, loading, games]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function findNearestGame(currentYear: number, date: string, s: string) {
+    if (currentYear < 2009) return;
+    try {
+      const r = await fetch(`/api/${s}/games/nearest-date?year=${currentYear}&date=${encodeURIComponent(date)}`);
+      const res: { date: string | null } = await r.json();
+      if (res.date) {
+        if (!cancelSearchRef.current) {
+          setSelectedDate(res.date);
+        }
+      } else {
+        if (!cancelSearchRef.current) {
+          findNearestGame(currentYear - 1, date, s);
+        }
+      }
+    } catch {}
+  }
 
   // Auto-poll live scores for today
   useEffect(() => {
@@ -254,6 +266,7 @@ function NBASchedule({ sport }: { sport: string }) {
 
   function goDay(delta: number) {
     autoSearchRef.current = 'done';
+    cancelSearchRef.current = true;
     const d = new Date(selectedDate + "T12:00:00-06:00");
     d.setDate(d.getDate() + delta);
     const offset = d.getTimezoneOffset();
@@ -294,7 +307,7 @@ function NBASchedule({ sport }: { sport: string }) {
         <input
           type="date"
           value={selectedDate}
-          onChange={e => { autoSearchRef.current = 'done'; setSelectedDate(e.target.value); }}
+          onChange={e => { cancelSearchRef.current = true; autoSearchRef.current = 'done'; setSelectedDate(e.target.value); }}
           min={seasonFirst}
           max={seasonLast}
           className="px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-sm text-white focus:outline-none focus:border-earl-500 [color-scheme:dark]"
@@ -386,6 +399,7 @@ function MLBSchedule({ sport }: { sport: string }) {
 
   // Auto-search: when initial date has no games, query the DB for nearest date with games
   const autoSearchRef = useRef<'idle' | 'done'>('idle');
+  const cancelSearchRef = useRef(false);
 
   // Start auto-search on mount if no date was explicitly in the URL
   useEffect(() => {
@@ -420,18 +434,29 @@ function MLBSchedule({ sport }: { sport: string }) {
 
     if (games.length === 0 && !loading) {
       autoSearchRef.current = 'done';
-      fetch(`/api/mlb/games/nearest-date?year=${year}&date=${encodeURIComponent(selectedDate)}`)
-        .then(r => r.json())
-        .then((res: { date: string | null }) => {
-          if (res.date) {
-            setSelectedDate(res.date);
-          }
-        })
-        .catch(() => {});
+      cancelSearchRef.current = false;
+      findNearestGame(year, selectedDate, sport);
     } else if (games.length > 0) {
       autoSearchRef.current = 'done';
     }
-  }, [year, selectedDate, loading, games, seasonFirst, seasonLast]);
+  }, [year, selectedDate, loading, games]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function findNearestGame(currentYear: number, date: string, s: string) {
+    if (currentYear < 2009) return;
+    try {
+      const r = await fetch(`/api/${s}/games/nearest-date?year=${currentYear}&date=${encodeURIComponent(date)}`);
+      const res: { date: string | null } = await r.json();
+      if (res.date) {
+        if (!cancelSearchRef.current) {
+          setSelectedDate(res.date);
+        }
+      } else {
+        if (!cancelSearchRef.current) {
+          findNearestGame(currentYear - 1, date, s);
+        }
+      }
+    } catch {}
+  }
 
   useEffect(() => {
     if (!isCurrentYear || selectedDate !== todayStr()) return;
@@ -447,6 +472,7 @@ function MLBSchedule({ sport }: { sport: string }) {
 
   function goDay(delta: number) {
     autoSearchRef.current = 'done';
+    cancelSearchRef.current = true;
     const d = new Date(selectedDate + "T12:00:00-05:00");
     d.setDate(d.getDate() + delta);
     const offset = d.getTimezoneOffset();
@@ -483,7 +509,7 @@ function MLBSchedule({ sport }: { sport: string }) {
           className="px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-sm text-gray-300 hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed transition"
         >←</button>
 
-        <input type="date" value={selectedDate} onChange={e => { autoSearchRef.current = 'done'; setSelectedDate(e.target.value); }}
+        <input type="date" value={selectedDate} onChange={e => { cancelSearchRef.current = true; autoSearchRef.current = 'done'; setSelectedDate(e.target.value); }}
           min={seasonFirst} max={seasonLast}
           className="px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-sm text-white focus:outline-none focus:border-earl-500 [color-scheme:dark]"
         />

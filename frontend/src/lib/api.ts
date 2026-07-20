@@ -230,10 +230,10 @@ export interface TokenUsageResponse {
 export const api = {
   // Teams
   teams: {
-    list: () => fetchAPI<Team[]>("/teams"),
-    get: (id: number) => fetchAPI<Team>(`/teams/${id}`),
-    getByAbbr: (abbr: string) => fetchAPI<Team>(`/teams/by-abbr/${abbr}`),
-    depthChart: (teamId: number) => fetchAPI<DepthChartEntry[]>(`/teams/${teamId}/depth-chart`),
+    list: () => fetchAPI<Team[]>("/api/teams"),
+    get: (id: number) => fetchAPI<Team>(`/api/teams/${id}`),
+    getByAbbr: (abbr: string) => fetchAPI<Team>(`/api/teams/by-abbr/${abbr}`),
+    depthChart: (teamId: number) => fetchAPI<DepthChartEntry[]>(`/api/teams/${teamId}/depth-chart`),
   },
 
   // Players
@@ -243,15 +243,15 @@ export const api = {
       if (params?.position) q.set("position", params.position);
       if (params?.team_id) q.set("team_id", String(params.team_id));
       const qs = q.toString();
-      return fetchAPI<Player[]>(`/players${qs ? `?${qs}` : ""}`);
+      return fetchAPI<Player[]>(`/api/players${qs ? `?${qs}` : ""}`);
     },
-    get: (id: number) => fetchAPI<Player>(`/players/${id}`),
-    search: (name: string) => fetchAPI<Player[]>(`/players/search/${name}`),
+    get: (id: number) => fetchAPI<Player>(`/api/players/${id}`),
+    search: (name: string) => fetchAPI<Player[]>(`/api/players/search/${name}`),
   },
 
   // Seasons
   seasons: {
-    list: () => fetchAPI<number[]>("/seasons"),
+    list: () => fetchAPI<number[]>("/api/seasons"),
   },
 
   // Games
@@ -262,10 +262,10 @@ export const api = {
       if (params?.week) q.set("week", String(params.week));
       if (params?.team_id) q.set("team_id", String(params.team_id));
       const qs = q.toString();
-      return fetchAPI<Game[]>(`/games${qs ? `?${qs}` : ""}`);
+      return fetchAPI<Game[]>(`/api/games${qs ? `?${qs}` : ""}`);
     },
-    get: (id: number) => fetchAPI<Game>(`/games/${id}`),
-    boxScore: (id: number) => fetchAPI<BoxScore | null>(`/games/${id}/box-score`),
+    get: (id: number) => fetchAPI<Game>(`/api/games/${id}`),
+    boxScore: (id: number) => fetchAPI<BoxScore | null>(`/api/games/${id}/box-score`),
   },
 
   // Auth

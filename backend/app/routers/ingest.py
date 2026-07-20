@@ -1060,6 +1060,30 @@ async def ingest_weather_update(
     return {"status": "ok" if all_ok else "partial", "results": results}
 
 
+@router.post("/ingest/fd-scraper")
+async def run_fd_scraper():
+    """
+    Run the FanDuel daily sportsbook scraper.
+
+    Scrapes team props (championship odds, win totals), player season props
+    (awards), and player daily props from FanDuel. Saves to mlb/nfl/nba
+    team_props, player_season_props, player_daily_props tables.
+
+    Intended for daily cron at 6:00 AM CT.
+    """
+    import logging
+    logger = logging.getLogger("earl.fd_scraper_route")
+
+    try:
+        from app.scrapers.daily_run import run_daily_scrape
+        stats = await run_daily_scrape()
+        logger.info(f"FD scraper complete: {stats}")
+        return {"status": "ok", "stats": stats}
+    except Exception as e:
+        logger.error(f"FD scraper failed: {e}")
+        return {"status": "error", "error": str(e)}
+
+
 @router.post("/ingest/nfl/pbp")
 async def ingest_nfl_pbp(
     years: list[int] = Query(default=[2025], description="Seasons to ingest"),
