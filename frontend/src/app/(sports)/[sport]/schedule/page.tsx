@@ -238,9 +238,10 @@ function NBASchedule({ sport }: { sport: string }) {
     if (currentYear < 2009) return;
     try {
       const r = await fetch(`/api/${s}/games/nearest-date?year=${currentYear}&date=${encodeURIComponent(date)}`);
-      const res: { date: string | null } = await r.json();
-      if (res.date) {
+      const res: { date: string | null; year: number | null } = await r.json();
+      if (res.date && res.year) {
         if (!cancelSearchRef.current) {
+          setYear(res.year);
           setSelectedDate(res.date);
         }
       } else {
@@ -445,9 +446,10 @@ function MLBSchedule({ sport }: { sport: string }) {
     if (currentYear < 2009) return;
     try {
       const r = await fetch(`/api/${s}/games/nearest-date?year=${currentYear}&date=${encodeURIComponent(date)}`);
-      const res: { date: string | null } = await r.json();
-      if (res.date) {
+      const res: { date: string | null; year: number | null } = await r.json();
+      if (res.date && res.year) {
         if (!cancelSearchRef.current) {
+          setYear(res.year);
           setSelectedDate(res.date);
         }
       } else {

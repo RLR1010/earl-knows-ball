@@ -1025,30 +1025,34 @@ async def mlb_nearest_date(
     SELECT DISTINCT (g.date AT TIME ZONE 'America/Chicago')::date AS game_date
     FROM mlb.games g
     JOIN mlb.seasons s ON s.id = g.season_id
-    WHERE s.year = :year AND (g.date AT TIME ZONE 'America/Chicago')::date > :date
+    WHERE s.year = :year
+      AND (g.date AT TIME ZONE 'America/Chicago')::date > :date
+      AND g.game_type IN ('R', 'P', 'D', 'W', 'C', 'A')
     ORDER BY game_date ASC
     LIMIT 1
     """
     result = await db.execute(text(forward_sql), {"year": year, "date": given_date})
     row = result.fetchone()
     if row:
-        return {"date": row[0].isoformat()}
+        return {"date": row[0].isoformat(), "year": year}
 
     # Nothing forward, try backward (most recent past date)
     backward_sql = """
     SELECT DISTINCT (g.date AT TIME ZONE 'America/Chicago')::date AS game_date
     FROM mlb.games g
     JOIN mlb.seasons s ON s.id = g.season_id
-    WHERE s.year = :year AND (g.date AT TIME ZONE 'America/Chicago')::date < :date
+    WHERE s.year = :year
+      AND (g.date AT TIME ZONE 'America/Chicago')::date < :date
+      AND g.game_type IN ('R', 'P', 'D', 'W', 'C', 'A')
     ORDER BY game_date DESC
     LIMIT 1
     """
     result = await db.execute(text(backward_sql), {"year": year, "date": given_date})
     row = result.fetchone()
     if row:
-        return {"date": row[0].isoformat()}
+        return {"date": row[0].isoformat(), "year": year}
 
-    return {"date": None}
+    return {"date": None, "year": None}
 
 
 def _sanitize_json(obj):
