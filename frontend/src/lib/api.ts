@@ -220,6 +220,13 @@ export interface PaymentRecord {
   created_at: string | null;
 }
 
+export interface TokenUsageResponse {
+  month: string;
+  tokens_used: number;
+  token_limit: number | null;
+  percent_used: number | null;
+}
+
 export const api = {
   // Teams
   teams: {
@@ -280,10 +287,9 @@ export const api = {
       }),
   },
 
-  // Articles
-  articles: {
-    list: () => fetchAPI<Article[]>("/articles"),
-    get: (slug: string) => fetchAPI<Article>(`/articles/${slug}`),
+  // Token Usage
+  tokenUsage: {
+    my: () => fetchAPI<TokenUsageResponse>("/api/users/me/token-usage"),
   },
 
   // Admin

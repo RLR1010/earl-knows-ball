@@ -75,7 +75,7 @@ class ToolChatEngine:
         db: Any,
         messages: list[dict],
         max_turns: int = 15,
-    ) -> str:
+    ) -> tuple[str, int]:
         """Run the tool-calling research loop and return DeepSeek's final answer.
 
         Args:
@@ -84,9 +84,10 @@ class ToolChatEngine:
             max_turns: Maximum tool-calling rounds before forcing a final answer.
 
         Returns:
-            Final answer text from DeepSeek.
+            Tuple of (final answer text, total tokens used).
         """
         original_answer = ""
+        total_tokens = 0
 
         try:
             client = AsyncOpenAI(
@@ -102,6 +103,9 @@ class ToolChatEngine:
                 tools=self.tools,
                 tool_choice="auto",
             )
+
+            if response.usage:
+                total_tokens += response.usage.total_tokens
 
             assistant_msg = response.choices[0].message
             self._append_assistant(messages, assistant_msg)
@@ -136,6 +140,8 @@ class ToolChatEngine:
                     tools=self.tools,
                     tool_choice="auto",
                 )
+                if response.usage:
+                    total_tokens += response.usage.total_tokens
                 assistant_msg = response.choices[0].message
                 self._append_assistant(messages, assistant_msg)
 
@@ -160,13 +166,16 @@ class ToolChatEngine:
                     model=self.model,
                     messages=messages,
                 )
+                if response.usage:
+                    total_tokens += response.usage.total_tokens
                 assistant_msg = response.choices[0].message
 
             original_answer = assistant_msg.content or ""
-            return original_answer
+            logger.info("research_and_answer total tokens used: %d", total_tokens)
+            return original_answer, total_tokens
         except Exception as e:
             logger.warning("research_and_answer error: %s", e)
-            return f"I was researching your question but hit a snag. Here's what I know so far:\n\n{original_answer}"
+            return f"I was researching your question but hit a snag. Here's what I know so far:\n\n{original_answer}", total_tokens
 
 
     @staticmethod
@@ -233,6 +242,7 @@ class ToolChatEngine:
             ("answer", text) — final answer
         """
         original_answer = ""
+        total_tokens = 0
         try:
             client = AsyncOpenAI(
                 api_key=settings.deepseek_api_key,
@@ -249,6 +259,9 @@ class ToolChatEngine:
                 tools=self.tools,
                 tool_choice="auto",
             )
+
+            if response.usage:
+                total_tokens += response.usage.total_tokens
 
             assistant_msg = response.choices[0].message
             self._append_assistant(messages, assistant_msg)
@@ -285,6 +298,8 @@ class ToolChatEngine:
                     tools=self.tools,
                     tool_choice="auto",
                 )
+                if response.usage:
+                    total_tokens += response.usage.total_tokens
                 assistant_msg = response.choices[0].message
                 self._append_assistant(messages, assistant_msg)
 
@@ -312,6 +327,8 @@ class ToolChatEngine:
                     max_tokens=2048,
                     tool_choice="none",
                 )
+                if response.usage:
+                    total_tokens += response.usage.total_tokens
                 assistant_msg = response.choices[0].message
 
             yield ("status", "Drafting your breakdown...")
@@ -319,6 +336,7 @@ class ToolChatEngine:
             if not original_answer:
                 original_answer = "I gathered information about this matchup but ran into an issue generating a full breakdown."
             yield ("answer", original_answer)
+            yield ("usage", {"total_tokens": total_tokens})
 
         except Exception as e:
             logger.exception("research_and_answer_stream error: %s", e, exc_info=True)
@@ -327,6 +345,7 @@ class ToolChatEngine:
                 yield ("answer", original_answer)
             else:
                 yield ("answer", f"I was researching your question but ran into an error. Let me summarize what I found.")
+            yield ("usage", {"total_tokens": total_tokens})
 
     @staticmethod
     def _extract_tool_results(messages: list[dict]) -> str:
@@ -365,10 +384,10 @@ class ToolChatEngine:
         question: str,
         sport: str,
         top_k: int = 10,
-    ) -> str:
+    ) -> tuple[str, int]:
         """Search pgvector for relevant articles and get a relevance summary from DeepSeek.
 
-        Returns an empty string if no relevant articles found.
+        Returns a tuple of (summary_text, total_tokens_used) or ("", 0) if no articles.
         """
         from app.ingestion.pgvector_search import search_articles
 
@@ -377,7 +396,7 @@ class ToolChatEngine:
         )
         if not articles:
             logger.info("No articles found for enrichment")
-            return ""
+            return "", 0
 
         articles_text = "\n\n".join(
             f"ARTICLE {i + 1}:\n"
@@ -416,4 +435,7 @@ class ToolChatEngine:
             max_tokens=2048,
         )
 
-        return summary_response.choices[0].message.content or ""
+        enrichment_tokens = summary_response.usage.total_tokens if summary_response.usage else 0
+        logger.info("run_enrichment tokens: %d", enrichment_tokens)
+
+        return summary_response.choices[0].message.content or "", enrichment_tokens

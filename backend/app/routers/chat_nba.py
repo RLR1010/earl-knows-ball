@@ -23,6 +23,7 @@ from app.database import get_db
 from app.models import User
 from app.models.chat_history import ChatHistory
 from app.chat_tools import ToolChatEngine, NBA_TOOL_DEFINITIONS, execute_nba_tool
+from app.services.token_tracker import check_token_limit, save_token_usage
 
 logger = logging.getLogger(__name__)
 
@@ -111,8 +112,25 @@ async def chat_nba(
     NBA chat endpoint — SSE streaming.
     Yields status events ('status') during research, then the final answer ('answer').
     """
+
+    # Check token limit for premium/ultimate users
+    if current_user.subscription_tier in ("premium", "ultimate"):
+        allowed, _ = await check_token_limit(current_user, db)
+        if not allowed:
+            async def limit_error_stream():
+                yield {"data": json.dumps({
+                    "type": "answer",
+                    "content": "You've reached your monthly chat token limit. Your usage will reset at the start of next month. Upgrade your plan if you need more tokens.",
+                }, ensure_ascii=False)}
+                yield {"data": json.dumps({"type": "done"}, ensure_ascii=False)}
+            return EventSourceResponse(
+                limit_error_stream(),
+                headers={"Cache-Control": "no-cache, no-store, must-revalidate", "Connection": "keep-alive"},
+                ping=5,
+            )
     async def event_stream():
         answer = ""
+        total_tokens = 0
         try:
             # --- Build message history ---
             messages: list[dict] = []
@@ -159,13 +177,16 @@ async def chat_nba(
             ):
                 if event_type == "status":
                     yield {"data": json.dumps({"type": "status", "message": data}, ensure_ascii=False)}
+                elif event_type == "usage":
+                    total_tokens += data.get("total_tokens", 0)
+                    continue
                 elif event_type == "answer":
                     answer = data
 
             # --- Enrichment phase ---
             if request.include_enrichment:
                 yield {"data": json.dumps({"type": "status", "message": "Searching for relevant articles..."}, ensure_ascii=False)}
-                enrichment_text = await ToolChatEngine.run_enrichment(
+                enrichment_text, enrichment_tokens = await ToolChatEngine.run_enrichment(
                     db=db,
                     question=request.message,
                     sport="nba",
@@ -212,6 +233,8 @@ async def chat_nba(
 
             # --- Send final answer ---
             yield {"data": json.dumps({"type": "answer", "content": answer}, ensure_ascii=False)}
+            await save_token_usage(current_user, db, total_tokens)
+
             yield {"data": json.dumps({"type": "done"}, ensure_ascii=False)}
 
         except Exception as e:

@@ -12,6 +12,8 @@ interface User {
   email_verified: boolean;
   created_at: string | null;
   last_login_at: string | null;
+  monthly_token_limit: number | null;
+  tokens_used: number;
 }
 
 const token = () => localStorage.getItem("earl_token");
@@ -118,6 +120,7 @@ export default function AdminUsers() {
                 <th className="pb-3 pr-4 font-semibold">Tier</th>
                 <th className="pb-3 pr-4 font-semibold">Status</th>
                 <th className="pb-3 pr-4 font-semibold">Admin</th>
+                <th className="pb-3 pr-4 font-semibold">Tokens</th>
                 <th className="pb-3 pr-4 font-semibold">Joined</th>
                 <th className="pb-3 font-semibold">Actions</th>
               </tr>
@@ -141,6 +144,11 @@ export default function AdminUsers() {
                   </td>
                   <td className="py-3 pr-4">
                     {user.is_admin ? <span className="text-earl-400">✓</span> : "—"}
+                  </td>
+                  <td className="py-3 pr-4 text-xs">
+                    <span className={user.monthly_token_limit && user.tokens_used > user.monthly_token_limit ? "text-red-400" : "text-gray-400"}>
+                      {user.tokens_used}{user.monthly_token_limit ? ` / ${user.monthly_token_limit}` : ""}
+                    </span>
                   </td>
                   <td className="py-3 pr-4 text-gray-400 text-xs">
                     {user.created_at ? new Date(user.created_at).toLocaleDateString() : "—"}
@@ -194,6 +202,16 @@ export default function AdminUsers() {
               <option value="premium_yearly">Premium Yearly</option>
             </select>
 
+            <label className="block text-xs text-gray-500 mb-1 mt-3">Monthly Token Limit</label>
+            <input
+              type="number"
+              defaultValue={editingUser.monthly_token_limit ?? ""}
+              id="edit-token-limit"
+              min="0"
+              className="w-full px-3 py-2 rounded bg-gray-900 border border-white/10 text-white text-sm mb-4 focus:outline-none focus:border-earl-400 placeholder-gray-600"
+              placeholder="Unlimited"
+            />
+
             <div className="flex items-center gap-4 mb-4">
               <label className="flex items-center gap-2 text-sm text-gray-300">
                 <input type="checkbox" defaultChecked={editingUser.is_active} id="edit-active" className="rounded" />
@@ -220,12 +238,15 @@ export default function AdminUsers() {
                   const active = (document.getElementById("edit-active") as HTMLInputElement).checked;
                   const admin = (document.getElementById("edit-admin") as HTMLInputElement).checked;
                   const verified = (document.getElementById("edit-verified") as HTMLInputElement).checked;
+                  const tokenLimitEl = document.getElementById("edit-token-limit") as HTMLInputElement;
+                  const tokenLimit = tokenLimitEl.value ? parseInt(tokenLimitEl.value) : null;
                   handleUpdate(editingUser.id, {
                     display_name: name || null,
                     subscription_tier: tier,
                     is_active: active,
                     is_admin: admin,
                     email_verified: verified,
+                    monthly_token_limit: tokenLimit,
                   });
                 }}
                 className="px-4 py-2 bg-earl-600 text-white rounded-lg text-sm hover:bg-earl-500 transition"

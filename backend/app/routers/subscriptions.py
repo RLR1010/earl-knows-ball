@@ -164,6 +164,9 @@ async def create_checkout_session(
                     "plan_id": plan.id,
                 },
                 "trial_period_days": plan.trial_days or None,
+                "payment_settings": {
+                    "statement_descriptor": "Earl Knows Ball",
+                },
             },
         }
 
@@ -314,6 +317,9 @@ async def _handle_checkout_completed(session: dict, db: AsyncSession):
             else:
                 user.subscription_tier = "premium"
 
+            if plan.monthly_token_limit is not None:
+                user.monthly_token_limit = plan.monthly_token_limit
+
     await db.commit()
 
 
@@ -359,6 +365,14 @@ async def _handle_subscription_updated(subscription: dict, db: AsyncSession):
     if user:
         if status == "active":
             user.subscription_tier = "premium"
+            # Sync monthly token limit from the plan
+            if sub.plan_id:
+                plan_result = await db.execute(
+                    select(SubscriptionPlan).where(SubscriptionPlan.id == sub.plan_id)
+                )
+                plan = plan_result.scalar_one_or_none()
+                if plan and plan.monthly_token_limit is not None:
+                    user.monthly_token_limit = plan.monthly_token_limit
         elif status in ("canceled", "past_due", "incomplete_expired", "unpaid"):
             # Check if user has any other active subscription before downgrading
             active_count = await db.scalar(
@@ -406,6 +420,7 @@ async def _handle_subscription_deleted(subscription: dict, db: AsyncSession):
         )
         if not active_count:
             user.subscription_tier = "free"
+            user.monthly_token_limit = None
             logger.info(f"Downgraded user {user.id} to free (no remaining active subscriptions)")
         else:
             logger.info(f"User {user.id} has {active_count} other active subscription(s); keeping tier")

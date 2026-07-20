@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useAuth } from "@/lib/auth-context";
-import { api, type PaymentRecord } from "@/lib/api";
+import { api, type PaymentRecord, type TokenUsageResponse } from "@/lib/api";
 import { useRouter } from "next/navigation";
 
 function formatCents(cents: number, currency: string) {
@@ -69,6 +69,8 @@ export default function ProfilePage() {
   const [subLoading, setSubLoading] = useState(true);
   const [cancelling, setCancelling] = useState(false);
   const [cancelMessage, setCancelMessage] = useState<string | null>(null);
+  const [tokenUsage, setTokenUsage] = useState<TokenUsageResponse | null>(null);
+  const [tokenUsageLoading, setTokenUsageLoading] = useState(false);
 
   useEffect(() => {
     if (!authLoading && !user) {
@@ -94,6 +96,16 @@ export default function ProfilePage() {
       .then((data) => setSubscription(data))
       .catch(() => setSubscription({ has_active: false, subscription: null }))
       .finally(() => setSubLoading(false));
+  }, [user]);
+
+  useEffect(() => {
+    if (!user || !("premium" === user.subscription_tier || "ultimate" === user.subscription_tier)) return;
+    setTokenUsageLoading(true);
+    api.tokenUsage
+      .my()
+      .then(setTokenUsage)
+      .catch(() => setTokenUsage(null))
+      .finally(() => setTokenUsageLoading(false));
   }, [user]);
 
   const handleCancel = async () => {
@@ -228,6 +240,38 @@ export default function ProfilePage() {
             </div>
           )}
         </section>
+
+        {/* Token Usage */}
+        {tokenUsage && tokenUsage.token_limit && (
+          <section className="bg-gray-900 border border-gray-800 rounded-lg p-6">
+            <h2 className="text-lg font-semibold mb-4">Chat Token Usage</h2>
+            <div className="space-y-3">
+              <div className="flex justify-between text-sm">
+                <span className="text-gray-400">This Month</span>
+                <span className="text-white font-medium">
+                  {tokenUsage.tokens_used.toLocaleString()} / {tokenUsage.token_limit.toLocaleString()} tokens
+                </span>
+              </div>
+              <div className="w-full bg-gray-800 rounded-full h-3 overflow-hidden">
+                <div
+                  className={`h-full rounded-full transition-all ${
+                    (tokenUsage.percent_used || 0) >= 90
+                      ? "bg-red-500"
+                      : (tokenUsage.percent_used || 0) >= 70
+                      ? "bg-yellow-500"
+                      : "bg-green-500"
+                  }`}
+                  style={{ width: `${Math.min((tokenUsage.percent_used || 0), 100)}%` }}
+                />
+              </div>
+              {tokenUsage.percent_used !== null && (
+                <p className="text-xs text-gray-500">
+                  {tokenUsage.percent_used.toFixed(1)}% used — resets at the start of next month
+                </p>
+              )}
+            </div>
+          </section>
+        )}
 
         {/* Payment History */}
         <section className="bg-gray-900 border border-gray-800 rounded-lg p-6">

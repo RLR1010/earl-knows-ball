@@ -14,6 +14,7 @@ const NAV_ITEMS = [
   { label: "Articles", path: "/admin/articles", icon: "📰" },
   { label: "　RSS Feeds", path: "/admin/articles/rss", icon: "📡" },
   { label: "Predictions", path: "/admin/predictions", icon: "🎯" },
+  { label: "Payments", path: "/admin/payments", icon: "💳" },
   { label: "Tasks", path: "/admin/tasks", icon: "⚡" },
   { label: "Data Loader", path: "/admin/data-loader", icon: "🧪" },
   { label: "Database", path: "/admin/database", icon: "🗄️" },

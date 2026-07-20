@@ -13,6 +13,8 @@ const nextConfig = {
       // Writeup routes — bare and /api prefixed, must be before catch-all
       { source: "/writeups/:path*", destination: "http://localhost:8001/writeups/:path*" },
       { source: "/api/writeups/:path*", destination: "http://localhost:8001/writeups/:path*" },
+      // Token usage — needs /api prefix preserved
+      { source: "/api/users/:path*", destination: "http://localhost:8001/api/users/:path*" },
       // All other /api calls get the prefix stripped (teams, players, games, chat, etc.)
       { source: "/api/:path*", destination: "http://localhost:8001/:path*" },
       { source: "/auth/:path*", destination: "http://localhost:8001/auth/:path*" },

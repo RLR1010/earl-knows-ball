@@ -13,6 +13,7 @@ from jose import jwt, JWTError
 
 from app.database import get_db
 from app.models import User, Article
+from app.models.token_usage import UserTokenUsage
 from app.models.nba import NBAArticle
 from app.models.mlb import MLBArticle
 from app.models.admin import SubscriptionPlan, UserSubscription, Payment
@@ -82,6 +83,8 @@ class UserOut(BaseModel):
     stripe_customer_id: str | None = None
     created_at: datetime | None = None
     last_login_at: datetime | None = None
+    monthly_token_limit: int | None = None
+    tokens_used: int = 0
 
     model_config = {"from_attributes": True}
 
@@ -92,6 +95,7 @@ class UserUpdate(BaseModel):
     is_active: Optional[bool] = None
     is_admin: Optional[bool] = None
     email_verified: Optional[bool] = None
+    monthly_token_limit: Optional[int] = None
 
 
 class PlanCreate(BaseModel):
@@ -107,6 +111,7 @@ class PlanCreate(BaseModel):
     sort_order: int = 0
     stripe_price_id: Optional[str] = None
     stripe_product_id: Optional[str] = None
+    monthly_token_limit: Optional[int] = None
 
 
 class PlanUpdate(BaseModel):
@@ -122,6 +127,7 @@ class PlanUpdate(BaseModel):
     sort_order: Optional[int] = None
     stripe_price_id: Optional[str] = None
     stripe_product_id: Optional[str] = None
+    monthly_token_limit: Optional[int] = None
 
 
 class PlanOut(BaseModel):
@@ -138,6 +144,7 @@ class PlanOut(BaseModel):
     sort_order: int
     stripe_price_id: str | None = None
     stripe_product_id: str | None = None
+    monthly_token_limit: int | None = None
     created_at: datetime | None = None
 
     model_config = {"from_attributes": True}
@@ -175,6 +182,14 @@ class PaymentOut(BaseModel):
     created_at: datetime | None = None
 
     model_config = {"from_attributes": True}
+
+
+class PaymentListResponse(BaseModel):
+    payments: list[PaymentOut]
+    total: int
+    total_cents: int
+    page: int
+    page_size: int
 
 
 class DashboardStats(BaseModel):
@@ -273,7 +288,9 @@ async def list_users(
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
 ):
-    """List users with search, filter, and pagination."""
+    """List users with search, filter, pagination, and token usage."""
+    from datetime import date
+
     query = select(User)
 
     if search:
@@ -287,7 +304,29 @@ async def list_users(
 
     query = query.order_by(desc(User.created_at)).offset(skip).limit(limit)
     result = await db.execute(query)
-    return result.scalars().all()
+    users = result.scalars().all()
+
+    # Batch fetch token usage for the current month
+    first_of_month = date.today().replace(day=1)
+    if users:
+        tu_result = await db.execute(
+            select(UserTokenUsage.user_id, UserTokenUsage.tokens_used)
+            .where(
+                UserTokenUsage.month == first_of_month,
+                UserTokenUsage.user_id.in_([u.id for u in users]),
+            )
+        )
+        token_map = {row[0]: row[1] for row in tu_result.fetchall()}
+    else:
+        token_map = {}
+
+    response = []
+    for u in users:
+        out = UserOut.model_validate(u)
+        out.tokens_used = token_map.get(u.id, 0)
+        response.append(out)
+
+    return response
 
 
 @router.get("/users/{user_id}", response_model=UserOut)
@@ -527,30 +566,71 @@ async def update_subscription(
 
 # ── Payments ────────────────────────────────────────────────────────
 
-@router.get("/payments", response_model=list[PaymentOut])
+@router.get("/payments", response_model=PaymentListResponse)
 async def list_payments(
     admin: User = Depends(get_admin_user),
     db: AsyncSession = Depends(get_db),
     status_filter: str = Query("", max_length=20),
-    skip: int = Query(0, ge=0),
-    limit: int = Query(50, ge=1, le=200),
+    date_from: str = Query("", max_length=30),
+    date_to: str = Query("", max_length=30),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
 ):
-    query = (
-        select(
-            Payment,
-            User.email,
-            User.display_name,
-        )
-        .outerjoin(User, User.id == Payment.user_id)
-    )
+    # Build the WHERE conditions to reuse across count, sum, and page queries
+    filters = []
     if status_filter:
-        query = query.where(Payment.status == status_filter)
-    query = query.order_by(desc(Payment.created_at)).offset(skip).limit(limit)
+        filters.append(Payment.status == status_filter)
 
+    today = datetime.now(timezone.utc).date()
+    if date_from:
+        try:
+            dt_from = datetime.fromisoformat(date_from)
+            if dt_from.tzinfo is None:
+                dt_from = dt_from.replace(tzinfo=timezone.utc)
+            filters.append(Payment.created_at >= dt_from)
+        except ValueError:
+            pass
+    else:
+        # Default: today's payments (start of today UTC)
+        dt_from = datetime(today.year, today.month, today.day, tzinfo=timezone.utc)
+        filters.append(Payment.created_at >= dt_from)
+
+    if date_to:
+        try:
+            dt_to = datetime.fromisoformat(date_to)
+            if dt_to.tzinfo is None:
+                dt_to = dt_to.replace(tzinfo=timezone.utc)
+            dt_to = dt_to.replace(hour=23, minute=59, second=59, microsecond=999999)
+            filters.append(Payment.created_at <= dt_to)
+        except ValueError:
+            pass
+
+    # Count total matching records
+    count_query = select(func.count(Payment.id)).where(*filters)
+    total_result = await db.execute(count_query)
+    total = total_result.scalar() or 0
+
+    # Sum amount_cents for matching records
+    sum_query = select(
+        func.coalesce(func.sum(Payment.amount_cents), 0)
+    ).where(*filters)
+    sum_result = await db.execute(sum_query)
+    total_cents = sum_result.scalar() or 0
+
+    # Fetch page with user join
+    skip = (page - 1) * page_size
+    query = (
+        select(Payment, User.email, User.display_name)
+        .outerjoin(User, User.id == Payment.user_id)
+        .where(*filters)
+        .order_by(desc(Payment.created_at))
+        .offset(skip)
+        .limit(page_size)
+    )
     result = await db.execute(query)
     rows = result.all()
 
-    return [
+    payments = [
         PaymentOut(
             id=p.id,
             user_id=p.user_id,
@@ -566,6 +646,14 @@ async def list_payments(
         )
         for p, email, display_name in rows
     ]
+
+    return PaymentListResponse(
+        payments=payments,
+        total=total,
+        total_cents=total_cents,
+        page=page,
+        page_size=page_size,
+    )
 
 
 @router.get("/payments/{payment_id}", response_model=PaymentOut)

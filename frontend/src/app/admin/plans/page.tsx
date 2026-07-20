@@ -16,13 +16,14 @@ interface Plan {
   sort_order: number;
   stripe_price_id: string | null;
   stripe_product_id: string | null;
+  monthly_token_limit: number | null;
   created_at: string | null;
 }
 
 const emptyPlan = {
   name: "", slug: "", description: "", price_cents: 999, currency: "usd",
   interval: "month", trial_days: 0, features: [], is_active: true, sort_order: 0,
-  stripe_price_id: "", stripe_product_id: "",
+  stripe_price_id: "", stripe_product_id: "", monthly_token_limit: null,
 };
 
 const token = () => localStorage.getItem("earl_token");
@@ -123,6 +124,9 @@ export default function AdminPlans() {
                   <div className="text-sm text-gray-400 mt-1">
                     {formatPrice(plan.price_cents, plan.currency, plan.interval)}
                     {plan.trial_days > 0 && ` · ${plan.trial_days}-day trial`}
+                    {plan.monthly_token_limit != null && (
+                      <span className="ml-2 text-gray-400">· {plan.monthly_token_limit.toLocaleString()} tokens/mo</span>
+                    )}
                   </div>
                   {plan.description && (
                     <div className="text-xs text-gray-500 mt-1">{plan.description}</div>
@@ -215,6 +219,11 @@ function PlanFormModal({ plan, onSave, onClose }: { plan: Plan | null; onSave: (
           </div>
         </div>
 
+        <div>
+          <label className="block text-xs text-gray-500 mb-1">Monthly Token Limit</label>
+          <input id="f-tokens" type="number" min="0" defaultValue={plan?.monthly_token_limit ?? ""} placeholder="Unlimited" className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white mb-3 focus:outline-none focus:border-earl-600" />
+        </div>
+
         <div className="flex items-center gap-4 mb-4">
           <label className="flex items-center gap-2 text-sm text-gray-300">
             <input type="checkbox" defaultChecked={plan?.is_active ?? true} id="f-active" className="rounded" />
@@ -241,6 +250,7 @@ function PlanFormModal({ plan, onSave, onClose }: { plan: Plan | null; onSave: (
                 features,
                 is_active: getCheck("f-active"),
                 sort_order: parseInt(get("f-order")) || 0,
+                monthly_token_limit: get("f-tokens") ? parseInt(get("f-tokens")) : null,
                 stripe_price_id: get("f-spid") || null,
                 stripe_product_id: plan?.stripe_product_id || null,
               });

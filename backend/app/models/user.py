@@ -1,4 +1,5 @@
-from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean
+from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean, BigInteger
+from sqlalchemy.orm import relationship
 from app.database import Base
 from datetime import datetime, timezone
 import uuid
@@ -16,6 +17,7 @@ class User(Base):
     is_active = Column(Boolean, default=True)
     is_admin = Column(Boolean, default=False)
     email_verified = Column(Boolean, default=False)
+    monthly_token_limit = Column(BigInteger, nullable=True)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     last_login_at = Column(DateTime(timezone=True), nullable=True)
     stripe_customer_id = Column(String(100), nullable=True)
@@ -23,3 +25,6 @@ class User(Base):
     # Passwordless login fields
     login_code_hash = Column(String(255), nullable=True)
     login_code_expires_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Relationships
+    token_usage = relationship("UserTokenUsage", back_populates="user", cascade="all, delete-orphan")

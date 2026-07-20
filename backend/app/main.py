@@ -56,6 +56,7 @@ from app.routers import (
     teams,
     admin,
     writeups,
+    token_usage,
 )
 
 app.include_router(auth.router)
@@ -73,6 +74,8 @@ app.include_router(subscriptions.router)
 app.include_router(teams.router)
 app.include_router(admin.router)
 app.include_router(writeups.router)
+app.include_router(token_usage.router)
+app.include_router(token_usage.admin_router)
 
 
 @app.get("/")

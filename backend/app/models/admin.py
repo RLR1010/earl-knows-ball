@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Text, Integer, Boolean, DateTime, ForeignKey, JSON, Numeric
+from sqlalchemy import Column, String, Text, Integer, BigInteger, Boolean, DateTime, ForeignKey, JSON, Numeric
 from sqlalchemy.orm import relationship
 from app.database import Base
 from datetime import datetime, timezone
@@ -19,6 +19,7 @@ class SubscriptionPlan(Base):
     interval = Column(String(10), nullable=False)            # "month" or "year"
     trial_days = Column(Integer, default=0)                 # free trial days
     features = Column(JSON, default=list)                    # ["AI Chat", "Advanced Stats", ...]
+    monthly_token_limit = Column(BigInteger, nullable=True)
     is_active = Column(Boolean, default=True)
     sort_order = Column(Integer, default=0)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
