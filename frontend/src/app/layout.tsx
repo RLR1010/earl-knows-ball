@@ -4,6 +4,7 @@ import { usePathname } from "next/navigation";
 import "./globals.css";
 import { AuthProvider } from "@/lib/auth-context";
 import HeaderUserArea from "@/components/HeaderUserArea";
+import MobileMenu from "@/components/MobileMenu";
 import Footer from "@/components/Footer";
 
 type Sport = "nfl" | "nba" | "mlb";
@@ -71,8 +72,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 <img src="/earl-logo.png" alt="Earl Knows Ball" className="h-6 sm:h-8 w-auto" />
               </a>
 
-              {/* Sport selector pills */}
-              <div className="flex items-center gap-1 bg-white/[0.04] rounded-full p-0.5 border border-white/10">
+              {/* Sport selector pills — hidden on mobile */}
+              <div className="hidden md:flex items-center gap-1 bg-white/[0.04] rounded-full p-0.5 border border-white/10">
                 {SPORTS.map((sport) => {
                   const isActive = activeSport === sport.key;
                   return (
@@ -92,8 +93,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 })}
               </div>
 
-              {/* Right side */}
-              <div className="flex items-center gap-4 text-sm font-medium text-gray-300">
+              {/* Right side — hidden on mobile */}
+              <div className="hidden md:flex items-center gap-4 text-sm font-medium text-gray-300">
                 {!hideSportChrome && !isLanding && (
                   <a
                     href="/chat"
@@ -103,6 +104,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                   </a>
                 )}
                 <HeaderUserArea />
+              </div>
+
+              {/* Mobile hamburger menu */}
+              <div className="flex md:hidden items-center">
+                <MobileMenu />
               </div>
             </div>
           </div>
