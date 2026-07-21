@@ -827,6 +827,21 @@ async def ingest_mlb_backfill_scores():
         }
 
 
+@router.post("/ingest/mlb/pitcher-stats/backfill")
+async def ingest_mlb_pitcher_stats_backfill(
+    db: AsyncSession = Depends(get_db),
+):
+    """Backfill pitcher game stats for 2024-2025 postseason games."""
+    from app.ingestion.mlb_pitcher_stats import ingest_pitcher_stats
+
+    results = {}
+    for year in [2024, 2025]:
+        count = await ingest_pitcher_stats(year_only=year, game_limit=None)
+        results[str(year)] = f"processed {count} games"
+
+    return {"status": "ok", "results": results}
+
+
 @router.post("/ingest/mlb/lines-and-picks")
 async def ingest_mlb_lines_and_picks(
     api_key: str = Query("", description="The Odds API key. Falls back to ODDS_API_KEY env var."),
@@ -922,6 +937,49 @@ async def ingest_mlb_lines_and_picks(
         import traceback
         results["errors"].append(str(e))
         logger.error(f"Lines+picks refresh failed: {e}\n{traceback.format_exc()}")
+
+    return {"status": "ok", "results": results}
+
+
+@router.post("/ingest/mlb/stats/backfill-postseason")
+async def ingest_mlb_stats_backfill_postseason(
+    db: AsyncSession = Depends(get_db),
+):
+    """Backfill batting_game_stats and pitcher_game_stats for 2020-2025 postseason games."""
+    import asyncpg
+    from app.core.config import settings
+    from app.ingestion.boxscore_ingest import get_games_to_process, process_game
+    from app.ingestion.mlb_pitcher_stats import ingest_pitcher_stats
+
+    results = {}
+
+    # Step 1 — process batting_game_stats (and any extra pitcher data in boxscores)
+    db_url = settings.database_url.replace("+asyncpg", "")
+    conn = await asyncpg.connect(db_url)
+    try:
+        games = await get_games_to_process(conn, fill_missing=True, from_year=2020)
+        total_games = len(games)
+        processed = 0
+        for game in games:
+            try:
+                rows = await process_game(conn, game)
+                if rows > 0:
+                    processed += 1
+            except Exception as e:
+                print(f"Boxscore error for game {game.get('id')}: {e}")
+    finally:
+        await conn.close()
+    results["boxscores"] = f"{total_games} to process, {processed} done"
+
+    # Step 2 — process pitcher_game_stats by year
+    years = [2020, 2021, 2022, 2023, 2024, 2025]
+    results["pitcher_stats"] = {}
+    for year in years:
+        try:
+            count = await ingest_pitcher_stats(year_only=year, game_limit=None)
+            results["pitcher_stats"][str(year)] = f"processed {count}"
+        except Exception as e:
+            results["pitcher_stats"][str(year)] = f"error: {e}"
 
     return {"status": "ok", "results": results}
 
@@ -1105,4 +1163,32 @@ async def ingest_nfl_pbp_game_stats(
     from app.ingestion.pbp_game_stats import aggregate_pbp_to_game_stats
     result = await aggregate_pbp_to_game_stats(db, seasons=seasons)
     return {"status": "ok", "seasons": result}
+
+
+@router.post("/ingest/mlb/games/backfill-years")
+async def ingest_mlb_games_backfill_years(
+    db: AsyncSession = Depends(get_db),
+):
+    """Load all games (including postseason) for 2024 and 2025."""
+    from app.ingestion.mlb_stats import load_games_for_season, sync_teams, MLB_TEAMS
+    from app.models.mlb import MLBSeason
+    from sqlalchemy import select
+
+    # Build team map via sync_teams (updates teams from API if needed)
+    team_map = await sync_teams(db)
+    team_abbr_by_api_id = {api_id: abbr for api_id, abbr, _, _, _ in MLB_TEAMS}
+
+    results = {}
+    for year in [2020, 2021, 2022, 2023, 2024, 2025]:
+        r = await db.execute(select(MLBSeason).where(MLBSeason.year == year))
+        season = r.scalar_one_or_none()
+        if not season:
+            results[str(year)] = "season not found"
+            continue
+
+        count = await load_games_for_season(db, year, season.id, team_map, team_abbr_by_api_id)
+        await db.commit()
+        results[str(year)] = f"loaded {count} new games"
+
+    return {"status": "ok", "results": results}
 

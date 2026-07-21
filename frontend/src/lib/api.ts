@@ -254,6 +254,14 @@ export const api = {
     list: () => fetchAPI<number[]>("/api/seasons"),
   },
 
+  nbaSeasons: {
+    list: () => fetchAPI<number[]>("/api/nba/seasons"),
+  },
+
+  mlbSeasons: {
+    list: () => fetchAPI<number[]>("/api/mlb/seasons"),
+  },
+
   // Games
   games: {
     list: (params?: { season_year?: number; week?: number; team_id?: number }) => {

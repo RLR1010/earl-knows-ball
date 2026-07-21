@@ -460,8 +460,8 @@ function MLBClassicPage({ gameId, backHref }: { gameId: string | undefined; back
   const awaySide = boxscore?.teams?.away;
   const homeSide = boxscore?.teams?.home;
 
-  function formatDate(iso: string) { const d = new Date(iso); return d.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric", timeZone: "America/Chicago" }); }
-  function formatTime(iso: string) { const d = new Date(iso); return d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: "America/Chicago" }); }
+  function formatDate(iso: string) { const d = new Date(iso); return d.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric", timeZone: "America/New_York" }); }
+  function formatTime(iso: string) { const d = new Date(iso); return d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: "America/New_York" }) + " ET"; }
   function statusBadge(status: string) {
     switch (status?.toLowerCase()) {
       case "final": return { label: "FINAL", cls: "text-green-400" };

@@ -6,6 +6,7 @@ import Link from "next/link";
 import Image from "next/image";
 import { api, Game, formatSpread, formatSpreadAway, formatOverUnder } from "@/lib/api";
 import { getTeamLogoUrl } from "@/lib/team_logos";
+import GameCalendar from "@/components/GameCalendar";
 
 const WEEKS = Array.from({ length: 22 }, (_, i) => i + 1);
 
@@ -19,9 +20,6 @@ function weekLabel(w: number): string {
   if (w >= 19) return PLAYOFF_LABELS[w] || `Week ${w}`;
   return `Week ${w}`;
 }
-const MLB_YEARS = Array.from({ length: 21 }, (_, i) => 2026 - i);
-const NBA_YEARS = Array.from({ length: 21 }, (_, i) => 2026 - i);
-
 function todayStr(): string {
   const d = new Date();
   const offset = d.getTimezoneOffset();
@@ -76,8 +74,8 @@ function formatTime(iso: string) {
   return d.toLocaleTimeString("en-US", {
     hour: "numeric",
     minute: "2-digit",
-    timeZone: "America/Chicago",
-  });
+    timeZone: "America/New_York",
+  }) + " ET";
 }
 
 function predBadge(label: string, result: string | null): React.ReactNode {
@@ -174,6 +172,7 @@ function mlbLastDay(year: number): string {
 function NBASchedule({ sport }: { sport: string }) {
   const searchParams = useSearchParams();
   const router = useRouter();
+  const [availableSeasons, setAvailableSeasons] = useState<number[]>([]);
   const [year, setYear] = useState(() => {
     const yp = searchParams.get('year');
     return yp ? parseInt(yp) : CURRENT_YEAR;
@@ -183,10 +182,36 @@ function NBASchedule({ sport }: { sport: string }) {
   });
   const [games, setGames] = useState<NBAGame[]>([]);
   const [loading, setLoading] = useState(true);
+  const [showCalendar, setShowCalendar] = useState(false);
+  const [gameDates, setGameDates] = useState<string[]>([]);
+
+  // Fetch all game dates for the calendar
+  useEffect(() => {
+    fetch(`/api/nba/games/dates?year=${year}`)
+      .then(r => r.json())
+      .then((dates: string[]) => setGameDates(dates))
+      .catch(() => {});
+  }, [year]);
+
+  // Fetch available seasons from backend (only years with games)
+  useEffect(() => {
+    fetch('/api/nba/seasons')
+      .then(r => r.json())
+      .then((seasons: number[]) => {
+        setAvailableSeasons(seasons);
+        if (seasons.length > 0 && !seasons.includes(year)) {
+          setYear(seasons[0]); // most recent season with games
+        }
+      })
+      .catch(() => {});
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const isCurrentYear = year === CURRENT_YEAR;
   const seasonFirst = nbaFirstGame(year);
   const seasonLast = nbaLastGame(year);
+  // Compute actual first/last game dates from fetched data, falling back to hardcoded values
+  const maxDate = gameDates.length > 0 ? gameDates[gameDates.length - 1] : seasonLast;
+  const minDate = gameDates.length > 0 ? gameDates[0] : seasonFirst;
 
   // Auto-search: when initial date has no games, query the DB for nearest date with games
   const autoSearchRef = useRef<'idle' | 'done'>('idle');
@@ -265,14 +290,18 @@ function NBASchedule({ sport }: { sport: string }) {
     return () => clearInterval(interval);
   }, [isCurrentYear, selectedDate]);
 
-  function goDay(delta: number) {
+  async function goDay(delta: number) {
     autoSearchRef.current = 'done';
     cancelSearchRef.current = true;
-    const d = new Date(selectedDate + "T12:00:00-06:00");
-    d.setDate(d.getDate() + delta);
-    const offset = d.getTimezoneOffset();
-    const local = new Date(d.getTime() - offset * 60_000);
-    setSelectedDate(local.toISOString().slice(0, 10));
+    const direction = delta > 0 ? 'forward' : 'backward';
+    try {
+      const r = await fetch(`/api/nba/games/nearest-date?year=${year}&date=${encodeURIComponent(selectedDate)}&direction=${direction}`);
+      const res: { date: string | null; year: number | null } = await r.json();
+      if (res.date && res.year) {
+        setYear(res.year);
+        setSelectedDate(res.date);
+      }
+    } catch {}
   }
 
   const dateObj = selectedDate ? (() => {
@@ -282,7 +311,7 @@ function NBASchedule({ sport }: { sport: string }) {
   
   const dateLabel = dateObj.toLocaleDateString("en-US", {
     weekday: "long", month: "long", day: "numeric", year: "numeric",
-    timeZone: "America/Chicago",
+    timeZone: "America/New_York",
   });
 
   return (
@@ -292,10 +321,22 @@ function NBASchedule({ sport }: { sport: string }) {
       <div className="flex items-center gap-3">
         <select
           value={year}
-          onChange={e => setYear(Number(e.target.value))}
+          onChange={async (e) => {
+            const newYear = Number(e.target.value);
+            setYear(newYear);
+            // Default to the last game of the new season
+            try {
+              const r = await fetch(`/api/nba/games/nearest-date?year=${newYear}&date=2099-12-31&direction=backward`);
+              const res: { date: string | null; year: number | null } = await r.json();
+              if (res.date && res.year) {
+                setSelectedDate(res.date);
+                if (res.year !== newYear) setYear(res.year);
+              }
+            } catch {}
+          }}
           className="px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-sm text-white focus:outline-none focus:border-earl-500"
         >
-          {NBA_YEARS.map(y => (
+          {availableSeasons.map(y => (
             <option key={y} value={y} className="text-black">{y}-{y + 1} Season</option>
           ))}
         </select>
@@ -305,14 +346,24 @@ function NBASchedule({ sport }: { sport: string }) {
           className="px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-sm text-gray-300 hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed transition"
         >←</button>
 
-        <input
-          type="date"
-          value={selectedDate}
-          onChange={e => { cancelSearchRef.current = true; autoSearchRef.current = 'done'; setSelectedDate(e.target.value); }}
-          min={seasonFirst}
-          max={seasonLast}
-          className="px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-sm text-white focus:outline-none focus:border-earl-500 [color-scheme:dark]"
-        />
+        <div className="relative">
+          <button
+            onClick={() => setShowCalendar(!showCalendar)}
+            className="px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-sm text-white focus:outline-none focus:border-earl-500 hover:bg-white/10 transition"
+          >
+            {selectedDate}
+          </button>
+          {showCalendar && (
+            <GameCalendar
+              gameDates={gameDates}
+              selectedDate={selectedDate}
+              onSelect={(d) => { cancelSearchRef.current = true; autoSearchRef.current = 'done'; setSelectedDate(d); }}
+              onClose={() => setShowCalendar(false)}
+              minDate={minDate}
+              maxDate={maxDate}
+            />
+          )}
+        </div>
 
         {isCurrentYear && (
           <button
@@ -369,6 +420,16 @@ function NBASchedule({ sport }: { sport: string }) {
                   <span className={`text-[10px] font-bold uppercase tracking-wider ${badge.cls}`}>{badge.label}</span>
                   {!isFinal && !isLive && <div className="text-xs text-gray-500 mt-1">{formatTime(g.date)}</div>}
                 </div>
+
+                {/* Betting line row */}
+                {g.spread != null && g.over_under != null && (
+                  <div className="mt-2 pt-2 border-t border-white/10 text-xs">
+                    <span className="text-earl-300">{formatSpreadAway(g.spread, g.away_team || "")}</span>
+                    <span className="mx-2 text-gray-700">|</span>
+                    <span className="text-earl-400">{formatSpread(g.spread, g.home_team || "")}</span>
+                    {g.over_under != null && <><span className="mx-2 text-gray-700">|</span><span className="text-gray-400">{formatOverUnder(g.over_under)}</span></>}
+                  </div>
+                )}
               </Link>
             );
           })}
@@ -384,6 +445,7 @@ function NBASchedule({ sport }: { sport: string }) {
 function MLBSchedule({ sport }: { sport: string }) {
   const searchParams = useSearchParams();
   const router = useRouter();
+  const [availableSeasons, setAvailableSeasons] = useState<number[]>([]);
   const [year, setYear] = useState(() => {
     const yp = searchParams.get('year');
     return yp ? parseInt(yp) : CURRENT_YEAR;
@@ -393,10 +455,36 @@ function MLBSchedule({ sport }: { sport: string }) {
   });
   const [games, setGames] = useState<MLBGame[]>([]);
   const [loading, setLoading] = useState(true);
+  const [showCalendar, setShowCalendar] = useState(false);
+  const [gameDates, setGameDates] = useState<string[]>([]);
+
+  // Fetch all game dates for the calendar
+  useEffect(() => {
+    fetch(`/api/mlb/games/dates?year=${year}`)
+      .then(r => r.json())
+      .then((dates: string[]) => setGameDates(dates))
+      .catch(() => {});
+  }, [year]);
+
+  // Fetch available seasons from backend (only years with games)
+  useEffect(() => {
+    fetch('/api/mlb/seasons')
+      .then(r => r.json())
+      .then((seasons: number[]) => {
+        setAvailableSeasons(seasons);
+        if (seasons.length > 0 && !seasons.includes(year)) {
+          setYear(seasons[0]); // most recent season with games
+        }
+      })
+      .catch(() => {});
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const isCurrentYear = year === CURRENT_YEAR;
   const seasonFirst = mlbOpeningDay(year);
   const seasonLast = mlbLastDay(year);
+  // Compute actual first/last game dates from fetched data, falling back to hardcoded values
+  const maxDate = gameDates.length > 0 ? gameDates[gameDates.length - 1] : seasonLast;
+  const minDate = gameDates.length > 0 ? gameDates[0] : seasonFirst;
 
   // Auto-search: when initial date has no games, query the DB for nearest date with games
   const autoSearchRef = useRef<'idle' | 'done'>('idle');
@@ -472,14 +560,18 @@ function MLBSchedule({ sport }: { sport: string }) {
     return () => clearInterval(interval);
   }, [isCurrentYear, selectedDate]);
 
-  function goDay(delta: number) {
+  async function goDay(delta: number) {
     autoSearchRef.current = 'done';
     cancelSearchRef.current = true;
-    const d = new Date(selectedDate + "T12:00:00-05:00");
-    d.setDate(d.getDate() + delta);
-    const offset = d.getTimezoneOffset();
-    const local = new Date(d.getTime() - offset * 60_000);
-    setSelectedDate(local.toISOString().slice(0, 10));
+    const direction = delta > 0 ? 'forward' : 'backward';
+    try {
+      const r = await fetch(`/api/mlb/games/nearest-date?year=${year}&date=${encodeURIComponent(selectedDate)}&direction=${direction}`);
+      const res: { date: string | null; year: number | null } = await r.json();
+      if (res.date && res.year) {
+        setYear(res.year);
+        setSelectedDate(res.date);
+      }
+    } catch {}
   }
 
   const dateObj = (() => {
@@ -489,7 +581,7 @@ function MLBSchedule({ sport }: { sport: string }) {
 
   const dateLabel = dateObj.toLocaleDateString("en-US", {
     weekday: "long", month: "long", day: "numeric", year: "numeric",
-    timeZone: "America/Chicago",
+    timeZone: "America/New_York",
   });
 
   return (
@@ -499,10 +591,22 @@ function MLBSchedule({ sport }: { sport: string }) {
       <div className="flex items-center gap-3">
         <select
           value={year}
-          onChange={e => setYear(Number(e.target.value))}
+          onChange={async (e) => {
+            const newYear = Number(e.target.value);
+            setYear(newYear);
+            // Default to the last game of the new season
+            try {
+              const r = await fetch(`/api/mlb/games/nearest-date?year=${newYear}&date=2099-12-31&direction=backward`);
+              const res: { date: string | null; year: number | null } = await r.json();
+              if (res.date && res.year) {
+                setSelectedDate(res.date);
+                if (res.year !== newYear) setYear(res.year);
+              }
+            } catch {}
+          }}
           className="px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-sm text-white focus:outline-none focus:border-earl-500"
         >
-          {MLB_YEARS.map(y => (
+          {availableSeasons.map(y => (
             <option key={y} value={y} className="text-black">{y} Season</option>
           ))}
         </select>
@@ -511,10 +615,24 @@ function MLBSchedule({ sport }: { sport: string }) {
           className="px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-sm text-gray-300 hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed transition"
         >←</button>
 
-        <input type="date" value={selectedDate} onChange={e => { cancelSearchRef.current = true; autoSearchRef.current = 'done'; setSelectedDate(e.target.value); }}
-          min={seasonFirst} max={seasonLast}
-          className="px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-sm text-white focus:outline-none focus:border-earl-500 [color-scheme:dark]"
-        />
+        <div className="relative">
+          <button
+            onClick={() => setShowCalendar(!showCalendar)}
+            className="px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-sm text-white focus:outline-none focus:border-earl-500 hover:bg-white/10 transition"
+          >
+            {selectedDate}
+          </button>
+          {showCalendar && (
+            <GameCalendar
+              gameDates={gameDates}
+              selectedDate={selectedDate}
+              onSelect={(d) => { cancelSearchRef.current = true; autoSearchRef.current = 'done'; setSelectedDate(d); }}
+              onClose={() => setShowCalendar(false)}
+              minDate={minDate}
+              maxDate={maxDate}
+            />
+          )}
+        </div>
 
         {isCurrentYear && (
           <button onClick={() => { autoSearchRef.current = 'idle'; setSelectedDate(todayStr()); }}
@@ -643,8 +761,8 @@ function NFLSchedule({ sport }: { sport: string }) {
     return d.toLocaleDateString("en-US", {
       weekday: "short", month: "short", day: "numeric",
       hour: "numeric", minute: "2-digit",
-      timeZone: "America/Chicago",
-    });
+      timeZone: "America/New_York",
+    }) + " ET";
   }
 
   return (

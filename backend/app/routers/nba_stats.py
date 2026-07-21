@@ -307,6 +307,19 @@ async def nba_game_boxscore(
     }
 
 
+@router.get("/nba/seasons")
+async def nba_seasons(db: AsyncSession = Depends(get_db)):
+    """Return years that have NBA games in the database."""
+    result = await db.execute(
+        text("""
+            SELECT DISTINCT s.year FROM nba.seasons s
+            INNER JOIN nba.games g ON g.season_id = s.id
+            ORDER BY s.year DESC
+        """)
+    )
+    return [row[0] for row in result.fetchall()]
+
+
 @router.get("/nba/games")
 async def nba_games(
     year: int = Query(...),
@@ -349,43 +362,116 @@ async def nba_games(
 async def nba_nearest_date(
     year: int = Query(...),
     date: str = Query(...),
+    direction: str | None = Query(None),
+    team_abbr: str | None = Query(None),
     db: AsyncSession = Depends(get_db),
 ):
     given_date = datetime.date.fromisoformat(date)
 
-    # Try forward first
-    forward_sql = """
-    SELECT DISTINCT (g.date AT TIME ZONE 'America/Chicago')::date AS game_date
-    FROM nba.games g
-    JOIN nba.seasons s ON s.id = g.season_id
-    WHERE s.year = :year
-      AND (g.date AT TIME ZONE 'America/Chicago')::date > :date
-      AND g.game_type IN ('REG', 'POST')
-    ORDER BY game_date ASC
-    LIMIT 1
-    """
-    result = await db.execute(text(forward_sql), {"year": year, "date": given_date})
-    row = result.fetchone()
-    if row:
-        return {"date": row[0].isoformat(), "year": year}
+    team_join = ""
+    team_filter = ""
+    params: dict = {"year": year, "date": given_date}
+    if team_abbr:
+        team_join = """JOIN nba.teams ht ON ht.id = g.home_team_id
+JOIN nba.teams at ON at.id = g.away_team_id
+"""
+        team_filter = "AND (ht.abbreviation = :team_abbr OR at.abbreviation = :team_abbr)"
+        params["team_abbr"] = team_abbr.upper()
 
-    # Nothing forward, try backward (most recent past date)
-    backward_sql = """
-    SELECT DISTINCT (g.date AT TIME ZONE 'America/Chicago')::date AS game_date
-    FROM nba.games g
-    JOIN nba.seasons s ON s.id = g.season_id
-    WHERE s.year = :year
-      AND (g.date AT TIME ZONE 'America/Chicago')::date < :date
-      AND g.game_type IN ('REG', 'POST')
-    ORDER BY game_date DESC
-    LIMIT 1
-    """
-    result = await db.execute(text(backward_sql), {"year": year, "date": given_date})
-    row = result.fetchone()
-    if row:
-        return {"date": row[0].isoformat(), "year": year}
+    def _nearest_sql(where_op: str, order: str) -> str:
+        return f"""\
+        SELECT DISTINCT (g.date AT TIME ZONE 'America/Chicago')::date AS game_date
+        FROM nba.games g
+{team_join}\
+        JOIN nba.seasons s ON s.id = g.season_id
+        WHERE s.year = :year
+          AND (g.date AT TIME ZONE 'America/Chicago')::date {where_op}
+          AND g.game_type IN ('REG', 'POST')
+{team_filter}\
+        ORDER BY game_date {order}
+        LIMIT 1"""
+
+    if direction == "backward":
+        sql = _nearest_sql("< :date", "DESC")
+        result = await db.execute(text(sql), params)
+        row = result.fetchone()
+        if row:
+            return {"date": row[0].isoformat(), "year": year}
+
+        # Nothing backward this year, try previous year (last date)
+        prev_params = {k: v for k, v in params.items() if k != "date"}
+        prev_sql = f"""\
+        SELECT DISTINCT (g.date AT TIME ZONE 'America/Chicago')::date AS game_date, s.year
+        FROM nba.games g
+{team_join}\
+        JOIN nba.seasons s ON s.id = g.season_id
+        WHERE s.year < :year
+          AND g.game_type IN ('REG', 'POST')
+{team_filter}\
+        ORDER BY s.year DESC, game_date DESC
+        LIMIT 1"""
+        result = await db.execute(text(prev_sql), prev_params)
+        row = result.fetchone()
+        if row:
+            return {"date": row[0].isoformat(), "year": row[1]}
+    elif direction == "forward":
+        sql = _nearest_sql("> :date", "ASC")
+        result = await db.execute(text(sql), params)
+        row = result.fetchone()
+        if row:
+            return {"date": row[0].isoformat(), "year": year}
+
+        # Nothing forward this year, try next year (first date)
+        next_params = {k: v for k, v in params.items() if k != "date"}
+        next_sql = f"""\
+        SELECT DISTINCT (g.date AT TIME ZONE 'America/Chicago')::date AS game_date, s.year
+        FROM nba.games g
+{team_join}\
+        JOIN nba.seasons s ON s.id = g.season_id
+        WHERE s.year > :year
+          AND g.game_type IN ('REG', 'POST')
+{team_filter}\
+        ORDER BY s.year ASC, game_date ASC
+        LIMIT 1"""
+        result = await db.execute(text(next_sql), next_params)
+        row = result.fetchone()
+        if row:
+            return {"date": row[0].isoformat(), "year": row[1]}
+    else:
+        # No direction: try forward first, then backward
+        forward_sql = _nearest_sql("> :date", "ASC")
+        result = await db.execute(text(forward_sql), params)
+        row = result.fetchone()
+        if row:
+            return {"date": row[0].isoformat(), "year": year}
+
+        backward_sql = _nearest_sql("< :date", "DESC")
+        result = await db.execute(text(backward_sql), params)
+        row = result.fetchone()
+        if row:
+            return {"date": row[0].isoformat(), "year": year}
 
     return {"date": None, "year": None}
+
+
+@router.get("/nba/games/dates")
+async def nba_game_dates(
+    year: int = Query(...),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return all distinct dates with games for a given year."""
+    result = await db.execute(
+        text("""
+            SELECT DISTINCT (g.date AT TIME ZONE 'America/Chicago')::date AS game_date
+            FROM nba.games g
+            JOIN nba.seasons s ON s.id = g.season_id
+            WHERE s.year = :year
+              AND g.game_type IN ('REG', 'POST')
+            ORDER BY game_date ASC
+        """),
+        {"year": year},
+    )
+    return [row[0].isoformat() for row in result.fetchall()]
 
 
 @router.get("/nba/players/{player_id}/profile")

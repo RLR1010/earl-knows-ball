@@ -88,7 +88,7 @@ NBA_TEAM_MAP = {
 # Opening offset: how early to capture opening lines (hours before game)
 # Closing offset: how close to game (minutes before)
 SPORT_CONFIG = {
-    "mlb": {"api": "baseball_mlb", "map": MLB_TEAM_MAP, "open_hrs": 15, "close_min": 10, "game_types": ["R"]},
+    "mlb": {"api": "baseball_mlb", "map": MLB_TEAM_MAP, "open_hrs": 15, "close_min": 10, "game_types": ["D", "F", "L", "W"]},
     "nfl": {"api": "americanfootball_nfl", "map": NFL_TEAM_MAP, "open_hrs": 72, "close_min": 10, "game_types": ["REG", "POST"]},
     "nba": {"api": "basketball_nba", "map": NBA_TEAM_MAP, "open_hrs": 18, "close_min": 10, "game_types": ["REG", "POST"]},
 }

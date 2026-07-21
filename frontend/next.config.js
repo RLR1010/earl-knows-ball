@@ -8,8 +8,8 @@ const nextConfig = {
       { source: "/api/admin/:path*", destination: "http://localhost:8001/api/admin/:path*" },
       { source: "/api/articles/:path*", destination: "http://localhost:8001/api/articles/:path*" },
       { source: "/api/subscriptions/:path*", destination: "http://localhost:8001/api/subscriptions/:path*" },
-      // MLB stats/roster routes need /api prefix preserved (they're at /api/mlb/* on the backend)
-      { source: "/api/mlb/:path*", destination: "http://localhost:8001/api/mlb/:path*" },
+      // MLB stats/roster routes (backend serves them at /mlb/*, not /api/mlb/*)
+      { source: "/api/mlb/:path*", destination: "http://localhost:8001/mlb/:path*" },
       // Writeup routes — bare and /api prefixed, must be before catch-all
       { source: "/writeups/:path*", destination: "http://localhost:8001/writeups/:path*" },
       { source: "/api/writeups/:path*", destination: "http://localhost:8001/writeups/:path*" },

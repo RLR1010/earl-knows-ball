@@ -55,13 +55,13 @@ const STATUS_LABELS: Record<string, string> = {
 
 function localDateStr(isoStr: string): string {
   return new Date(isoStr).toLocaleDateString("en-CA", {
-    timeZone: "America/Chicago",
+    timeZone: "America/New_York",
   });
 }
 
 function formatDate(dateStr: string): string {
   // Date-only strings like "2026-07-11" are parsed as midnight UTC by
-  // the spec, which shifts them to the previous day in America/Chicago.
+  // the spec, which shifts them to the previous day in America/New_York.
   // Add T12 to land in local noon — avoids the UTC-midnight rollover.
   const d = dateStr.includes("T")
     ? new Date(dateStr)
@@ -71,7 +71,7 @@ function formatDate(dateStr: string): string {
     month: "short",
     day: "numeric",
     year: "numeric",
-    timeZone: "America/Chicago",
+    timeZone: "America/New_York",
   });
 }
 
@@ -80,9 +80,8 @@ function formatTime(dateStr: string): string {
   return d.toLocaleTimeString("en-US", {
     hour: "numeric",
     minute: "2-digit",
-    timeZoneName: "short",
-    timeZone: "America/Chicago",
-  });
+    timeZone: "America/New_York",
+  }) + " ET";
 }
 
 /* ─────────────────────────────────────────────
@@ -135,8 +134,8 @@ function GameCard({
 }) {
   const today = new Date();
   // Compare local date strings so past/future respects the user's timezone
-  const todayLocal = today.toLocaleDateString("en-CA", { timeZone: "America/Chicago" });
-  const gameLocal = new Date(game.date).toLocaleDateString("en-CA", { timeZone: "America/Chicago" });
+  const todayLocal = today.toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+  const gameLocal = new Date(game.date).toLocaleDateString("en-CA", { timeZone: "America/New_York" });
   const isPast = gameLocal < todayLocal;
 
   return (
@@ -220,6 +219,7 @@ export default function AdminContent() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [generating, setGenerating] = useState<number | null>(null);
+  const [generatingDay, setGeneratingDay] = useState<string | null>(null);
   const [stats, setStats] = useState({
     total: 0,
     with_writeup: 0,
@@ -261,8 +261,8 @@ export default function AdminContent() {
 
     // Use local-date strings for the backend filter so the API
     // queries the correct UTC window around the user's local dates.
-    const from = start.toLocaleDateString("en-CA", { timeZone: "America/Chicago" });
-    const to = apiEnd.toLocaleDateString("en-CA", { timeZone: "America/Chicago" });
+    const from = start.toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+    const to = apiEnd.toLocaleDateString("en-CA", { timeZone: "America/New_York" });
 
     try {
       const res = await fetch(
@@ -394,6 +394,34 @@ export default function AdminContent() {
     if (
       !confirm(
         `Generate write-ups for ${missing.length} games? This will take a while.`
+      )
+    )
+      return;
+
+    for (const game of missing) {
+      setGenerating(game.id);
+      try {
+        await fetch(`/api/writeups/${sport}/generate/${game.id}`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token()}` },
+        });
+      } catch (e: any) {
+        console.error(`Failed for game ${game.id}:`, e);
+      }
+    }
+    setGenerating(null);
+    await fetchGames();
+  };
+
+  const handleGenerateDay = async (daysGames: Game[]) => {
+    const missing = daysGames.filter((g) => !g.writeup_status);
+    if (missing.length === 0) {
+      alert("All games on this day already have write-ups!");
+      return;
+    }
+    if (
+      !confirm(
+        `Generate write-ups for ${missing.length} games on this day?`
       )
     )
       return;
@@ -563,9 +591,17 @@ export default function AdminContent() {
           {/* Day groups */}
           {groupByDay(games).map(({ date, games: dayGames }) => (
             <div key={date} className="mb-8">
-              <h3 className="text-sm font-medium text-gray-400 mb-3 uppercase tracking-wider">
-                {formatDate(date)}
-              </h3>
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-sm font-medium text-gray-400 uppercase tracking-wider">
+                  {formatDate(date)}
+                </h3>
+                <button
+                  onClick={() => handleGenerateDay(dayGames)}
+                  className="px-3 py-1 text-xs font-medium rounded-lg bg-blue-600/20 text-blue-400 border border-blue-600/30 hover:bg-blue-600/30 transition"
+                >
+                  Generate Day
+                </button>
+              </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
                 {dayGames.map((game) => (
                   <GameCard

@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import * as React from "react";
-import { useParams } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
+import GameCalendar from "@/components/GameCalendar";
 import Image from "next/image";
 import Link from "next/link";
 import { api, Team, Game, DepthChartEntry, BoxScore, formatSpread, formatSpreadAway, formatOverUnder } from "@/lib/api";
@@ -166,15 +167,15 @@ function formatGameDate(iso: string) {
   const d = new Date(iso);
   return d.toLocaleDateString("en-US", {
     weekday: "short", month: "short", day: "numeric", year: "numeric",
-    timeZone: "America/Chicago",
+    timeZone: "America/New_York",
   });
 }
 
 function formatGameTime(iso: string) {
   const d = new Date(iso);
   return d.toLocaleTimeString("en-US", {
-    hour: "numeric", minute: "2-digit", timeZone: "America/Chicago",
-  });
+    hour: "numeric", minute: "2-digit", timeZone: "America/New_York",
+  }) + " ET";
 }
 
 function formatYards(yds: number): string {
@@ -344,10 +345,31 @@ export default function TeamDetailPage() {
   }
   const [mlbMonthIdx, setMlbMonthIdx] = useState(currentMlbMonthIndex());
   const [depthChart, setDepthChart] = useState<DepthChartEntry[]>([]);
+  const [autoSearchDone, setAutoSearchDone] = useState(false);
+  const [isSearchingNearest, setIsSearchingNearest] = useState(false);
   const [depthLoading, setDepthLoading] = useState(false);
   const [tab, setTab] = useState<Tab>("schedule");
   const [seasonYear, setSeasonYear] = useState(2026);
   const [error, setError] = useState("");
+
+  // Smart navigation: find nearest date with games for this team
+  const goTeamDay = useCallback(async (direction: string) => {
+    try {
+      const res = await fetch(`/api/nba/games/nearest-date?year=${seasonYear}&date=${nbaDate}&direction=${direction}&team_abbr=${abbrUpper}`);
+      const data = await res.json();
+      if (data.date) {
+        setNbaDate(data.date);
+        if (data.year && data.year !== seasonYear) {
+          setSeasonYear(data.year);
+        }
+      }
+    } catch {
+      // fallback to simple +1/-1
+      const d = new Date(nbaDate);
+      d.setDate(d.getDate() + (direction === "forward" ? 1 : -1));
+      setNbaDate(d.toISOString().slice(0, 10));
+    }
+  }, [seasonYear, nbaDate, abbrUpper]);
   const [availableYears, setAvailableYears] = useState<number[]>([]);
 
 
@@ -379,14 +401,6 @@ export default function TeamDetailPage() {
       // MLB doesn't use the team DB model — it fetches via abbreviation directly
       setGamesLoading(true);
       fetch(`/api/mlb/games?year=${seasonYear}&team_abbr=${abbrUpper}`)
-        .then(r => r.json())
-        .then(setGames)
-        .catch(() => setGames([]))
-        .finally(() => setGamesLoading(false));
-    } else if (sport === "nba") {
-      if (!team) return;
-      setGamesLoading(true);
-      fetch(`/api/nba/games?year=${seasonYear}&team_abbr=${abbrUpper}&date=${nbaDate}`)
         .then(r => r.json())
         .then(setGames)
         .catch(() => setGames([]))
@@ -467,31 +481,26 @@ export default function TeamDetailPage() {
       {/* Schedule Tab */}
       {tab === "schedule" && (
         <div className="space-y-4">
-          <div className="flex items-center gap-3">
-            <label className="text-sm text-gray-400 font-medium">Season:</label>
-            <select value={seasonYear} onChange={e => setSeasonYear(Number(e.target.value))}
-              className="px-3 py-1.5 rounded-lg bg-white/10 border border-white/20 text-sm font-semibold text-white focus:outline-none focus:border-earl-500 cursor-pointer appearance-none"
-              style={{
-                backgroundImage: `url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%236b7280' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e")`,
-                backgroundPosition: "right 0.5rem center", backgroundRepeat: "no-repeat", backgroundSize: "1.25rem", paddingRight: "2rem",
-              }}>
-              {availableYears.length === 0 && <option value={seasonYear} className="bg-gray-900">{seasonYear}</option>}
-              {availableYears.map(yr => <option key={yr} value={yr} className="bg-gray-900">{yr} Season</option>)}
-            </select>
-            <span className="text-xs text-gray-500">{games.length} game{games.length !== 1 ? "s" : ""}</span>
-          </div>
-
+          {sport !== "nba" && (
+            <div className="flex items-center gap-3">
+              <label className="text-sm text-gray-400 font-medium">Season:</label>
+              <select value={seasonYear} onChange={e => setSeasonYear(Number(e.target.value))}
+                className="px-3 py-1.5 rounded-lg bg-white/10 border border-white/20 text-sm font-semibold text-white focus:outline-none focus:border-earl-500 cursor-pointer appearance-none"
+                style={{
+                  backgroundImage: `url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%236b7280' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e")`,
+                  backgroundPosition: "right 0.5rem center", backgroundRepeat: "no-repeat", backgroundSize: "1.25rem", paddingRight: "2rem",
+                }}>
+                {availableYears.length === 0 && <option value={seasonYear} className="bg-gray-900">{seasonYear}</option>}
+                {availableYears.map(yr => <option key={yr} value={yr} className="bg-gray-900">{yr} Season</option>)}
+              </select>
+            </div>
+          )}
           {gamesLoading ? (
             <div className="text-center py-16 text-gray-500">Loading games...</div>
           ) : sport === "nba" ? (
             <NBATeamSchedule
-              games={games}
-              loading={gamesLoading}
               sport={sport}
               abbrUpper={abbrUpper}
-              seasonYear={seasonYear}
-              nbaDate={nbaDate}
-              setNbaDate={setNbaDate}
               formatGameDate={formatGameDate}
               formatGameTime={formatGameTime}
             />
@@ -1004,159 +1013,376 @@ function TeamRoster({ sport, teamAbbr, teamName }: { sport: string; teamAbbr: st
 // ── Team News Component ────────────────────────────────────────────────
 // ── NBA Team Schedule Component ─────────────────────────────────────
 interface NBATeamScheduleProps {
-  games: any[];
-  loading: boolean;
   sport: string;
   abbrUpper: string;
-  seasonYear: number;
-  nbaDate: string;
-  setNbaDate: (d: string) => void;
   formatGameDate: (d: string) => string;
   formatGameTime: (d: string) => string;
 }
 
-function NBATeamSchedule({ games, loading, sport, abbrUpper, seasonYear, nbaDate, setNbaDate, formatGameDate, formatGameTime }: NBATeamScheduleProps) {
+interface NBATeamGame {
+  id: number;
+  home_team: string;
+  away_team: string;
+  home_score: number | null;
+  away_score: number | null;
+  date: string;
+  time: string;
+  status: string;
+  game_type: string;
+  game_id: number;
+  homeTeam?: string;
+  awayTeam?: string;
+  homeScore?: number | null;
+  awayScore?: number | null;
+  is_final?: boolean;
+  isFinal?: boolean;
+  game_status?: string;
+  spread?: number;
+  over_under?: number;
+}
+
+const CURRENT_YEAR_NBA = 2026;
+
+function NBATeamSchedule({ sport, abbrUpper, formatGameDate, formatGameTime }: NBATeamScheduleProps) {
+  const searchParams = useSearchParams();
+  const router = useRouter();
+
+  const [availableSeasons, setAvailableSeasons] = useState<number[]>([]);
+  const [year, setYear] = useState(() => {
+    const yp = searchParams.get("year");
+    return yp ? parseInt(yp) : CURRENT_YEAR_NBA;
+  });
+  const [selectedDate, setSelectedDate] = useState(() => {
+    return searchParams.get("date") || todayStr();
+  });
+  const [games, setGames] = useState<NBATeamGame[]>([]);
+  const [showCalendar, setShowCalendar] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [gameDates, setGameDates] = useState<string[]>([]);
+  const cancelSearchRef = useRef(false);
+  const autoSearchRef = useRef<"idle" | "done">("idle");
+
+  // Sync URL params for back-button support
+  useEffect(() => {
+    const params = new URLSearchParams(searchParams.toString());
+    params.set('year', String(year));
+    params.set('date', selectedDate);
+    router.replace(`/${sport}/teams/${abbrUpper}?${params.toString()}`, { scroll: false });
+  }, [year, selectedDate, sport, abbrUpper]);
+
+  function todayStr(): string {
+    const d = new Date();
+    const offset = d.getTimezoneOffset();
+    return new Date(d.getTime() - offset * 60_000).toISOString().slice(0, 10);
+  }
+
+  const isCurrentYear = year === CURRENT_YEAR_NBA;
+
+  // Fetch available seasons
+  useEffect(() => {
+    fetch(`/api/nba/seasons`)
+      .then((r) => r.json())
+      .then((seasons: number[]) => {
+        setAvailableSeasons(seasons);
+        if (seasons.length > 0 && !seasons.includes(year)) {
+          setYear(seasons[0]);
+        }
+      });
+  }, []);
+
+  // Fetch game dates for calendar
+  useEffect(() => {
+    fetch(`/api/nba/games/dates?year=${year}&team_abbr=${abbrUpper}`)
+      .then((r) => r.json())
+      .then(setGameDates)
+      .catch(() => {});
+  }, [year, abbrUpper]);
+
+  // Fetch games
+  useEffect(() => {
+    setLoading(true);
+    fetch(`/api/nba/games?year=${year}&team_abbr=${abbrUpper}&date=${selectedDate}`)
+      .then((r) => r.json())
+      .then((data: NBATeamGame[]) => setGames(Array.isArray(data) ? data : []))
+      .catch(() => setGames([]))
+      .finally(() => setLoading(false));
+  }, [year, selectedDate, abbrUpper]);
+
+  // Auto-search: when games load empty, query backend for nearest date with games
+  useEffect(() => {
+    if (autoSearchRef.current === "done" || loading) return;
+
+    if (games.length === 0 && !loading) {
+      autoSearchRef.current = "done";
+      cancelSearchRef.current = false;
+      findNearestGame(year, selectedDate);
+    } else if (games.length > 0) {
+      autoSearchRef.current = "done";
+    }
+  }, [year, selectedDate, loading, games]);
+
+  function todayStr2(): string {
+    const d = new Date();
+    const offset = d.getTimezoneOffset();
+    return new Date(d.getTime() - offset * 60_000).toISOString().slice(0, 10);
+  }
+  const todayStrVal = todayStr2();
+
+  // Set autoSearchRef to idle on initial mount (allow one auto-search)
+  useEffect(() => {
+    const t = setTimeout(() => {
+      if (autoSearchRef.current === "idle") {
+        // check if we should auto-search (only if no date was in URL)
+        const urlDate = searchParams.get("date");
+        if (!urlDate) {
+          autoSearchRef.current = "idle";
+        } else {
+          autoSearchRef.current = "done";
+        }
+      }
+    }, 100);
+    return () => clearTimeout(t);
+  }, []);
+
+  async function findNearestGame(currentYear: number, date: string) {
+    if (currentYear < 2009) return;
+    try {
+      const r = await fetch(
+        `/api/nba/games/nearest-date?year=${currentYear}&date=${encodeURIComponent(date)}&team_abbr=${abbrUpper}`
+      );
+      const res: { date: string | null; year: number | null } = await r.json();
+      if (res.date && res.year) {
+        if (!cancelSearchRef.current) {
+          setYear(res.year);
+          setSelectedDate(res.date);
+        }
+      } else {
+        if (!cancelSearchRef.current) {
+          findNearestGame(currentYear - 1, date);
+        }
+      }
+    } catch {}
+  }
+
+  async function goDay(delta: number) {
+    autoSearchRef.current = "done";
+    cancelSearchRef.current = true;
+    const direction = delta > 0 ? "forward" : "backward";
+    try {
+      const r = await fetch(
+        `/api/nba/games/nearest-date?year=${year}&date=${encodeURIComponent(selectedDate)}&direction=${direction}&team_abbr=${abbrUpper}`
+      );
+      const res: { date: string | null; year: number | null } = await r.json();
+      if (res.date && res.year) {
+        setYear(res.year);
+        setSelectedDate(res.date);
+      }
+    } catch {}
+  }
+
+  // Auto-poll live scores for today
+  useEffect(() => {
+    if (!isCurrentYear || selectedDate !== todayStrVal) return;
+    const interval = setInterval(() => {
+      fetch(`/api/nba/games?year=${CURRENT_YEAR_NBA}&team_abbr=${abbrUpper}&date=${selectedDate}`)
+        .then((r) => r.json())
+        .then((data: NBATeamGame[]) => setGames(Array.isArray(data) ? data : []))
+        .catch(() => {});
+    }, 30000);
+    return () => clearInterval(interval);
+  }, [isCurrentYear, selectedDate, abbrUpper]);
+
+  const minDate =
+    availableSeasons.length > 0 ? `${Math.min(...availableSeasons)}-10-01` : "2009-10-01";
+  const maxDate =
+    availableSeasons.length > 0
+      ? `${Math.max(...availableSeasons) + 1}-06-30`
+      : `${CURRENT_YEAR_NBA + 1}-06-30`;
+
+  const dateObj = (() => {
+    if (selectedDate) {
+      const d = new Date(selectedDate + "T12:00:00-05:00");
+      if (!isNaN(d.getTime())) return d;
+    }
+    return new Date();
+  })();
+
+  const dateLabel = dateObj.toLocaleDateString("en-US", {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+    timeZone: "America/New_York",
+  });
+
   return (
     <div className="space-y-4">
-      {/* Date navigation */}
-      <div className="flex items-center gap-3 flex-wrap">
-        <button
-          onClick={() => {
-            const d = new Date(nbaDate + "T12:00:00");
-            d.setDate(d.getDate() - 1);
-            const offset = d.getTimezoneOffset();
-            const local = new Date(d.getTime() - offset * 60_000);
-            setNbaDate(local.toISOString().slice(0, 10));
+      <div className="flex items-center gap-3">
+        <select
+          value={year}
+          onChange={(e) => {
+            cancelSearchRef.current = true;
+            const newYear = Number(e.target.value);
+            setYear(newYear);
+            setSelectedDate(todayStr());
+            setTimeout(() => {
+              cancelSearchRef.current = false;
+              autoSearchRef.current = "idle";
+              findNearestGame(newYear, todayStr());
+            }, 100);
           }}
+          className="px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-sm text-white focus:outline-none focus:border-earl-500"
+        >
+          {availableSeasons.map((sy) => (
+            <option key={sy} value={sy} className="text-black">
+              {sy}-{sy + 1} Season
+            </option>
+          ))}
+        </select>
+
+        <button
+          onClick={() => goDay(-1)}
           className="px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-sm text-gray-300 hover:bg-white/10 transition"
         >
-          ← Previous Day
+          &larr;
         </button>
 
-        <input
-          type="date"
-          value={nbaDate}
-          onChange={e => setNbaDate(e.target.value)}
-          className="px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-sm text-white focus:outline-none focus:border-earl-500 [color-scheme:dark]"
-        />
+        <div className="relative">
+          <button
+            onClick={() => setShowCalendar(!showCalendar)}
+            className="px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-sm text-white focus:outline-none focus:border-earl-500 hover:bg-white/10 transition"
+          >
+            {selectedDate}
+          </button>
+          {showCalendar && (
+            <GameCalendar
+              gameDates={gameDates}
+              selectedDate={selectedDate}
+              onSelect={(d: string) => {
+                cancelSearchRef.current = true;
+                autoSearchRef.current = "done";
+                setSelectedDate(d);
+              }}
+              onClose={() => setShowCalendar(false)}
+              minDate={minDate}
+              maxDate={maxDate}
+            />
+          )}
+        </div>
 
         <button
-          onClick={() => {
-            const d = new Date();
-            const offset = d.getTimezoneOffset();
-            const local = new Date(d.getTime() - offset * 60_000);
-            setNbaDate(local.toISOString().slice(0, 10));
-          }}
-          className="px-3 py-1.5 rounded-lg bg-earl-600/20 border border-earl-500/30 text-xs text-earl-400 hover:bg-earl-600/30 transition"
-        >
-          Today
-        </button>
-
-        <button
-          onClick={() => {
-            const d = new Date(nbaDate + "T12:00:00");
-            d.setDate(d.getDate() + 1);
-            const offset = d.getTimezoneOffset();
-            const local = new Date(d.getTime() - offset * 60_000);
-            setNbaDate(local.toISOString().slice(0, 10));
-          }}
+          onClick={() => goDay(1)}
           className="px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-sm text-gray-300 hover:bg-white/10 transition"
         >
-          Next Day →
+          &rarr;
         </button>
+
+        {isCurrentYear && (
+          <button
+            onClick={() => {
+              autoSearchRef.current = "idle";
+              setSelectedDate(todayStr());
+            }}
+            className={selectedDate === todayStr() ? "px-3 py-1.5 rounded-lg border text-xs transition bg-earl-600/20 border-earl-500/30 text-earl-400" : "px-3 py-1.5 rounded-lg border text-xs transition bg-white/5 border-white/10 text-gray-400 hover:bg-white/10"
+            }
+          >
+            Today
+          </button>
+        )}
       </div>
 
+      <p className="text-gray-400 text-sm">{dateLabel}</p>
+
       {loading ? (
-        <div className="text-center py-12 text-gray-500">Loading...</div>
+        <p className="text-gray-400">Loading...</p>
       ) : games.length === 0 ? (
-        <div className="text-center py-12 text-gray-500">No games for {abbrUpper} on this date.</div>
+        <p className="text-gray-400">No games for {abbrUpper} on this date.</p>
       ) : (
-        games.map(g => {
-          const isFinal = g.status === "final";
-          const isHome = g.home_team === abbrUpper;
-          const oppScore = isHome ? g.away_score : g.home_score;
-          const teamScore = isHome ? g.home_score : g.away_score;
-          const won = isFinal && teamScore != null && oppScore != null && teamScore > oppScore;
-          const lost = isFinal && teamScore != null && oppScore != null && teamScore < oppScore;
-          const opponent = isHome ? g.away_team : g.home_team;
-          return (
-            <Link key={g.id} href={"/" + sport + "/games/" + g.id + "?year=" + seasonYear + "&date=" + nbaDate}
-              className="block w-full text-left border rounded-xl p-4 transition hover:border-earl-500/50 hover:bg-earl-600/10 border-white/10 bg-white/5 hover:bg-white/10"
-            >
-              <div className="flex items-center justify-between">
-                <div className="w-24 shrink-0">
-                  <div className="text-xs text-gray-500 mt-0.5">{formatGameDate(g.date)}</div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          {games.map((g: NBATeamGame) => {
+            const homeTeam = g.home_team || g.homeTeam || "";
+            const awayTeam = g.away_team || g.awayTeam || "";
+            const homeScore = g.home_score ?? g.homeScore ?? null;
+            const awayScore = g.away_score ?? g.awayScore ?? null;
+            const status = g.status || g.game_status || "";
+            const isFinal =
+              status === "FINAL" || g.is_final === true || g.isFinal === true || (homeScore !== null && awayScore !== null);
+            const isLive = status === "LIVE" || status === "IN_PROGRESS";
+            const isScheduled = !isFinal && !isLive;
+            const gameId = g.game_id ?? g.id;
+
+            const awayWon = isFinal && awayScore != null && homeScore != null && awayScore > homeScore;
+            const homeWon = isFinal && homeScore != null && awayScore != null && homeScore > awayScore;
+
+            return (
+              <Link
+                key={gameId}
+                href={"/" + sport + "/games/" + gameId + "?year=" + year + "&date=" + selectedDate}
+                className="block border border-white/10 rounded-xl p-3 bg-white/5 hover:bg-white/10 transition text-center"
+              >
+                {/* Teams row with logos, names, and scores */}
+                <div className="flex items-center justify-center gap-1.5 text-lg">
+                  {awayTeam && getTeamLogoUrl(awayTeam, "nba") && (
+                    <Image
+                      src={getTeamLogoUrl(awayTeam, "nba")!}
+                      alt={awayTeam}
+                      width={20}
+                      height={20}
+                      className="object-contain shrink-0"
+                      unoptimized
+                    />
+                  )}
+                  <div className={`font-semibold ${awayWon ? "text-earl-400" : "text-gray-300"}`}>{awayTeam}</div>
+                  {isFinal && awayScore !== null && <span className="font-bold text-white">{awayScore}</span>}
+                  {isLive && awayScore !== null && <span className="font-bold text-red-400">{awayScore}</span>}
+                  <span className="text-gray-500 font-medium">@</span>
+                  {isFinal && homeScore !== null && <span className="font-bold text-white">{homeScore}</span>}
+                  {isLive && homeScore !== null && <span className="font-bold text-red-400">{homeScore}</span>}
+                  <div className={`font-semibold ${homeWon ? "text-earl-400" : "text-gray-300"}`}>{homeTeam}</div>
+                  {homeTeam && getTeamLogoUrl(homeTeam, "nba") && (
+                    <Image
+                      src={getTeamLogoUrl(homeTeam, "nba")!}
+                      alt={homeTeam}
+                      width={20}
+                      height={20}
+                      className="object-contain shrink-0"
+                      unoptimized
+                    />
+                  )}
                 </div>
-                <div className="flex-1 flex items-center justify-center gap-4">
-                  <div className="flex items-center gap-2">
-                    <div className="w-6 h-6 rounded-full bg-white/10 flex items-center justify-center shrink-0 overflow-hidden">
-                      <img src={getTeamLogoUrl(opponent, sport) || undefined} alt={opponent} width={24} height={24} className="object-contain" style={{ filter: "brightness(1.1)" }} />
-                    </div>
-                    <span className={"text-sm font-semibold " + (!isHome ? "text-white" : "text-gray-400")}>{opponent}</span>
-                    {isFinal && <span className={"text-base font-bold " + (won ? "text-earl-400" : lost ? "text-red-400" : "text-white")}>{!isHome ? g.away_score : g.home_score}</span>}
+
+                {/* Status badge or time */}
+                <div className="mt-1">
+                  {isFinal && (
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Final</span>
+                  )}
+                  {isLive && (
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-red-400">Live</span>
+                  )}
+                  {isScheduled && (
+                    <div className="text-xs text-gray-500">{formatGameTime(selectedDate + "T" + (g.time || "19:00"))}</div>
+                  )}
+                </div>
+
+                {/* Odds section at bottom */}
+                {g.spread != null && g.over_under != null && (
+                  <div className="mt-2 pt-2 border-t border-white/10 text-xs">
+                    <span className="text-earl-300">{formatSpreadAway(g.spread, awayTeam)}</span>
+                    <span className="mx-2 text-gray-700">|</span>
+                    <span className="text-earl-400">{formatSpread(g.spread, homeTeam)}</span>
+                    <span className="mx-2 text-gray-700">|</span>
+                    <span className="text-gray-400">{formatOverUnder(g.over_under)}</span>
                   </div>
-                  <div className="text-center min-w-[60px]">
-                    {isFinal ? (
-                      <span className={"text-[10px] font-bold uppercase tracking-wider " + (won ? "text-green-400" : lost ? "text-red-400" : "text-gray-500")}>
-                        {won ? "W" : lost ? "L" : ""}
-                      </span>
-                    ) : (
-                      <span className="text-[10px] text-gray-500">{formatGameTime(g.date)}</span>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-2">
-                    {isFinal && <span className={"text-base font-bold " + (won && isHome ? "text-earl-400" : lost && isHome ? "text-red-400" : "text-white")}>{isHome ? g.home_score : g.away_score}</span>}
-                    <span className={"text-sm font-semibold " + (isHome ? "text-white" : "text-gray-400")}>{isHome ? abbrUpper : opponent}</span>
-                    <div className="w-6 h-6 rounded-full bg-white/10 flex items-center justify-center shrink-0 overflow-hidden">
-                      <img src={getTeamLogoUrl(isHome ? g.home_team : g.away_team, sport) || undefined} alt={abbrUpper} width={24} height={24} className="object-contain" style={{ filter: "brightness(1.1)" }} />
-                    </div>
-                  </div>
-                </div>
-                <div className="w-28 shrink-0 text-right">
-                  {!isFinal ? <div className="text-xs text-gray-500">{formatGameTime(g.date)}</div> : <div className="text-[10px] text-gray-500">FINAL</div>}
-                </div>
-              </div>
-              {/* Betting Line */}
-              {g.spread != null && (
-                <div className="mt-3 text-center">
-                  <span className="inline-block px-4 py-1.5 rounded-lg bg-gradient-to-r from-earl-700/30 via-earl-600/40 to-earl-700/30 border border-earl-500/40 text-sm font-bold tracking-wide">
-                    <span className="text-earl-300">{isHome ? formatSpreadAway(g.spread, opponent) : formatSpread(g.spread, opponent)}</span>
-                    <span className="mx-3 text-gray-600">|</span>
-                    <span className="text-earl-400">{isHome ? formatSpread(g.spread, abbrUpper) : formatSpreadAway(g.spread, abbrUpper)}</span>
-                    {g.over_under != null && (
-                      <>
-                        <span className="mx-3 text-gray-600">|</span>
-                        <span className="text-gray-200">{formatOverUnder(g.over_under)}</span>
-                      </>
-                    )}
-                  </span>
-                </div>
-              )}
-            </Link>
-          );
-        })
+                )}
+              </Link>
+            );
+          })}
+        </div>
       )}
     </div>
   );
 }
 
-interface TeamNewsProps {
-  sport: string;
-  abbreviation: string;
-}
-
-interface TeamArticle {
-  id: number;
-  title: string;
-  excerpt: string | null;
-  source_name: string | null;
-  source_url: string | null;
-  category: string | null;
-  author: string | null;
-  published_at: string | null;
-}
-
-// ── NFL/MLB Team Schedule Component ──────────────────────────────────
 interface NFLMLBTeamScheduleProps {
   games: any[];
   sport: string;
@@ -1332,6 +1558,27 @@ function NFLMLBTeamSchedule({ games, sport, abbrUpper, seasonYear, formatGameDat
 
 // ── END NFL/MLB Team Schedule Component ──────────────────────────────
 
+interface TeamNewsProps {
+  sport: string;
+  abbreviation: string;
+}
+
+interface TeamArticle {
+  id: number;
+  title: string;
+  description?: string;
+  url?: string;
+  published_date?: string;
+  source?: string;
+  source_name?: string;
+  source_url?: string;
+  content?: string;
+  image_url?: string;
+  excerpt?: string;
+  author?: string;
+  category?: string;
+  published_at?: string;
+}
 
 function TeamNews({ sport, abbreviation }: TeamNewsProps) {
   const [articles, setArticles] = useState<TeamArticle[]>([]);

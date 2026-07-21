@@ -77,6 +77,14 @@ PUBLIC CONTENT (also required):
 - Must still be informative and well-written, not just generic.
 - Should make the reader feel informed and excited about the game.
 
+⚠️ STRICT ACCURACY RULES (VIOLATION WILL BE REJECTED):
+- EVERY player you mention MUST appear in the RESEARCH DATA section below.
+- If a player is NOT in the research data, do NOT mention them by name.
+- Do NOT reference players who have been traded, released, or retired based on your training data.
+- Only cite statistics that are explicitly provided in the research data.
+- Do NOT fabricate statistics, percentages, or historical comparisons.
+- Stick to what is in the research. If you are unsure, leave it out.
+
 OUTPUT FORMAT:
 Return ONLY valid JSON with the following fields:
 {{
@@ -132,6 +140,14 @@ Do NOT include:
 - ATS splits or any ATS/OU record references
 - Any handicapping predictions, model picks, or edge calculations
 - Line movement data
+
+⚠️ STRICT ACCURACY RULES (VIOLATION WILL BE REJECTED):
+- EVERY player you mention MUST appear in the RESEARCH DATA section below.
+- If a player is NOT in the research data, do NOT mention them by name.
+- Do NOT reference players who have been traded, released, or retired based on your training data.
+- Only cite statistics that are explicitly provided in the research data.
+- Do NOT fabricate statistics, percentages, or historical comparisons.
+- Stick to what is in the research. If you are unsure, leave it out.
 
 This is a game preview — not a betting analysis. Write in the style of a well-informed beat writer: insightful, engaging, and authoritative.
 
@@ -201,6 +217,14 @@ Example:
 ## The Javier Conundrum
 
 On paper, this looks like a battle of two middling AL West teams with losing June records...
+
+⚠️ STRICT ACCURACY RULES (VIOLATION WILL BE REJECTED):
+- EVERY player you mention MUST appear in the RESEARCH DATA section below.
+- If a player is NOT in the research data, do NOT mention them by name.
+- Do NOT reference players who have been traded, released, or retired based on your training data.
+- Only cite statistics that are explicitly provided in the research data.
+- Do NOT fabricate statistics, percentages, or historical comparisons.
+- Stick to what is in the research. If you are unsure, leave it out.
 {tense_note}"""
 
     # ── Generation ──────────────────────────────────────────

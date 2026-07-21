@@ -602,12 +602,12 @@ async def load_games_for_season(
     team_map: dict[int, int],
     team_abbr_by_api_id: dict[int, str],
 ):
-    """Load all regular season games for a given year."""
+    """Load all games (regular season + postseason) for a given year."""
     url = f"{MLB_API_BASE}/schedule"
     data = await _api_get(url, {
         "sportId": 1,
         "season": year,
-        "gameTypes": "R",
+        "gameTypes": "R,F,D,L,W,A",
         "hydrate": "venue,weather",
     })
     if not data:

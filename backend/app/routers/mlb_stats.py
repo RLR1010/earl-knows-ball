@@ -870,6 +870,19 @@ async def mlb_pitching_stats(
 # ── MLB Game Schedule ─────────────────────────────────────────────────
 
 
+@router.get("/mlb/seasons")
+async def mlb_seasons(db: AsyncSession = Depends(get_db)):
+    """Return years that have MLB games in the database."""
+    result = await db.execute(
+        text("""
+            SELECT DISTINCT s.year FROM mlb.seasons s
+            INNER JOIN mlb.games g ON g.season_id = s.id
+            ORDER BY s.year DESC
+        """)
+    )
+    return [row[0] for row in result.fetchall()]
+
+
 @router.get("/mlb/games")
 async def mlb_games(
     year: int = Query(...),
@@ -1016,43 +1029,122 @@ async def mlb_games(
 async def mlb_nearest_date(
     year: int = Query(...),
     date: str = Query(...),
+    direction: str | None = Query(None),
     db: AsyncSession = Depends(get_db),
 ):
     given_date = datetime.date.fromisoformat(date)
 
-    # Try forward first
-    forward_sql = """
-    SELECT DISTINCT (g.date AT TIME ZONE 'America/Chicago')::date AS game_date
-    FROM mlb.games g
-    JOIN mlb.seasons s ON s.id = g.season_id
-    WHERE s.year = :year
-      AND (g.date AT TIME ZONE 'America/Chicago')::date > :date
-      AND g.game_type IN ('R', 'P', 'D', 'W', 'C', 'A')
-    ORDER BY game_date ASC
-    LIMIT 1
-    """
-    result = await db.execute(text(forward_sql), {"year": year, "date": given_date})
-    row = result.fetchone()
-    if row:
-        return {"date": row[0].isoformat(), "year": year}
+    if direction == "backward":
+        backward_sql = """
+        SELECT DISTINCT (g.date AT TIME ZONE 'America/Chicago')::date AS game_date
+        FROM mlb.games g
+        JOIN mlb.seasons s ON s.id = g.season_id
+        WHERE s.year = :year
+          AND (g.date AT TIME ZONE 'America/Chicago')::date < :date
+          AND g.game_type IN ('R', 'P', 'D', 'W', 'C', 'A')
+        ORDER BY game_date DESC
+        LIMIT 1
+        """
+        result = await db.execute(text(backward_sql), {"year": year, "date": given_date})
+        row = result.fetchone()
+        if row:
+            return {"date": row[0].isoformat(), "year": year}
 
-    # Nothing forward, try backward (most recent past date)
-    backward_sql = """
-    SELECT DISTINCT (g.date AT TIME ZONE 'America/Chicago')::date AS game_date
-    FROM mlb.games g
-    JOIN mlb.seasons s ON s.id = g.season_id
-    WHERE s.year = :year
-      AND (g.date AT TIME ZONE 'America/Chicago')::date < :date
-      AND g.game_type IN ('R', 'P', 'D', 'W', 'C', 'A')
-    ORDER BY game_date DESC
-    LIMIT 1
-    """
-    result = await db.execute(text(backward_sql), {"year": year, "date": given_date})
-    row = result.fetchone()
-    if row:
-        return {"date": row[0].isoformat(), "year": year}
+        prev_sql = """
+        SELECT DISTINCT (g.date AT TIME ZONE 'America/Chicago')::date AS game_date, s.year
+        FROM mlb.games g
+        JOIN mlb.seasons s ON s.id = g.season_id
+        WHERE s.year < :year
+          AND g.game_type IN ('R', 'P', 'D', 'W', 'C', 'A')
+        ORDER BY s.year DESC, game_date DESC
+        LIMIT 1
+        """
+        result = await db.execute(text(prev_sql), {"year": year})
+        row = result.fetchone()
+        if row:
+            return {"date": row[0].isoformat(), "year": row[1]}
+    elif direction == "forward":
+        forward_sql = """
+        SELECT DISTINCT (g.date AT TIME ZONE 'America/Chicago')::date AS game_date
+        FROM mlb.games g
+        JOIN mlb.seasons s ON s.id = g.season_id
+        WHERE s.year = :year
+          AND (g.date AT TIME ZONE 'America/Chicago')::date > :date
+          AND g.game_type IN ('R', 'P', 'D', 'W', 'C', 'A')
+        ORDER BY game_date ASC
+        LIMIT 1
+        """
+        result = await db.execute(text(forward_sql), {"year": year, "date": given_date})
+        row = result.fetchone()
+        if row:
+            return {"date": row[0].isoformat(), "year": year}
+
+        next_sql = """
+        SELECT DISTINCT (g.date AT TIME ZONE 'America/Chicago')::date AS game_date, s.year
+        FROM mlb.games g
+        JOIN mlb.seasons s ON s.id = g.season_id
+        WHERE s.year > :year
+          AND g.game_type IN ('R', 'P', 'D', 'W', 'C', 'A')
+        ORDER BY s.year ASC, game_date ASC
+        LIMIT 1
+        """
+        result = await db.execute(text(next_sql), {"year": year})
+        row = result.fetchone()
+        if row:
+            return {"date": row[0].isoformat(), "year": row[1]}
+    else:
+        # No direction: forward first, then backward (original behavior)
+        forward_sql = """
+        SELECT DISTINCT (g.date AT TIME ZONE 'America/Chicago')::date AS game_date
+        FROM mlb.games g
+        JOIN mlb.seasons s ON s.id = g.season_id
+        WHERE s.year = :year
+          AND (g.date AT TIME ZONE 'America/Chicago')::date > :date
+          AND g.game_type IN ('R', 'P', 'D', 'W', 'C', 'A')
+        ORDER BY game_date ASC
+        LIMIT 1
+        """
+        result = await db.execute(text(forward_sql), {"year": year, "date": given_date})
+        row = result.fetchone()
+        if row:
+            return {"date": row[0].isoformat(), "year": year}
+
+        backward_sql = """
+        SELECT DISTINCT (g.date AT TIME ZONE 'America/Chicago')::date AS game_date
+        FROM mlb.games g
+        JOIN mlb.seasons s ON s.id = g.season_id
+        WHERE s.year = :year
+          AND (g.date AT TIME ZONE 'America/Chicago')::date < :date
+          AND g.game_type IN ('R', 'P', 'D', 'W', 'C', 'A')
+        ORDER BY game_date DESC
+        LIMIT 1
+        """
+        result = await db.execute(text(backward_sql), {"year": year, "date": given_date})
+        row = result.fetchone()
+        if row:
+            return {"date": row[0].isoformat(), "year": year}
 
     return {"date": None, "year": None}
+
+
+@router.get("/mlb/games/dates")
+async def mlb_game_dates(
+    year: int = Query(...),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return all distinct dates with games for a given year."""
+    result = await db.execute(
+        text("""
+            SELECT DISTINCT (g.date AT TIME ZONE 'America/Chicago')::date AS game_date
+            FROM mlb.games g
+            JOIN mlb.seasons s ON s.id = g.season_id
+            WHERE s.year = :year
+              AND g.game_type IN ('R', 'P', 'D', 'W', 'C', 'A')
+            ORDER BY game_date ASC
+        """),
+        {"year": year},
+    )
+    return [row[0].isoformat() for row in result.fetchall()]
 
 
 def _sanitize_json(obj):
