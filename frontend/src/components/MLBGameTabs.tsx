@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import PremiumGate from "./PremiumGate";
 
 interface MLBGameTabsProps {
   gameId: number;
@@ -107,9 +108,9 @@ export default function MLBGameTabs({ gameId, pickCard, game, formatOdds, boxsco
       <div className="p-4">
         {activeTab === "boxscore" && renderBoxScore()}
         {activeTab === "summary" && renderGameSummary()}
-        {activeTab === "picks" && renderEarlsPicks()}
-        {activeTab === "analysis" && renderDetailedAnalysis()}
-        {activeTab === "stats" && renderDetailedStats()}
+        {activeTab === "picks" && <PremiumGate>{renderEarlsPicks()}</PremiumGate>}
+        {activeTab === "analysis" && <PremiumGate>{renderDetailedAnalysis()}</PremiumGate>}
+        {activeTab === "stats" && <PremiumGate>{renderDetailedStats()}</PremiumGate>}
       </div>
     </div>
   );

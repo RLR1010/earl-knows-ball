@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import PremiumGate from "./PremiumGate";
 
 interface NBABoxScoreData {
   game_id: number;
@@ -758,9 +759,9 @@ export default function NBAGameTabs({ gameId, prediction }: NBAGameTabsProps) {
           <div className="p-4">
             {activeTab === "boxscore" && renderBoxScore()}
             {activeTab === "summary" && renderGamePreview()}
-            {activeTab === "picks" && renderPicks()}
-            {activeTab === "analysis" && renderAnalysis()}
-            {activeTab === "stats" && <DetailedStatsTab gameId={gameId} />}
+            {activeTab === "picks" && <PremiumGate>{renderPicks()}</PremiumGate>}
+            {activeTab === "analysis" && <PremiumGate>{renderAnalysis()}</PremiumGate>}
+            {activeTab === "stats" && <PremiumGate><DetailedStatsTab gameId={gameId} /></PremiumGate>}
           </div>
         </div>
       )}

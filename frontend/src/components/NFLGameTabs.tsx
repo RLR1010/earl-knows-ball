@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import PremiumGate from "./PremiumGate";
 
 // ── Types ─────────────────────────────────────────────────────
 
@@ -627,11 +628,14 @@ export default function NFLGameTabs({ gameId, boxscore, prediction, isFinal }: N
 
         {/* Earl's Picks */}
         {activeTab === "picks" && (
-          <NFLPickCard pred={prediction} homeTeam={homeTeam} awayTeam={awayTeam} isFinal={isFinal} />
+          <PremiumGate>
+            <NFLPickCard pred={prediction} homeTeam={homeTeam} awayTeam={awayTeam} isFinal={isFinal} />
+          </PremiumGate>
         )}
 
         {/* Detailed Analysis */}
         {activeTab === "analysis" && (
+          <PremiumGate>
           <div className="border border-white/10 rounded-xl p-6 bg-gradient-to-br from-earl-900/20 to-transparent">
             <div className="text-xs text-gray-500 uppercase tracking-wider mb-3">Detailed Analysis</div>
             {writeupLoading ? (
@@ -653,11 +657,14 @@ export default function NFLGameTabs({ gameId, boxscore, prediction, isFinal }: N
               </div>
             )}
           </div>
+          </PremiumGate>
         )}
 
         {/* Detailed Stats */}
         {activeTab === "stats" && (
-          <DetailedStatsTab gameId={gameId} boxscore={boxscore} />
+          <PremiumGate>
+            <DetailedStatsTab gameId={gameId} boxscore={boxscore} />
+          </PremiumGate>
         )}
       </div>
       </div>

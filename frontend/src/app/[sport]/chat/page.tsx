@@ -5,6 +5,8 @@ import { useParams } from "next/navigation";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import ChatSidebar from "@/components/ChatSidebar";
+import LoginModal from "@/components/LoginModal";
+import { useAuth } from "@/lib/auth-context";
 
 type Sport = "nfl" | "nba" | "mlb";
 
@@ -126,9 +128,8 @@ export default function ChatPage() {
   const [statusText, setStatusText] = useState<string | null>(null);
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [token, setToken] = useState<string | null>(null);
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [showLogin, setShowLogin] = useState(true);
+  const { user, loading: authLoading } = useAuth();
+  const [loginModalOpen, setLoginModalOpen] = useState(false);
   const [sidebarRefresh, setSidebarRefresh] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -162,7 +163,6 @@ export default function ChatPage() {
       return;
     }
 
-    // Get token from state or localStorage
     const authToken = token || localStorage.getItem("earl_token");
     if (!authToken) return;
 
@@ -188,37 +188,7 @@ export default function ChatPage() {
     }
   }, [sport, token, startNewChat]);
 
-  async function handleLogin(e: React.FormEvent) {
-    e.preventDefault();
-    try {
-      const res = await fetch("/auth/login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password }),
-      });
-      const data = await res.json();
-      localStorage.setItem("earl_token", data.access_token);
-      setToken(data.access_token);
-    } catch {
-      alert("Login failed");
-    }
-  }
 
-  async function handleRegister(e: React.FormEvent) {
-    e.preventDefault();
-    try {
-      const res = await fetch("/auth/register", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password, display_name: email.split("@")[0] }),
-      });
-      const data = await res.json();
-      localStorage.setItem("earl_token", data.access_token);
-      setToken(data.access_token);
-    } catch {
-      alert("Registration failed. Email may already be in use.");
-    }
-  }
 
   async function handleSend() {
     if (!input.trim() || loading || !token) return;
@@ -352,7 +322,6 @@ export default function ChatPage() {
         }
       }
 
-      // Update conversation ID and refresh sidebar
       if (newConvId) {
         setConversationId(newConvId);
         setSidebarRefresh(true);
@@ -381,192 +350,147 @@ export default function ChatPage() {
     } finally {
       setLoading(false);
       setStatusText(null);
-      // Trigger sidebar refresh if we have a conversation
       if (conversationId || true) {
         setSidebarRefresh(true);
       }
     }
   }
 
-  // --- Login gate ---
-  if (!token) {
+  // Render LoginModal at component level so it mounts regardless of which return fires
+  const loginModal = <LoginModal open={loginModalOpen} onClose={() => setLoginModalOpen(false)} />;
+
+  // --- Premium gate: shown to non-logged-in or non-premium users ---
+  const isPremium = user?.subscription_tier === "premium" || user?.subscription_tier === "ultimate";
+
+  if (!token || !isPremium) {
     return (
       <div className="min-h-screen flex items-center justify-center p-6">
-        <div className="w-full max-w-md bg-white/5 rounded-2xl p-8 border border-white/10">
-          <div className="text-center mb-8">
-            <span className="text-3xl">{SPORT_EMOJIS[sport]}</span>
-            <h1 className="text-xl font-bold text-gray-100 mt-3">
-              Earl Knows {SPORT_NAMES[sport]}
-            </h1>
-            <p className="text-sm text-gray-400 mt-1">Sign in to chat with Earl</p>
-          </div>
+        <div className="w-full max-w-md bg-white/5 rounded-2xl p-8 border border-white/10 text-center">
+          
+          <h1 className="text-xl font-bold text-gray-100 mb-2">
+            {user ? `Earl Knows ${SPORT_NAMES[sport]}` : "AI Chat"}
+          </h1>
+          <div className="w-12 h-0.5 bg-earl-600 mx-auto my-4 rounded-full" />
+          <p className="text-gray-300 text-sm mb-6">
+            {user
+              ? "Upgrade to Premium to chat with Earl about spreads, props, and matchups."
+              : "Sign in and upgrade to Premium to chat with Earl about spreads, props, and matchups."}
+          </p>
 
-          {showLogin ? (
-            <form onSubmit={handleLogin} className="space-y-4">
-              <input
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="Email"
-                className="w-full px-4 py-3 rounded-xl bg-white/5 border border-white/10 text-sm focus:outline-none focus:border-earl-500"
-                required
-              />
-              <input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="Password"
-                className="w-full px-4 py-3 rounded-xl bg-white/5 border border-white/10 text-sm focus:outline-none focus:border-earl-500"
-                required
-              />
-              <button
-                type="submit"
-                className="w-full py-3 rounded-xl bg-earl-600 text-white font-semibold hover:bg-earl-500 transition"
-              >
-                Sign In
-              </button>
-              <p className="text-center text-sm text-gray-500">
-                No account?{" "}
-                <button
-                  type="button"
-                  onClick={() => setShowLogin(false)}
-                  className="text-earl-400 hover:text-earl-300 underline"
-                >
-                  Register
-                </button>
-              </p>
-            </form>
+          {user ? (
+            <a
+              href="/pricing"
+              className="inline-block w-full py-3 rounded-xl bg-earl-600 text-white font-semibold hover:bg-earl-500 transition"
+            >
+              Upgrade to Premium
+            </a>
           ) : (
-            <form onSubmit={handleRegister} className="space-y-4">
-              <input
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="Email"
-                className="w-full px-4 py-3 rounded-xl bg-white/5 border border-white/10 text-sm focus:outline-none focus:border-earl-500"
-                required
-              />
-              <input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="Password"
-                className="w-full px-4 py-3 rounded-xl bg-white/5 border border-white/10 text-sm focus:outline-none focus:border-earl-500"
-                required
-              />
-              <button
-                type="submit"
-                className="w-full py-3 rounded-xl bg-earl-600 text-white font-semibold hover:bg-earl-500 transition"
-              >
-                Create Account
-              </button>
-              <p className="text-center text-sm text-gray-500">
-                Already have an account?{" "}
-                <button
-                  type="button"
-                  onClick={() => setShowLogin(true)}
-                  className="text-earl-400 hover:text-earl-300 underline"
-                >
-                  Sign In
-                </button>
-              </p>
-            </form>
+            <button
+              onClick={() => setLoginModalOpen(true)}
+              className="w-full py-3 rounded-xl bg-earl-600 text-white font-semibold hover:bg-earl-500 transition"
+            >
+              Sign In to Get Started
+            </button>
           )}
         </div>
+        {loginModal}
       </div>
     );
   }
 
   // --- Main chat UI ---
   return (
-    <div className="flex h-[calc(100dvh-8rem)]">
-      {/* Sidebar toggle for mobile */}
-      <button
-        onClick={() => setSidebarOpen(!sidebarOpen)}
-        className="absolute top-4 left-4 z-10 md:hidden text-gray-400 hover:text-white p-1 rounded-md hover:bg-white/10"
-        aria-label={sidebarOpen ? "Close sidebar" : "Open sidebar"}
-      >
-        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-          <path strokeLinecap="round" strokeLinejoin="round" d={sidebarOpen ? "M11 19l-7-7 7-7m8 14l-7-7 7-7" : "M13 5l7 7-7 7M5 5l7 7-7 7"} />
-        </svg>
-      </button>
+    <div className="max-w-[1280px] mx-auto w-full">
+      <div className="flex h-[calc(100dvh-8rem)]">
+        {/* Sidebar toggle for mobile */}
+        <button
+          onClick={() => setSidebarOpen(!sidebarOpen)}
+          className="absolute top-4 left-4 z-10 md:hidden text-gray-400 hover:text-white p-1 rounded-md hover:bg-white/10"
+          aria-label={sidebarOpen ? "Close sidebar" : "Open sidebar"}
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d={sidebarOpen ? "M11 19l-7-7 7-7m8 14l-7-7 7-7" : "M13 5l7 7-7 7M5 5l7 7-7 7"} />
+          </svg>
+        </button>
 
-      {/* Sidebar */}
-      <div className={`${sidebarOpen ? "flex" : "hidden"} md:flex w-64 shrink-0`}>
-        <ChatSidebar
-          sport={sport}
-          activeConversationId={conversationId}
-          onSelectConversation={loadConversation}
-          onRefreshNeeded={sidebarRefresh}
-          onRefreshed={() => setSidebarRefresh(false)}
-        />
-      </div>
-
-      {/* Chat area */}
-      <div className="flex-1 flex flex-col min-w-0">
-        {/* Messages */}
-        <div className="flex-1 overflow-y-auto px-4 py-6 space-y-4">
-          {messages.map((msg, i) => (
-            <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
-              <div
-                className={`max-w-[85%] rounded-2xl px-4 py-3 ${
-                  msg.role === "user"
-                    ? "bg-earl-600/20 border border-earl-600/30 text-gray-200"
-                    : "bg-white/5 border border-white/10 text-gray-300"
-                }`}
-              >
-                <div className="text-xs font-semibold text-gray-500 mb-1 uppercase tracking-wide">
-                  {msg.role === "user" ? "You" : `${SPORT_EMOJIS[sport]} Earl`}
-                </div>
-                <div className="text-sm leading-relaxed prose prose-invert max-w-none">
-                  <ReactMarkdown
-                    remarkPlugins={[remarkGfm]}
-                    components={markdownComponents}
-                  >
-                    {msg.content}
-                  </ReactMarkdown>
-                </div>
-              </div>
-            </div>
-          ))}
-
-          {loading && (
-            <div className="flex justify-start">
-              <div className="bg-white/5 border border-white/10 rounded-2xl px-4 py-3 max-w-[85%]">
-                <div className="text-xs font-semibold text-gray-500 mb-1 uppercase tracking-wide">
-                  {SPORT_EMOJIS[sport]} Earl
-                </div>
-                <span className="w-2 h-2 bg-earl-400 rounded-full animate-pulse" />
-                <span className="italic ml-2 text-sm text-gray-400" ref={statusRef}>{statusText}</span>
-              </div>
-            </div>
-          )}
-
-          <div ref={bottomRef} />
+        {/* Sidebar */}
+        <div className={`${sidebarOpen ? "flex" : "hidden"} md:flex w-64 shrink-0`}>
+          <ChatSidebar
+            sport={sport}
+            activeConversationId={conversationId}
+            onSelectConversation={loadConversation}
+            onRefreshNeeded={sidebarRefresh}
+            onRefreshed={() => setSidebarRefresh(false)}
+          />
         </div>
 
-        {/* Input */}
-        <div className="border-t border-white/10 p-4">
-          <div className="flex gap-2">
-            <input
-              type="text"
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && handleSend()}
-              placeholder={SPORT_PLACEHOLDERS[sport]}
-              className="flex-1 px-4 py-3 rounded-xl bg-white/5 border border-white/10 text-sm focus:outline-none focus:border-earl-500"
-              disabled={loading}
-            />
-            <button
-              onClick={handleSend}
-              disabled={loading || !input.trim()}
-              className="px-6 py-3 rounded-xl bg-earl-600 text-white font-semibold hover:bg-earl-500 transition disabled:opacity-50"
-            >
-              Send
-            </button>
+        {/* Chat area */}
+        <div className="flex-1 flex flex-col min-w-0">
+          {/* Messages */}
+          <div className="flex-1 overflow-y-auto px-4 py-6 space-y-4">
+            {messages.map((msg, i) => (
+              <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
+                <div
+                  className={`max-w-[85%] rounded-2xl px-4 py-3 ${
+                    msg.role === "user"
+                      ? "bg-earl-600/20 border border-earl-600/30 text-gray-200"
+                      : "bg-white/5 border border-white/10 text-gray-300"
+                  }`}
+                >
+                  <div className="text-xs font-semibold text-gray-500 mb-1 uppercase tracking-wide">
+                    {msg.role === "user" ? "You" : `${SPORT_EMOJIS[sport]} Earl`}
+                  </div>
+                  <div className="text-sm leading-relaxed prose prose-invert max-w-none">
+                    <ReactMarkdown
+                      remarkPlugins={[remarkGfm]}
+                      components={markdownComponents}
+                    >
+                      {msg.content}
+                    </ReactMarkdown>
+                  </div>
+                </div>
+              </div>
+            ))}
+
+            {loading && (
+              <div className="flex justify-start">
+                <div className="bg-white/5 border border-white/10 rounded-2xl px-4 py-3 max-w-[85%]">
+                  <div className="text-xs font-semibold text-gray-500 mb-1 uppercase tracking-wide">
+                    {SPORT_EMOJIS[sport]} Earl
+                  </div>
+                  <span className="w-2 h-2 bg-earl-400 rounded-full animate-pulse" />
+                  <span className="italic ml-2 text-sm text-gray-400" ref={statusRef}>{statusText}</span>
+                </div>
+              </div>
+            )}
+
+            <div ref={bottomRef} />
+          </div>
+
+          {/* Input */}
+          <div className="border-t border-white/10 p-4">
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && handleSend()}
+                placeholder={SPORT_PLACEHOLDERS[sport]}
+                className="flex-1 px-4 py-3 rounded-xl bg-white/5 border border-white/10 text-sm focus:outline-none focus:border-earl-500"
+                disabled={loading}
+              />
+              <button
+                onClick={handleSend}
+                disabled={loading || !input.trim()}
+                className="px-6 py-3 rounded-xl bg-earl-600 text-white font-semibold hover:bg-earl-500 transition disabled:opacity-50"
+              >
+                Send
+              </button>
+            </div>
           </div>
         </div>
-      </div>
+        {loginModal}
+    </div>
     </div>
   );
 }
