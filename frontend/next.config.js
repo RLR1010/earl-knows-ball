@@ -1,5 +1,11 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  async redirects() {
+    return [
+      { source: "/chat", destination: "/nfl/chat", permanent: false },
+      { source: "/chat/:path*", destination: "/nfl/chat/:path*", permanent: false },
+    ];
+  },
   async rewrites() {
     return [
       // Auth routes (frontend calls /api/auth/send-code, backend serves /auth/send-code)

@@ -20,7 +20,7 @@ const SUB_NAV_ITEMS = [
   { label: "Stats", path: "/stats" },
   { label: "Teams", path: "/teams" },
   { label: "Schedule", path: "/schedule" },
-  { label: "Players", path: "/players" },
+  { label: "Chat With Earl", path: "/chat" },
 ];
 
 function getActiveSport(pathname: string): Sport | null {
@@ -43,7 +43,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   const activeSport = getActiveSport(pathname);
 
   // Don't show sport chrome on landing, chat, login, register, profile
-  const hideSportChrome = ["/chat", "/login", "/register", "/profile"].some((p) => pathname.startsWith(p));
+  const hideSportChrome = ["/login", "/register", "/profile"].some((p) => pathname.startsWith(p))
+    || pathname.endsWith("/chat");
   // But still show sport selector on those pages (just no sub-nav highlighting)
 
   const isLanding = pathname === "/";
@@ -95,14 +96,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
 
               {/* Right side — hidden on mobile */}
               <div className="hidden md:flex items-center gap-4 text-sm font-medium text-gray-300">
-                {!hideSportChrome && !isLanding && (
-                  <a
-                    href="/chat"
-                    className="px-4 py-1.5 rounded-full bg-earl-600 text-white text-sm font-semibold hover:bg-earl-500 transition"
-                  >
-                    AI Chat
-                  </a>
-                )}
                 <HeaderUserArea />
               </div>
 
@@ -126,6 +119,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                     ? currentSubPath === "/"
                     : currentSubPath.startsWith(item.path);
 
+                  const displayLabel = item.label === "Home" && activeSport
+                    ? activeSport.toUpperCase()
+                    : item.label;
+
                   return (
                     <a
                       key={item.label}
@@ -136,7 +133,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                           : "text-gray-500 border-transparent hover:text-gray-300 hover:border-gray-600"
                       }`}
                     >
-                      {item.label}
+                      {displayLabel}
                     </a>
                   );
                 })}

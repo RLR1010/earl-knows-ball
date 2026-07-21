@@ -46,6 +46,7 @@ from app.routers import (
     chat,
     chat_nba,
     chat_mlb,
+    conversations,
     games,
     home,
     ingest,
@@ -65,6 +66,7 @@ app.include_router(articles.router)
 app.include_router(chat.router)
 app.include_router(chat_nba.router)
 app.include_router(chat_mlb.router)
+app.include_router(conversations.router)
 app.include_router(games.router)
 app.include_router(home.router)
 app.include_router(ingest.router)

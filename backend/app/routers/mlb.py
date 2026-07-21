@@ -3,7 +3,7 @@ from fastapi import APIRouter, HTTPException
 from sqlalchemy import text
 from app.database import async_session
 
-logger = logging.getLogger("uvicorn")
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
