@@ -16,10 +16,11 @@ import logging
 import sys
 import time
 
+from playwright.async_api import Page
 from sqlalchemy import create_engine
 
 from app.core.config import settings
-from app.scrapers.browser import BrowserManager, get_browser, stop_browser
+from app.scrapers.browser import get_browser, stop_browser
 from app.scrapers.db import (
     save_team_props,
     save_player_season_props,
@@ -36,18 +37,17 @@ engine = create_engine(sync_db_url, pool_pre_ping=True)
 
 
 async def run_sport(
-    browser: BrowserManager,
+    page: Page,
     config,
     stats: dict,
 ) -> None:
-    """Scrape one sport from FanDuel via ONE shared page.
+    """Scrape one sport from FanDuel using a single shared page.
 
-    Creates a single page/tab for the sport, navigates it through all three
-    tabs (futures -> awards -> games) with page.goto(), then closes it.
-    ONE page = ONE Firefox tab per sport = no window/captcha explosion.
+    Navigates the same page through all three FD tabs (futures -> awards ->
+    games) via page.goto(). The page is created by the caller so that ALL
+    sports reuse the SAME Firefox tab across the entire scraper run.
     """
     sport_name = config.name.upper()
-    page = await browser.context.new_page()
     sport_had_data = False
 
     try:
@@ -112,13 +112,15 @@ async def run_sport(
 
     except Exception as e:
         logger.error(f"[FD {sport_name}] fatal: {e}")
-    finally:
-        if page:
-            await page.close()
 
 
 async def run_daily_scrape() -> dict:
-    """Main orchestrator. Gets the persistent browser and scrapes all sports."""
+    """Main orchestrator. Gets the persistent browser and scrapes all sports.
+
+    Creates ONE single page/tab for the ENTIRE run. Every sport, every tab
+    navigation happens via page.goto() on this same page. No new tabs, no
+    windows, no captcha explosion.
+    """
     stats = {"team_props": 0, "season_props": 0, "daily_props": 0}
     configs = get_active_configs()
 
@@ -127,11 +129,15 @@ async def run_daily_scrape() -> dict:
     )
 
     browser = await get_browser()
+    page = await browser.context.new_page()
     start_time = time.time()
 
-    for config in configs:
-        logger.info(f"=== Scraping FanDuel {config.name} ===")
-        await run_sport(browser, config, stats)
+    try:
+        for config in configs:
+            logger.info(f"=== Scraping FanDuel {config.name} ===")
+            await run_sport(page, config, stats)
+    finally:
+        await page.close()
 
     elapsed = time.time() - start_time
     logger.info(
