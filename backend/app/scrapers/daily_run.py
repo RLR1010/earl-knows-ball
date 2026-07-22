@@ -69,9 +69,6 @@ async def run_sport(
             except Exception as e:
                 logger.error(f"[FD {sport_name}] team props failed: {e}")
 
-        # Brief cooldown between tabs
-        await asyncio.sleep(5)
-
         # --- Awards ---
         if config.scrape_awards:
             t0 = time.time()
@@ -89,8 +86,6 @@ async def run_sport(
                     logger.info(f"[FD {sport_name}] no award props found")
             except Exception as e:
                 logger.error(f"[FD {sport_name}] awards failed: {e}")
-
-        await asyncio.sleep(5)
 
         # --- Player Daily Props ---
         if config.scrape_player_props:

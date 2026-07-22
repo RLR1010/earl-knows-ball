@@ -11,6 +11,7 @@ all tabs: futures -> awards -> games) and saves storage state afterwards.
 
 import asyncio
 import logging
+import random
 import re
 from datetime import datetime
 from decimal import Decimal
@@ -114,6 +115,13 @@ async def _load_tab_dom(
         {"attachments": {"markets": {market_id: {"marketName": ..., "runners": [...]}}}}
     """
     url = _tab_url(sport, tab)
+
+    # ── Human-like delay before navigation ──────────────────────────
+    # Random wait simulates reading/scrolling before clicking a new tab.
+    delay = random.uniform(5, 30)
+    logger.info(f"FD {sport}/{tab}: waiting {delay:.0f}s before navigating to {url}")
+    await asyncio.sleep(delay)
+
     logger.info(f"FD {sport}/{tab}: loading {url}")
 
     # Navigate the existing page instead of creating a new one
