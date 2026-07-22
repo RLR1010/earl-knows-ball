@@ -40,13 +40,14 @@ async def run_sport(
     config,
     stats: dict,
 ) -> None:
-    """Scrape one sport from FanDuel via the persistent browser context.
+    """Scrape one sport from FanDuel via ONE shared page.
 
-    All three tabs (futures -> awards -> games) share the same long-lived
-    browser context so that cookies persist naturally across navigations.
+    Creates a single page/tab for the sport, navigates it through all three
+    tabs (futures -> awards -> games) with page.goto(), then closes it.
+    ONE page = ONE Firefox tab per sport = no window/captcha explosion.
     """
     sport_name = config.name.upper()
-    ctx = browser.context  # shared persistent context
+    page = await browser.context.new_page()
     sport_had_data = False
 
     try:
@@ -54,7 +55,7 @@ async def run_sport(
         if config.scrape_team_props:
             t0 = time.time()
             try:
-                team_props = await fanduel.scrape_team_props(ctx, config.name)
+                team_props = await fanduel.scrape_team_props(page, config.name)
                 if team_props:
                     count = save_team_props(engine, team_props)
                     stats["team_props"] += count
@@ -75,7 +76,7 @@ async def run_sport(
         if config.scrape_awards:
             t0 = time.time()
             try:
-                award_props = await fanduel.scrape_awards(ctx, config.name)
+                award_props = await fanduel.scrape_awards(page, config.name)
                 if award_props:
                     count = save_player_season_props(engine, award_props)
                     stats["season_props"] += count
@@ -95,7 +96,7 @@ async def run_sport(
         if config.scrape_player_props:
             t0 = time.time()
             try:
-                player_props = await fanduel.scrape_player_props(ctx, config.name)
+                player_props = await fanduel.scrape_player_props(page, config.name)
                 if player_props:
                     count = save_player_daily_props(engine, player_props)
                     stats["daily_props"] += count
@@ -111,6 +112,9 @@ async def run_sport(
 
     except Exception as e:
         logger.error(f"[FD {sport_name}] fatal: {e}")
+    finally:
+        if page:
+            await page.close()
 
 
 async def run_daily_scrape() -> dict:

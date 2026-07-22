@@ -78,38 +78,44 @@ async def run():
         # TAB 1: Team props
         log.info("=== TAB 1: Team props ===")
         ctx = await browser.new_context(bootstrap_cookies=cookies)
+        page1 = await ctx.new_page()
         t0 = time.time()
-        props = await fanduel.scrape_team_props(ctx, "mlb")
+        props = await fanduel.scrape_team_props(page1, "mlb")
         log.info(f"  {time.time()-t0:.1f}s — {len(props)} props")
         if props:
             stats["team_props"] = save_team_props(engine, props)
             log.info(f"  → Saved {stats['team_props']} rows")
         await browser.save_storage_state(ctx)
         ctx_saved_path = STORAGE_STATE_PATH
+        await page1.close()
         await ctx.close()
         await asyncio.sleep(2)
 
         # TAB 2: Awards
         log.info("=== TAB 2: Awards ===")
         ctx = await browser.new_context()
+        page2 = await ctx.new_page()
         t0 = time.time()
-        props = await fanduel.scrape_awards(ctx, "mlb")
+        props = await fanduel.scrape_awards(page2, "mlb")
         log.info(f"  {time.time()-t0:.1f}s — {len(props)} props")
         if props:
             stats["season_props"] = save_player_season_props(engine, props)
             log.info(f"  → Saved {stats['season_props']} rows")
+        await page2.close()
         await ctx.close()
         await asyncio.sleep(2)
 
         # TAB 3: Daily props
         log.info("=== TAB 3: Daily props ===")
         ctx = await browser.new_context()
+        page3 = await ctx.new_page()
         t0 = time.time()
-        props = await fanduel.scrape_player_props(ctx, "mlb")
+        props = await fanduel.scrape_player_props(page3, "mlb")
         log.info(f"  {time.time()-t0:.1f}s — {len(props)} props")
         if props:
             stats["daily_props"] = save_player_daily_props(engine, props)
             log.info(f"  → Saved {stats['daily_props']} rows")
+        await page3.close()
         await ctx.close()
 
     finally:

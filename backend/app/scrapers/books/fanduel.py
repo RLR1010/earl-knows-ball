@@ -16,7 +16,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Optional
 
-from playwright.async_api import BrowserContext
+from playwright.async_api import Page
 
 from app.scrapers.models import TeamProp, PlayerSeasonProp, PlayerDailyProp
 
@@ -59,25 +59,25 @@ PRICE_SELECTORS = [
 # Public API
 # ═══════════════════════════════════════════════════════
 
-async def scrape_team_props(context: BrowserContext, sport: str) -> list[TeamProp]:
+async def scrape_team_props(page: Page, sport: str) -> list[TeamProp]:
     """Scrape team futures (championship odds, win totals, etc.)."""
-    page_data = await _load_tab_dom(context, sport, TAB_FUTURES)
+    page_data = await _load_tab_dom(page, sport, TAB_FUTURES)
     if not page_data:
         return []
     return _extract_team_props(page_data, sport)
 
 
-async def scrape_awards(context: BrowserContext, sport: str) -> list[PlayerSeasonProp]:
+async def scrape_awards(page: Page, sport: str) -> list[PlayerSeasonProp]:
     """Scrape player season awards (MVP, Cy Young, etc.)."""
-    page_data = await _load_tab_dom(context, sport, TAB_AWARDS)
+    page_data = await _load_tab_dom(page, sport, TAB_AWARDS)
     if not page_data:
         return []
     return _extract_award_props(page_data, sport)
 
 
-async def scrape_player_props(context: BrowserContext, sport: str) -> list[PlayerDailyProp]:
+async def scrape_player_props(page: Page, sport: str) -> list[PlayerDailyProp]:
     """Scrape daily game-level player props."""
-    page_data = await _load_tab_dom(context, sport, TAB_GAMES)
+    page_data = await _load_tab_dom(page, sport, TAB_GAMES)
     if not page_data:
         return []
     return _extract_player_daily_props(page_data, sport)
@@ -101,11 +101,14 @@ def _tab_url(sport: str, tab: str) -> str:
 
 
 async def _load_tab_dom(
-    context: BrowserContext, sport: str, tab: str
+    page: Page, sport: str, tab: str
 ) -> Optional[dict]:
     """
-    Navigate to a FD tab, wait for React rendering, then extract market data
-    from the rendered DOM using page.evaluate().
+    Navigate the shared page to a FD tab, wait for React rendering, then extract
+    market data from the rendered DOM using page.evaluate().
+
+    Uses page.goto() so only ONE browser tab is used for all navigations.
+    No new pages are created — no tab accumulation, no captcha storm.
 
     Returns a dict matching the shape the _extract_* functions expect:
         {"attachments": {"markets": {market_id: {"marketName": ..., "runners": [...]}}}}
@@ -113,9 +116,7 @@ async def _load_tab_dom(
     url = _tab_url(sport, tab)
     logger.info(f"FD {sport}/{tab}: loading {url}")
 
-    page = await context.new_page()
-    # NO page.close() at end. The persistent browser keeps tabs open
-    # so that any captcha/challenge page stays visible for Rich to answer.
+    # Navigate the existing page instead of creating a new one
     try:
         await page.goto(url, wait_until="load", timeout=60_000)
 

@@ -12,7 +12,7 @@ ensures one shared instance across the entire application.
 import logging
 from typing import Optional
 
-from playwright.async_api import async_playwright, Browser, BrowserContext, Page
+from playwright.async_api import async_playwright, BrowserContext, Page
 from playwright_stealth import Stealth
 
 logger = logging.getLogger("earl.scrapers.browser")
@@ -45,7 +45,6 @@ class BrowserManager:
 
     def __init__(self):
         self._playwright = None
-        self._browser: Optional[Browser] = None
         self._context: Optional[BrowserContext] = None
         self._stealth = Stealth()
 
@@ -82,10 +81,10 @@ class BrowserManager:
         """Shut down the persistent browser."""
         if self._context:
             await self._context.close()
-        if self._browser:
-            await self._browser.close()
+            self._context = None
         if self._playwright:
             await self._playwright.stop()
+            self._playwright = None
         logger.info("Persistent browser shut down")
 
     @property
