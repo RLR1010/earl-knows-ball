@@ -101,6 +101,32 @@ def _tab_url(sport: str, tab: str) -> str:
     return f"https://sportsbook.fanduel.com/navigation/{slug}{param}"
 
 
+async def _humanize(page: Page) -> None:
+    """Simulate human browsing behavior on the current page.
+
+    DataDome monitors scroll events, mouse coordinates, and interaction
+    timing to distinguish humans from bots. This function performs random
+    scrolling and mouse movements to generate those signals.
+    """
+    # Random number of scroll steps (1-4)
+    steps = random.randint(1, 4)
+    for _ in range(steps):
+        # Scroll down a random amount (100-600px)
+        scroll_y = random.randint(100, 600)
+        await page.evaluate(f"window.scrollBy({{top: {scroll_y}, left: 0, behavior: 'smooth'}})")
+        await asyncio.sleep(random.uniform(0.5, 2.0))
+
+        # Move mouse to a random visible position
+        x = random.randint(200, 1700)
+        y = random.randint(200, 800)
+        await page.mouse.move(x, y)
+        await asyncio.sleep(random.uniform(0.3, 1.5))
+
+    # Scroll back up to top-ish (human wouldn't stay scrolled down)
+    await page.evaluate("window.scrollTo(0, 0)")
+    await asyncio.sleep(random.uniform(0.5, 1.5))
+
+
 async def _load_tab_dom(
     page: Page, sport: str, tab: str
 ) -> Optional[dict]:
@@ -141,6 +167,14 @@ async def _load_tab_dom(
             body = await page.evaluate("document.body.innerText.substring(0, 500)")
             logger.warning(f"FD {sport}/{tab}: DataDome blocked page\n{body}")
             return None
+
+        # ── Human-like interaction before reading ────────────────────
+        # DataDome's JS monitors scroll/mouse events to detect bots.
+        # Random scrolling + mouse moves make the session look human.
+        try:
+            await _humanize(page)
+        except Exception:
+            pass  # non-critical, don't block extraction
 
         # Extract markets from DOM
         page_data = await page.evaluate("""

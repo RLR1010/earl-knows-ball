@@ -73,8 +73,13 @@ class BrowserManager:
             locale="en-US",
             timezone_id="America/Chicago",
         )
-        # No need for init_scripts — the real profile + headed mode is
-        # more stealthy than any JS patches.
+
+        # Apply stealth patches to disguise automation signals.
+        # DataDome's JS checks for navigator.webdriver, Playwright-specific
+        # properties, and other automation fingerprints. Stealth patches these
+        # on every page load via route interception.
+        await self._stealth.apply_stealth_async(self._context)
+
         logger.info(f"Persistent browser ready (profile: {profile_dir})")
 
     async def stop(self) -> None:
