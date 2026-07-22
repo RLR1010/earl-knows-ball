@@ -579,7 +579,7 @@ function MLBClassicPage({ gameId, backHref }: { gameId: string | undefined; back
                         <span className="text-gray-500 w-4 shrink-0">{l.order}.</span>
                         <span className="font-medium">{l.name}</span>
                         <span className="text-gray-500">{l.position}</span>
-                        {l.stats?.avg && <span className="text-gray-400 ml-auto">{l.stats.avg}</span>}
+                        {l.stats?.avg != null && <span className="text-gray-400 ml-auto">.{(l.stats.avg as number).toFixed(3).slice(1)}</span>}
                       </li>
                     ))}
                   </ol>

@@ -2,7 +2,7 @@ import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 import zoneinfo
-from fastapi import APIRouter, Depends, HTTPException, Header, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Header, Query, Request, status
 
 logger = logging.getLogger(__name__)
 from sqlalchemy import select, func, case, desc, text
@@ -38,6 +38,9 @@ router = APIRouter(prefix="/api/admin", tags=["admin"])
 
 # ── Auth / Dependencies ─────────────────────────────────────────────
 
+COOKIE_NAME = "earl_token"
+
+
 def get_token_from_header(authorization: str | None = None) -> str:
     if not authorization:
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -50,9 +53,22 @@ def get_token_from_header(authorization: str | None = None) -> str:
 async def get_admin_user(
     db: AsyncSession = Depends(get_db),
     authorization: str | None = Header(None),
+    request: Request = None,
 ) -> User:
-    """Dependency that verifies JWT and checks is_admin=True."""
-    token = get_token_from_header(authorization)
+    """Dependency that verifies JWT and checks is_admin=True.
+    Checks the Authorization header first, then falls back to the earl_token cookie."""
+    token = None
+    # Try Authorization header first
+    if authorization:
+        try:
+            token = get_token_from_header(authorization)
+        except HTTPException:
+            token = None
+    # Fall back to cookie
+    if not token and request:
+        token = request.cookies.get(COOKIE_NAME)
+    if not token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
     try:
         payload = jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
         user_id = payload.get("sub")

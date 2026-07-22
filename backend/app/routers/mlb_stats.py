@@ -1015,10 +1015,19 @@ async def mlb_games(
                 select(MLBLineup).where(MLBLineup.game_id == g["id"]).order_by(MLBLineup.team_side, MLBLineup.batting_order)
             )
             lineup_rows = lineup_r.scalars().all()
-            g["lineups"] = {
-                "home": [{"order": l.batting_order, "name": l.player_name, "position": l.position} for l in lineup_rows if l.team_side == "home"],
-                "away": [{"order": l.batting_order, "name": l.player_name, "position": l.position} for l in lineup_rows if l.team_side == "away"],
-            }
+            raw_home = [{"order": l.batting_order, "name": l.player_name, "position": l.position} for l in lineup_rows if l.team_side == "home"]
+            raw_away = [{"order": l.batting_order, "name": l.player_name, "position": l.position} for l in lineup_rows if l.team_side == "away"]
+
+            # Insert synthetic pitcher entries if missing from DB
+            for side, entries, pitcher_name in [
+                ("home", raw_home, g.get("home_pitcher_name")),
+                ("away", raw_away, g.get("away_pitcher_name")),
+            ]:
+                has_pitcher = any(e.get("order") == 0 for e in entries)
+                if not has_pitcher and pitcher_name and any(e.get("order", 1) >= 1 for e in entries):
+                    entries.insert(0, {"order": 0, "name": pitcher_name, "position": "SP"})
+
+            g["lineups"] = {"home": raw_home, "away": raw_away}
     except Exception:
         pass
 
@@ -1178,6 +1187,8 @@ async def mlb_game_boxscore(
         at.name AS away_team_name,
         g.home_score,
         g.away_score,
+        g.home_pitcher_name,
+        g.away_pitcher_name,
         g.venue,
         g.scheduled_innings,
         g.actual_innings,
@@ -1579,10 +1590,26 @@ async def mlb_game_boxscore(
                     info["stats"] = batting_by_name.get(nkey, {})
                 return info
 
-            lineups = {
-                "home": [_entry(r) for r in lineup_rows if r.team_side == "home"],
-                "away": [_entry(r) for r in lineup_rows if r.team_side == "away"],
-            }
+            raw_home = [_entry(r) for r in lineup_rows if r.team_side == "home"]
+            raw_away = [_entry(r) for r in lineup_rows if r.team_side == "away"]
+
+            # Ensure starting pitchers are included (handles games before fallback fix)
+            # Insert a synthetic pitcher entry if a side has batters but no pitcher
+            for side, entries, pitcher_name in [
+                ("home", raw_home, game_dict.get("home_pitcher_name")),
+                ("away", raw_away, game_dict.get("away_pitcher_name")),
+            ]:
+                has_pitcher = any(e.get("order") == 0 for e in entries)
+                if not has_pitcher and pitcher_name and any(e.get("order", 1) >= 1 for e in entries):
+                    nkey = pitcher_name.lower()
+                    entries.insert(0, {
+                        "order": 0,
+                        "name": pitcher_name,
+                        "position": "SP",
+                        "stats": pitching_by_name.get(nkey, {}),
+                    })
+
+            lineups = {"home": raw_home, "away": raw_away}
 
     return {
         "game": game_dict,

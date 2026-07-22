@@ -14,10 +14,15 @@ logging.basicConfig(
 
 from app import task_scheduler
 
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Start scheduler on boot, shut down on stop."""
+    """Start scheduler on boot, shut down on stop.
+
+    NOTE: Browser is NOT started here. Granian forks worker processes, and
+    Playwright can't survive a fork. Instead the browser is created lazily
+    on the first scrape request via get_browser() and lives forever in the
+    single worker process (--workers 1).
+    """
     await task_scheduler.start_scheduler()
     yield
     await task_scheduler.stop_scheduler()
@@ -53,6 +58,7 @@ from app.routers import (
     mlb_stats,
     nba_stats,
     players,
+    results,
     stats,
     subscriptions,
     teams,
@@ -76,6 +82,7 @@ app.include_router(players.router)
 app.include_router(stats.router)
 app.include_router(subscriptions.router)
 app.include_router(teams.router)
+app.include_router(results.router)
 app.include_router(admin.router)
 app.include_router(writeups.router)
 app.include_router(token_usage.router)

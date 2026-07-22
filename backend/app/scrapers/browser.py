@@ -1,125 +1,100 @@
 """
 Shared Playwright browser setup for FanDuel scraping.
 
-Uses storage state persistence to maintain a FanDuel session:
-  1. First run: inject bootstrap cookies → FD accepts → Playwright gets its
-     own session cookies → saved to storage_state.json
-  2. Subsequent runs: load saved storage state — no manual cookies needed.
+ONE persistent Firefox session (headed, on :0) that lives as long as the API.
+No more open/close cycles — the session accumulates cookies naturally, and
+if DataDome ever serves a captcha, Rich can answer it in the visible browser.
 
-Playwright's storage_state captures all cookies + localStorage, which
-is tied to Playwright's browser fingerprint after bootstrap.
+Use get_browser() / stop_browser() at module level — the singleton pattern
+ensures one shared instance across the entire application.
 """
 
-import json
 import logging
-import os
-from pathlib import Path
 from typing import Optional
 
-from playwright.async_api import async_playwright, Browser, BrowserContext
+from playwright.async_api import async_playwright, Browser, BrowserContext, Page
 from playwright_stealth import Stealth
 
 logger = logging.getLogger("earl.scrapers.browser")
 
-# Location for persistent storage state
-STORAGE_STATE_PATH = Path(__file__).parent / "storage_state.json"
+# ── Module-level singleton ──────────────────────────────────────────────
+_BROWSER: Optional["BrowserManager"] = None
 
+
+async def get_browser() -> "BrowserManager":
+    """Return the persistent browser singleton, starting it if needed."""
+    global _BROWSER
+    if _BROWSER is None:
+        _BROWSER = BrowserManager()
+        await _BROWSER.start()
+    return _BROWSER
+
+
+async def stop_browser() -> None:
+    """Shut down the persistent browser singleton."""
+    global _BROWSER
+    if _BROWSER:
+        await _BROWSER.stop()
+        _BROWSER = None
+
+
+# ── Browser Manager class ───────────────────────────────────────────────
 
 class BrowserManager:
-    """Manages a single headless Chromium instance with stealth + session persistence."""
+    """Manages ONE persistent headed Firefox session."""
 
     def __init__(self):
         self._playwright = None
         self._browser: Optional[Browser] = None
+        self._context: Optional[BrowserContext] = None
         self._stealth = Stealth()
 
     async def start(self) -> None:
-        """Launch Playwright and create the browser."""
+        """Launch Firefox (headed on :0) using a persistent profile.
+
+        Uses launch_persistent_context with a real Firefox profile directory
+        so the browser looks like a normal user's Firefox, not a Playwright-
+        launched temp profile. This avoids DataDome's headless/automation
+        detection.
+        """
+        import tempfile
+        from pathlib import Path
+
+        logger.info("Starting persistent browser (headed on :0)...")
+
+        # Use a stable profile directory so cache/cookies survive restarts
+        profile_dir = Path.home() / ".openclaw" / "fd-profile"
+        profile_dir.mkdir(parents=True, exist_ok=True)
+
         self._playwright = await async_playwright().start()
-        self._browser = await self._playwright.chromium.launch(
-            headless=True,
-            args=[
-                "--no-sandbox",
-                "--disable-blink-features=AutomationControlled",
-            ],
+        self._context = await self._playwright.firefox.launch_persistent_context(
+            user_data_dir=str(profile_dir),
+            headless=False,
+            viewport={"width": 1920, "height": 1080},
+            locale="en-US",
+            timezone_id="America/Chicago",
         )
-        logger.info("Browser launched")
+        # No need for init_scripts — the real profile + headed mode is
+        # more stealthy than any JS patches.
+        logger.info(f"Persistent browser ready (profile: {profile_dir})")
 
     async def stop(self) -> None:
-        """Shut everything down."""
+        """Shut down the persistent browser."""
+        if self._context:
+            await self._context.close()
         if self._browser:
             await self._browser.close()
         if self._playwright:
             await self._playwright.stop()
-        logger.info("Browser shut down")
+        logger.info("Persistent browser shut down")
 
-    async def new_context(
-        self, bootstrap_cookies: Optional[list[dict]] = None
-    ) -> BrowserContext:
-        """Create a fresh browser context with stealth and session persistence.
-
-        Args:
-            bootstrap_cookies: Optional list of cookie dicts to inject for the
-                               first run. After a successful scrape, the session
-                               is saved and reused automatically.
-
-        Cookie dict format: {"name": str, "value": str, "domain": str, "path": str}
-        """
-        if not self._browser:
+    @property
+    def context(self) -> BrowserContext:
+        """Return the persistent browser context."""
+        if not self._context:
             raise RuntimeError("Browser not started")
+        return self._context
 
-        # Check if we have a saved storage state
-        if STORAGE_STATE_PATH.exists():
-            try:
-                context = await self._browser.new_context(
-                    user_agent=(
-                        "Mozilla/5.0 (X11; Linux x86_64) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) "
-                        "Chrome/130.0.0.0 Safari/537.36"
-                    ),
-                    viewport={"width": 1920, "height": 1080},
-                    locale="en-US",
-                    timezone_id="America/New_York",
-                    storage_state=str(STORAGE_STATE_PATH),
-                )
-                await context.add_init_script(self._stealth.script_payload)
-                logger.info(
-                    "Loaded saved FD session from "
-                    f"{STORAGE_STATE_PATH.name}"
-                )
-                return context
-            except Exception as e:
-                logger.warning(
-                    f"Failed to load storage state, falling back: {e}"
-                )
-
-        # No saved state → new context with optional bootstrap cookies
-        context = await self._browser.new_context(
-            user_agent=(
-                "Mozilla/5.0 (X11; Linux x86_64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/130.0.0.0 Safari/537.36"
-            ),
-            viewport={"width": 1920, "height": 1080},
-            locale="en-US",
-            timezone_id="America/New_York",
-        )
-        await context.add_init_script(self._stealth.script_payload)
-
-        if bootstrap_cookies:
-            await context.add_cookies(bootstrap_cookies)
-            logger.info("Injected bootstrap cookies")
-
-        return context
-
-    async def save_storage_state(self, context: BrowserContext) -> bool:
-        """Save the current context's storage state for future use."""
-        try:
-            state = await context.storage_state()
-            with open(STORAGE_STATE_PATH, "w") as f:
-                json.dump(state, f, indent=2)
-            logger.info(f"Saved FD session to {STORAGE_STATE_PATH}")
-            return True
-        except Exception as e:
-            logger.warning(f"Failed to save storage state: {e}")
-            return False
+    async def new_page(self) -> Page:
+        """Create a new page/tab in the persistent context."""
+        return await self.context.new_page()

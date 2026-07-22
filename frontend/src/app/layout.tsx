@@ -17,7 +17,7 @@ const SPORTS: { key: Sport; label: string; emoji: string }[] = [
 
 const SUB_NAV_ITEMS = [
   { label: "Home", path: "" },
-  { label: "Stats", path: "/stats" },
+  { label: "Results", path: "/results" },
   { label: "Teams", path: "/teams" },
   { label: "Schedule", path: "/schedule" },
   { label: "Chat With Earl", path: "/chat" },
@@ -66,7 +66,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <AuthProvider>
         <header className="sticky top-0 z-50">
           {/* ── Top Nav ──────────────────────────────────────────── */}
-          <div className="border-b border-white/10 bg-black/50 backdrop-blur-sm">
+          <div className="border-b border-white/10 bg-black/50 backdrop-blur-sm relative z-10">
             <div className="max-w-7xl mx-auto px-4 h-20 flex items-center justify-between">
               {/* Logo */}
               <a href="/" className="shrink-0">

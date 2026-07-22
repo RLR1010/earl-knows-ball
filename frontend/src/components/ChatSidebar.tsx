@@ -16,6 +16,7 @@ interface ChatSidebarProps {
   onSelectConversation: (id: string | null) => void;
   onRefreshNeeded: boolean;
   onRefreshed: () => void;
+  onClose?: () => void;
 }
 
 export default function ChatSidebar({
@@ -24,6 +25,7 @@ export default function ChatSidebar({
   onSelectConversation,
   onRefreshNeeded,
   onRefreshed,
+  onClose,
 }: ChatSidebarProps) {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [loading, setLoading] = useState(false);
@@ -106,9 +108,23 @@ export default function ChatSidebar({
   };
 
   return (
-    <div className="flex flex-col h-full bg-[#0c1220] border-r border-white/10">
+    <div className="flex flex-col h-full w-full bg-[#0c1220] border-r border-white/10 overflow-hidden">
       {/* Header */}
-      <div className="p-3 border-b border-white/10">
+      <div className="p-3 border-b border-white/10 space-y-2">
+        {/* Close button - top right */}
+        {onClose && (
+          <div className="flex justify-end">
+            <button
+              onClick={onClose}
+              className="md:hidden text-gray-400 hover:text-white p-1 rounded-md hover:bg-white/10"
+              aria-label="Close sidebar"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M11 19l-7-7 7-7m8 14l-7-7 7-7" />
+              </svg>
+            </button>
+          </div>
+        )}
         <button
           onClick={() => onSelectConversation(null)}
           className={`w-full py-2.5 px-4 rounded-lg text-sm font-semibold transition-colors flex items-center justify-center gap-2 ${

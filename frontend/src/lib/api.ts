@@ -363,14 +363,14 @@ export const api = {
     features: {
       get: (sport: string) =>
         fetchAPI<{ features: Array<{name: string; description: string; display_name: string | null; is_trainable: boolean; current_ou: boolean; current_ats: boolean}> }>(
-          `/admin/features/${sport}`,
+          `/api/admin/features/${sport}`,
           {} 
         ),
     },
     training: {
       trigger: (sport: string, modelType: string, features: string[]) =>
         fetchAPI<{ status: string; features_updated: number; training_pid: number; message: string }>(
-          `/admin/train-new/${sport}/${modelType}`,
+          `/api/admin/train-new/${sport}/${modelType}`,
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -379,7 +379,7 @@ export const api = {
         ),
       getRuns: (sport: string, modelType: string) =>
         fetchAPI<any[]>(
-          `/admin/training-runs/${sport}/${modelType}`,
+          `/api/admin/training-runs/${sport}/${modelType}`,
           {} 
         ),
     },

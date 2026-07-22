@@ -132,6 +132,11 @@ export default function ChatPage() {
   const [loginModalOpen, setLoginModalOpen] = useState(false);
   const [sidebarRefresh, setSidebarRefresh] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+
+  // Default sidebar collapsed on mobile (small screens)
+  useEffect(() => {
+    setSidebarOpen(window.innerWidth >= 768);
+  }, []);
   const bottomRef = useRef<HTMLDivElement>(null);
   const statusRef = useRef<HTMLSpanElement>(null);
 
@@ -401,17 +406,19 @@ export default function ChatPage() {
   // --- Main chat UI ---
   return (
     <div className="max-w-[1280px] mx-auto w-full">
-      <div className="flex h-[calc(100dvh-8rem)]">
-        {/* Sidebar toggle for mobile */}
-        <button
-          onClick={() => setSidebarOpen(!sidebarOpen)}
-          className="absolute top-4 left-4 z-10 md:hidden text-gray-400 hover:text-white p-1 rounded-md hover:bg-white/10"
-          aria-label={sidebarOpen ? "Close sidebar" : "Open sidebar"}
-        >
-          <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d={sidebarOpen ? "M11 19l-7-7 7-7m8 14l-7-7 7-7" : "M13 5l7 7-7 7M5 5l7 7-7 7"} />
-          </svg>
-        </button>
+      <div className="relative flex h-[calc(100dvh-8rem)] overflow-hidden">
+        {/* Mobile open button - only visible when sidebar is closed */}
+        {!sidebarOpen && (
+          <button
+            onClick={() => setSidebarOpen(true)}
+            className="fixed top-20 left-4 z-10 md:hidden text-gray-400 hover:text-white p-1 rounded-md hover:bg-white/10"
+            aria-label="Open sidebar"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M13 5l7 7-7 7M5 5l7 7-7 7" />
+            </svg>
+          </button>
+        )}
 
         {/* Sidebar */}
         <div className={`${sidebarOpen ? "flex" : "hidden"} md:flex w-64 shrink-0`}>
@@ -421,17 +428,18 @@ export default function ChatPage() {
             onSelectConversation={loadConversation}
             onRefreshNeeded={sidebarRefresh}
             onRefreshed={() => setSidebarRefresh(false)}
+            onClose={() => setSidebarOpen(false)}
           />
         </div>
 
         {/* Chat area */}
         <div className="flex-1 flex flex-col min-w-0">
           {/* Messages */}
-          <div className="flex-1 overflow-y-auto px-4 py-6 space-y-4">
+          <div className="flex-1 overflow-y-auto px-4 py-8 space-y-4">
             {messages.map((msg, i) => (
               <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
                 <div
-                  className={`max-w-[85%] rounded-2xl px-4 py-3 ${
+                  className={`max-w-[85%] rounded-2xl px-4 py-3 break-words ${
                     msg.role === "user"
                       ? "bg-earl-600/20 border border-earl-600/30 text-gray-200"
                       : "bg-white/5 border border-white/10 text-gray-300"
@@ -454,7 +462,7 @@ export default function ChatPage() {
 
             {loading && (
               <div className="flex justify-start">
-                <div className="bg-white/5 border border-white/10 rounded-2xl px-4 py-3 max-w-[85%]">
+                <div className="bg-white/5 border border-white/10 rounded-2xl px-4 py-3 max-w-[85%] break-words">
                   <div className="text-xs font-semibold text-gray-500 mb-1 uppercase tracking-wide">
                     {SPORT_EMOJIS[sport]} Earl
                   </div>

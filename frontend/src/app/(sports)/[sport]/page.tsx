@@ -69,10 +69,10 @@ export default async function SportHomePage({ params }: { params: Promise<{ spor
       {/* Quick links */}
       <section className="grid md:grid-cols-3 gap-6">
         <FeatureCard
-          title="Statistics"
-          desc="Player stats, team stats, and league leaders. Sortable tables with all major categories."
-          emoji="📊"
-          href={`/${sport}/stats`}
+          title="Results"
+          desc="How our picks perform — win rates, profit, ROI, and EV score breakdowns."
+          emoji="🎯"
+          href={`/${sport}/results`}
         />
         <FeatureCard
           title="Teams"

@@ -124,7 +124,7 @@ async def save_lineups(db: AsyncSession, game_id: int, away_lineup: list[dict], 
     from sqlalchemy import select, delete as sa_delete
     from app.models.mlb import MLBLineup
 
-    # Delete existing lineups for this game
+    # Delete existing lineups for this game (we re-insert everything below)
     await db.execute(sa_delete(MLBLineup).where(MLBLineup.game_id == game_id))
 
     now = datetime.now(timezone.utc)
@@ -152,20 +152,16 @@ async def save_lineups(db: AsyncSession, game_id: int, away_lineup: list[dict], 
 
     for entry in away_lineup:
         bo = entry["batting_order"]
-        if bo < 1 or bo > 9:
-            if entry.get("is_starting_pitcher"):
-                continue  # SPs handled separately by caller at bo=0
-            else:
-                continue
-        _add("away", bo, entry)
+        if entry.get("is_starting_pitcher"):
+            _add("away", 0, entry)  # Starting pitcher
+        elif 1 <= bo <= 9:
+            _add("away", bo, entry)
     for entry in home_lineup:
         bo = entry["batting_order"]
-        if bo < 1 or bo > 9:
-            if entry.get("is_starting_pitcher"):
-                continue  # SPs handled separately by caller at bo=0
-            else:
-                continue
-        _add("home", bo, entry)
+        if entry.get("is_starting_pitcher"):
+            _add("home", 0, entry)  # Starting pitcher
+        elif 1 <= bo <= 9:
+            _add("home", bo, entry)
 
 
 async def update_lineups_for_date(db: AsyncSession, game_date: date) -> dict:
@@ -220,28 +216,38 @@ async def update_lineups_for_date(db: AsyncSession, game_date: date) -> dict:
             away_lu = lineup_data.get("away_lineup", [])
             home_lu = lineup_data.get("home_lineup", [])
 
-            # Save / update starting pitchers first (so old SP rows are gone before save_lineups)
+            if away_lu or home_lu:
+                await save_lineups(db, db_game.id, away_lu, home_lu)
+                stats["lineups_saved"] += 1
+
+            # Fallback: if the lineup API didn't include SP (AL games), insert from game record
+            from sqlalchemy import select, delete as sa_delete
             from app.models.mlb import MLBLineup
-            from sqlalchemy import delete as sa_delete
-            await db.execute(sa_delete(MLBLineup).where(
-                MLBLineup.game_id == db_game.id, MLBLineup.batting_order == 0
-            ))
+            logger.info(f"  Fallback check for game {db_game.id} (mlb_id={game_pk}): HP={db_game.home_pitcher_name!r} AP={db_game.away_pitcher_name!r}")
+            r = await db.execute(
+                select(MLBLineup).where(
+                    MLBLineup.game_id == db_game.id,
+                    MLBLineup.batting_order == 0
+                )
+            )
+            existing_pitchers = r.scalars().all()
+            existing_sides = {p.team_side for p in existing_pitchers}
+            logger.info(f"  Existing pitcher rows: {existing_sides}")
             now = datetime.now(timezone.utc)
-            if db_game.home_pitcher_name:
+            if db_game.home_pitcher_name and "home" not in existing_sides:
+                logger.info(f"  Inserting home SP: {db_game.home_pitcher_name}")
                 db.add(MLBLineup(
                     game_id=db_game.id, team_side="home", batting_order=0,
                     player_id=None, player_name=db_game.home_pitcher_name,
                     position="SP", created_at=now, updated_at=now,
                 ))
-            if db_game.away_pitcher_name:
+            if db_game.away_pitcher_name and "away" not in existing_sides:
+                logger.info(f"  Inserting away SP: {db_game.away_pitcher_name}")
                 db.add(MLBLineup(
                     game_id=db_game.id, team_side="away", batting_order=0,
                     player_id=None, player_name=db_game.away_pitcher_name,
                     position="SP", created_at=now, updated_at=now,
                 ))
-            if away_lu or home_lu:
-                await save_lineups(db, db_game.id, away_lu, home_lu)
-                stats["lineups_saved"] += 1
 
         except Exception as e:
             logger.error(f"Error processing game {game_info.get('game_pk')}: {e}")
