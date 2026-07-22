@@ -158,14 +158,29 @@ async def _load_tab_dom(
         await page.wait_for_load_state("networkidle", timeout=30_000)
         await asyncio.sleep(3)
 
-        # Check for DataDome/captcha page
-        blocked = await page.evaluate(
-            "document.body.innerText.substring(0, 300).toLowerCase().includes('blocked') "
-            "|| document.body.innerText.substring(0, 300).toLowerCase().includes('captcha')"
+        # ── Blocked page detection ───────────────────────────────────
+        # DataDome block pages have a small HTML body and a title like
+        # "Access to this page has been denied" — "blocked" or "captcha"
+        # may not appear in body text at all, so check title + size too.
+        title = (await page.title()).lower()
+        html_len = len(await page.content())
+        body_text = await page.evaluate(
+            "document.body.innerText.substring(0, 300).toLowerCase()"
+        )
+
+        blocked = (
+            "denied" in title
+            or "blocked" in title
+            or "captcha" in title
+            or html_len < 10000
+            or "blocked" in body_text
+            or "captcha" in body_text
         )
         if blocked:
-            body = await page.evaluate("document.body.innerText.substring(0, 500)")
-            logger.warning(f"FD {sport}/{tab}: DataDome blocked page\n{body}")
+            logger.warning(
+                f"FD {sport}/{tab}: blocked (title='{title}', "
+                f"html_len={html_len})\n{body_text[:200]}"
+            )
             return None
 
         # ── Human-like interaction before reading ────────────────────
