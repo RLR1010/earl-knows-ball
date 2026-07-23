@@ -3271,10 +3271,47 @@ async def data_loader_load_game(
         # Step 3: Build features on the full context
         if sport == "nfl":
             from app.handicapping.nfl.data_loader import build_features as nfl_build_features
-            from app.handicapping.nfl.team_stats import compute_team_game_aggregates
-            from sqlalchemy import create_engine as _create_engine
+            from sqlalchemy import create_engine as _create_engine, text as _sql_text
+            import pandas as _pd
             _sync_engine = _create_engine(db_url)
-            _ts_df = compute_team_game_aggregates(_sync_engine, window=5)
+            CUM_SQL = _sql_text("""
+                SELECT season, week, team_abbr, opponent_abbr AS opp_abbr,
+                    off_ypg, off_ypp AS ypp, off_pass_ypg AS pass_ypg,
+                    off_rush_ypg AS rush_ypg, off_ypa AS pass_ypa,
+                    off_ypc AS rush_ypa,
+                    turnover_margin_avg AS turnover_diff,
+                    def_ypg_allowed AS def_ypg,
+                    def_ypp_allowed AS def_ypp,
+                    def_pass_ypg_allowed AS def_pass_ypg,
+                    def_rush_ypg_allowed AS def_rush_ypg,
+                    off_first_downs AS first_downs,
+                    off_third_down_pct AS third_down_pct,
+                    off_fourth_down_pct AS fourth_down_pct,
+                    off_red_zone_trips AS rz_trips,
+                    off_rz_td_pct AS rz_td_pct,
+                    off_explosive_rate AS explosive_plays,
+                    off_three_and_out_rate AS three_and_outs,
+                    off_int_rate AS ints_thrown,
+                    def_first_downs_allowed AS def_first_downs,
+                    def_third_down_pct,
+                    def_fourth_down_pct,
+                    def_red_zone_trips AS def_rz_trips,
+                    def_rz_td_pct,
+                    def_explosive_rate AS def_explosive_plays,
+                    def_three_and_out_rate AS def_three_and_outs,
+                    def_takeaway_rate AS def_ints_thrown,
+                    off_epa_per_play, win_streak,
+                    off_pts_stddev_5, off_yds_stddev_5,
+                    rw_off_ppg, rw_off_ypg,
+                    adj_off_ppg, adj_off_ypg,
+                    def_epa_per_play,
+                    def_pts_stddev_5, def_yds_stddev_5,
+                    rw_def_ppg, rw_def_ypg,
+                    adj_def_ppg, adj_def_ypg
+                FROM nfl.cumulative_game_stats
+                ORDER BY season, week, team_abbr
+            """)
+            _ts_df = _pd.read_sql(CUM_SQL, _sync_engine)
             full_built_df = nfl_build_features(full_raw_df, team_stats=_ts_df)
         elif sport == "mlb":
             from app.handicapping.mlb.data_loader import build_features as mlb_build_features
