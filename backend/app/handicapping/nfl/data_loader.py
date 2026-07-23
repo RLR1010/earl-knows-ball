@@ -758,40 +758,92 @@ class NFLDataLoader:
             logger.warning("No games returned — returning empty DataFrame")
             return df
 
-        # 2. Load team stats from nfl.game_stats (real NFL stats 2016-present)
+        # 2. Load team stats from nfl.cumulative_game_stats (pre-computed, backward-looking)
         team_stats = None
         try:
-            from .team_stats import compute_team_game_aggregates
-
-            ts_df = compute_team_game_aggregates(self.engine)
+            CUM_SQL = """
+                SELECT
+                    season, week, team_abbr, opponent_abbr AS opp_abbr,
+                    off_ypg,
+                    off_ypp                                 AS ypp,
+                    off_pass_ypg                            AS pass_ypg,
+                    off_rush_ypg                            AS rush_ypg,
+                    off_ypa                                 AS pass_ypa,
+                    off_ypc                                 AS rush_ypa,
+                    turnover_margin_avg                     AS turnover_diff,
+                    def_ypg_allowed                         AS def_ypg,
+                    def_ypp_allowed                         AS def_ypp,
+                    def_pass_ypg_allowed                    AS def_pass_ypg,
+                    def_rush_ypg_allowed                    AS def_rush_ypg,
+                    off_first_downs                         AS first_downs,
+                    off_third_down_pct                      AS third_down_pct,
+                    off_fourth_down_pct                     AS fourth_down_pct,
+                    off_red_zone_trips                      AS rz_trips,
+                    off_rz_td_pct                           AS rz_td_pct,
+                    off_explosive_rate                      AS explosive_plays,
+                    off_three_and_out_rate                  AS three_and_outs,
+                    off_int_rate                            AS ints_thrown,
+                    def_first_downs_allowed                 AS def_first_downs,
+                    def_third_down_pct,
+                    def_fourth_down_pct,
+                    def_red_zone_trips                      AS def_rz_trips,
+                    def_rz_td_pct,
+                    def_explosive_rate                      AS def_explosive_plays,
+                    def_three_and_out_rate                  AS def_three_and_outs,
+                    def_takeaway_rate                       AS def_ints_thrown,
+                    off_epa_per_play, win_streak,
+                    off_pts_stddev_5, off_yds_stddev_5,
+                    rw_off_ppg, rw_off_ypg,
+                    adj_off_ppg, adj_off_ypg,
+                    def_epa_per_play,
+                    def_pts_stddev_5, def_yds_stddev_5,
+                    rw_def_ppg, rw_def_ypg,
+                    adj_def_ppg, adj_def_ypg
+                FROM nfl.cumulative_game_stats
+                ORDER BY season, week, team_abbr
+            """
+            ts_df = pd.read_sql(CUM_SQL, self.engine)
             if not ts_df.empty:
-                # Keep columns needed for merge (season+week+team_abbr to match GAME_QUERY)
-                team_stats = ts_df[
-                    ["season", "week", "team_abbr", "opp_abbr",
-                     "off_ypg", "ypp", "pass_ypg", "rush_ypg",
-                     "pass_ypa", "rush_ypa", "turnover_diff",
-                     "def_ypg", "def_ypp",
-                     "def_pass_ypg", "def_rush_ypg",
-                     # PBP-derived offensive stats used by build_features
-                     "first_downs", "third_down_pct", "fourth_down_pct",
-                     "rz_trips", "rz_td_pct",
-                     "explosive_plays", "three_and_outs", "ints_thrown",
-                     # PBP-derived defensive stats used by build_features
-                     "def_first_downs", "def_third_down_pct", "def_fourth_down_pct",
-                     "def_rz_trips", "def_rz_td_pct",
-                     "def_explosive_plays", "def_three_and_outs", "def_ints_thrown",
-                     ]
-                ].copy()
+                team_stats = ts_df
                 logger.info(
-                    "Loaded %d team-game stat rows from nfl.game_stats (%d-%d)",
+                    "Loaded %d cumulative stat rows from nfl.cumulative_game_stats (%d-%d)",
                     len(team_stats),
                     int(team_stats["season"].min()),
                     int(team_stats["season"].max()),
                 )
-        except ImportError:
-            logger.debug("team_stats module not available — skipping")
         except Exception as exc:
-            logger.warning("Failed to load team stats: %s", exc)
+            logger.warning(
+                "Failed to load cumulative stats: %s -- falling back to window-function query",
+                exc,
+            )
+            try:
+                from .team_stats import compute_team_game_aggregates
+                ts_df = compute_team_game_aggregates(self.engine)
+                if not ts_df.empty:
+                    team_stats = ts_df[
+                        ["season", "week", "team_abbr", "opp_abbr",
+                         "off_ypg", "ypp", "pass_ypg", "rush_ypg",
+                         "pass_ypa", "rush_ypa", "turnover_diff",
+                         "def_ypg", "def_ypp",
+                         "def_pass_ypg", "def_rush_ypg",
+                         "first_downs", "third_down_pct", "fourth_down_pct",
+                         "rz_trips", "rz_td_pct",
+                         "explosive_plays", "three_and_outs", "ints_thrown",
+                         "def_first_downs", "def_third_down_pct", "def_fourth_down_pct",
+                         "def_rz_trips", "def_rz_td_pct",
+                         "def_explosive_plays", "def_three_and_outs", "def_ints_thrown",
+                         ]
+                    ].copy()
+                    logger.info(
+                        "Loaded %d team-game stat rows from nfl.game_stats (%d-%d)",
+                        len(team_stats),
+                        int(team_stats["season"].min()),
+                        int(team_stats["season"].max()),
+                    )
+            except ImportError:
+                logger.debug("team_stats module not available -- skipping")
+            except Exception as exc2:
+                logger.warning("Failed to load team stats: %s", exc2)
 
         # 3. Run feature engineering
         fn = build_features_fn if build_features_fn is not None else build_features
