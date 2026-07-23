@@ -98,6 +98,10 @@ def run_backtest(
     train_feats = df[df["season_year"].isin(train_years)].copy()
     test_feats = df[df["season_year"] == test_year].copy()
 
+    # Drop games without closing OU — needed for OU evaluation
+    train_feats = train_feats[train_feats["closing_ou"].notna()].copy()
+    test_feats = test_feats[test_feats["closing_ou"].notna()].copy()
+
     if train_feats.empty or test_feats.empty:
         logger.warning("Empty train (%d) or test (%d) for year %d", len(train_feats), len(test_feats), test_year)
         return {"year": test_year, "error": "insufficient data"}
@@ -135,6 +139,9 @@ def run_backtest(
 
     if train_feats.empty or test_feats.empty:
         return {"year": test_year, "error": "all rows dropped by NaN"}
+
+    # Save closing_ou for OU accuracy eval before subsetting to features only
+    ou_line = test_feats.get("closing_ou", test_feats.get("opening_ou", None))
 
     X_train = train_feats[available].values
     y_train = train_feats[target].values
@@ -192,8 +199,6 @@ def run_backtest(
     elapsed = time.time() - t0
 
     # Over/under accuracy: did model correctly predict over/under vs closing OU?
-    # Use test_data (full DataFrame) — test_feats is only [features + target], lacks closing_ou
-    ou_line = test_data.get("closing_ou", test_data.get("opening_ou", None))
     ou_acc = None
     if ou_line is not None:
         over_correct = ((y_pred > ou_line) == (y_test > ou_line)).mean()
@@ -251,8 +256,8 @@ async def run_all_years(
 
     results: List[Dict[str, Any]] = []
     for test_year in test_years:
-        if test_year == min(test_years):
-            logger.info("Skipping first year %d (no train data before it)", test_year)
+        if test_year not in TEST_YEARS:
+            logger.info("Skipping year %d (not in TEST_YEARS)", test_year)
             continue
 
         result = run_backtest(df, test_year, hyperparams=hyperparams, return_model=False)
@@ -294,7 +299,7 @@ def run_single(
         logger.info("Saved OU model to %s", path)
 
         test_year = CURRENT_YEAR
-        train_seasons = list(range(2015, test_year))
+        train_seasons = list(range(2016, test_year))
         training_id = save_training_run(
             sport="nfl",
             model_type="ou",
@@ -423,7 +428,7 @@ def predict_ou_game(
 
 
 # ── Train model (async full pipeline) ────────────────────────────────────────────
-TEST_YEARS = [2024, 2025]
+TEST_YEARS = [2021, 2022, 2023, 2024, 2025]
 
 
 def _train_years_for_test_year(test_year: int) -> List[int]:
@@ -432,7 +437,7 @@ def _train_years_for_test_year(test_year: int) -> List[int]:
     2024: trains on 2021, 2022, 2023
     2025: trains on 2021, 2022, 2023, 2024
     """
-    return list(range(2021, test_year))
+    return list(range(2016, test_year))
 
 
 async def train_model(
@@ -501,6 +506,10 @@ async def train_model(
 
         df_train = df_all[df_all["season_year"].isin(train_seasons)].copy()
         df_test = df_all[df_all["season_year"] == test_year].copy()
+
+        # Drop games without closing OU — needed for OU evaluation
+        df_train = df_train[df_train["closing_ou"].notna()].copy()
+        df_test = df_test[df_test["closing_ou"].notna()].copy()
 
         if df_train.empty:
             logger.warning("No training data for test_year=%d, skipping", test_year)
@@ -645,7 +654,7 @@ if __name__ == "__main__":
     mode = sys.argv[1] if len(sys.argv) > 1 else "backtest"
 
     if mode == "backtest":
-        results = asyncio.run(run_all_years(train_from=2021))
+        results = asyncio.run(run_all_years(train_from=2016))
         print("\n=== NFL OU Backtest Results ===")
         for r in results:
             if "error" in r:

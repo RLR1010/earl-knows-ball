@@ -754,9 +754,22 @@ async def _run_mlb_stats_refresh():
             except Exception as e:
                 logger.error(f"  Step 9 prediction result update failed: {e}")
 
-            await pconn.close()
+        # Step 10: Refresh cumulative season-to-date stats
+        # Pre-computed in mlb.cumulative_game_stats table for fast GAME_QUERY
+        try:
+            from app.handicapping.mlb.data_loader import refresh_cumulative_stats
+            from app.core.config import settings
+            result = refresh_cumulative_stats(db_url=settings.DATABASE_URL_SYNC)
+            logger.info(
+                f"  Step 10: Cumulative stats refreshed — "
+                f"{result.get('total_inserted', 0)} new rows"
+            )
         except Exception as e:
-            logger.error(f"  Outer boxscore/prediction block failed: {e}")
+            logger.error(f"  Step 10 cumulative stats refresh failed: {e}")
+
+        await pconn.close()
+    except Exception as e:
+        logger.error(f"  Outer boxscore/prediction block failed: {e}")
 
         # Commit all changes (lineups, pitchers, picks)
         try:
@@ -1163,6 +1176,19 @@ async def ingest_nfl_pbp_game_stats(
     from app.ingestion.pbp_game_stats import aggregate_pbp_to_game_stats
     result = await aggregate_pbp_to_game_stats(db, seasons=seasons)
     return {"status": "ok", "seasons": result}
+
+
+@router.post("/ingest/nfl/cumulative-stats")
+async def ingest_nfl_cumulative_stats(
+    seasons: list[int] = Query(default=[2025, 2024, 2023], description="Seasons to compute"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Compute and upsert cumulative team stats for NFL — replaces expensive rolling window
+    recomputation in the data loader.
+    """
+    from app.handicapping.nfl.cumulative_stats import recompute
+    results = await recompute(db, seasons=seasons)
+    return {"status": "ok", "seasons": results}
 
 
 @router.post("/ingest/mlb/games/backfill-years")

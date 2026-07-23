@@ -248,7 +248,7 @@ async def run_backtest(
 async def run_all_years(
     hide_progress: bool = True,
     feature_sets: list[str] | None = None,
-    train_from: int = 2022,
+    train_from: int = 2016,
     test_until: int | None = None,
     skip_db: bool = False,
 ) -> list[dict]:
@@ -268,7 +268,7 @@ async def run_all_years(
     log(f"Loaded {len(raw)} games, {len(feats.columns)} features")
 
     # Test years are the final 2 seasons; train_years is everything before each test year
-    test_years = [2025, 2026]
+    test_years = [2021, 2022, 2023, 2024, 2025, 2026]
 
     for feature_set in feature_sets:
         for year in test_years:
@@ -348,7 +348,7 @@ def _enrich_df(df: pd.DataFrame) -> pd.DataFrame:
 
 
 async def run_single(
-    test_year: int = 2025,
+    test_year: int = 2026,
     feature_set: str = "full",
 ) -> dict:
     """Load data, build features, run backtest for one year."""
@@ -522,7 +522,7 @@ if __name__ == "__main__":
     parser.add_argument("--features", type=str, default="ats")
     parser.add_argument("--mode", type=str, default="one",
                         choices=["one", "all"])
-    parser.add_argument("--train-from", type=int, default=2022, help="First training year")
+    parser.add_argument("--train-from", type=int, default=2016, help="First training year")
     parser.add_argument("--test-until", type=int, default=None, help="Last test year (default: CURRENT_YEAR)")
     parser.add_argument("--skip-db", action="store_true", help="Skip saving to database")
     args = parser.parse_args()

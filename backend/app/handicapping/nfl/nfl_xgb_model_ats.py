@@ -123,6 +123,10 @@ def run_backtest(
     train_df = df[df["season_year"] < test_year].copy()
     test_df = df[df["season_year"] == test_year].copy()
 
+    # Drop games without closing spread — needed for ATS evaluation
+    train_df = train_df[train_df["closing_spread"].notna()].copy()
+    test_df = test_df[test_df["closing_spread"].notna()].copy()
+
     if train_df.empty or test_df.empty:
         logger.warning("Empty train (%d) or test (%d) for year %d", len(train_df), len(test_df), test_year)
         return {"year": test_year, "error": "insufficient data"}
@@ -239,7 +243,7 @@ def run_backtest(
 
 # ── Run all years ────────────────────────────────────────────────────────────────
 async def run_all_years(
-    train_from: int = 2021,
+    train_from: int = 2016,
     ats_only: bool = True,
     ou_only: bool = False,
     limit: Optional[int] = None,
@@ -278,8 +282,8 @@ async def run_all_years(
 
     results: List[Dict[str, Any]] = []
     for test_year in test_years:
-        if test_year == min(test_years):
-            logger.info("Skipping first year %d (no train data before it)", test_year)
+        if test_year not in TEST_YEARS:
+            logger.info("Skipping year %d (not in TEST_YEARS)", test_year)
             continue
 
         result = run_backtest(
@@ -334,7 +338,7 @@ def run_single(
         logger.info("Saved model to %s", path)
 
         test_year = CURRENT_YEAR
-        train_seasons = list(range(2015, test_year))
+        train_seasons = list(range(2016, test_year))
         training_id = save_training_run(
             sport="nfl",
             model_type="ats",
@@ -429,7 +433,7 @@ def predict_ats(
 
 
 # ── Train model (async, full pipeline) ───────────────────────────────────────────
-TEST_YEARS = [2024, 2025]
+TEST_YEARS = [2021, 2022, 2023, 2024, 2025]
 
 
 def _train_years_for_test_year(test_year: int) -> List[int]:
@@ -438,7 +442,7 @@ def _train_years_for_test_year(test_year: int) -> List[int]:
     2024: trains on 2021, 2022, 2023
     2025: trains on 2021, 2022, 2023, 2024
     """
-    return list(range(2021, test_year))
+    return list(range(2016, test_year))
 
 
 async def train_model(
@@ -522,6 +526,10 @@ async def train_model(
 
         df_train = df_all[df_all["season_year"].isin(train_seasons)].copy()
         df_test = df_all[df_all["season_year"] == test_year].copy()
+
+        # Drop games without closing spread — needed for ATS evaluation
+        df_train = df_train[df_train["closing_spread"].notna()].copy()
+        df_test = df_test[df_test["closing_spread"].notna()].copy()
 
         if df_train.empty:
             logger.warning("No training data for test_year=%d, skipping", test_year)
@@ -685,7 +693,7 @@ if __name__ == "__main__":
     mode = sys.argv[1] if len(sys.argv) > 1 else "backtest"
 
     if mode == "backtest":
-        results = asyncio.run(run_all_years(train_from=2021))
+        results = asyncio.run(run_all_years(train_from=2016))
         print("\n=== NFL ATS Backtest Results ===")
         for r in results:
             if "error" in r:

@@ -5,6 +5,15 @@ class Settings(BaseSettings):
     app_name: str = "EarlKnowsBall"
     database_url: str = "postgresql+asyncpg://earl:earl@localhost:5432/earl_knows_football"
 
+    @property
+    def database_url_sync(self) -> str:
+        """Sync PostgreSQL URL for SQLAlchemy."""
+        return self.database_url.replace("+asyncpg", "+psycopg2")
+
+    def get_sync_url(self) -> str:
+        """Plain sync URL (no driver suffix)."""
+        return self.database_url.replace("+asyncpg", "")
+
     # The Odds API
     odds_api_key: str = ""                                          # Paid tier (Professional, 20k/mo)
     odds_api_key_free: str = ""                                     # Free tier (500/mo)

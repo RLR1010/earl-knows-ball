@@ -162,6 +162,74 @@ starter_era AS (
     JOIN mlb.teams h_t ON h_t.id = g.home_team_id
     JOIN mlb.teams a_t ON a_t.id = g.away_team_id
     GROUP BY s.game_id
+),
+batting_game AS (
+    SELECT
+        bgs.game_id,
+        bgs.team_side,
+        g.date,
+        g.season_id,
+        CASE WHEN bgs.team_side = 'home' THEN g.home_team_id ELSE g.away_team_id END AS team_id,
+        SUM(bgs.at_bats)::numeric AS at_bats,
+        SUM(bgs.hits)::numeric AS hits,
+        SUM(bgs.runs)::numeric AS runs,
+        SUM(bgs.doubles)::numeric AS doubles,
+        SUM(bgs.triples)::numeric AS triples,
+        SUM(bgs.home_runs)::numeric AS home_runs,
+        SUM(bgs.base_on_balls)::numeric AS walks,
+        SUM(bgs.strikeouts)::numeric AS strikeouts,
+        SUM(bgs.stolen_bases)::numeric AS stolen_bases,
+        SUM(bgs.hit_by_pitch)::numeric AS hit_by_pitch,
+        SUM(bgs.sacrifice_flies)::numeric AS sacrifice_flies,
+        SUM(bgs.total_bases)::numeric AS total_bases,
+        SUM(bgs.plate_appearances)::numeric AS plate_appearances
+    FROM mlb.batting_game_stats bgs
+    JOIN mlb.games g ON g.id = bgs.game_id
+    WHERE g.status = 'FINAL'
+      AND bgs.plate_appearances IS NOT NULL
+      AND bgs.team_side IS NOT NULL
+    GROUP BY bgs.game_id, bgs.team_side, g.date, g.season_id,
+             CASE WHEN bgs.team_side = 'home' THEN g.home_team_id ELSE g.away_team_id END
+),
+pitching_game AS (
+    SELECT
+        pgs.game_id,
+        g.date,
+        g.season_id,
+        CASE
+            WHEN h_t.abbreviation = pgs.team_abbr THEN g.home_team_id
+            WHEN a_t.abbreviation = pgs.team_abbr THEN g.away_team_id
+            WHEN pgs.team_abbr = 'ATH' AND h_t.abbreviation = 'OAK' THEN g.home_team_id
+            WHEN pgs.team_abbr = 'ATH' AND a_t.abbreviation = 'OAK' THEN g.away_team_id
+            WHEN pgs.team_abbr = 'AZ' AND h_t.abbreviation = 'ARI' THEN g.home_team_id
+            WHEN pgs.team_abbr = 'AZ' AND a_t.abbreviation = 'ARI' THEN g.away_team_id
+        END AS team_id,
+        SUM(pgs.ip)::numeric AS ip,
+        SUM(pgs.er)::numeric AS er,
+        SUM(pgs.h)::numeric AS hits_allowed,
+        SUM(pgs.bb)::numeric AS walks_allowed,
+        SUM(pgs.k)::numeric AS k,
+        SUM(pgs.hr)::numeric AS home_runs_allowed,
+        SUM(pgs.hit_by_pitch)::numeric AS hit_batters,
+        SUM(pgs.batters_faced)::numeric AS batters_faced
+    FROM mlb.pitcher_game_stats pgs
+    JOIN mlb.games g ON g.id = pgs.game_id
+    JOIN mlb.teams h_t ON h_t.id = g.home_team_id
+    JOIN mlb.teams a_t ON a_t.id = g.away_team_id
+    WHERE g.status = 'FINAL'
+      AND pgs.team_abbr IS NOT NULL
+      AND (h_t.abbreviation = pgs.team_abbr OR a_t.abbreviation = pgs.team_abbr
+           OR (pgs.team_abbr = 'ATH' AND (h_t.abbreviation = 'OAK' OR a_t.abbreviation = 'OAK'))
+           OR (pgs.team_abbr = 'AZ' AND (h_t.abbreviation = 'ARI' OR a_t.abbreviation = 'ARI')))
+    GROUP BY pgs.game_id, g.date, g.season_id,
+             CASE
+                 WHEN h_t.abbreviation = pgs.team_abbr THEN g.home_team_id
+                 WHEN a_t.abbreviation = pgs.team_abbr THEN g.away_team_id
+                 WHEN pgs.team_abbr = 'ATH' AND h_t.abbreviation = 'OAK' THEN g.home_team_id
+                 WHEN pgs.team_abbr = 'ATH' AND a_t.abbreviation = 'OAK' THEN g.away_team_id
+                 WHEN pgs.team_abbr = 'AZ' AND h_t.abbreviation = 'ARI' THEN g.home_team_id
+                 WHEN pgs.team_abbr = 'AZ' AND a_t.abbreviation = 'ARI' THEN g.away_team_id
+             END
 )
 SELECT
     g.id                                                    AS game_id,
@@ -256,7 +324,33 @@ SELECT
     toa.team_hits                                           AS away_hits,
     toa.team_walks                                          AS away_walks,
     toa.team_total_bases                                    AS away_total_bases,
-    toa.team_pa                                             AS away_pa
+    toa.team_pa                                             AS away_pa,
+
+    -- Cumulative season-to-date batting stats
+    hcb.cum_avg                                             AS h_cum_avg,
+    hcb.cum_obp                                             AS h_cum_obp,
+    hcb.cum_slg                                             AS h_cum_slg,
+    hcb.cum_ops                                             AS h_cum_ops,
+    hcb.cum_babip                                           AS h_cum_babip,
+    hcb.cum_k_rate                                          AS h_cum_k_rate,
+    hcb.cum_bb_rate                                         AS h_cum_bb_rate,
+    acb.cum_avg                                             AS a_cum_avg,
+    acb.cum_obp                                             AS a_cum_obp,
+    acb.cum_slg                                             AS a_cum_slg,
+    acb.cum_ops                                             AS a_cum_ops,
+    acb.cum_babip                                           AS a_cum_babip,
+    acb.cum_k_rate                                          AS a_cum_k_rate,
+    acb.cum_bb_rate                                         AS a_cum_bb_rate,
+
+    -- Cumulative season-to-date pitching stats
+    hcp.cum_era                                             AS h_cum_era,
+    hcp.cum_whip                                            AS h_cum_whip,
+    hcp.cum_k9                                              AS h_cum_k9,
+    hcp.cum_bb9                                             AS h_cum_bb9,
+    acp.cum_era                                             AS a_cum_era,
+    acp.cum_whip                                            AS a_cum_whip,
+    acp.cum_k9                                              AS a_cum_k9,
+    acp.cum_bb9                                             AS a_cum_bb9
 
 FROM mlb.games g
 LEFT JOIN mlb.teams h         ON h.id = g.home_team_id
@@ -266,6 +360,18 @@ LEFT JOIN team_ops toa        ON toa.game_id = g.id AND toa.team_side = 'away'
 LEFT JOIN starter_era gse ON gse.game_id = g.id
 LEFT JOIN mlb.seasons s       ON s.id = g.season_id
 LEFT JOIN mlb.betting_lines_consolidated c ON c.game_id = g.id
+
+    -- Pre-computed cumulative season-to-date stats (from cumulative_game_stats table)
+    LEFT JOIN mlb.cumulative_game_stats hcb
+        ON hcb.game_id = g.id AND hcb.team_side = 'home'
+    LEFT JOIN mlb.cumulative_game_stats acb
+        ON acb.game_id = g.id AND acb.team_side = 'away'
+    -- hcp/acp aliases point to the same rows as hcb/acb (all cum stats in one table)
+    LEFT JOIN mlb.cumulative_game_stats hcp
+        ON hcp.game_id = g.id AND hcp.team_side = 'home'
+    LEFT JOIN mlb.cumulative_game_stats acp
+        ON acp.game_id = g.id AND acp.team_side = 'away'
+
 ORDER BY g.date DESC
 """
 
@@ -325,6 +431,29 @@ FEATURES_CATALOG: Dict[str, str] = {
     "margin": "Actual run differential (home_score - away_score); FINAL only",
     # ── Player IDs (not yet enriched) ──
     "mlb_game_id": "External MLB game ID (from ESPN/MLB.com)",
+    # ── Cumulative season-to-date stats ──
+    "h_cum_avg": "Home cumulative AVG",
+    "a_cum_avg": "Away cumulative AVG",
+    "h_cum_obp": "Home cumulative OBP",
+    "a_cum_obp": "Away cumulative OBP",
+    "h_cum_slg": "Home cumulative SLG",
+    "a_cum_slg": "Away cumulative SLG",
+    "h_cum_ops": "Home cumulative OPS",
+    "a_cum_ops": "Away cumulative OPS",
+    "h_cum_babip": "Home cumulative BABIP",
+    "a_cum_babip": "Away cumulative BABIP",
+    "h_cum_k_rate": "Home cumulative K rate",
+    "a_cum_k_rate": "Away cumulative K rate",
+    "h_cum_bb_rate": "Home cumulative BB rate",
+    "a_cum_bb_rate": "Away cumulative BB rate",
+    "h_cum_era": "Home cumulative ERA",
+    "a_cum_era": "Away cumulative ERA",
+    "h_cum_whip": "Home cumulative WHIP",
+    "a_cum_whip": "Away cumulative WHIP",
+    "h_cum_k9": "Home cumulative K/9",
+    "a_cum_k9": "Away cumulative K/9",
+    "h_cum_bb9": "Home cumulative BB/9",
+    "a_cum_bb9": "Away cumulative BB/9",
 }
 
 # Features added during featurization (computed by build_features)
@@ -2231,3 +2360,28 @@ if __name__ == "__main__":
             print(f"\nDate range: {df['game_date'].min()} → {df['game_date'].max()}")
             print(f"\nFirst 3 rows:")
             print(df.head(3).to_string())
+
+
+# ── Cumulative Stats Refresh ───────────────────────────────────────────────
+
+def refresh_cumulative_stats(db_url: str, seasons: list[int] | None = None) -> dict:
+    """Populate/update mlb.cumulative_game_stats with pre-computed running totals.
+
+    Incremental — only processes games not yet in the table.
+    Safe to call multiple times.
+
+    Parameters
+    ----------
+    db_url :
+        Sync PostgreSQL connection string.
+    seasons :
+        Season IDs to process.  None = all seasons.
+
+    Returns
+    -------
+    dict
+        Summary of rows inserted.
+    """
+    from app.handicapping.mlb.cumulative_stats import populate_cumulative_stats
+
+    return populate_cumulative_stats(db_url=db_url, seasons=seasons)

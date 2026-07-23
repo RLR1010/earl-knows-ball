@@ -98,6 +98,10 @@ def run_backtest(
     train_feats = df[df["season_year"].isin(train_years)].copy()
     test_feats = df[df["season_year"] == test_year].copy()
 
+    # Drop games without closing OU — needed for OU evaluation
+    train_feats = train_feats[train_feats["closing_ou"].notna()].copy()
+    test_feats = test_feats[test_feats["closing_ou"].notna()].copy()
+
     if train_feats.empty or test_feats.empty:
         logger.warning("Empty train (%d) or test (%d) for year %d", len(train_feats), len(test_feats), test_year)
         return {"year": test_year, "error": "insufficient data"}
@@ -269,7 +273,7 @@ def run_backtest(
 
 # ── Run all years ────────────────────────────────────────────────────────────────
 async def run_all_years(
-    train_from: int = 2021,
+    train_from: int = 2016,
     limit: Optional[int] = None,
     hyperparams: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
@@ -286,7 +290,7 @@ async def run_all_years(
     df = df.sort_values(["season_year", "date"]).reset_index(drop=True)
 
     unique_years = sorted(df["season_year"].unique())
-    test_years = unique_years[-2:]
+    test_years = [2021, 2022, 2023, 2024, 2025, 2026]
     logger.info("Test years (OU): %s (all unique years: %s)", test_years, unique_years)
 
     import math
@@ -402,7 +406,7 @@ def run_single(
         logger.info("Saved OU model to %s", path)
 
         test_year = CURRENT_YEAR
-        train_seasons = list(range(2015, test_year))
+        train_seasons = list(range(2016, test_year))
         training_id = save_training_run(
             sport="nba",
             model_type="ou",
@@ -531,7 +535,7 @@ def predict_ou_game(
 
 
 # ── Train model (async full pipeline) ────────────────────────────────────────────
-TEST_YEARS = [2024, 2025]
+TEST_YEARS = [2021, 2022, 2023, 2024, 2025, 2026]
 
 
 def _train_years_for_test_year(test_year: int) -> List[int]:
@@ -540,7 +544,7 @@ def _train_years_for_test_year(test_year: int) -> List[int]:
     2024: trains on 2021, 2022, 2023
     2025: trains on 2021, 2022, 2023, 2024
     """
-    return list(range(2021, test_year))
+    return list(range(2016, test_year))
 
 
 async def train_model(
@@ -604,6 +608,10 @@ async def train_model(
 
         df_train = df_all[df_all["season_year"].isin(train_seasons)].copy()
         df_test = df_all[df_all["season_year"] == test_year].copy()
+
+        # Drop games without closing OU — needed for OU evaluation
+        df_train = df_train[df_train["closing_ou"].notna()].copy()
+        df_test = df_test[df_test["closing_ou"].notna()].copy()
 
         if df_train.empty:
             logger.warning("No training data for test_year=%d, skipping", test_year)
@@ -741,7 +749,7 @@ if __name__ == "__main__":
     mode = sys.argv[1] if len(sys.argv) > 1 else "backtest"
 
     if mode == "backtest":
-        results = asyncio.run(run_all_years(train_from=2021))
+        results = asyncio.run(run_all_years(train_from=2016))
         print("\n=== NBA OU Backtest Results ===")
         for r in results:
             if "error" in r:

@@ -24,4 +24,5 @@ transformers>=4.30.0
 psycopg2-binary>=2.9.9
 setuptools>=68.0.0
 granian
+stripe>=8.0.0
 

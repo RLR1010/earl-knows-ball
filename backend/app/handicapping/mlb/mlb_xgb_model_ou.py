@@ -6,7 +6,7 @@ game and feature data. Structure matches mlb_xgb_model_ats.py.
 
 Usage:
     python -m app.handicapping.mlb.mlb_xgb_model_ou --mode all
-    python -m app.handicapping.mlb.mlb_xgb_model_ou --mode single --test-year 2026 --train-from 2021
+    python -m app.handicapping.mlb.mlb_xgb_model_ou --mode single --test-year 2026 --train-from 2016
 """
 
 import json
@@ -173,21 +173,21 @@ async def run_backtest(
 
 
 async def run_all_years(
-    train_from: int = 2021,
+    train_from: int = 2016,
     feature_sets: list[list[str]] = None,
     skip_db: bool = False,
     do_save_training_run: bool = True,
 ) -> list[dict]:
     """Run OU backtest for 2025 and 2026 using walk-forward training.
 
-    train_from = first train year (default 2021).
-    test_years = [2025, 2026].
+    train_from = first train year (default 2016).
+    test_years = [2021, 2022, 2023, 2024, 2025, 2026].
     """
     if feature_sets is None:
         feature_sets = [_ensure_ou_features()]
 
     test_until = CURRENT_YEAR
-    test_years = [2025, 2026]
+    test_years = [2021, 2022, 2023, 2024, 2025, 2026]
 
     log(f"Loading MLB data (all seasons)...")
     raw = get_data_loader().load_games(status="FINAL")
@@ -267,7 +267,7 @@ async def run_all_years(
 
 async def run_single(
     test_year: int = 2026,
-    train_from: int = 2021,
+    train_from: int = 2016,
     feature_set: list[str] = None,
     skip_db: bool = False,
     do_save_training_run: bool = True,
@@ -340,8 +340,8 @@ if __name__ == "__main__":
                         help="'all' runs 2025+2026, 'single' runs one year")
     parser.add_argument("--test-year", type=int, default=2026,
                         help="Test year (default 2026; only used for --mode single)")
-    parser.add_argument("--train-from", type=int, default=2021,
-                        help="First training year (default 2021)")
+    parser.add_argument("--train-from", type=int, default=2016,
+                        help="First training year (default 2016)")
     parser.add_argument("--skip-db", action="store_true",
                         help="Skip saving to database")
 
