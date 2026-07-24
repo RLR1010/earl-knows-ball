@@ -336,10 +336,7 @@ COMPUTED_FEATURES_CATALOG: Dict[str, str] = {
     "h_adj_def_10": "Home opponent-adjusted defense, rolling 10",
     "a_adj_off_10": "Away opponent-adjusted offense, rolling 10",
     "a_adj_def_10": "Away opponent-adjusted defense, rolling 10",
-    "h_adj_off_20": "Home opponent-adjusted offense, rolling 20",
-    "h_adj_def_20": "Home opponent-adjusted defense, rolling 20",
-    "a_adj_off_20": "Away opponent-adjusted offense, rolling 20",
-    "a_adj_def_20": "Away opponent-adjusted defense, rolling 20",
+
     "rest_h": "Home team rest days since last game",
     "rest_a": "Away team rest days since last game",
     "rest_diff": "Rest days advantage (home - away)",
@@ -392,26 +389,22 @@ COMPUTED_FEATURES_CATALOG: Dict[str, str] = {
     "a_ortg_r5": "Away team offensive rating rolling 5",
     "h_ortg_r10": "Home team offensive rating rolling 10",
     "a_ortg_r10": "Away team offensive rating rolling 10",
-    "h_ortg_r20": "Home team offensive rating rolling 20",
-    "a_ortg_r20": "Away team offensive rating rolling 20",
+
     "h_drtg_r5": "Home team defensive rating rolling 5",
     "a_drtg_r5": "Away team defensive rating rolling 5",
     "h_drtg_r10": "Home team defensive rating rolling 10",
     "a_drtg_r10": "Away team defensive rating rolling 10",
-    "h_drtg_r20": "Home team defensive rating rolling 20",
-    "a_drtg_r20": "Away team defensive rating rolling 20",
+
     "h_net_rtg_r5": "Home team net rating rolling 5",
     "a_net_rtg_r5": "Away team net rating rolling 5",
     "h_net_rtg_r10": "Home team net rating rolling 10",
     "a_net_rtg_r10": "Away team net rating rolling 10",
-    "h_net_rtg_r20": "Home team net rating rolling 20",
-    "a_net_rtg_r20": "Away team net rating rolling 20",
+
     "h_pace_r5": "Home team pace (possessions) rolling 5",
     "a_pace_r5": "Away team pace (possessions) rolling 5",
     "h_pace_r10": "Home team pace (possessions) rolling 10",
     "a_pace_r10": "Away team pace (possessions) rolling 10",
-    "h_pace_r20": "Home team pace (possessions) rolling 20",
-    "a_pace_r20": "Away team pace (possessions) rolling 20",
+
     "net_rtg_diff_5": "Net rating differential (home - away) rolling 5",
     "net_rtg_diff_10": "Net rating differential (home - away) rolling 10",
     "pace_diff_5": "Pace differential (home - away) rolling 5",
@@ -421,26 +414,22 @@ COMPUTED_FEATURES_CATALOG: Dict[str, str] = {
     "a_ft_rate_r5": "Away team free throw rate (FTA/FGA) rolling 5",
     "h_ft_rate_r10": "Home team free throw rate (FTA/FGA) rolling 10",
     "a_ft_rate_r10": "Away team free throw rate (FTA/FGA) rolling 10",
-    "h_ft_rate_r20": "Home team free throw rate (FTA/FGA) rolling 20",
-    "a_ft_rate_r20": "Away team free throw rate (FTA/FGA) rolling 20",
+
     "h_efg_r5": "Home team effective FG% rolling 5",
     "a_efg_r5": "Away team effective FG% rolling 5",
     "h_efg_r10": "Home team effective FG% rolling 10",
     "a_efg_r10": "Away team effective FG% rolling 10",
-    "h_efg_r20": "Home team effective FG% rolling 20",
-    "a_efg_r20": "Away team effective FG% rolling 20",
+
     "h_threep_rate_r5": "Home team 3PA rate (3PA/FGA) rolling 5",
     "a_threep_rate_r5": "Away team 3PA rate (3PA/FGA) rolling 5",
     "h_threep_rate_r10": "Home team 3PA rate (3PA/FGA) rolling 10",
     "a_threep_rate_r10": "Away team 3PA rate (3PA/FGA) rolling 10",
-    "h_threep_rate_r20": "Home team 3PA rate (3PA/FGA) rolling 20",
-    "a_threep_rate_r20": "Away team 3PA rate (3PA/FGA) rolling 20",
+
     "h_ast_ratio_r5": "Home team assist ratio (AST/FGM) rolling 5",
     "a_ast_ratio_r5": "Away team assist ratio (AST/FGM) rolling 5",
     "h_ast_ratio_r10": "Home team assist ratio (AST/FGM) rolling 10",
     "a_ast_ratio_r10": "Away team assist ratio (AST/FGM) rolling 10",
-    "h_ast_ratio_r20": "Home team assist ratio (AST/FGM) rolling 20",
-    "a_ast_ratio_r20": "Away team assist ratio (AST/FGM) rolling 20",
+
 
     # ── Star player features (season 35 only) ──────────────────────────
     "h_star_ppg_5": "Home team top-3 scorers PPG rolling 5",
@@ -470,10 +459,7 @@ DISPLAY_NAMES: Dict[str, str] = {
     "h_adj_def_10": "Home Adj Def L10",
     "a_adj_off_10": "Away Adj Off L10",
     "a_adj_def_10": "Away Adj Def L10",
-    "h_adj_off_20": "Home Adj Off L20",
-    "h_adj_def_20": "Home Adj Def L20",
-    "a_adj_off_20": "Away Adj Off L20",
-    "a_adj_def_20": "Away Adj Def L20",
+
     "rest_h": "Home Rest",
     "rest_a": "Away Rest",
     "rest_diff": "Rest Diff",
@@ -526,26 +512,22 @@ DISPLAY_NAMES: Dict[str, str] = {
     "a_ortg_r5": "Away ORTG L5",
     "h_ortg_r10": "Home ORTG L10",
     "a_ortg_r10": "Away ORTG L10",
-    "h_ortg_r20": "Home ORTG L20",
-    "a_ortg_r20": "Away ORTG L20",
+
     "h_drtg_r5": "Home DRTG L5",
     "a_drtg_r5": "Away DRTG L5",
     "h_drtg_r10": "Home DRTG L10",
     "a_drtg_r10": "Away DRTG L10",
-    "h_drtg_r20": "Home DRTG L20",
-    "a_drtg_r20": "Away DRTG L20",
+
     "h_net_rtg_r5": "Home Net Rtg L5",
     "a_net_rtg_r5": "Away Net Rtg L5",
     "h_net_rtg_r10": "Home Net Rtg L10",
     "a_net_rtg_r10": "Away Net Rtg L10",
-    "h_net_rtg_r20": "Home Net Rtg L20",
-    "a_net_rtg_r20": "Away Net Rtg L20",
+
     "h_pace_r5": "Home Pace L5",
     "a_pace_r5": "Away Pace L5",
     "h_pace_r10": "Home Pace L10",
     "a_pace_r10": "Away Pace L10",
-    "h_pace_r20": "Home Pace L20",
-    "a_pace_r20": "Away Pace L20",
+
     "net_rtg_diff_5": "Net Rtg Diff L5",
     "net_rtg_diff_10": "Net Rtg Diff L10",
     "pace_diff_5": "Pace Diff L5",
@@ -555,26 +537,22 @@ DISPLAY_NAMES: Dict[str, str] = {
     "a_ft_rate_r5": "Away FTr L5",
     "h_ft_rate_r10": "Home FTr L10",
     "a_ft_rate_r10": "Away FTr L10",
-    "h_ft_rate_r20": "Home FTr L20",
-    "a_ft_rate_r20": "Away FTr L20",
+
     "h_efg_r5": "Home eFG% L5",
     "a_efg_r5": "Away eFG% L5",
     "h_efg_r10": "Home eFG% L10",
     "a_efg_r10": "Away eFG% L10",
-    "h_efg_r20": "Home eFG% L20",
-    "a_efg_r20": "Away eFG% L20",
+
     "h_threep_rate_r5": "Home 3PA% L5",
     "a_threep_rate_r5": "Away 3PA% L5",
     "h_threep_rate_r10": "Home 3PA% L10",
     "a_threep_rate_r10": "Away 3PA% L10",
-    "h_threep_rate_r20": "Home 3PA% L20",
-    "a_threep_rate_r20": "Away 3PA% L20",
+
     "h_ast_ratio_r5": "Home AST/FGM L5",
     "a_ast_ratio_r5": "Away AST/FGM L5",
     "h_ast_ratio_r10": "Home AST/FGM L10",
     "a_ast_ratio_r10": "Away AST/FGM L10",
-    "h_ast_ratio_r20": "Home AST/FGM L20",
-    "a_ast_ratio_r20": "Away AST/FGM L20",
+
 
     # ── Star player features ───────────────────────────────────────────
     "h_star_ppg_5": "Home Stars PPG L5",
@@ -999,6 +977,33 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
         "away_field_goals_attempted": "opp_fga",
         "away_free_throws_attempted": "opp_fta",
         "away_rebounds": "opp_reb",
+        # ── Cumulative stats (pre-computed, season-to-date) ───────────
+        "h_cum_ppg": "cum_ppg",
+        "h_cum_oppg": "cum_oppg",
+        "h_cum_margin_pg": "cum_margin_pg",
+        "h_cum_fg_pct": "cum_fg_pct",
+        "h_cum_fg3_pct": "cum_fg3_pct",
+        "h_cum_ft_pct": "cum_ft_pct",
+        "h_cum_reb_pg": "cum_reb_pg",
+        "h_cum_ast_pg": "cum_ast_pg",
+        "h_cum_stl_pg": "cum_stl_pg",
+        "h_cum_blk_pg": "cum_blk_pg",
+        "h_cum_tov_pg": "cum_tov_pg",
+        "h_cum_pf_pg": "cum_pf_pg",
+        "h_cum_ortg": "cum_ortg",
+        "h_cum_drtg": "cum_drtg",
+        "h_cum_net_ortg": "cum_net_ortg",
+        "h_cum_pace": "cum_pace",
+        "h_cum_efg_pct": "cum_efg_pct",
+        "h_cum_opp_efg_pct": "cum_opp_efg_pct",
+        "h_cum_tov_rate": "cum_tov_rate",
+        "h_cum_opp_tov_rate": "cum_opp_tov_rate",
+        "h_cum_ft_rate": "cum_ft_rate",
+        "h_cum_3pa_rate": "cum_3pa_rate",
+        "h_cum_ast_ratio": "cum_ast_ratio",
+        "h_cum_stl_rate": "cum_stl_rate",
+        "h_cum_blk_rate": "cum_blk_rate",
+        "h_games_played": "games_played",
     }
     away_cols = {
         "game_id": "game_id",
@@ -1032,6 +1037,33 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
         "home_field_goals_attempted": "opp_fga",
         "home_free_throws_attempted": "opp_fta",
         "home_rebounds": "opp_reb",
+        # ── Cumulative stats (pre-computed, season-to-date) ───────────
+        "a_cum_ppg": "cum_ppg",
+        "a_cum_oppg": "cum_oppg",
+        "a_cum_margin_pg": "cum_margin_pg",
+        "a_cum_fg_pct": "cum_fg_pct",
+        "a_cum_fg3_pct": "cum_fg3_pct",
+        "a_cum_ft_pct": "cum_ft_pct",
+        "a_cum_reb_pg": "cum_reb_pg",
+        "a_cum_ast_pg": "cum_ast_pg",
+        "a_cum_stl_pg": "cum_stl_pg",
+        "a_cum_blk_pg": "cum_blk_pg",
+        "a_cum_tov_pg": "cum_tov_pg",
+        "a_cum_pf_pg": "cum_pf_pg",
+        "a_cum_ortg": "cum_ortg",
+        "a_cum_drtg": "cum_drtg",
+        "a_cum_net_ortg": "cum_net_ortg",
+        "a_cum_pace": "cum_pace",
+        "a_cum_efg_pct": "cum_efg_pct",
+        "a_cum_opp_efg_pct": "cum_opp_efg_pct",
+        "a_cum_tov_rate": "cum_tov_rate",
+        "a_cum_opp_tov_rate": "cum_opp_tov_rate",
+        "a_cum_ft_rate": "cum_ft_rate",
+        "a_cum_3pa_rate": "cum_3pa_rate",
+        "a_cum_ast_ratio": "cum_ast_ratio",
+        "a_cum_stl_rate": "cum_stl_rate",
+        "a_cum_blk_rate": "cum_blk_rate",
+        "a_games_played": "games_played",
     }
 
     home_half = df[list(home_cols.keys())].rename(columns=home_cols).copy()
@@ -1098,7 +1130,7 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
 
     season_avg = team_games.groupby("season_id")["score_for"].transform("mean")
 
-    for window in (10, 20):
+    for window in (10,):
         # opp_def_avg = how many points teams typically score against this opponent (measures opponent's defense)
         def_col = f"opp_def_avg_{window}"
         team_games[def_col] = (
@@ -1156,7 +1188,7 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
 
     team_games["won"] = (team_games["score_for"] > team_games["score_against"]).astype(int)
 
-    for window in (5, 10, 20):
+    for window in (5, 10):
         # Team-wide win count (ALL games, not split by venue)
         win_col = f"wins_{window}"
         team_games[win_col] = (
@@ -1189,7 +1221,7 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
 
     # ── Carry to main df ────────────────────────────────────────────
     for metric in nba_adv_metrics + nba_per_poss:
-        for window in (5, 10, 20):
+        for window in (5, 10):
             rolling_col = f"{metric}_r{window}"
             df[f"h_{rolling_col}"] = team_games.loc[
                 team_games["is_home"] == 1, rolling_col
@@ -1411,7 +1443,7 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
     df.drop(columns=["away_travel"], inplace=True, errors="ignore")
 
     # ── Surface opponent-adjusted efficiency to df ────────────────────────
-    for window in (10, 20):
+    for window in (10,):
         home_adj = team_games.loc[
             team_games["is_home"] == 1,
             ["game_id"] + [f"h_{s}_{window}" for s in ("adj_off", "adj_def")],
