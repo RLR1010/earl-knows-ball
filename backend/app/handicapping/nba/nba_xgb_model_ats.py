@@ -332,7 +332,7 @@ async def run_all_years(
 
     unique_years = sorted(df["season_year"].unique())
     # Test only the last 2 years (standard default)
-    test_years = [2021, 2022, 2023, 2024, 2025, 2026]
+    test_years = [2021, 2022, 2023, 2024, 2025]
     logger.info("Test years: %s (all unique years: %s)", test_years, unique_years)
 
     import math
@@ -557,7 +557,7 @@ def predict_ats(
 
 
 # ── Train model (async, full pipeline) ───────────────────────────────────────────
-TEST_YEARS = [2021, 2022, 2023, 2024, 2025, 2026]
+TEST_YEARS = [2021, 2022, 2023, 2024, 2025]
 
 
 def _train_years_for_test_year(test_year: int) -> List[int]:

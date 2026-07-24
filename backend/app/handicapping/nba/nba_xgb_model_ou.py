@@ -290,7 +290,7 @@ async def run_all_years(
     df = df.sort_values(["season_year", "date"]).reset_index(drop=True)
 
     unique_years = sorted(df["season_year"].unique())
-    test_years = [2021, 2022, 2023, 2024, 2025, 2026]
+    test_years = [2021, 2022, 2023, 2024, 2025]
     logger.info("Test years (OU): %s (all unique years: %s)", test_years, unique_years)
 
     import math
@@ -535,7 +535,7 @@ def predict_ou_game(
 
 
 # ── Train model (async full pipeline) ────────────────────────────────────────────
-TEST_YEARS = [2021, 2022, 2023, 2024, 2025, 2026]
+TEST_YEARS = [2021, 2022, 2023, 2024, 2025]
 
 
 def _train_years_for_test_year(test_year: int) -> List[int]:
