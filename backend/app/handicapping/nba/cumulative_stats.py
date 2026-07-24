@@ -21,6 +21,7 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
+import numpy as np
 import pandas as pd
 from sqlalchemy import Engine, create_engine, text as sa_text
 
@@ -102,6 +103,24 @@ CREATE TABLE IF NOT EXISTS {CUM_TABLE} (
     cum_ast_ratio          DOUBLE PRECISION,
     cum_stl_rate           DOUBLE PRECISION,
     cum_blk_rate           DOUBLE PRECISION,
+
+    -- ── Tier 4: Momentum & recency ───────────────────────────────
+    rw3_ppg                DOUBLE PRECISION,
+    rw5_ppg                DOUBLE PRECISION,
+    rw3_net_rtg            DOUBLE PRECISION,
+    rw5_net_rtg            DOUBLE PRECISION,
+    rw3_efg_pct            DOUBLE PRECISION,
+    rw5_efg_pct            DOUBLE PRECISION,
+    rw3_drtg               DOUBLE PRECISION,
+    rw5_drtg               DOUBLE PRECISION,
+    cv10_ppg               DOUBLE PRECISION,
+    cv20_ppg               DOUBLE PRECISION,
+    cv10_net_rtg           DOUBLE PRECISION,
+    recency_ppg            DOUBLE PRECISION,
+    recency_net_rtg        DOUBLE PRECISION,
+
+    -- ── Tier 5: Team quality ───────────────────────────────────────
+    cum_win_pct            DOUBLE PRECISION,
 
     PRIMARY KEY (game_id, team_side)
 );
@@ -353,6 +372,18 @@ ALL_COLS = [
     "cum_tov_rate", "cum_opp_tov_rate",
     "cum_ft_rate", "cum_3pa_rate",
     "cum_ast_ratio", "cum_stl_rate", "cum_blk_rate",
+
+    # Tier 4: Momentum & recency
+    "rw3_ppg", "rw5_ppg",
+    "rw3_net_rtg", "rw5_net_rtg",
+    "rw3_efg_pct", "rw5_efg_pct",
+    "rw3_drtg", "rw5_drtg",
+    "cv10_ppg", "cv20_ppg",
+    "cv10_net_rtg",
+    "recency_ppg", "recency_net_rtg",
+
+    # Tier 5: Team quality
+    "cum_win_pct",
 ]
 
 UPSERT_COLS = [c for c in ALL_COLS if c not in ("game_id", "team_side")]
@@ -415,15 +446,15 @@ def _populate(
     """Internal implementation."""
     summary: dict[str, int] = {"rows_processed": 0}
 
+    if force_rebuild:
+        with engine.begin() as conn:
+            conn.execute(sa_text(f"DROP TABLE IF EXISTS {CUM_TABLE}"))
+            logger.info("Dropped %s (force_rebuild=True).", CUM_TABLE)
+
     # ── Ensure table exists ──
     with engine.begin() as conn:
         conn.execute(sa_text(CREATE_TABLE_SQL))
         logger.info("Table %s ready.", CUM_TABLE)
-
-    if force_rebuild:
-        with engine.begin() as conn:
-            conn.execute(sa_text(f"TRUNCATE {CUM_TABLE}"))
-            logger.info("Truncated %s (force_rebuild=True).", CUM_TABLE)
 
     # ── Load per-game team box scores ──
     team_game_sql = GET_TEAM_GAME_SQL
@@ -464,6 +495,99 @@ def _populate(
     # ── Sort by (team, season, date, game_id) for cumulative computation ──
     df.sort_values(["team_id", "season_id", "game_date", "game_id"], inplace=True)
 
+    # ── Keep a copy of per-game data for momentum/recency stats ──
+    # We need single-game values before cumsum overwrites them.
+    df_raw = df.copy()
+
+    # Compute per-game advanced metrics from single-game box scores
+    df_raw["won"] = (df_raw["points"] > df_raw["points_allowed"]).astype(int)
+
+    def _per_game_ortg(r):
+        r_pts = r.get("points", 0) or 0
+        r_fga = r.get("fga", 0) or 0
+        r_fta = r.get("fta", 0) or 0
+        r_tov = r.get("tov", 0) or 0
+        r_poss = max(r_fga + 0.44 * r_fta + r_tov, 1)
+        return r_pts / r_poss * 100
+
+    df_raw["pg_ortg"] = df_raw.apply(_per_game_ortg, axis=1)
+
+    def _per_game_drtg(r):
+        r_pts = r.get("points_allowed", 0) or 0
+        r_opp_fga = r.get("opp_fga", 0) or 0
+        r_opp_fta = r.get("opp_fta", 0) or 0
+        r_opp_tov = r.get("opp_tov", 0) or 0
+        r_poss = max(r_opp_fga + 0.44 * r_opp_fta + r_opp_tov, 1)
+        return r_pts / r_poss * 100
+
+    df_raw["pg_drtg"] = df_raw.apply(_per_game_drtg, axis=1)
+    df_raw["pg_net_rtg"] = df_raw["pg_ortg"] - df_raw["pg_drtg"]
+
+    def _per_game_efg(r):
+        fgm = r.get("fgm", 0) or 0
+        fgm3 = r.get("fgm3", 0) or 0
+        fga = r.get("fga", 0) or 0
+        return (fgm + 0.5 * fgm3) / fga if fga > 0 else 0.0
+
+    df_raw["pg_efg_pct"] = df_raw.apply(_per_game_efg, axis=1)
+
+    # ── Compute backward-looking momentum/recency per team/season ──
+    grouped_raw = df_raw.groupby(["team_id", "season_id"], sort=False)
+
+    # ── Recency-weighted averages (fully vectorized via shift + weighted sum) ──
+    rw3_w = [0.5, 0.3, 0.2]
+    rw5_w = [0.3, 0.25, 0.2, 0.15, 0.1]
+
+    def _rw3(s: pd.Series) -> pd.Series:
+        s1 = s.shift(1)
+        s2 = s.shift(2)
+        s3 = s.shift(3)
+        wsum = 0.5 * s1 + 0.3 * s2 + 0.2 * s3
+        # First 2 games: all-NaN or partial.  Fill with rolling mean fallback.
+        return wsum.fillna(s1.rolling(2, min_periods=1).mean())
+
+    def _rw5(s: pd.Series) -> pd.Series:
+        s1 = s.shift(1); s2 = s.shift(2); s3 = s.shift(3); s4 = s.shift(4); s5 = s.shift(5)
+        wsum = 0.3 * s1 + 0.25 * s2 + 0.2 * s3 + 0.15 * s4 + 0.1 * s5
+        return wsum.fillna(s1.rolling(4, min_periods=1).mean())
+
+    df_raw["rw3_ppg"] = grouped_raw["points"].transform(_rw3)
+    df_raw["rw5_ppg"] = grouped_raw["points"].transform(_rw5)
+    df_raw["rw3_net_rtg"] = grouped_raw["pg_net_rtg"].transform(_rw3)
+    df_raw["rw5_net_rtg"] = grouped_raw["pg_net_rtg"].transform(_rw5)
+    df_raw["rw3_efg_pct"] = grouped_raw["pg_efg_pct"].transform(_rw3)
+    df_raw["rw5_efg_pct"] = grouped_raw["pg_efg_pct"].transform(_rw5)
+    df_raw["rw3_drtg"] = grouped_raw["pg_drtg"].transform(_rw3)
+    df_raw["rw5_drtg"] = grouped_raw["pg_drtg"].transform(_rw5)
+
+    # ── Coefficient of variation (vectorized) ──
+    def _cv(s: pd.Series, window: int, min_p: int = 3) -> pd.Series:
+        shifted = s.shift(1)
+        roll_std = shifted.rolling(window, min_periods=min_p).std()
+        roll_mean = shifted.rolling(window, min_periods=min_p).mean()
+        return np.where(roll_mean.abs() > 0, roll_std / roll_mean.abs(), 0.0)
+
+    df_raw["cv10_ppg"] = grouped_raw["points"].transform(lambda s: _cv(s, 10))
+    df_raw["cv20_ppg"] = grouped_raw["points"].transform(lambda s: _cv(s, 20))
+    df_raw["cv10_net_rtg"] = grouped_raw["pg_net_rtg"].transform(lambda s: _cv(s, 10))
+
+    # ── Recency (% of total accounted for by last 3 games) ──
+    def _recency(s: pd.Series) -> pd.Series:
+        shifted = s.shift(1)
+        last3 = shifted.rolling(3, min_periods=2).sum()
+        total = shifted.expanding(min_periods=1).sum()
+        return np.where(total.abs() > 0, last3 / total.abs(), 0.0)
+
+    df_raw["recency_ppg"] = grouped_raw["points"].transform(_recency)
+    df_raw["recency_net_rtg"] = grouped_raw["pg_net_rtg"].transform(_recency)
+
+    # ── Tier 5: Team quality ──
+    df_raw["cum_win_pct"] = grouped_raw["won"].transform(
+        lambda s: s.shift(1).expanding(min_periods=1).mean()
+    ).fillna(0.0)
+    # Round to 4 decimals
+    df_raw["cum_win_pct"] = df_raw["cum_win_pct"].round(4)
+
     # ── Compute cumulative sums (shift(1) = backward-looking) ──
     # Cumulative: for game N, we want stats from games 1..N-1.
     # cumsum() gives games 1..N, shift(1) gives 1..N-1.
@@ -474,9 +598,21 @@ def _populate(
     df[cum_sum_cols] = df.groupby(["team_id", "season_id"], sort=False)[cum_sum_cols].shift(1).fillna(0)
     df["games_played"] = grouped.cumcount()
 
+    # ── Define Tier 4/5 column names for merge ──
+    tier45_cols = [
+        "rw3_ppg", "rw5_ppg",
+        "rw3_net_rtg", "rw5_net_rtg",
+        "rw3_efg_pct", "rw5_efg_pct",
+        "rw3_drtg", "rw5_drtg",
+        "cv10_ppg", "cv20_ppg",
+        "cv10_net_rtg",
+        "recency_ppg", "recency_net_rtg",
+        "cum_win_pct",
+    ]
+
     # ── Build result rows ──
     rows: list[dict] = []
-    for _, row in df.iterrows():
+    for idx, row in df.iterrows():
         gs = int(row["games_played"])
 
         # Build dict with cum_ prefixes from raw DataFrame columns
@@ -495,6 +631,16 @@ def _populate(
         tier3 = _compute_tier3(gs, r)
         r.update(tier2)
         r.update(tier3)
+
+        # Look up Tier 4/5 values from df_raw (same sort order, same index)
+        raw_row = df_raw.loc[idx]
+        for col in tier45_cols:
+            val = raw_row.get(col, None)
+            if val is not None and not (isinstance(val, float) and np.isnan(val)):
+                r[col] = round(float(val), 4) if isinstance(val, (float, np.floating)) else val
+            else:
+                r[col] = None
+
         rows.append(r)
 
     logger.info("Prepared %d cumulative rows for upsert.", len(rows))

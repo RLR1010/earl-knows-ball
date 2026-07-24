@@ -206,6 +206,24 @@ team_games AS (
         hcs.cum_stl_rate           AS h_cum_stl_rate,
         hcs.cum_blk_rate           AS h_cum_blk_rate,
 
+        -- Tier 4: Momentum & recency
+        hcs.rw3_ppg                AS h_rw3_ppg,
+        hcs.rw5_ppg                AS h_rw5_ppg,
+        hcs.rw3_net_rtg            AS h_rw3_net_rtg,
+        hcs.rw5_net_rtg            AS h_rw5_net_rtg,
+        hcs.rw3_efg_pct            AS h_rw3_efg_pct,
+        hcs.rw5_efg_pct            AS h_rw5_efg_pct,
+        hcs.rw3_drtg               AS h_rw3_drtg,
+        hcs.rw5_drtg               AS h_rw5_drtg,
+        hcs.cv10_ppg               AS h_cv10_ppg,
+        hcs.cv20_ppg               AS h_cv20_ppg,
+        hcs.cv10_net_rtg           AS h_cv10_net_rtg,
+        hcs.recency_ppg            AS h_recency_ppg,
+        hcs.recency_net_rtg        AS h_recency_net_rtg,
+
+        -- Tier 5: Team quality
+        hcs.cum_win_pct            AS h_cum_win_pct,
+
         -- Away team cumulative stats (backward-looking, season-to-date)
         acs.games_played           AS a_games_played,
         acs.cum_ppg                AS a_cum_ppg,
@@ -232,7 +250,25 @@ team_games AS (
         acs.cum_3pa_rate           AS a_cum_3pa_rate,
         acs.cum_ast_ratio          AS a_cum_ast_ratio,
         acs.cum_stl_rate           AS a_cum_stl_rate,
-        acs.cum_blk_rate           AS a_cum_blk_rate
+        acs.cum_blk_rate           AS a_cum_blk_rate,
+
+        -- Tier 4: Momentum & recency
+        acs.rw3_ppg                AS a_rw3_ppg,
+        acs.rw5_ppg                AS a_rw5_ppg,
+        acs.rw3_net_rtg            AS a_rw3_net_rtg,
+        acs.rw5_net_rtg            AS a_rw5_net_rtg,
+        acs.rw3_efg_pct            AS a_rw3_efg_pct,
+        acs.rw5_efg_pct            AS a_rw5_efg_pct,
+        acs.rw3_drtg               AS a_rw3_drtg,
+        acs.rw5_drtg               AS a_rw5_drtg,
+        acs.cv10_ppg               AS a_cv10_ppg,
+        acs.cv20_ppg               AS a_cv20_ppg,
+        acs.cv10_net_rtg           AS a_cv10_net_rtg,
+        acs.recency_ppg            AS a_recency_ppg,
+        acs.recency_net_rtg        AS a_recency_net_rtg,
+
+        -- Tier 5: Team quality
+        acs.cum_win_pct            AS a_cum_win_pct
     FROM nba.games g
     JOIN nba.teams ht ON ht.id = g.home_team_id
     JOIN nba.teams at ON at.id = g.away_team_id
@@ -329,6 +365,37 @@ FEATURES_CATALOG: Dict[str, str] = {
     "a_cum_ast_ratio": "Away cumulative assist ratio (AST/FGM)",
     "a_cum_stl_rate": "Away cumulative steal rate (STL/opp_poss)",
     "a_cum_blk_rate": "Away cumulative block rate (BLK/opp_FGA)",
+
+    # ── Tier 4: Momentum & recency ─────────────────────────────────────
+    "h_rw3_ppg": "Home trailing 3-game recency-weighted PPG",
+    "h_rw5_ppg": "Home trailing 5-game recency-weighted PPG",
+    "h_rw3_net_rtg": "Home trailing 3-game net rating",
+    "h_rw5_net_rtg": "Home trailing 5-game net rating",
+    "h_rw3_efg_pct": "Home trailing 3-game eFG%",
+    "h_rw5_efg_pct": "Home trailing 5-game eFG%",
+    "h_rw3_drtg": "Home trailing 3-game defensive rating",
+    "h_rw5_drtg": "Home trailing 5-game defensive rating",
+    "h_cv10_ppg": "Home coefficient of variation PPG (last 10)",
+    "h_cv20_ppg": "Home coefficient of variation PPG (last 20)",
+    "h_cv10_net_rtg": "Home coefficient of variation net rating (last 10)",
+    "h_recency_ppg": "Home % of PPG from last 3 games",
+    "h_recency_net_rtg": "Home % of net rating from last 3 games",
+    "h_cum_win_pct": "Home season-to-date win %",
+
+    "a_rw3_ppg": "Away trailing 3-game recency-weighted PPG",
+    "a_rw5_ppg": "Away trailing 5-game recency-weighted PPG",
+    "a_rw3_net_rtg": "Away trailing 3-game net rating",
+    "a_rw5_net_rtg": "Away trailing 5-game net rating",
+    "a_rw3_efg_pct": "Away trailing 3-game eFG%",
+    "a_rw5_efg_pct": "Away trailing 5-game eFG%",
+    "a_rw3_drtg": "Away trailing 3-game defensive rating",
+    "a_rw5_drtg": "Away trailing 5-game defensive rating",
+    "a_cv10_ppg": "Away coefficient of variation PPG (last 10)",
+    "a_cv20_ppg": "Away coefficient of variation PPG (last 20)",
+    "a_cv10_net_rtg": "Away coefficient of variation net rating (last 10)",
+    "a_recency_ppg": "Away % of PPG from last 3 games",
+    "a_recency_net_rtg": "Away % of net rating from last 3 games",
+    "a_cum_win_pct": "Away season-to-date win %",
 }
 
 COMPUTED_FEATURES_CATALOG: Dict[str, str] = {
@@ -1004,6 +1071,22 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
         "h_cum_stl_rate": "cum_stl_rate",
         "h_cum_blk_rate": "cum_blk_rate",
         "h_games_played": "games_played",
+
+        # Tier 4: Momentum & recency
+        "h_rw3_ppg": "rw3_ppg",
+        "h_rw5_ppg": "rw5_ppg",
+        "h_rw3_net_rtg": "rw3_net_rtg",
+        "h_rw5_net_rtg": "rw5_net_rtg",
+        "h_rw3_efg_pct": "rw3_efg_pct",
+        "h_rw5_efg_pct": "rw5_efg_pct",
+        "h_rw3_drtg": "rw3_drtg",
+        "h_rw5_drtg": "rw5_drtg",
+        "h_cv10_ppg": "cv10_ppg",
+        "h_cv20_ppg": "cv20_ppg",
+        "h_cv10_net_rtg": "cv10_net_rtg",
+        "h_recency_ppg": "recency_ppg",
+        "h_recency_net_rtg": "recency_net_rtg",
+        "h_cum_win_pct": "cum_win_pct",
     }
     away_cols = {
         "game_id": "game_id",
@@ -1064,6 +1147,22 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
         "a_cum_stl_rate": "cum_stl_rate",
         "a_cum_blk_rate": "cum_blk_rate",
         "a_games_played": "games_played",
+
+        # Tier 4: Momentum & recency
+        "a_rw3_ppg": "rw3_ppg",
+        "a_rw5_ppg": "rw5_ppg",
+        "a_rw3_net_rtg": "rw3_net_rtg",
+        "a_rw5_net_rtg": "rw5_net_rtg",
+        "a_rw3_efg_pct": "rw3_efg_pct",
+        "a_rw5_efg_pct": "rw5_efg_pct",
+        "a_rw3_drtg": "rw3_drtg",
+        "a_rw5_drtg": "rw5_drtg",
+        "a_cv10_ppg": "cv10_ppg",
+        "a_cv20_ppg": "cv20_ppg",
+        "a_cv10_net_rtg": "cv10_net_rtg",
+        "a_recency_ppg": "recency_ppg",
+        "a_recency_net_rtg": "recency_net_rtg",
+        "a_cum_win_pct": "cum_win_pct",
     }
 
     home_half = df[list(home_cols.keys())].rename(columns=home_cols).copy()
