@@ -753,6 +753,8 @@ async def _run_mlb_stats_refresh():
                 logger.info(f"  Step 9: Updated {pred_updated} predictions with actual results")
             except Exception as e:
                 logger.error(f"  Step 9 prediction result update failed: {e}")
+        except Exception as e:
+            logger.error(f"  Outer boxscore/prediction block failed: {e}")
 
         # Step 10: Refresh cumulative season-to-date stats
         # Pre-computed in mlb.cumulative_game_stats table for fast GAME_QUERY
@@ -768,8 +770,6 @@ async def _run_mlb_stats_refresh():
             logger.error(f"  Step 10 cumulative stats refresh failed: {e}")
 
         await pconn.close()
-    except Exception as e:
-        logger.error(f"  Outer boxscore/prediction block failed: {e}")
 
         # Commit all changes (lineups, pitchers, picks)
         try:

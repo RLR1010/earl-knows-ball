@@ -145,6 +145,7 @@ team_games AS (
         g.home_assists,
         g.home_steals,
         g.home_blocks,
+        g.home_turnovers,
         g.home_fouls,
         g.away_field_goals_made,
         g.away_field_goals_attempted,
@@ -156,6 +157,7 @@ team_games AS (
         g.away_assists,
         g.away_steals,
         g.away_blocks,
+        g.away_turnovers,
         g.away_fouls,
         ht.abbreviation                                                         AS home_abbr,
         ht.name                                                                 AS home_team_name,
@@ -174,12 +176,72 @@ team_games AS (
         ba.over_odds,
         ba.under_odds,
         ba.home_implied_probability,
-        ba.away_implied_probability
+        ba.away_implied_probability,
+
+        -- Home team cumulative stats (backward-looking, season-to-date)
+        hcs.games_played           AS h_games_played,
+        hcs.cum_ppg                AS h_cum_ppg,
+        hcs.cum_oppg               AS h_cum_oppg,
+        hcs.cum_margin_pg          AS h_cum_margin_pg,
+        hcs.cum_fg_pct             AS h_cum_fg_pct,
+        hcs.cum_fg3_pct            AS h_cum_fg3_pct,
+        hcs.cum_ft_pct             AS h_cum_ft_pct,
+        hcs.cum_reb_pg             AS h_cum_reb_pg,
+        hcs.cum_ast_pg             AS h_cum_ast_pg,
+        hcs.cum_stl_pg             AS h_cum_stl_pg,
+        hcs.cum_blk_pg             AS h_cum_blk_pg,
+        hcs.cum_tov_pg             AS h_cum_tov_pg,
+        hcs.cum_pf_pg              AS h_cum_pf_pg,
+        hcs.cum_ortg               AS h_cum_ortg,
+        hcs.cum_drtg               AS h_cum_drtg,
+        hcs.cum_net_ortg           AS h_cum_net_ortg,
+        hcs.cum_pace               AS h_cum_pace,
+        hcs.cum_efg_pct            AS h_cum_efg_pct,
+        hcs.cum_opp_efg_pct        AS h_cum_opp_efg_pct,
+        hcs.cum_tov_rate           AS h_cum_tov_rate,
+        hcs.cum_opp_tov_rate       AS h_cum_opp_tov_rate,
+        hcs.cum_ft_rate            AS h_cum_ft_rate,
+        hcs.cum_3pa_rate           AS h_cum_3pa_rate,
+        hcs.cum_ast_ratio          AS h_cum_ast_ratio,
+        hcs.cum_stl_rate           AS h_cum_stl_rate,
+        hcs.cum_blk_rate           AS h_cum_blk_rate,
+
+        -- Away team cumulative stats (backward-looking, season-to-date)
+        acs.games_played           AS a_games_played,
+        acs.cum_ppg                AS a_cum_ppg,
+        acs.cum_oppg               AS a_cum_oppg,
+        acs.cum_margin_pg          AS a_cum_margin_pg,
+        acs.cum_fg_pct             AS a_cum_fg_pct,
+        acs.cum_fg3_pct            AS a_cum_fg3_pct,
+        acs.cum_ft_pct             AS a_cum_ft_pct,
+        acs.cum_reb_pg             AS a_cum_reb_pg,
+        acs.cum_ast_pg             AS a_cum_ast_pg,
+        acs.cum_stl_pg             AS a_cum_stl_pg,
+        acs.cum_blk_pg             AS a_cum_blk_pg,
+        acs.cum_tov_pg             AS a_cum_tov_pg,
+        acs.cum_pf_pg              AS a_cum_pf_pg,
+        acs.cum_ortg               AS a_cum_ortg,
+        acs.cum_drtg               AS a_cum_drtg,
+        acs.cum_net_ortg           AS a_cum_net_ortg,
+        acs.cum_pace               AS a_cum_pace,
+        acs.cum_efg_pct            AS a_cum_efg_pct,
+        acs.cum_opp_efg_pct        AS a_cum_opp_efg_pct,
+        acs.cum_tov_rate           AS a_cum_tov_rate,
+        acs.cum_opp_tov_rate       AS a_cum_opp_tov_rate,
+        acs.cum_ft_rate            AS a_cum_ft_rate,
+        acs.cum_3pa_rate           AS a_cum_3pa_rate,
+        acs.cum_ast_ratio          AS a_cum_ast_ratio,
+        acs.cum_stl_rate           AS a_cum_stl_rate,
+        acs.cum_blk_rate           AS a_cum_blk_rate
     FROM nba.games g
     JOIN nba.teams ht ON ht.id = g.home_team_id
     JOIN nba.teams at ON at.id = g.away_team_id
     JOIN nba.seasons s ON s.id = g.season_id
     INNER JOIN betting_agg ba ON ba.game_id = g.id
+    LEFT JOIN nba.cumulative_game_stats hcs
+        ON hcs.game_id = g.id AND hcs.team_side = 'home'
+    LEFT JOIN nba.cumulative_game_stats acs
+        ON acs.game_id = g.id AND acs.team_side = 'away'
     WHERE g.status = 'FINAL'
       AND g.home_score IS NOT NULL
       AND g.away_score IS NOT NULL
@@ -212,6 +274,61 @@ FEATURES_CATALOG: Dict[str, str] = {
     "date": "Game date",
     "home_team_id": "Home team ID",
     "away_team_id": "Away team ID",
+
+    # ── Cumulative game stats (pre-computed, backward-looking) ────────
+    "h_games_played": "Home team games played before this game in season",
+    "h_cum_ppg": "Home cumulative PPG (season-to-date, excl. current)",
+    "h_cum_oppg": "Home cumulative opponent PPG",
+    "h_cum_margin_pg": "Home cumulative point margin per game",
+    "h_cum_fg_pct": "Home cumulative FG%",
+    "h_cum_fg3_pct": "Home cumulative 3P%",
+    "h_cum_ft_pct": "Home cumulative FT%",
+    "h_cum_reb_pg": "Home cumulative RPG",
+    "h_cum_ast_pg": "Home cumulative APG",
+    "h_cum_stl_pg": "Home cumulative SPG",
+    "h_cum_blk_pg": "Home cumulative BPG",
+    "h_cum_tov_pg": "Home cumulative TOV per game",
+    "h_cum_pf_pg": "Home cumulative fouls per game",
+    "h_cum_ortg": "Home cumulative offensive rating",
+    "h_cum_drtg": "Home cumulative defensive rating",
+    "h_cum_net_ortg": "Home cumulative net rating",
+    "h_cum_pace": "Home cumulative estimated pace",
+    "h_cum_efg_pct": "Home cumulative effective FG%",
+    "h_cum_opp_efg_pct": "Home cumulative opponent eFG%",
+    "h_cum_tov_rate": "Home cumulative turnover rate",
+    "h_cum_opp_tov_rate": "Home cumulative opponent TOV rate",
+    "h_cum_ft_rate": "Home cumulative free throw rate (FTA/FGA)",
+    "h_cum_3pa_rate": "Home cumulative 3PA rate (3PA/FGA)",
+    "h_cum_ast_ratio": "Home cumulative assist ratio (AST/FGM)",
+    "h_cum_stl_rate": "Home cumulative steal rate (STL/opp_poss)",
+    "h_cum_blk_rate": "Home cumulative block rate (BLK/opp_FGA)",
+
+    "a_games_played": "Away team games played before this game in season",
+    "a_cum_ppg": "Away cumulative PPG (season-to-date, excl. current)",
+    "a_cum_oppg": "Away cumulative opponent PPG",
+    "a_cum_margin_pg": "Away cumulative point margin per game",
+    "a_cum_fg_pct": "Away cumulative FG%",
+    "a_cum_fg3_pct": "Away cumulative 3P%",
+    "a_cum_ft_pct": "Away cumulative FT%",
+    "a_cum_reb_pg": "Away cumulative RPG",
+    "a_cum_ast_pg": "Away cumulative APG",
+    "a_cum_stl_pg": "Away cumulative SPG",
+    "a_cum_blk_pg": "Away cumulative BPG",
+    "a_cum_tov_pg": "Away cumulative TOV per game",
+    "a_cum_pf_pg": "Away cumulative fouls per game",
+    "a_cum_ortg": "Away cumulative offensive rating",
+    "a_cum_drtg": "Away cumulative defensive rating",
+    "a_cum_net_ortg": "Away cumulative net rating",
+    "a_cum_pace": "Away cumulative estimated pace",
+    "a_cum_efg_pct": "Away cumulative effective FG%",
+    "a_cum_opp_efg_pct": "Away cumulative opponent eFG%",
+    "a_cum_tov_rate": "Away cumulative turnover rate",
+    "a_cum_opp_tov_rate": "Away cumulative opponent TOV rate",
+    "a_cum_ft_rate": "Away cumulative free throw rate (FTA/FGA)",
+    "a_cum_3pa_rate": "Away cumulative 3PA rate (3PA/FGA)",
+    "a_cum_ast_ratio": "Away cumulative assist ratio (AST/FGM)",
+    "a_cum_stl_rate": "Away cumulative steal rate (STL/opp_poss)",
+    "a_cum_blk_rate": "Away cumulative block rate (BLK/opp_FGA)",
 }
 
 COMPUTED_FEATURES_CATALOG: Dict[str, str] = {
@@ -613,6 +730,29 @@ class NBADataLoader:
         logger.info("Query returned %d rows in %.2fs", len(df), elapsed)
         return df
 
+    # ── Cumulative stats refresh ──────────────────────────────────────
+
+    def refresh_cumulative_stats(
+        self,
+        force_rebuild: bool = False,
+    ) -> Dict[str, int]:
+        """Refresh the nba.cumulative_game_stats pre-computed table.
+
+        Calls the module-level ``populate_cumulative_stats()``, which
+        runs incremental upserts (only processes new games) unless
+        ``force_rebuild=True`` drops and rebuilds everything.
+
+        Returns
+        -------
+        Summary dict with ``rows_processed``.
+        """
+        from .cumulative_stats import populate_cumulative_stats
+
+        return populate_cumulative_stats(
+            self.db_url,
+            force_rebuild=force_rebuild,
+        )
+
     # ── Load methods ─────────────────────────────────────────────────────────
 
     def load_games(
@@ -675,11 +815,25 @@ class NBADataLoader:
         self,
         seasons: Optional[List[int]] = None,
         limit: Optional[int] = None,
+        refresh_cumulative: bool = True,
+        force_rebuild_cumulative: bool = False,
     ) -> pd.DataFrame:
         """Load game data and apply full feature engineering.
 
         Main entry point for training pipelines.
+
+        Parameters
+        ----------
+        refresh_cumulative :
+            If True, refresh ``nba.cumulative_game_stats`` before loading
+            games (incremental upsert of new games only).
+        force_rebuild_cumulative :
+            If True, drop and rebuild the cumulative stats table entirely.
         """
+        if refresh_cumulative:
+            self.refresh_cumulative_stats(
+                force_rebuild=force_rebuild_cumulative,
+            )
         df = self.load_games(seasons=seasons, limit=limit)
         if df.empty:
             logger.warning("No NBA games found for seasons=%s", seasons)
