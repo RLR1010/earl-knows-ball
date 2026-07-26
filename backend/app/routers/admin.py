@@ -1628,33 +1628,23 @@ async def get_prediction_stats(
         ou_t = r.ou_wins + r.ou_losses
         ml_t = r.ml_wins + r.ml_losses
         # Calibrated confidence-level breakdown for this year
-        # Maps raw margin_conf → calibrated value via empirical lookup
-        try:
-            from app.handicapping.calibrate_confidence import calibrate as _calibrate
-            _HAS_CAL = True
-        except ImportError:
-            _HAS_CAL = False
-
         # Fetch per-model confidence columns for MLB, margin_conf for NFL/NBA
         is_mlb = sport == "mlb"
         if is_mlb:
             conf_cols = "gp.rl_conf, gp.ml_conf, gp.ou_conf"
-            conf_col = "gp.rl_conf"
+            cal_cols = "gp.rl_conf_cal, gp.ml_conf_cal, gp.ou_conf_cal"
         else:
             conf_cols = f"gp.margin_conf as rl_conf, gp.ml_conf as ml_conf, gp.ou_conf as ou_conf"
-            conf_col = "gp.margin_conf"
+            cal_cols = f"gp.ats_conf_cal as rl_conf_cal, gp.ml_conf_cal, gp.ou_conf_cal"
         raw_rows = await db.execute(_sa_text(f"""
             SELECT {conf_col},
                    {conf_cols},
+                   {cal_cols},
                    gp.{rl_col} as ats_result, gp.ou_result, gp.ml_result,
                    gp.ats_profit, gp.ou_profit, gp.ml_profit
             FROM (
                 SELECT DISTINCT ON (gp_inner.game_id) gp_inner.*
-                FROM (
-            SELECT DISTINCT ON (gp_inner.game_id) gp_inner.*
-            FROM {schema}.game_predictions gp_inner
-            ORDER BY gp_inner.game_id, gp_inner.created_at DESC
-        ) gp_inner
+                FROM {schema}.game_predictions gp_inner
                 ORDER BY gp_inner.game_id, gp_inner.created_at DESC
             ) gp
             JOIN {schema}.games g ON g.id = gp.game_id
@@ -1676,17 +1666,23 @@ async def get_prediction_stats(
                      float(cr.ml_conf) if cr.ml_conf is not None else 0.50,
                      float(cr.ou_conf) if cr.ou_conf is not None else 0.50,
                      cr.ats_result, cr.ou_result, cr.ml_result,
-                     cr.ats_profit or 0, cr.ou_profit or 0, cr.ml_profit or 0)
+                     cr.ats_profit or 0, cr.ou_profit or 0, cr.ml_profit or 0,
+                     float(cr.rl_conf_cal) if cr.rl_conf_cal is not None else None,
+                     float(cr.ml_conf_cal) if cr.ml_conf_cal is not None else None,
+                     float(cr.ou_conf_cal) if cr.ou_conf_cal is not None else None)
                     for cr in raw_rows.fetchall()]
 
         # Build per-model breakdowns
         def _build_breakdown(model_type, result_field):
             """model_type: 'ats','ou','ml' | result_field: 'ats_result','ou_result','ml_result'"""
-            # Map model_type to the correct confidence column index in all_raw
-            conf_idx = {"ats": 1, "ml": 2, "ou": 3}[model_type]
+            # Map model_type to confidence column indices in all_raw
+            # Indices: 0=overall, 1=rl_conf, 2=ml_conf, 3=ou_conf, 10=rl_conf_cal, 11=ml_conf_cal, 12=ou_conf_cal
+            raw_idx = {"ats": 1, "ml": 2, "ou": 3}[model_type]
+            cal_idx = {"ats": 10, "ml": 11, "ou": 12}[model_type]
             buckets = {}
             for row in all_raw:
-                cf = row[conf_idx]  # rl_conf, ml_conf, or ou_conf
+                # Use calibrated confidence if available, otherwise raw
+                cf = row[cal_idx] if row[cal_idx] is not None else row[raw_idx]
                 bk = _bucket(cf, model_type)
                 if bk is None:
                     continue
@@ -1739,7 +1735,8 @@ async def get_prediction_stats(
         def _build_overall_breakdown():
             buckets = {}
             for row in all_raw:
-                mc = row[0]  # margin_conf
+                # Use calibrated confidence when available, fall back to raw
+                mc = row[10] if row[10] is not None else row[0]
                 ats_r, ou_r, ml_r = row[4], row[5], row[6]
                 ats_p, ou_p, ml_p = row[7], row[8], row[9]
                 # Normalize results per sport format

@@ -989,6 +989,7 @@ function TrainFeatureModal({ sport, modelType, onClose, onRefresh }: {
   onRefresh: () => void;
 }) {
   const [features, setFeatures] = useState<Array<{name: string; description: string; display_name: string | null; is_trainable: boolean; current_ou: boolean; current_ats: boolean}>>([]);
+  const trainableFeats = features.filter(f => f.is_trainable);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
@@ -1036,7 +1037,11 @@ function TrainFeatureModal({ sport, modelType, onClose, onRefresh }: {
         attempts++;
         const runs: any[] = await api.admin.training.getRuns(sport, modelType);
         const completed = runs.find(
-          (r: any) => r.is_current && r.results_json && r.trained_at > startedAt
+          (r: any) => r.is_current && r.trained_at > startedAt && (
+            // Populated results: non-empty array or non-array object (has keys)
+            (Array.isArray(r.results_json) && r.results_json.length > 0) ||
+            (typeof r.results_json === 'object' && r.results_json !== null && !Array.isArray(r.results_json) && Object.keys(r.results_json).length > 0)
+          )
         );
         if (completed) {
           setStatus(`✅ Training complete — ${completed.pkl_filename}`);
@@ -1080,13 +1085,13 @@ function TrainFeatureModal({ sport, modelType, onClose, onRefresh }: {
           ) : (
             <>
               <div className="flex items-center gap-3 mb-3 text-xs text-gray-500">
-                <button onClick={() => setSelected(new Set(features.map(f => f.name)))} className="text-earl-400 hover:text-earl-300 underline">Select All</button>
+                <button onClick={() => setSelected(new Set(trainableFeats.map(f => f.name)))} className="text-earl-400 hover:text-earl-300 underline">Select All</button>
                 <span>/</span>
                 <button onClick={() => setSelected(new Set())} className="text-earl-400 hover:text-earl-300 underline">Clear All</button>
-                <span className="ml-auto">{selected.size} / {features.length} selected</span>
+                <span className="ml-auto">{selected.size} / {trainableFeats.length} selected</span>
               </div>
               <div className="grid grid-cols-2 gap-1.5">
-                {features.map((feat) => {
+                {trainableFeats.map((feat) => {
                   const isSelected = selected.has(feat.name);
                   return (
                     <label key={feat.name} className={`flex items-start gap-2 px-3 py-2 rounded-lg cursor-pointer text-sm transition-colors ${

@@ -93,9 +93,18 @@ def _load_cache(sport: str):
                 cache[sport] = None
 
 
-def calibrate(raw_conf: float, pick_type: str, sport: str = "nfl") -> float:
-    _load_cache(sport)
-    data = cache.get(sport)
+def calibrate(raw_conf: float, pick_type: str, sport: str = "nfl", curve_data: dict = None) -> float:
+    """
+    Map raw confidence -> calibrated empirical win rate.
+
+    If curve_data is provided (pre-built curve dict), use it directly.
+    Otherwise load the global curve from cache/file.
+    """
+    if curve_data is not None:
+        data = curve_data
+    else:
+        _load_cache(sport)
+        data = cache.get(sport)
     if data is None:
         return raw_conf
 
@@ -122,12 +131,18 @@ def calibrate(raw_conf: float, pick_type: str, sport: str = "nfl") -> float:
     return float(round(y_l + t * (y_r - y_l), 3))
 
 
-async def build_calibration(db, sport: str = "nfl"):
+async def build_calibration(db, sport: str = "nfl", max_exclusive_season: int = None, skip_file_save: bool = False):
     """
     Build calibration curve for a sport by bucketting raw confidence → empirical win rate.
 
-    Queries all API predictions, groups into 20 confidence buckets (2.5% each),
+    Queries all predictions, groups into 20 confidence buckets (2.5% each),
     computes win rate per bucket, and saves to JSON.
+
+    If max_exclusive_season is provided, only uses seasons < that value.
+    This enables honest per-season calibration during backtesting.
+
+    If skip_file_save is True, the curve dict is returned without writing
+    to the global JSON file (used for per-season curves in backtesting).
     """
     if sport not in SPORT_CONFIG:
         logger.warning("Unknown sport: %s", sport)
@@ -136,6 +151,12 @@ async def build_calibration(db, sport: str = "nfl"):
     cfg = SPORT_CONFIG[sport]
     schema = cfg["schema"]
     use_per_model = cfg["use_per_model"]
+
+    season_filter = ""
+    params = {}
+    if max_exclusive_season is not None:
+        season_filter = "  AND gp.season_year < :max_season"
+        params["max_season"] = max_exclusive_season
 
     if use_per_model:
         # ── MLB, NBA: per-model confidence columns ──
@@ -180,9 +201,10 @@ async def build_calibration(db, sport: str = "nfl"):
                 WHERE gp.source IN ('api', 'backtest')
                   AND gp.{col} IS NOT NULL
                   AND {res_filter}
+                {season_filter}
                 GROUP BY bucket
                 ORDER BY bucket
-            """))
+            """), params)
             buckets = []
             for r in raw_rows.fetchall():
                 n = r.n
@@ -231,9 +253,10 @@ async def build_calibration(db, sport: str = "nfl"):
             FROM {schema}.game_predictions gp
             WHERE gp.source IN ('api', 'backtest')
               AND gp.margin_conf IS NOT NULL
+              {season_filter}
             GROUP BY bucket
             ORDER BY bucket
-        """))
+        """), params)
 
         raw_buckets = []
         for r in rows.fetchall():
@@ -263,20 +286,27 @@ async def build_calibration(db, sport: str = "nfl"):
             "ml": _curve("ml_pct"),
         }
 
-    cal_path = _cal_path(sport)
-    cal_path.write_text(json.dumps(data, indent=2))
-
     total = data["meta"]["total_games"]
-    logger.info(
-        "Saved %s calibration (%d buckets %s, %d games)",
-        sport,
-        len(data.get("ats", {}).get("x", [])),
-        "per-model" if use_per_model else "margin_conf",
-        total,
-    )
 
-    # Reload cache
-    _load_cache(sport)
+    if not skip_file_save:
+        cal_path = _cal_path(sport)
+        cal_path.write_text(json.dumps(data, indent=2))
+        logger.info(
+            "Saved %s calibration (%d buckets %s, %d games)",
+            sport,
+            len(data.get("ats", {}).get("x", [])),
+            "per-model" if use_per_model else "margin_conf",
+            total,
+        )
+        # Reload cache
+        _load_cache(sport)
+    else:
+        logger.info(
+            "Built %s calibration (%d buckets, %d games) — file save skipped",
+            sport,
+            len(data.get("ats", {}).get("x", [])),
+            total,
+        )
 
     return data
 

@@ -30,7 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sess
 
 from app.models.nfl.game_prediction import NFLGamePrediction
 from app.handicapping.nfl.data_loader import NFLDataLoader, get_data_loader, get_model_features
-from app.handicapping.calibrate_confidence import calibrate
+from app.handicapping.calibrate_confidence import calibrate, build_calibration
 
 logger = logging.getLogger(__name__)
 
@@ -379,6 +379,18 @@ async def backtest_season(
 
         if save_results:
             year_df = df[df["season_year"] == test_year]
+            first_test_year = min(years)
+            if test_year > first_test_year:
+                # Build calibration curve from all prior seasons (no look-ahead)
+                try:
+                    logger.info("  Building calibration curve from seasons before %d...", test_year)
+                    curve_data = await build_calibration(db, "nfl", max_exclusive_season=test_year, skip_file_save=True)
+                except Exception as e:
+                    logger.warning("  Could not build calibration curve for %d: %s", test_year, e)
+                    curve_data = None
+            else:
+                # First season: no prior data to calibrate with
+                curve_data = None
             logger.info("Saving %d backtest predictions for %s...", len(year_df), test_year)
             ats_model = _load_model_for_year("ats", test_year)
             ou_model = _load_model_for_year("ou", test_year)
@@ -392,6 +404,7 @@ async def backtest_season(
                     ats_features=ats_feats,
                     ou_features=ou_feats,
                     db=db,
+                    curve_data=curve_data,
                 )
 
     return {
@@ -725,6 +738,7 @@ async def _save_backtest_prediction(
     ats_features=None,
     ou_features=None,
     db: AsyncSession = None,
+    curve_data: dict = None,
 ) -> None:
     """Save a single backtest prediction using the NFLGamePrediction ORM model.
 
@@ -875,9 +889,10 @@ async def _save_backtest_prediction(
         ou_raw = round(min(0.5 + ou_confidence_diff * 0.07, 0.92), 4) if ou_confidence_diff is not None else 0.5
 
         # ── Calibrated confidences ───
-        ats_cal = calibrate(margin_conf, "ats", "nfl")
-        ml_cal = calibrate(ml_raw, "ml", "nfl")
-        ou_cal = calibrate(ou_raw, "ou", "nfl")
+        # Use curve_data for honest (backward-looking) calibration during backtesting
+        ats_cal = calibrate(margin_conf, "ats", "nfl", curve_data=curve_data)
+        ml_cal = calibrate(ml_raw, "ml", "nfl", curve_data=curve_data)
+        ou_cal = calibrate(ou_raw, "ou", "nfl", curve_data=curve_data)
 
         # ── Expected value ───
         def _ev(conf_: float, odds_: float) -> float:
