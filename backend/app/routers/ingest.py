@@ -761,7 +761,7 @@ async def _run_mlb_stats_refresh():
         try:
             from app.handicapping.mlb.data_loader import refresh_cumulative_stats
             from app.core.config import settings
-            result = refresh_cumulative_stats(db_url=settings.DATABASE_URL_SYNC)
+            result = refresh_cumulative_stats(db_url=settings.database_url_sync)
             logger.info(
                 f"  Step 10: Cumulative stats refreshed — "
                 f"{result.get('total_inserted', 0)} new rows"

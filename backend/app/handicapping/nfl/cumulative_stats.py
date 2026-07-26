@@ -237,7 +237,7 @@ WITH team_games AS (
     JOIN nfl.game_stats opp
         ON opp.season = s.year AND opp.week = g.week
         AND opp.team_abbr = at.abbreviation
-    WHERE s.year = :season AND g.week >= 1
+    WHERE s.year = :season AND g.week >= 1 AND g.game_type = 'REG'
 
     UNION ALL
 
@@ -317,7 +317,7 @@ WITH team_games AS (
     JOIN nfl.game_stats opp
         ON opp.season = s.year AND opp.week = g.week
         AND opp.team_abbr = ht.abbreviation
-    WHERE s.year = :season AND g.week >= 1
+    WHERE s.year = :season AND g.week >= 1 AND g.game_type = 'REG'
 )
 SELECT * FROM team_games
 ORDER BY date, game_id, team_abbr
@@ -584,6 +584,21 @@ def compute_rates(cum: dict) -> dict:
     r["def_explosive_rate"] = round(float(cum.get("def_explosive_plays_allowed", 0)) / gp_f, 2)
     r["def_three_and_out_rate"] = round(float(cum.get("def_three_and_outs_forced", 0)) / gp_f, 2)
 
+    # Defensive passer rating (NFL formula, cumulative season to date)
+    d_att = float(cum.get("def_pass_att_faced", 0))
+    if d_att > 0:
+        d_cmp = float(cum.get("def_pass_cmp_allowed", 0))
+        d_yds = float(cum.get("def_pass_yds_allowed", 0))
+        d_td = float(cum.get("def_pass_td_allowed", 0))
+        d_int = float(cum.get("def_interceptions", 0))
+        a = max(0, min(2.375, ((d_cmp / d_att) - 0.3) * 5))
+        b = max(0, min(2.375, ((d_yds / d_att) - 3) * 0.25))
+        c = max(0, min(2.375, (d_td / d_att) * 20))
+        dd = max(0, min(2.375, 2.375 - ((d_int / d_att) * 25)))
+        r["def_pass_qbr"] = round(((a + b + c + dd) / 6) * 100, 2)
+    else:
+        r["def_pass_qbr"] = 0.0
+
     # EPA/play (defense)
     def_epa_total = float(cum.get("def_passing_epa_allowed", 0) or 0) + float(cum.get("def_rushing_epa_allowed", 0) or 0)
     r["def_epa_per_play"] = round(def_epa_total / dpl, 3) if dpl else 0.0
@@ -650,6 +665,7 @@ UPSERT_COLS = [
     "def_fourth_down_pct", "def_rz_td_pct", "def_sack_rate", "def_takeaway_rate",
     "def_explosive_rate", "def_three_and_out_rate",
     "def_epa_per_play",
+    "def_pass_qbr",
     # Differentials
     "point_differential_avg", "yardage_differential_avg",
     "pass_yds_differential_avg", "rush_yds_differential_avg",
@@ -659,6 +675,67 @@ UPSERT_COLS = [
     # Recency-weighted
     "rw_off_ppg", "rw_off_ypg", "rw_def_ppg", "rw_def_ypg",
 ]
+
+
+# ──────────────── Ranking Computation ────────────────
+
+RANK_CONFIGS = [
+    # (col_name, source_stat, ascending)
+    # offensive: higher is better → ascending=False (rank 1 = highest)
+    # defensive: lower is better → ascending=True (rank 1 = lowest)
+    ("off_yardage_rank", "off_ypg", False),
+    ("def_yardage_rank", "def_ypg_allowed", True),
+    ("off_scoring_rank", "off_ppg", False),
+    ("def_scoring_rank", "def_ppg_allowed", True),
+    ("off_rushing_rank", "off_rush_ypg", False),
+    ("def_rushing_rank", "def_rush_ypg_allowed", True),
+    ("off_passing_rank", "off_pass_ypg", False),
+    ("def_passing_rating_rank", "def_pass_qbr", True),
+]
+
+
+async def compute_rankings(db: AsyncSession, season: int):
+    """
+    Compute league-wide rankings 1-32 for each week.
+    Teams on bye carry forward their most recent stats so they
+    stay ranked correctly even when they don't have a
+    cumulative_game_stats row that week.
+    """
+    conn = await db.connection()
+
+    for rank_col, source_col, ascending in RANK_CONFIGS:
+        order = "ASC" if ascending else "DESC"
+        await conn.execute(text(f"""
+            WITH weeks AS (
+                SELECT DISTINCT week FROM nfl.cumulative_game_stats WHERE season = :s
+            ),
+            team_weeks AS (
+                SELECT t.abbreviation, w.week
+                FROM (SELECT DISTINCT team_abbr AS abbreviation FROM nfl.cumulative_game_stats WHERE season = :s) t
+                CROSS JOIN weeks w
+            ),
+            latest_stats AS (
+                SELECT DISTINCT ON (tw.abbreviation, tw.week)
+                    tw.abbreviation AS team_abbr, tw.week, cum.{source_col}
+                FROM team_weeks tw
+                LEFT JOIN nfl.cumulative_game_stats cum
+                    ON cum.season = :s AND cum.team_abbr = tw.abbreviation AND cum.week <= tw.week
+                ORDER BY tw.abbreviation, tw.week, cum.week DESC
+            ),
+            ranked AS (
+                SELECT team_abbr, week,
+                    ROW_NUMBER() OVER (PARTITION BY week ORDER BY {source_col} {order}) AS rn
+                FROM latest_stats
+                WHERE {source_col} IS NOT NULL
+            )
+            UPDATE nfl.cumulative_game_stats cum
+            SET {rank_col} = ranked.rn::smallint
+            FROM ranked
+            WHERE cum.season = :s AND cum.team_abbr = ranked.team_abbr AND cum.week = ranked.week
+        """), {"s": season})
+
+    await conn.commit()
+    logger.info(f"Rankings computed for season {season}")
 
 
 # ──────────────── Public API ────────────────
@@ -750,6 +827,7 @@ async def recompute(db: AsyncSession, seasons: Optional[list[int]] = None) -> di
     for season in seasons:
         res = await compute_for_season(db, season)
         results[season] = res
+        await compute_rankings(db, season)
 
     return results
 
@@ -790,6 +868,7 @@ async def refresh_cumulative_stats(db: AsyncSession) -> dict:
             results[season] = await compute_for_season(db, season)
         else:
             logger.info(f"Season {season}: up to date (max_week={max_week})")
+        await compute_rankings(db, season)
 
     return results
 

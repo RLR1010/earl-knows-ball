@@ -1397,7 +1397,7 @@ async def get_mlb_features(
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(f"SELECT name, description, display_name, is_trainable, current_ou, current_ats, "
-                        f"created_at FROM {sport}.features WHERE is_trainable = true ORDER BY display_name, name")
+                        f"created_at FROM {sport}.features ORDER BY display_name, name")
             rows = cur.fetchall()
             return {"features": [dict(r) for r in rows]}
     finally:
@@ -3307,7 +3307,15 @@ async def data_loader_load_game(
                     def_epa_per_play,
                     def_pts_stddev_5, def_yds_stddev_5,
                     rw_def_ppg, rw_def_ypg,
-                    adj_def_ppg, adj_def_ypg
+                    adj_def_ppg, adj_def_ypg,
+                    off_yardage_rank,
+                    def_yardage_rank,
+                    off_scoring_rank,
+                    def_scoring_rank,
+                    off_rushing_rank,
+                    def_rushing_rank,
+                    off_passing_rank,
+                    def_passing_rating_rank
                 FROM nfl.cumulative_game_stats
                 ORDER BY season, week, team_abbr
             """)

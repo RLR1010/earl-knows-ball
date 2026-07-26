@@ -1318,26 +1318,25 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
                 .transform(lambda s: s.ffill())
             )
 
-    # ── Carry to main df ────────────────────────────────────────────
+    # ── Carry to main df (merge by game_id — team_games is sorted by team, not chrono) ──
+    _hl = team_games[team_games["is_home"] == 1].set_index("game_id")
+    _al = team_games[team_games["is_home"] == 0].set_index("game_id")
+
     for metric in nba_adv_metrics + nba_per_poss:
         for window in (5, 10):
             rolling_col = f"{metric}_r{window}"
-            df[f"h_{rolling_col}"] = team_games.loc[
-                team_games["is_home"] == 1, rolling_col
-            ].values
-            df[f"a_{rolling_col}"] = team_games.loc[
-                team_games["is_home"] == 0, rolling_col
-            ].values
+            df[f"h_{rolling_col}"] = df["game_id"].map(_hl[rolling_col])
+            df[f"a_{rolling_col}"] = df["game_id"].map(_al[rolling_col])
 
         # Also carry current-game non-rolling values for reference
-        df[f"h_{metric}"] = team_games.loc[team_games["is_home"] == 1, metric].values
-        df[f"a_{metric}"] = team_games.loc[team_games["is_home"] == 0, metric].values
+        df[f"h_{metric}"] = df["game_id"].map(_hl[metric])
+        df[f"a_{metric}"] = df["game_id"].map(_al[metric])
 
     # ── Team-wide win count (from long-form team_games, NOT venue-split) ──
     for window in (5, 10):
         win_col = f"wins_{window}"
-        df[f"h_{win_col}"] = team_games.loc[team_games["is_home"] == 1, win_col].values
-        df[f"a_{win_col}"] = team_games.loc[team_games["is_home"] == 0, win_col].values
+        df[f"h_{win_col}"] = df["game_id"].map(_hl[win_col])
+        df[f"a_{win_col}"] = df["game_id"].map(_al[win_col])
 
     # ── Net Rating differential ─────────────────────────────────────
     df["net_rtg_diff_5"] = df["h_net_rtg_r5"] - df["a_net_rtg_r5"]
@@ -1465,10 +1464,12 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
     ).dt.days
     team_games["b2b"] = (team_games["rest_days"] == 1).astype(int)
 
-    df["rest_h"] = team_games.loc[team_games["is_home"] == 1, "rest_days"].values
-    df["rest_a"] = team_games.loc[team_games["is_home"] == 0, "rest_days"].values
-    df["home_b2b"] = team_games.loc[team_games["is_home"] == 1, "b2b"].values
-    df["away_b2b"] = team_games.loc[team_games["is_home"] == 0, "b2b"].values
+    _hl2 = team_games[team_games["is_home"] == 1].set_index("game_id")
+    _al2 = team_games[team_games["is_home"] == 0].set_index("game_id")
+    df["rest_h"] = df["game_id"].map(_hl2["rest_days"])
+    df["rest_a"] = df["game_id"].map(_al2["rest_days"])
+    df["home_b2b"] = df["game_id"].map(_hl2["b2b"])
+    df["away_b2b"] = df["game_id"].map(_al2["b2b"])
 
     df["rest_diff"] = df["rest_h"] - df["rest_a"]
     df["rest_diff"] = df["rest_diff"].fillna(0)
@@ -1490,12 +1491,14 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
         team_games.loc[idx, "four_in_five"] = _schedule_density_values(grp, 5, 4)
         team_games.loc[idx, "five_in_eight"] = _schedule_density_values(grp, 8, 5)
 
-    df["h_three_in_four"] = team_games.loc[team_games["is_home"] == 1, "three_in_four"].values
-    df["a_three_in_four"] = team_games.loc[team_games["is_home"] == 0, "three_in_four"].values
-    df["h_four_in_five"] = team_games.loc[team_games["is_home"] == 1, "four_in_five"].values
-    df["a_four_in_five"] = team_games.loc[team_games["is_home"] == 0, "four_in_five"].values
-    df["h_five_in_eight"] = team_games.loc[team_games["is_home"] == 1, "five_in_eight"].values
-    df["a_five_in_eight"] = team_games.loc[team_games["is_home"] == 0, "five_in_eight"].values
+    _hl3 = team_games[team_games["is_home"] == 1].set_index("game_id")
+    _al3 = team_games[team_games["is_home"] == 0].set_index("game_id")
+    df["h_three_in_four"] = df["game_id"].map(_hl3["three_in_four"])
+    df["a_three_in_four"] = df["game_id"].map(_al3["three_in_four"])
+    df["h_four_in_five"] = df["game_id"].map(_hl3["four_in_five"])
+    df["a_four_in_five"] = df["game_id"].map(_al3["four_in_five"])
+    df["h_five_in_eight"] = df["game_id"].map(_hl3["five_in_eight"])
+    df["a_five_in_eight"] = df["game_id"].map(_al3["five_in_eight"])
 
     # ═══════════════════════════════════════════════════════════════════════════
     #  3. Travel miles (haversine)

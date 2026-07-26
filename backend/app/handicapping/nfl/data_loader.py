@@ -385,6 +385,24 @@ COMPUTED_FEATURES_CATALOG: Dict[str, str] = {
     "away_def_rush_ypg": "Away Def Rush YPG",
     "home_injury_weight": "Home Injury Weight",
     "away_injury_weight": "Away Injury Weight",
+
+    # ── Rankings (added 2026-07-25) ──
+    "home_off_yardage_rank": "Off YPG Rank H",
+    "away_off_yardage_rank": "Off YPG Rank A",
+    "home_def_yardage_rank": "Def YPG Rank H",
+    "away_def_yardage_rank": "Def YPG Rank A",
+    "home_off_scoring_rank": "Off Pts Rank H",
+    "away_off_scoring_rank": "Off Pts Rank A",
+    "home_def_scoring_rank": "Def Pts Rank H",
+    "away_def_scoring_rank": "Def Pts Rank A",
+    "home_off_rushing_rank": "Rush YPG Rank H",
+    "away_off_rushing_rank": "Rush YPG Rank A",
+    "home_def_rushing_rank": "Def Rush YPG Rank H",
+    "away_def_rushing_rank": "Def Rush YPG Rank A",
+    "home_off_passing_rank": "Pass YPG Rank H",
+    "away_off_passing_rank": "Pass YPG Rank A",
+    "home_def_passing_rating_rank": "Def Pass QBR Rank H",
+    "away_def_passing_rating_rank": "Def Pass QBR Rank A",
 }
 
 # Human-readable short labels for every feature (matches nfl.features.display_name)
@@ -479,6 +497,24 @@ DISPLAY_NAMES: Dict[str, str] = {
     "away_def_rush_ypg": "D-Rush YPG A",
     "home_injury_weight": "Inj Wt H",
     "away_injury_weight": "Inj Wt A",
+
+    # ── Rankings ──
+    "home_off_yardage_rank": "Off YPG Rn H",
+    "away_off_yardage_rank": "Off YPG Rn A",
+    "home_def_yardage_rank": "Def YPG Rn H",
+    "away_def_yardage_rank": "Def YPG Rn A",
+    "home_off_scoring_rank": "Off Pts Rn H",
+    "away_off_scoring_rank": "Off Pts Rn A",
+    "home_def_scoring_rank": "Def Pts Rn H",
+    "away_def_scoring_rank": "Def Pts Rn A",
+    "home_off_rushing_rank": "Rush YPG Rn H",
+    "away_off_rushing_rank": "Rush YPG Rn A",
+    "home_def_rushing_rank": "Def Rush YPG Rn H",
+    "away_def_rushing_rank": "Def Rush YPG Rn A",
+    "home_off_passing_rank": "Pass YPG Rn H",
+    "away_off_passing_rank": "Pass YPG Rn A",
+    "home_def_passing_rating_rank": "Def Pass QBR Rn H",
+    "away_def_passing_rating_rank": "Def Pass QBR Rn A",
 }
 
 
@@ -798,7 +834,15 @@ class NFLDataLoader:
                     def_epa_per_play,
                     def_pts_stddev_5, def_yds_stddev_5,
                     rw_def_ppg, rw_def_ypg,
-                    adj_def_ppg, adj_def_ypg
+                    adj_def_ppg, adj_def_ypg,
+                    off_yardage_rank,
+                    def_yardage_rank,
+                    off_scoring_rank,
+                    def_scoring_rank,
+                    off_rushing_rank,
+                    def_rushing_rank,
+                    off_passing_rank,
+                    def_passing_rating_rank
                 FROM nfl.cumulative_game_stats
                 ORDER BY season, week, team_abbr
             """
@@ -1141,46 +1185,119 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
     tg = pd.concat([home_long, away_long], ignore_index=True)
     tg = tg.sort_values(["team_id", "date", "game_id"]).reset_index(drop=True)
 
+    # ── Load prior-season team stats for first-game NaN seeding ─────
+    # Replaces hardcoded fillna(0.5) / fillna(0.0) with prior-season averages
+    # for the first game of each team each season.
+    prior_map = {}
+    try:
+        from app.core.config import settings as _s
+        p_url = str(_s.database_url).replace("+asyncpg", "")
+        from sqlalchemy import create_engine as _ce
+        from sqlalchemy import text as _qt
+        _pe = _ce(p_url)
+        with _pe.connect() as _cx:
+            _db = _cx.execute(_qt("SELECT * FROM nfl.prior_team_stats")).fetchall()
+        for _r in _db:
+            prior_map[(_r.team_abbr, _r.season)] = {
+                "win_pct": _r.win_pct or 0.5,
+                "margin": _r.point_differential or 0.0,
+                "off_ppg": _r.off_ppg or 0.0,
+                "def_ppg": _r.def_ppg or 0.0,
+                # Offensive stats
+                "off_ypg": _r.off_ypg or 0.0,
+                "off_pass_ypg": _r.off_pass_ypg or 0.0,
+                "off_rush_ypg": _r.off_rush_ypg or 0.0,
+                "off_ypa": _r.off_ypa or 0.0,
+                "off_cmp_pct": _r.off_cmp_pct or 0.0,
+                "off_third_down_pct": _r.off_third_down_pct or 0.5,
+                "off_rz_td_pct": _r.off_rz_td_pct or 0.5,
+                "off_explosive_rate": _r.off_explosive_rate or 0.1,
+                "off_three_and_out_rate": _r.off_three_and_out_rate or 0.1,
+                "off_epa_per_play": _r.off_epa_per_play or 0.0,
+                # Defensive stats
+                "def_ypg": _r.def_ypg or 0.0,
+                "def_pass_ypg": _r.def_pass_ypg or 0.0,
+                "def_rush_ypg": _r.def_rush_ypg or 0.0,
+                "def_ypa_allowed": _r.def_ypa_allowed or 0.0,
+                "def_cmp_pct_allowed": _r.def_cmp_pct_allowed or 0.0,
+                "def_third_down_pct": _r.def_third_down_pct or 0.5,
+                "def_sack_rate": _r.def_sack_rate or 0.0,
+                "def_explosive_rate": _r.def_explosive_rate or 0.1,
+                "def_three_and_out_rate": _r.def_three_and_out_rate or 0.1,
+                "def_epa_per_play": _r.def_epa_per_play or 0.0,
+                # Rolling-weighted
+                "rw_off_ppg": _r.rw_off_ppg or _r.off_ppg or 0.0,
+                "rw_off_ypg": _r.rw_off_ypg or _r.off_ypg or 0.0,
+                "rw_def_ppg": _r.rw_def_ppg or _r.def_ppg or 0.0,
+                "rw_def_ypg": _r.rw_def_ypg or _r.def_ypg or 0.0,
+                # Adjusted stats
+                "adj_off_ppg": _r.adj_off_ppg or _r.rw_off_ppg or _r.off_ppg or 0.0,
+                "adj_off_ypg": _r.adj_off_ypg or _r.rw_off_ypg or _r.off_ypg or 0.0,
+                "adj_def_ppg": _r.adj_def_ppg or _r.rw_def_ppg or _r.def_ppg or 0.0,
+                "adj_def_ypg": _r.adj_def_ypg or _r.rw_def_ypg or _r.def_ypg or 0.0,
+                # Streak
+                "win_streak": _r.win_streak or 0,
+            }
+        _pe.dispose()
+    except Exception:
+        pass
+
     # ── Compute team-overall rolling stats on the long frame ────────────
+    def _first_fill(series: pd.Series, prior_key: str,
+                    default_val: float = 0.5) -> pd.Series:
+        """Rolling mean; first-game NaN gets prior-season value."""
+        r = series.copy()
+        m = r.isna()
+        if m.any():
+            for i in r[m].index:
+                tm = tg.loc[i, "team_abbr"]
+                sy = tg.loc[i, "season_year"]
+                pv = prior_map.get((tm, sy - 1), {}).get(prior_key, default_val)
+                r.loc[i] = pv
+            r = r.fillna(default_val)
+        return r
+
     for window in [3, 5, 10]:
-        tg[f"win_pct_r{window}"] = (
-            tg.groupby("team_id")["won"]
-            .transform(lambda s: s.shift(1).rolling(window, min_periods=1).mean())
-            .fillna(0.5)
+        tg[f"win_pct_r{window}"] = _first_fill(
+            tg.groupby(["team_id", "season_year"])["won"]
+            .transform(lambda s: s.shift(1).rolling(window, min_periods=1).mean()),
+            "win_pct", 0.5
         )
-        tg[f"margin_r{window}"] = (
-            tg.groupby("team_id")["margin"]
-            .transform(lambda s: s.shift(1).rolling(window, min_periods=1).mean())
-            .fillna(0.0)
+        tg[f"margin_r{window}"] = _first_fill(
+            tg.groupby(["team_id", "season_year"])["margin"]
+            .transform(lambda s: s.shift(1).rolling(window, min_periods=1).mean()),
+            "margin", 0.0
         )
-        tg[f"cover_pct_r{window}"] = (
-            tg.groupby("team_id")["cover"]
-            .transform(lambda s: s.shift(1).rolling(window, min_periods=1).mean())
-            .fillna(0.5)
+        tg[f"cover_pct_r{window}"] = _first_fill(
+            tg.groupby(["team_id", "season_year"])["cover"]
+            .transform(lambda s: s.shift(1).rolling(window, min_periods=1).mean()),
+            "win_pct", 0.5
         )
         if window == 10:
-            tg["pf"] = (
-                tg.groupby("team_id")["score"]
-                .transform(lambda s: s.shift(1).rolling(10, min_periods=1).mean())
+            tg["pf"] = _first_fill(
+                tg.groupby(["team_id", "season_year"])["score"]
+                .transform(lambda s: s.shift(1).rolling(10, min_periods=1).mean()),
+                "off_ppg", 0.0
             )
-            tg["pa"] = (
-                tg.groupby("team_id")["opp_score"]
-                .transform(lambda s: s.shift(1).rolling(10, min_periods=1).mean())
+            tg["pa"] = _first_fill(
+                tg.groupby(["team_id", "season_year"])["opp_score"]
+                .transform(lambda s: s.shift(1).rolling(10, min_periods=1).mean()),
+                "def_ppg", 0.0
             )
 
     # OU features
     if "ou_margin" in tg.columns:
         tg["cover_as_over"] = (tg["ou_margin"] > 0).astype(float)
         for window in [3, 5, 10]:
-            tg[f"ou_over_pct_r{window}"] = (
-                tg.groupby("team_id")["cover_as_over"]
-                .transform(lambda s: s.shift(1).rolling(window, min_periods=1).mean())
-                .fillna(0.5)
+            tg[f"ou_over_pct_r{window}"] = _first_fill(
+                tg.groupby(["team_id", "season_year"])["cover_as_over"]
+                .transform(lambda s: s.shift(1).rolling(window, min_periods=1).mean()),
+                "win_pct", 0.5
             )
-            tg[f"ou_margin_r{window}"] = (
+            tg[f"ou_margin_r{window}"] = _first_fill(
                 tg.groupby("team_id")["ou_margin"]
-                .transform(lambda s: s.shift(1).rolling(window, min_periods=1).mean())
-                .fillna(0.0)
+                .transform(lambda s: s.shift(1).rolling(window, min_periods=1).mean()),
+                "margin", 0.0
             )
         tg["ou_as_over_pct_r10"] = tg["ou_over_pct_r10"]
 
@@ -1234,15 +1351,25 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
                 break
         return streak
 
-    for stat_name, stat_col in [("win", "won"), ("ats", "cover")]:
-        tg[f"{stat_name}_streak"] = (
-            tg.groupby("team_id")[stat_col]
-            .transform(
-                lambda s: s.shift(1)
-                .rolling(5, min_periods=1)
-                .apply(lambda x: _compute_streak(x.values) if len(x) > 0 else 0)
-            )
-        ).fillna(0).astype(int)
+    # Win streak resets per season (week 1 = 0)
+    tg["win_streak"] = (
+        tg.groupby(["team_id", "season_year"])["won"]
+        .transform(
+            lambda s: s.shift(1)
+            .rolling(5, min_periods=1)
+            .apply(lambda x: _compute_streak(x.values) if len(x) > 0 else 0)
+        )
+    ).fillna(0).astype(int)
+
+    # ATS streak carries across seasons (no season_year partition)
+    tg["ats_streak"] = (
+        tg.groupby("team_id")["cover"]
+        .transform(
+            lambda s: s.shift(1)
+            .rolling(5, min_periods=1)
+            .apply(lambda x: _compute_streak(x.values) if len(x) > 0 else 0)
+        )
+    ).fillna(0).astype(int)
 
     # Weighted (decayed) margin
     decay_weights = np.array([0.0625, 0.125, 0.25, 0.5, 1.0])
@@ -1255,14 +1382,15 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
         w = decay_weights[-len(vals):]
         return float(np.average(vals, weights=w))
 
-    tg["weighted_margin_r5"] = (
+    tg["weighted_margin_r5"] = _first_fill(
         tg.groupby("team_id")["margin"]
         .transform(
             lambda s: s.shift(1)
             .rolling(5, min_periods=1)
             .apply(_weighted_avg)
-        )
-    ).fillna(0.0)
+        ),
+        "margin", 0.0
+    )
 
     # ── Join team-overall stats back into wide DataFrame ──────────────────
     home_stats = tg[tg["position"] == "home"].set_index("game_id")
@@ -1399,6 +1527,10 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
             "rw_off_ypg": "home_rw_off_ypg",
             "adj_off_ppg": "home_adj_off_ppg",
             "adj_off_ypg": "home_adj_off_ypg",
+            "off_yardage_rank": "home_off_yardage_rank",
+            "off_scoring_rank": "home_off_scoring_rank",
+            "off_rushing_rank": "home_off_rushing_rank",
+            "off_passing_rank": "home_off_passing_rank",
         })
         _ho_cols = [season_col, "week", "home_abbr",
                     "home_off_ypg", "home_ypp", "home_pass_ypg",
@@ -1411,7 +1543,9 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
                     "home_off_epa_per_play", "home_win_streak",
                     "home_off_pts_stddev_5", "home_off_yds_stddev_5",
                     "home_rw_off_ppg", "home_rw_off_ypg",
-                    "home_adj_off_ppg", "home_adj_off_ypg"]
+                    "home_adj_off_ppg", "home_adj_off_ypg",
+                    "home_off_yardage_rank", "home_off_scoring_rank",
+                    "home_off_rushing_rank", "home_off_passing_rank"]
         _ho_cols = [c for c in _ho_cols if c in home_off.columns]
         df = df.merge(
             home_off[_ho_cols],
@@ -1446,6 +1580,10 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
             "rw_off_ypg": "away_rw_off_ypg",
             "adj_off_ppg": "away_adj_off_ppg",
             "adj_off_ypg": "away_adj_off_ypg",
+            "off_yardage_rank": "away_off_yardage_rank",
+            "off_scoring_rank": "away_off_scoring_rank",
+            "off_rushing_rank": "away_off_rushing_rank",
+            "off_passing_rank": "away_off_passing_rank",
         })
         _ao_cols = [season_col, "week", "away_abbr",
                     "away_off_ypg", "away_ypp", "away_pass_ypg",
@@ -1458,7 +1596,9 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
                     "away_off_epa_per_play", "away_win_streak",
                     "away_off_pts_stddev_5", "away_off_yds_stddev_5",
                     "away_rw_off_ppg", "away_rw_off_ypg",
-                    "away_adj_off_ppg", "away_adj_off_ypg"]
+                    "away_adj_off_ppg", "away_adj_off_ypg",
+                    "away_off_yardage_rank", "away_off_scoring_rank",
+                    "away_off_rushing_rank", "away_off_passing_rank"]
         _ao_cols = [c for c in _ao_cols if c in away_off.columns]
         df = df.merge(
             away_off[_ao_cols],
@@ -1490,6 +1630,10 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
             "rw_def_ypg": "home_rw_def_ypg",
             "adj_def_ppg": "home_adj_def_ppg",
             "adj_def_ypg": "home_adj_def_ypg",
+            "def_yardage_rank": "home_def_yardage_rank",
+            "def_scoring_rank": "home_def_scoring_rank",
+            "def_rushing_rank": "home_def_rushing_rank",
+            "def_passing_rating_rank": "home_def_passing_rating_rank",
         })
         _hd_cols = [season_col, "week", "home_abbr",
                     "home_def_ypg", "home_def_ypp",
@@ -1501,7 +1645,9 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
                     "home_def_epa_per_play", "home_def_pts_stddev_5",
                     "home_def_yds_stddev_5", "home_rw_def_ppg",
                     "home_rw_def_ypg", "home_adj_def_ppg",
-                    "home_adj_def_ypg"]
+                    "home_adj_def_ypg",
+                    "home_def_yardage_rank", "home_def_scoring_rank",
+                    "home_def_rushing_rank", "home_def_passing_rating_rank"]
         _hd_cols = [c for c in _hd_cols if c in home_def.columns]
         df = df.merge(
             home_def[_hd_cols],
@@ -1532,6 +1678,10 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
             "rw_def_ypg": "away_rw_def_ypg",
             "adj_def_ppg": "away_adj_def_ppg",
             "adj_def_ypg": "away_adj_def_ypg",
+            "def_yardage_rank": "away_def_yardage_rank",
+            "def_scoring_rank": "away_def_scoring_rank",
+            "def_rushing_rank": "away_def_rushing_rank",
+            "def_passing_rating_rank": "away_def_passing_rating_rank",
         })
         _ad_cols = [season_col, "week", "away_abbr",
                     "away_def_ypg", "away_def_ypp",
@@ -1543,7 +1693,9 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
                     "away_def_epa_per_play", "away_def_pts_stddev_5",
                     "away_def_yds_stddev_5", "away_rw_def_ppg",
                     "away_rw_def_ypg", "away_adj_def_ppg",
-                    "away_adj_def_ypg"]
+                    "away_adj_def_ypg",
+                    "away_def_yardage_rank", "away_def_scoring_rank",
+                    "away_def_rushing_rank", "away_def_passing_rating_rank"]
         _ad_cols = [c for c in _ad_cols if c in away_def.columns]
         df = df.merge(
             away_def[_ad_cols],
@@ -1574,12 +1726,79 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
             "def_pts_stddev_5", "def_yds_stddev_5",
             "rw_def_ppg", "rw_def_ypg",
             "adj_def_ppg", "adj_def_ypg",
+            # Rankings (display only, not trainable)
+            "off_yardage_rank",
+            "def_yardage_rank",
+            "off_scoring_rank",
+            "def_scoring_rank",
+            "off_rushing_rank",
+            "def_rushing_rank",
+            "off_passing_rank",
+            "def_passing_rating_rank",
         ]
+        # Mapping from stat_suffix (team_stats alias) to prior_map key
+        # Mapping from team_stats suffix (after alias) to prior_team_stats column
+        _suffix_to_prior = {
+            "off_ypg": "off_ypg",
+            "ypp": None,
+            "pass_ypg": "off_pass_ypg",
+            "rush_ypg": "off_rush_ypg",
+            "pass_ypa": "off_ypa",
+            "rush_ypa": None,
+            "turnover_diff_r5": None,
+            "def_ypg": "def_ypg",
+            "def_ypp": None,
+            "def_pass_ypg": "def_pass_ypg",
+            "def_rush_ypg": "def_rush_ypg",
+            "first_downs": None,
+            "third_down_pct": "off_third_down_pct",
+            "fourth_down_pct": None,
+            "rz_trips": None,
+            "rz_td_pct": "off_rz_td_pct",
+            "explosive_plays": "off_explosive_rate",
+            "three_and_outs": "off_three_and_out_rate",
+            "ints_thrown": None,
+            "def_first_downs": None,
+            "def_third_down_pct": "def_third_down_pct",
+            "def_fourth_down_pct": None,
+            "def_rz_trips": None,
+            "def_rz_td_pct": "off_rz_td_pct",  # proxy: opponent's RZ TD rate ≈ def_rz_td_pct
+            "def_explosive_plays": "def_explosive_rate",
+            "def_three_and_outs": "def_three_and_out_rate",
+            "def_ints_thrown": None,
+            "off_epa_per_play": "off_epa_per_play",
+            "win_streak": None,
+            "off_pts_stddev_5": None,
+            "off_yds_stddev_5": None,
+            "rw_off_ppg": "rw_off_ppg",
+            "rw_off_ypg": "rw_off_ypg",
+            "adj_off_ppg": "adj_off_ppg",
+            "adj_off_ypg": "adj_off_ypg",
+            "def_epa_per_play": "def_epa_per_play",
+            "def_pts_stddev_5": None,
+            "def_yds_stddev_5": None,
+            "rw_def_ppg": "rw_def_ppg",
+            "rw_def_ypg": "rw_def_ypg",
+            "adj_def_ppg": "adj_def_ppg",
+            "adj_def_ypg": "adj_def_ypg",
+            "win_streak": "win_streak",
+        }
         for prefix in ["home", "away"]:
             for suffix in stat_suffixes:
                 col = f"{prefix}_{suffix}"
-                if col in df.columns:
-                    df[col] = df[col].fillna(0.0)
+                if col not in df.columns:
+                    continue
+                # week 1 games: fill from prior_team_stats (cumulative data is empty)
+                prior_key = _suffix_to_prior.get(suffix)
+                if prior_key is not None and (df["week"] == 1).any():
+                    abbr_col = f"{prefix}_abbr"
+                    if abbr_col in df.columns:
+                        w1_mask = df["week"] == 1
+                        df.loc[w1_mask, col] = df.loc[w1_mask].apply(
+                            lambda r: prior_map.get((r[abbr_col], r["season_year"] - 1), {}).get(prior_key, 0.0),
+                            axis=1
+                        )
+                df[col] = df[col].fillna(0.0)
 
         logger.info(
             "Team stats merged: home_off_ypg non-null count = %d",
@@ -1596,6 +1815,15 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
                 "first_downs", "third_down_pct", "fourth_down_pct",
                 "rz_trips", "rz_td_pct",
                 "explosive_plays", "three_and_outs", "ints_thrown",
+                # Rankings
+                "off_yardage_rank",
+                "def_yardage_rank",
+                "off_scoring_rank",
+                "def_scoring_rank",
+                "off_rushing_rank",
+                "def_rushing_rank",
+                "off_passing_rank",
+                "def_passing_rating_rank",
             ]:
                 df[f"{prefix}_{suffix}"] = 0.0
 

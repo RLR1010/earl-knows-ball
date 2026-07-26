@@ -90,7 +90,7 @@ def save_training_run(
                     training_id,
                     model_type,
                     now,
-                    psycopg2.extras.Json(results_json, dumps=lambda x: json.dumps(x, default=str)) if results_json else None,
+                    psycopg2.extras.Json(results_json, dumps=lambda x: json.dumps(x, default=str)) if results_json is not None else None,
                     pkl_filename,
                     algorithm,
                     test_year,

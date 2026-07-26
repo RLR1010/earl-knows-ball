@@ -1,5 +1,5 @@
 """
-NFL XGBoost Over/Under model — regression predicting total points.
+NFL XGBoost Over/Under model - regression predicting total points.
 
 Mirrors ``mlb/mlb_xgb_model_ou.py`` but adapted for the NFL schema
 and NFL data loader. Predicts total game points (home + away) rather
@@ -42,12 +42,13 @@ OU_MODEL_PATH = NFL_PKL_DIR / "nfl_ou_best.pkl"
 NFL_PKL_DIR.mkdir(parents=True, exist_ok=True)
 
 # ── Training defaults ───────────────────────────────────────────────────────────
-DEFAULT_N_ESTIMATORS = 300
-DEFAULT_LEARNING_RATE = 0.03
+DEFAULT_N_ESTIMATORS = 600
+DEFAULT_LEARNING_RATE = 0.04
 DEFAULT_MAX_DEPTH = 5
 DEFAULT_SUBSAMPLE = 0.8
-DEFAULT_COL_SAMPLE = 0.8
-DEFAULT_EARLY_STOPPING = 30
+DEFAULT_COL_SAMPLE = 0.6
+DEFAULT_EARLY_STOPPING = 50
+DEFAULT_TIME_DECAY = 0.96
 
 CURRENT_YEAR = datetime.now().year
 DB_DSN: str = os.environ.get(
@@ -87,7 +88,7 @@ def run_backtest(
     """Train OU regression on ``train_years``, evaluate on ``test_year``.
 
     The target is actual total game points (``home_score + away_score``).
-    The model predicts the total and is scored via MAE / RMSE / R².
+    The model predicts the total and is scored via MAE / RMSE / R2.
     """
     t0 = time.time()
 
@@ -98,7 +99,7 @@ def run_backtest(
     train_feats = df[df["season_year"].isin(train_years)].copy()
     test_feats = df[df["season_year"] == test_year].copy()
 
-    # Drop games without closing OU — needed for OU evaluation
+    # Drop games without closing OU - needed for OU evaluation
     train_feats = train_feats[train_feats["closing_ou"].notna()].copy()
     test_feats = test_feats[test_feats["closing_ou"].notna()].copy()
 
@@ -151,16 +152,21 @@ def run_backtest(
     hp = hyperparams or {}
     params: Dict[str, Any] = {
         "objective": "reg:squarederror",
-        "eval_metric": "mae",
+        "eval_metric": "rmse",
         "learning_rate": hp.get("learning_rate", DEFAULT_LEARNING_RATE),
         "max_depth": hp.get("max_depth", DEFAULT_MAX_DEPTH),
         "subsample": hp.get("subsample", DEFAULT_SUBSAMPLE),
         "colsample_bytree": hp.get("colsample_bytree", DEFAULT_COL_SAMPLE),
+        "lambda": hp.get("lambda", 1.0),
+        "alpha": hp.get("alpha", 0.0),
+        "gamma": hp.get("gamma", 0.1),
+        "min_child_weight": hp.get("min_child_weight", 3),
         "seed": 42,
         "verbosity": 0,
     }
 
-    dtrain = xgb.DMatrix(X_train, label=y_train, feature_names=available)
+    decay_weights = _compute_decay_weights(train_feats, decay=hp.get("time_decay", DEFAULT_TIME_DECAY))
+    dtrain = xgb.DMatrix(X_train, label=y_train, weight=decay_weights, feature_names=available)
     dtest = xgb.DMatrix(X_test, label=y_test, feature_names=available)
 
     n_estimators = hp.get("n_estimators", DEFAULT_N_ESTIMATORS)
@@ -226,7 +232,7 @@ def run_backtest(
         result["model"] = model
 
     logger.info(
-        "Year %d | MAE=%.2f RMSE=%.2f R²=%.4f OU_acc=%s | train=%d test=%d %.1fs",
+        "Year %d | MAE=%.2f RMSE=%.2f R2=%.4f OU_acc=%s | train=%d test=%d %.1fs",
         test_year, mae, rmse, r2, ou_acc, len(X_train), len(X_test), elapsed,
     )
 
@@ -440,6 +446,20 @@ def _train_years_for_test_year(test_year: int) -> List[int]:
     return list(range(2016, test_year))
 
 
+def _compute_decay_weights(df: pd.DataFrame, decay: float) -> np.ndarray:
+    """Compute per-game sample weights via exponential time decay.
+
+    More recent seasons get higher weight. Formula:
+        weight = decay ^ (max_train_year - season_year)
+
+    With decay=0.96 and max=2024:
+        2024 -> 1.0,   2023 -> 0.96,   2022 -> 0.92,
+        2021 -> 0.88,  2020 -> 0.85,   2019 -> 0.82,  ...
+    """
+    max_year = df["season_year"].max()
+    return (decay ** (max_year - df["season_year"].values)).astype(np.float32)
+
+
 async def train_model(
     model_path: Optional[Path] = None,
     hyperparams: Optional[Dict[str, Any]] = None,
@@ -468,15 +488,19 @@ async def train_model(
     hp = hyperparams or {}
     params: Dict[str, Any] = {
         "objective": "reg:squarederror",
-        "eval_metric": "mae",
+        "eval_metric": "rmse",
         "learning_rate": hp.get("learning_rate", DEFAULT_LEARNING_RATE),
         "max_depth": hp.get("max_depth", DEFAULT_MAX_DEPTH),
         "subsample": hp.get("subsample", DEFAULT_SUBSAMPLE),
         "colsample_bytree": hp.get("colsample_bytree", DEFAULT_COL_SAMPLE),
+        "lambda": hp.get("lambda", 1.0),
+        "alpha": hp.get("alpha", 0.0),
+        "gamma": hp.get("gamma", 0.1),
+        "min_child_weight": hp.get("min_child_weight", 3),
         "seed": 42,
         "verbosity": 0,
     }
-
+    
     conn = psycopg2.connect(DB_DSN)
     try:
         with conn.cursor() as cur:
@@ -507,7 +531,7 @@ async def train_model(
         df_train = df_all[df_all["season_year"].isin(train_seasons)].copy()
         df_test = df_all[df_all["season_year"] == test_year].copy()
 
-        # Drop games without closing OU — needed for OU evaluation
+        # Drop games without closing OU - needed for OU evaluation
         df_train = df_train[df_train["closing_ou"].notna()].copy()
         df_test = df_test[df_test["closing_ou"].notna()].copy()
 
@@ -527,7 +551,9 @@ async def train_model(
         X = df_train[available].values
         y = df_train["total_points"].values
 
-        dtrain = xgb.DMatrix(X, label=y, feature_names=available)
+        # Time-decay sample weights - recent seasons weighted more
+        decay_weights = _compute_decay_weights(df_train, decay=hp.get("time_decay", DEFAULT_TIME_DECAY))
+        dtrain = xgb.DMatrix(X, label=y, weight=decay_weights, feature_names=available)
 
         model = xgb.train(params, dtrain, num_boost_round=n_estimators, verbose_eval=False)
 
@@ -658,9 +684,9 @@ if __name__ == "__main__":
         print("\n=== NFL OU Backtest Results ===")
         for r in results:
             if "error" in r:
-                print(f"  {r['year']}: ERROR — {r['error']}")
+                print(f"  {r['year']}: ERROR - {r['error']}")
             else:
-                print(f"  {r['year']}: MAE={r['mae']:.2f} RMSE={r['rmse']:.2f} R²={r['r2']:.4f} OU_acc={r['ou_accuracy']}  n={r['n_train']}+{r['n_test']}")
+                print(f"  {r['year']}: MAE={r['mae']:.2f} RMSE={r['rmse']:.2f} R2={r['r2']:.4f} OU_acc={r['ou_accuracy']}  n={r['n_train']}+{r['n_test']}")
 
     elif mode == "train":
         result = asyncio.run(train_model(label="nfl_ou_cli"))

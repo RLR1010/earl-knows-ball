@@ -934,24 +934,55 @@ def build_features(df: pd.DataFrame, log_fn=None) -> pd.DataFrame:
     tg["win"] = (tg["rf"] > tg["ra"]).astype(int)
 
     # ── 3b. Prior-season averages for expanding stat game-1 fill ──
+    # First try the persistent mlb.prior_team_stats table (available even on
+    # single-season loads). Falls back to computing from prior-season tg data.
 
-    prior_season = tg[tg["year"] == current_year - 1].copy()
     prior_map = {}
+    prior_season = tg[tg["year"] == current_year - 1].copy()
+
+    # Load prior-season stats from mlb.prior_team_stats table. This provides
+    # coverage for advanced stats (avg, ops, era, whip, k9, bb9) that the
+    # tg-based method lacks, and works even on single-season loads.
+    try:
+        purl = str(cfg.database_url).replace("+asyncpg", "")
+        p_eng = create_engine(purl)
+        with p_eng.connect() as cxn:
+            dbprior = cxn.execute(
+                text("SELECT * FROM mlb.prior_team_stats WHERE year = :y"),
+                {"y": current_year - 1}
+            ).fetchall()
+        for r in dbprior:
+            prior_map[r.team_abbr] = {
+                "rf": r.rf, "ra": r.ra,
+                "win": r.win_pct, "over_flag": r.over_pct,
+                "rf_home": r.rf_home, "rf_away": r.rf_away,
+                "avg": r.avg, "obp": r.obp, "slg": r.slg, "ops": r.ops,
+                "era": r.era, "whip": r.whip, "k9": r.k9, "bb9": r.bb9,
+                "k_rate": r.k_rate, "bb_rate": r.bb_rate,
+                "home_runs": r.home_runs,
+            }
+        p_eng.dispose()
+    except Exception:
+        pass  # Fall through to in-memory tg-based prior
+
+    # Supplement/override with in-memory prior-season tg averages
+    # (catches any last-season teams before the DB table was populated)
     if len(prior_season) > 0:
-        # Compute over_flag temporally if over_under is available
         if "over_under" in prior_season.columns:
             prior_season["over_flag"] = ((prior_season["rf"] + prior_season["ra"]) > prior_season["over_under"]).astype(float)
         elif "over_flag" not in prior_season.columns:
             prior_season["over_flag"] = 0.0
         for team, grp in prior_season.groupby("team"):
-            prior_map[team] = {
-                "rf": grp["rf"].mean(),
-                "ra": grp["ra"].mean(),
-                "win": grp["win"].mean(),
-                "over_flag": grp["over_flag"].mean(),
-                "rf_home": grp[grp["home_ind"] == 1]["rf"].mean() if grp["home_ind"].sum() > 0 else None,
-                "rf_away": grp[grp["home_ind"] == 0]["rf"].mean() if (~grp["home_ind"]).sum() > 0 else None,
-            }
+            # DB table is authoritative; only fill if team wasn't in DB
+            if team not in prior_map:
+                prior_map[team] = {}
+            # Preserve DB-provided advanced stats; fill only basic keys if missing
+            prior_map[team].setdefault("rf", grp["rf"].mean())
+            prior_map[team].setdefault("ra", grp["ra"].mean())
+            prior_map[team].setdefault("win", grp["win"].mean())
+            prior_map[team].setdefault("over_flag", grp["over_flag"].mean())
+            prior_map[team].setdefault("rf_home", grp[grp["home_ind"] == 1]["rf"].mean() if grp["home_ind"].sum() > 0 else None)
+            prior_map[team].setdefault("rf_away", grp[grp["home_ind"] == 0]["rf"].mean() if (~grp["home_ind"]).sum() > 0 else None)
 
     # Fill game-1 NaN in expanding stats
     for col, prior_key in [

@@ -21,3 +21,6 @@ backend/app/data/pbp/
 
 # Runtime-generated — credentials/tokens
 backend/app/scrapers/storage_state.json
+*.bak
+compare_params.py
+*.bak*

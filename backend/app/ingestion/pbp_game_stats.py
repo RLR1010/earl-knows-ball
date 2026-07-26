@@ -35,7 +35,7 @@ FROM (
         SPLIT_PART(pbp.game_id, '_', 4) AS away_team,
         pbp.season,
         pbp.week,
-        pbp.posteam AS team_abbr,
+        CASE WHEN pbp.posteam = 'LA' THEN 'LAR' ELSE pbp.posteam END AS team_abbr,
 
         SUM(pbp.first_down) AS first_downs,
         SUM(pbp.third_down_attempted) AS third_down_attempts,

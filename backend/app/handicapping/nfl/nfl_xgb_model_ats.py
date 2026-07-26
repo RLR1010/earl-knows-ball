@@ -1,5 +1,5 @@
 """
-NFL XGBoost ATS/OU model — train, backtest, and predict.
+NFL XGBoost ATS/OU model - train, backtest, and predict.
 
 Mirrors ``mlb/mlb_xgb_model_ats.py`` but adapted for the NFL schema
 and NFL data loader.
@@ -41,12 +41,13 @@ OU_MODEL_PATH = NFL_PKL_DIR / "nfl_ou_best.pkl"
 NFL_PKL_DIR.mkdir(parents=True, exist_ok=True)
 
 # ── Training constants ──────────────────────────────────────────────────────────
-DEFAULT_LEARNING_RATE = 0.05
-DEFAULT_MAX_DEPTH = 6
-DEFAULT_N_ESTIMATORS = 800
+DEFAULT_LEARNING_RATE = 0.04
+DEFAULT_MAX_DEPTH = 5
+DEFAULT_N_ESTIMATORS = 600
 DEFAULT_EARLY_STOPPING = 50
 DEFAULT_SUBSAMPLE = 0.8
-DEFAULT_COL_SAMPLE = 0.8
+DEFAULT_COL_SAMPLE = 0.6
+DEFAULT_TIME_DECAY = 0.96
 
 CURRENT_YEAR = datetime.now().year
 NFL_SCHEMA = "nfl"
@@ -72,7 +73,7 @@ def _ensure_ats_features(df: pd.DataFrame) -> pd.DataFrame:
     for feat in ats_features:
         if feat not in df.columns:
             # Fill missing with 0 (neutral for tree models) instead of NaN.
-            # NaN would trigger dropna() and drop rows — or erase the entire
+            # NaN would trigger dropna() and drop rows - or erase the entire
             # dataset if the column is entirely missing.  The engine's
             # _extract_feature_vector fills NaN with 0.0, so we must match.
             df[feat] = 0.0
@@ -123,7 +124,7 @@ def run_backtest(
     train_df = df[df["season_year"] < test_year].copy()
     test_df = df[df["season_year"] == test_year].copy()
 
-    # Drop games without closing spread — needed for ATS evaluation
+    # Drop games without closing spread - needed for ATS evaluation
     train_df = train_df[train_df["closing_spread"].notna()].copy()
     test_df = test_df[test_df["closing_spread"].notna()].copy()
 
@@ -133,7 +134,7 @@ def run_backtest(
 
     target = "home_score_margin"
     if target not in train_df.columns:
-        logger.error("Target column '%s' not found — skipping year %d", target, test_year)
+        logger.error("Target column '%s' not found - skipping year %d", target, test_year)
         return {"year": test_year, "error": f"missing target '{target}'"}
 
     train_df = train_df.dropna(subset=[target])
@@ -173,6 +174,10 @@ def run_backtest(
     X_test, y_test = test_df[feature_cols].values, test_df[target].values
 
     hp = hyperparams or {}
+
+    # Time-decay sample weights — recent seasons weighted more
+    decay_weights = _compute_decay_weights(train_df, hp.get("time_decay", DEFAULT_TIME_DECAY))
+
     params: Dict[str, Any] = {
         "objective": "reg:squarederror",
         "eval_metric": "rmse",
@@ -180,11 +185,15 @@ def run_backtest(
         "max_depth": hp.get("max_depth", DEFAULT_MAX_DEPTH),
         "subsample": hp.get("subsample", DEFAULT_SUBSAMPLE),
         "colsample_bytree": hp.get("colsample_bytree", DEFAULT_COL_SAMPLE),
+        "lambda": hp.get("lambda", 1.0),
+        "alpha": hp.get("alpha", 0.0),
+        "gamma": hp.get("gamma", 0.1),
+        "min_child_weight": hp.get("min_child_weight", 3),
         "seed": 42,
         "verbosity": 0,
     }
 
-    dtrain = xgb.DMatrix(X_train, label=y_train, feature_names=feature_cols)
+    dtrain = xgb.DMatrix(X_train, label=y_train, weight=decay_weights, feature_names=feature_cols)
     dtest = xgb.DMatrix(X_test, label=y_test, feature_names=feature_cols)
 
     n_estimators = hp.get("n_estimators", DEFAULT_N_ESTIMATORS)
@@ -268,7 +277,7 @@ async def run_all_years(
     # Load all data from train_from onward
     df = dl.load_data(limit=limit)
     if df.empty:
-        logger.error("No data loaded — check DB connection and season IDs")
+        logger.error("No data loaded - check DB connection and season IDs")
         return []
 
     # Filter to train_from+ and sort
@@ -445,6 +454,20 @@ def _train_years_for_test_year(test_year: int) -> List[int]:
     return list(range(2016, test_year))
 
 
+def _compute_decay_weights(df: pd.DataFrame, decay: float) -> np.ndarray:
+    """Compute per-game sample weights via exponential time decay.
+
+    More recent seasons get higher weight. Formula:
+        weight = decay ^ (max_train_year - season_year)
+
+    With decay=0.96 and max=2024:
+        2024 -> 1.0,   2023 -> 0.96,   2022 -> 0.92,
+        2021 -> 0.88,  2020 -> 0.85,   2019 -> 0.82,  ...
+    """
+    max_year = df["season_year"].max()
+    return (decay ** (max_year - df["season_year"].values)).astype(np.float32)
+
+
 async def train_model(
     model_path: Optional[Path] = None,
     ats_only: bool = True,
@@ -485,6 +508,10 @@ async def train_model(
         "max_depth": hp.get("max_depth", DEFAULT_MAX_DEPTH),
         "subsample": hp.get("subsample", DEFAULT_SUBSAMPLE),
         "colsample_bytree": hp.get("colsample_bytree", DEFAULT_COL_SAMPLE),
+        "lambda": hp.get("lambda", 1.0),
+        "alpha": hp.get("alpha", 0.0),
+        "gamma": hp.get("gamma", 0.1),
+        "min_child_weight": hp.get("min_child_weight", 3),
         "seed": 42,
         "verbosity": 0,
     }
@@ -527,7 +554,7 @@ async def train_model(
         df_train = df_all[df_all["season_year"].isin(train_seasons)].copy()
         df_test = df_all[df_all["season_year"] == test_year].copy()
 
-        # Drop games without closing spread — needed for ATS evaluation
+        # Drop games without closing spread - needed for ATS evaluation
         df_train = df_train[df_train["closing_spread"].notna()].copy()
         df_test = df_test[df_test["closing_spread"].notna()].copy()
 
@@ -547,7 +574,9 @@ async def train_model(
         X_train = df_train[available].values
         y_train = df_train[target].values
 
-        dtrain = xgb.DMatrix(X_train, label=y_train, feature_names=available)
+        # Time-decay sample weights - recent seasons weighted more
+        decay_weights = _compute_decay_weights(df_train, decay=hp.get("time_decay", DEFAULT_TIME_DECAY))
+        dtrain = xgb.DMatrix(X_train, label=y_train, weight=decay_weights, feature_names=available)
 
         model = xgb.train(params, dtrain, num_boost_round=n_estimators, verbose_eval=False)
 
@@ -563,7 +592,7 @@ async def train_model(
             key=lambda x: -x["importance"],
         )
 
-        # Test accuracy (ATS) – evaluate on test year data
+        # Test accuracy (ATS) - evaluate on test year data
         ats_total = 0
         ats_correct = 0
         ml_total = 0
@@ -697,7 +726,7 @@ if __name__ == "__main__":
         print("\n=== NFL ATS Backtest Results ===")
         for r in results:
             if "error" in r:
-                print(f"  {r['year']}: ERROR — {r['error']}")
+                print(f"  {r['year']}: ERROR - {r['error']}")
             else:
                 print(f"  {r['year']}: rmse={r['rmse']:.4f} mae={r['mae']:.4f}  n={r['n_train']}+{r['n_test']}")
 

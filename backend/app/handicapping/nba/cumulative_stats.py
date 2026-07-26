@@ -287,18 +287,11 @@ def _compute_tier3(gs: int, row: dict) -> dict:
     opp_poss = opp_fga + 0.44 * opp_fta + opp_tov
     avg_poss = (poss + opp_poss) / 2.0 if gs > 0 else 0
 
-    # Est possessions per game = (avg_poss / games_played) / 2 per game
-    # Pace = 48 * (poss + opp_poss) / (2 * games_played * minutes)
-    # Without actual minutes, estimate via avg per-game possession count
-    est_pace_poss = _div(poss, gs)
-    est_opp_pace_poss = _div(opp_poss, gs, 2)
-    # Pace formula: possessions per 48 minutes.
-    # Without actual game minutes (no total_minutes column in nba.games),
-    # compute estimated per-game pace as an approximation.
-    # Standard NBA: ~100 possessions/game ≈ ORTG of ~110.
-    # We'll store per-game average of estimated possessions * 2 / 1 team
-    # as a simplified pace proxy.
-    est_pace = _div(poss + opp_poss, gs, 2)
+    # Pace = average team possessions per game. The standard NBA pace formula
+    # is 48 * (poss + opp_poss) / (2 * games * minutes). Without actual game
+    # minutes, use (poss + opp_poss) / (2 * games) — a simplified per-team
+    # proxy. Standard NBA: ~100 possessions/game ≈ ORTG of ~110.
+    est_pace = _div(poss + opp_poss, 2 * gs, 2)
 
     ortg = _div(pts, _div(poss, 100, 2))
     drtg = _div(opp, _div(opp_poss, 100, 2), 2)

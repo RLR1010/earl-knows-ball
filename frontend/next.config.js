@@ -1,5 +1,6 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  allowedDevOrigins: ['earlknowsball.com', 'localhost'],
   async redirects() {
     return [
       { source: "/chat", destination: "/nfl/chat", permanent: false },
