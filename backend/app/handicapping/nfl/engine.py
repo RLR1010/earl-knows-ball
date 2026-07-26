@@ -455,8 +455,8 @@ async def batch_predict_upcoming_games(
                     # Align features to what the model expects
                     model_feats = ats_model.feature_names
                     if names and model_feats and set(names) != set(model_feats):
-                        feat_map = dict(zip(names, feats))
-                        feats = [feat_map.get(f, 0.0) for f in model_feats]
+                        feat_map = dict(zip(names, feats[0]))
+                        feats = [[feat_map.get(f, 0.0) for f in model_feats]]
                         names = model_feats
                     dmat = xgb.DMatrix(feats, feature_names=names)
                     ats_margin = float(ats_model.predict(dmat)[0])
@@ -469,8 +469,8 @@ async def batch_predict_upcoming_games(
                     # Align features to what the model expects
                     model_feats = ou_model.feature_names
                     if names and model_feats and set(names) != set(model_feats):
-                        feat_map = dict(zip(names, feats))
-                        feats = [feat_map.get(f, 0.0) for f in model_feats]
+                        feat_map = dict(zip(names, feats[0]))
+                        feats = [[feat_map.get(f, 0.0) for f in model_feats]]
                         names = model_feats
                     dmat = xgb.DMatrix(feats, feature_names=names)
                     predicted_total = float(ou_model.predict(dmat)[0])
@@ -579,8 +579,8 @@ def _evaluate_year_model(year_df: pd.DataFrame, model: xgb.Booster, model_type: 
         # Align features to what the model expects (handles feature drift)
         model_feats = model.feature_names
         if feat_names and model_feats and set(feat_names) != set(model_feats):
-            feat_map = dict(zip(feat_names, feat_vals))
-            feat_vals = [feat_map.get(f, 0.0) for f in model_feats]
+            feat_map = dict(zip(feat_names, feat_vals[0]))
+            feat_vals = [[feat_map.get(f, 0.0) for f in model_feats]]
             feat_names = model_feats
         dmat = xgb.DMatrix(feat_vals, feature_names=feat_names)
         prob = float(model.predict(dmat)[0])
@@ -789,8 +789,8 @@ async def _save_backtest_prediction(
                 # Align features to what the model expects
                 model_feats = ats_model.feature_names
                 if names and model_feats and set(names) != set(model_feats):
-                    feat_map = dict(zip(names, feats))
-                    feats = [feat_map.get(f, 0.0) for f in model_feats]
+                    feat_map = dict(zip(names, feats[0]))
+                    feats = [[feat_map.get(f, 0.0) for f in model_feats]]
                     names = model_feats
                 dmat = xgb.DMatrix(feats, feature_names=names)
                 ats_margin = float(ats_model.predict(dmat)[0])
@@ -803,8 +803,8 @@ async def _save_backtest_prediction(
                 # Align features to what the model expects
                 model_feats = ou_model.feature_names
                 if names and model_feats and set(names) != set(model_feats):
-                    feat_map = dict(zip(names, feats))
-                    feats = [feat_map.get(f, 0.0) for f in model_feats]
+                    feat_map = dict(zip(names, feats[0]))
+                    feats = [[feat_map.get(f, 0.0) for f in model_feats]]
                     names = model_feats
                 dmat = xgb.DMatrix(feats, feature_names=names)
                 predicted_total = float(ou_model.predict(dmat)[0])
