@@ -64,8 +64,9 @@ function CalibrationChart({ model, bins }: { model: string; bins: CalibrationBin
   const minWR = Math.min(...populated.map(b => b.win_rate), 50);
   const wrRange = Math.max(maxWR - minWR, 10);
 
+  const lastIdx = bins.length - 1;
   function xPos(binIdx: number): number {
-    return PL + (binIdx / 19) * CW;
+    return PL + (binIdx / (lastIdx || 1)) * CW;
   }
 
   function yCal(winRate: number): number {
@@ -78,7 +79,7 @@ function CalibrationChart({ model, bins }: { model: string; bins: CalibrationBin
     return volTop + CH - (count / maxCount) * CH;
   }
 
-  const idealPoints = [0, 19].map(i => `${xPos(i)},${yCal(50 + 50 * i / 19)}`).join(" ");
+  const idealPoints = [0, lastIdx].map(i => `${xPos(i)},${yCal(50 + 50 * i / lastIdx)}`).join(" ");
 
   // Build calibration line
   const calLine: string[] = [];
@@ -101,11 +102,12 @@ function CalibrationChart({ model, bins }: { model: string; bins: CalibrationBin
     );
 
     const bHt = (b.total / maxCount) * CH;
+    const barW = Math.max(4, CW / (lastIdx + 1) * 0.5);
     const evColor = b.avg_cal_ev >= 0 ? '#22c55e' : '#ef4444';
     volBars.push(
       <g key={`vol-${i}`}>
-        <rect x={x - CW / 42} y={volTop + CH - bHt}
-          width={CW / 21} height={bHt}
+      <rect x={x - barW/2} y={volTop + CH - bHt}
+          width={barW} height={bHt}
           fill={evColor} fillOpacity={0.65}
           rx={2} />
         {Math.abs(b.avg_cal_ev) >= 0.5 && <text x={x} y={volTop + CH - bHt - 4}
@@ -139,11 +141,10 @@ function CalibrationChart({ model, bins }: { model: string; bins: CalibrationBin
     );
   });
 
-  // X-axis labels (every 5th bin)
-  const xLabels = [0, 5, 10, 15, 19].map(idx => {
-    const b = bins[idx];
+  // X-axis labels
+  const xLabels = bins.map((b, i) => {
     return (
-      <text key={`xl-${idx}`} x={xPos(idx)} y={volTop + CH + 18}
+      <text key={`xl-${i}`} x={xPos(i)} y={volTop + CH + 18}
         textAnchor="middle" fill="white" fillOpacity={0.5} fontSize={10}>
         {b.label}
       </text>
@@ -542,7 +543,7 @@ export default function PredictionsPage() {
           <div>
             <h3 className="text-lg font-semibold text-white mb-4">Calibration Quality by Model</h3>
             <p className="text-xs text-gray-500 mb-4">
-              Predictions split into Low (&lt;60%), Medium (60-75%), and High (&gt;75%) confidence brackets.
+              Predictions binned by calibrated confidence into 5 confidence ranges.
               Click on any model header to see the full calibration curve and volume histogram.
             </p>
 
@@ -561,10 +562,15 @@ export default function PredictionsPage() {
                   totals[b.bracket].profit += (b.profit || 0);
                 });
               });
-              const BRACKET_ORDER = ['Low','Medium','High'];
-              brackets.sort((a,b) => BRACKET_ORDER.indexOf(a) - BRACKET_ORDER.indexOf(b));
+              // Backend returns brackets in order (highest confidence first)
+              // Sort brackets by their numeric lower bound (ascending)
+              brackets.sort((a, b) => {
+                const aLo = parseFloat(a.split('-')[0]);
+                const bLo = parseFloat(b.split('-')[0]);
+                return aLo - bLo;
+              });
               if (brackets.length === 0) return null;
-              const allBk = BRACKET_ORDER.filter(b => brackets.includes(b));
+              const allBk = brackets;
 
               return <div key={model} className="mb-8">
                 <h4 className={`text-md font-semibold text-white mb-2 cursor-pointer hover:${meta.color} transition-colors`}

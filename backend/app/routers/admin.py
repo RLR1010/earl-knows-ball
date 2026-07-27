@@ -1618,24 +1618,77 @@ async def get_prediction_stats(
         ) gp
         JOIN {schema}.games g ON g.id = gp.game_id
         JOIN {schema}.seasons s ON s.id = g.season_id
+        WHERE s.year >= 2022
         GROUP BY s.year
         ORDER BY s.year
     """))
+
+    # ── Pre-loop: compute global per-market confidence brackets from all years ──
+    # This ensures consistent bracket labels across all years
+    is_mlb = sport == "mlb"
+    if is_mlb:
+        conf_col = "gp.rl_conf"
+        conf_cols = "gp.rl_conf, gp.ml_conf, gp.ou_conf"
+        cal_cols = "gp.rl_conf_cal, gp.ml_conf_cal, gp.ou_conf_cal"
+    else:
+        conf_col = "gp.margin_conf"
+        conf_cols = f"gp.margin_conf as rl_conf, gp.ml_conf as ml_conf, gp.ou_conf as ou_conf"
+        cal_cols = f"gp.ats_conf_cal as rl_conf_cal, gp.ml_conf_cal, gp.ou_conf_cal"
+
+    all_raw_rows = await db.execute(_sa_text(f"""
+        SELECT {cal_cols}
+        FROM (
+            SELECT DISTINCT ON (gp_inner.game_id) gp_inner.*
+            FROM {schema}.game_predictions gp_inner
+            ORDER BY gp_inner.game_id, gp_inner.created_at DESC
+        ) gp
+        JOIN {schema}.games g ON g.id = gp.game_id
+        JOIN {schema}.seasons s ON s.id = g.season_id
+        WHERE s.year >= 2022
+    """))
+
+    _global_cals = list(all_raw_rows.fetchall())
+
+    # Collect per-type calibrated values so bracket ranges are type-appropriate
+    ats_cal_vals, ou_cal_vals, ml_cal_vals = [], [], []
+    for cr in _global_cals:
+        for cal_field, dest in [
+            (getattr(cr, 'rl_conf_cal', None), ats_cal_vals),
+            (getattr(cr, 'ou_conf_cal', None), ou_cal_vals),
+            (getattr(cr, 'ml_conf_cal', None), ml_cal_vals),
+        ]:
+            if cal_field is not None:
+                cv = float(cal_field)
+                if cv == cv:
+                    dest.append(cv)
+
+    def _make_bracket_def(cfs):
+        if len(cfs) < 2:
+            lo, hi = 0.40, 0.60
+        else:
+            lo = max(min(cfs) - 0.005, 0.0)
+            hi = min(max(cfs) + 0.005, 1.0)
+            if hi - lo < 0.05:
+                lo, hi = 0.40, 0.60
+        step = (hi - lo) / 5
+        labels = [f"{round((lo + i*step)*100, 1):.1f}-{round((lo + (i+1)*step)*100, 1):.1f}%" for i in range(5)]
+        return {"lo": lo, "hi": hi, "step": step, "labels": labels}
+
+    # Overall = combined cal values across all types (for combined breakdown)
+    overall_cal_vals = ats_cal_vals + ou_cal_vals + ml_cal_vals
+
+    bkt_defs = {
+        "ats": _make_bracket_def(ats_cal_vals),
+        "ou": _make_bracket_def(ou_cal_vals),
+        "ml": _make_bracket_def(ml_cal_vals),
+        "overall": _make_bracket_def(overall_cal_vals),
+    }
 
     yearly_stats = []
     for r in rows.fetchall():
         ats_t = r.ats_wins + r.ats_losses
         ou_t = r.ou_wins + r.ou_losses
         ml_t = r.ml_wins + r.ml_losses
-        # Calibrated confidence-level breakdown for this year
-        # Fetch per-model confidence columns for MLB, margin_conf for NFL/NBA
-        is_mlb = sport == "mlb"
-        if is_mlb:
-            conf_cols = "gp.rl_conf, gp.ml_conf, gp.ou_conf"
-            cal_cols = "gp.rl_conf_cal, gp.ml_conf_cal, gp.ou_conf_cal"
-        else:
-            conf_cols = f"gp.margin_conf as rl_conf, gp.ml_conf as ml_conf, gp.ou_conf as ou_conf"
-            cal_cols = f"gp.ats_conf_cal as rl_conf_cal, gp.ml_conf_cal, gp.ou_conf_cal"
         raw_rows = await db.execute(_sa_text(f"""
             SELECT {conf_col},
                    {conf_cols},
@@ -1653,13 +1706,23 @@ async def get_prediction_stats(
               AND {conf_col} IS NOT NULL
         """))
 
-        def _bucket(cf, model_type=None):
-            """Map confidence to 3-tier bracket: Low / Medium / High."""
-            if cf is None:
+        _conf_rows = list(raw_rows.fetchall())
+
+        def _bucket(cf, model_type="ats"):
+            if cf is None or (isinstance(cf, float) and cf != cf):
                 return None
-            if cf >= 0.75: return "High"
-            if cf >= 0.60: return "Medium"
-            return "Low"
+            bd = bkt_defs.get(model_type)
+            if bd is None:
+                return None
+            labels = bd["labels"]
+            if cf >= bd["hi"]:
+                return labels[-1]
+            if cf <= bd["lo"]:
+                return labels[0]
+            idx = min(int((cf - bd["lo"]) / bd["step"]), len(labels) - 1)
+            if idx < 0:
+                idx = 0
+            return labels[idx]
 
         all_raw = [(float(getattr(cr, 'margin_conf', getattr(cr, 'rl_conf', 0.50))),
                      float(cr.rl_conf) if cr.rl_conf is not None else 0.50,
@@ -1670,7 +1733,7 @@ async def get_prediction_stats(
                      float(cr.rl_conf_cal) if cr.rl_conf_cal is not None else None,
                      float(cr.ml_conf_cal) if cr.ml_conf_cal is not None else None,
                      float(cr.ou_conf_cal) if cr.ou_conf_cal is not None else None)
-                    for cr in raw_rows.fetchall()]
+                    for cr in _conf_rows]
 
         # Build per-model breakdowns
         def _build_breakdown(model_type, result_field):
@@ -1682,7 +1745,17 @@ async def get_prediction_stats(
             buckets = {}
             for row in all_raw:
                 # Use calibrated confidence if available, otherwise raw
-                cf = row[cal_idx] if row[cal_idx] is not None else row[raw_idx]
+                # NaN check: DB stores NaN as float, not NULL — must catch
+                # both NULL and NaN, and fall back to raw then default 0.50.
+                # About 1,400 rows have NaN in BOTH cal and raw columns.
+                cal = row[cal_idx]
+                raw = row[raw_idx]
+                if cal is not None and not (isinstance(cal, float) and cal != cal):
+                    cf = cal
+                elif raw is not None and not (isinstance(raw, float) and raw != raw):
+                    cf = raw
+                else:
+                    cf = 0.50
                 bk = _bucket(cf, model_type)
                 if bk is None:
                     continue
@@ -1701,29 +1774,32 @@ async def get_prediction_stats(
                 if res == "Win":
                     buckets[bk][model_type+"_w"] += 1
                     buckets[bk]["total"] += 1
-                    buckets[bk]["profit"] += pf
+                    if pf is not None:
+                        buckets[bk]["profit"] += pf
                 elif res == "Loss":
                     buckets[bk][model_type+"_l"] += 1
                     buckets[bk]["total"] += 1
-                    buckets[bk]["profit"] += pf
+                    if pf is not None:
+                        buckets[bk]["profit"] += pf
                 elif res == "Push":
                     buckets[bk]["pushes"] += 1
                     buckets[bk]["total"] += 1
 
             out = []
-            for bk in ["Low", "Medium", "High"]:
+            m_labels = bkt_defs[model_type]["labels"]
+            for bk in m_labels:
                 b = buckets.get(bk)
                 if not b or b["total"] == 0:
                     continue
                 denom = b[model_type+"_w"] + b[model_type+"_l"]  # exclude pushes from accuracy
                 out.append({
                     "bracket": bk,
-                    "total": b["total"],  # includes pushes for sum consistency
+                    "total": b["total"],
                     "correct": b[model_type+"_w"],
                     "incorrect": b[model_type+"_l"],
                     "pushes": b["pushes"],
                     "pct": round(100 * b[model_type+"_w"] / max(denom, 1), 1),
-                    "profit": round(b["profit"], 1),
+                    "profit": round(b["profit"], 1) if b["profit"] == b["profit"] else 0.0,
                 })
             return out
 
@@ -1736,7 +1812,7 @@ async def get_prediction_stats(
             buckets = {}
             for row in all_raw:
                 # Use calibrated confidence when available, fall back to raw
-                mc = row[10] if row[10] is not None else row[0]
+                mc = row[10] if row[10] is not None and not (isinstance(row[10], float) and row[10] != row[10]) else row[0]
                 ats_r, ou_r, ml_r = row[4], row[5], row[6]
                 ats_p, ou_p, ml_p = row[7], row[8], row[9]
                 # Normalize results per sport format
@@ -1759,7 +1835,8 @@ async def get_prediction_stats(
                     if res == "Win": buckets[bk][k+"_w"] += 1; buckets[bk][k+"_p"] += pf
                     elif res == "Loss": buckets[bk][k+"_l"] += 1; buckets[bk][k+"_p"] += pf
             out = []
-            for bk in ["Low", "Medium", "High"]:
+            m_labels = bkt_defs["overall"]["labels"]
+            for bk in m_labels:
                 b = buckets.get(bk)
                 if not b or b["total"] == 0:
                     continue
@@ -1807,6 +1884,10 @@ async def get_prediction_stats(
                 "profit": r.ml_profit, "roi": ml_roi,
             },
         })
+
+    # Show 2022 onwards for NFL (2021 was a debug/training year)
+    if sport == "nfl":
+        yearly_stats = [s for s in yearly_stats if s["year"] >= 2022]
 
     # Aggregate totals
     ats_c = sum(s["ats"]["correct"] for s in yearly_stats)
@@ -1860,9 +1941,9 @@ async def get_prediction_calibration(
         conf_col = "gp.rl_conf"
         conf_main = "rl_conf"
     else:
-        conf_cols = f"gp.margin_conf as rl_conf, gp.ml_conf as ml_conf, gp.ou_conf as ou_conf"
-        conf_col = "gp.margin_conf"
-        conf_main = "margin_conf"
+        conf_cols = f"gp.ats_conf_cal as rl_conf, gp.ml_conf_cal as ml_conf, gp.ou_conf_cal as ou_conf"
+        conf_col = "gp.ats_conf_cal"
+        conf_main = "rl_conf"
 
     rows = await db.execute(_sa_text(f"""
         SELECT
@@ -1881,34 +1962,63 @@ async def get_prediction_calibration(
           AND {conf_col} IS NOT NULL
     """))
 
-    # Bucket: 20 bins from 0.50 to 1.00 (step = 0.025)
-    BIN_COUNT = 20
-    BIN_STEP = 0.025
+    # ── First pass: collect all rows and find min/max of confidence values ──
+    _all_rows = list(rows.fetchall())
+    # Collect per-type confidence values so bin ranges are type-appropriate
+    ats_cf_list, ou_cf_list, ml_cf_list = [], [], []
+    for r in _all_rows:
+        mc = float(getattr(r, conf_main, 0.50)) if getattr(r, conf_main, None) is not None else 0.50
+        rc = float(r.rl_conf) if r.rl_conf is not None else mc
+        oc = float(r.ou_conf) if r.ou_conf is not None else mc
+        mcl = float(r.ml_conf) if r.ml_conf is not None else mc
+        if rc == rc:
+            ats_cf_list.append(rc)
+        if oc == oc:
+            ou_cf_list.append(oc)
+        if mcl == mcl:
+            ml_cf_list.append(mcl)
 
-    def _bucket_index(cf: float) -> int:
-        """Return bin index 0-19 for a confidence value."""
-        if cf is None or cf != cf or cf < 0.50:  # cf != cf catches NaN
-            return 0
-        if cf >= 1.0:
-            return BIN_COUNT - 1
-        idx = int((cf - 0.50) / BIN_STEP)
-        return min(idx, BIN_COUNT - 1)
+    def _make_bins(cfs: list[float]) -> tuple:
+        """Create 5 uniform bins + bucket_index closed over those bins.
 
-    def _make_bins() -> list:
-        """Create empty bin structure."""
+        Returns (bins, bucket_fn) where bins is the empty bin dict list
+        and bucket_fn maps a confidence value to a bin index.
+        """
+        if len(cfs) < 2:
+            _min, _max = 0.40, 0.60
+        else:
+            _min = max(min(cfs) - 0.02, 0.0)
+            _max = min(max(cfs) + 0.02, 1.0)
+            if _max - _min < 0.05:
+                _min, _max = 0.40, 0.60
+
+        _count = 5
+        _step = (_max - _min) / _count
+
         bins = []
-        for i in range(BIN_COUNT):
-            lo = round(0.50 + i * BIN_STEP, 3)
-            hi = round(lo + BIN_STEP, 3)
+        for i in range(_count):
+            lo = round(_min + i * _step, 3)
+            hi = round(_min + (i + 1) * _step, 3)
             bins.append({
                 "bin_lo": lo, "bin_hi": hi,
                 "label": f"{lo*100:.0f}-{hi*100:.0f}%",
                 "total": 0, "wins": 0, "losses": 0, "pushes": 0,
                 "profit": 0.0,
-                "fwd_ev_sum": 0.0,  # forward-looking EV sum (uses model confidence)
-                "odds_sum": 0.0,      # odds sum for computing avg odds
+                "fwd_ev_sum": 0.0,
+                "odds_sum": 0.0,
             })
-        return bins
+
+        def _bucket_index(cf: float) -> int:
+            if cf is None or cf != cf:
+                return 0
+            if cf >= _max:
+                return _count - 1
+            if cf <= _min:
+                return 0
+            idx = int((cf - _min) / _step)
+            return min(idx, _count - 1)
+
+        return bins, _bucket_index
 
     def _profit_per_100(odds: int | None) -> float:
         """Profit on a $100 flat bet at given odds.
@@ -1935,16 +2045,12 @@ async def get_prediction_calibration(
         profit = _profit_per_100(odds)
         return (confidence * profit) - ((1.0 - confidence) * 100.0)
 
-    ats_bins = _make_bins()
-    ou_bins = _make_bins()
-    ml_bins = _make_bins()
+    # Build per-type bins + bucket functions from their own confidence ranges
+    ats_cf_bins, ats_bucket = _make_bins(ats_cf_list)
+    ou_cf_bins, ou_bucket = _make_bins(ou_cf_list)
+    ml_cf_bins, ml_bucket = _make_bins(ml_cf_list)
 
-    # Track model-specific confidence
-    ats_cf_bins = _make_bins()
-    ou_cf_bins = _make_bins()
-    ml_cf_bins = _make_bins()
-
-    for r in rows.fetchall():
+    for r in _all_rows:
         mc = float(getattr(r, conf_main, 0.50)) if getattr(r, conf_main, None) is not None else 0.50
         rl_cf = float(r.rl_conf) if r.rl_conf is not None else mc
         ml_cf = float(r.ml_conf) if r.ml_conf is not None else mc
@@ -1979,8 +2085,8 @@ async def get_prediction_calibration(
         ou_profit_odds = _profit_per_100(ou_odds) if ou_odds else 0.0
         ml_profit_odds = _profit_per_100(ml_odds) if ml_odds else 0.0
 
-        # ATS — bucket by rl_conf (or margin_conf)
-        bi = _bucket_index(rl_cf)
+        # ATS — bucket by rl_conf (or margin_conf) — type-specific bins
+        bi = ats_bucket(rl_cf)
         ats_cf_bins[bi]["total"] += 1
         ats_cf_bins[bi]["fwd_ev_sum"] += ats_fwd
         ats_cf_bins[bi]["odds_sum"] += ats_profit_odds
@@ -1993,8 +2099,8 @@ async def get_prediction_calibration(
         elif ats_r == "Push":
             ats_cf_bins[bi]["pushes"] += 1
 
-        # OU — bucket by ou_conf
-        bi = _bucket_index(ou_cf)
+        # OU — bucket by ou_conf — type-specific bins
+        bi = ou_bucket(ou_cf)
         ou_cf_bins[bi]["total"] += 1
         ou_cf_bins[bi]["fwd_ev_sum"] += ou_fwd
         ou_cf_bins[bi]["odds_sum"] += ou_profit_odds
@@ -2007,8 +2113,8 @@ async def get_prediction_calibration(
         elif ou_r == "Push":
             ou_cf_bins[bi]["pushes"] += 1
 
-        # ML — bucket by ml_conf
-        bi = _bucket_index(ml_cf)
+        # ML — bucket by ml_conf — type-specific bins
+        bi = ml_bucket(ml_cf)
         ml_cf_bins[bi]["total"] += 1
         ml_cf_bins[bi]["fwd_ev_sum"] += ml_fwd
         ml_cf_bins[bi]["odds_sum"] += ml_profit_odds
@@ -2057,6 +2163,13 @@ async def get_prediction_calibration(
             out.append(b)
         return out
 
+    logger.info(
+        "ATS bins: %s | OU bins: %s | ML bins: %s",
+        [b["label"] for b in ats_cf_bins],
+        [b["label"] for b in ou_cf_bins],
+        [b["label"] for b in ml_cf_bins],
+    )
+
     return {
         "sport": sport,
         "ats": _finalize(ats_cf_bins),
@@ -2081,14 +2194,14 @@ async def get_prediction_ev_distribution(
 
     # Resolve sport config inlined
     if sport == "nfl":
-        conf_main = "margin_conf"
+        conf_main = "ats_conf_cal"
         schema, use_ats, use_ml = "nfl", True, True
-        conf_ats = "margin_conf"; conf_ml = "margin_conf"; conf_ou = "margin_conf"
+        conf_ats = "ats_conf_cal"; conf_ml = "ml_conf_cal"; conf_ou = "ou_conf_cal"
         rl_col = "ats_result"
     elif sport == "nba":
+        conf_main = "ats_conf_cal"
         schema, use_ats, use_ml = "nba", True, True
-        conf_ats = "margin_conf"; conf_ml = "ml_conf"; conf_ou = "ou_conf"
-        conf_main = "margin_conf"
+        conf_ats = "ats_conf_cal"; conf_ml = "ml_conf_cal"; conf_ou = "ou_conf_cal"
         rl_col = "ats_result"
     else:
         schema, use_ats, use_ml = "mlb", True, True
@@ -2116,15 +2229,38 @@ async def get_prediction_ev_distribution(
           AND gp.{conf_main} IS NOT NULL
     """))
 
-    # ── Calibration: bucket picks by confidence, get per-bin win rates ──
-    BIN_COUNT = 20
-    BIN_STEP = 0.025
+    # ── First pass: collect rows, separate confidence per type ──
+    _all_rows = list(rows.fetchall())
+    ev_ats_cfs, ev_ou_cfs, ev_ml_cfs = [], [], []
+    for r in _all_rows:
+        mc = float(getattr(r, conf_main, 0.50)) if getattr(r, conf_main, None) is not None else 0.50
+        for cf, dest in [(float(r.rl_conf) if r.rl_conf is not None else mc, ev_ats_cfs),
+                         (float(r.ou_conf) if r.ou_conf is not None else mc, ev_ou_cfs),
+                         (float(r.ml_conf) if r.ml_conf is not None else mc, ev_ml_cfs)]:
+            if cf == cf:
+                dest.append(cf)
 
-    def _bucket_index(cf: float) -> int:
-        if cf is None or cf != cf or cf < 0.50: return 0  # cf != cf catches NaN
-        if cf >= 1.0: return BIN_COUNT - 1
-        idx = int((cf - 0.50) / BIN_STEP)
-        return min(idx, BIN_COUNT - 1)
+    def _ev_make_buckets(cfs):
+        if len(cfs) < 2:
+            _min, _max = 0.40, 0.60
+        else:
+            _min = max(min(cfs) - 0.02, 0.0)
+            _max = min(max(cfs) + 0.02, 1.0)
+            if _max - _min < 0.05:
+                _min, _max = 0.40, 0.60
+        _count = 5
+        _step = (_max - _min) / _count
+        def _bucket_index(cf: float) -> int:
+            if cf is None or cf != cf: return 0
+            if cf >= _max: return _count - 1
+            if cf <= _min: return 0
+            idx = int((cf - _min) / _step)
+            return min(idx, _count - 1)
+        return _count, _bucket_index
+
+    ev_bin_count, ev_ats_bkt = _ev_make_buckets(ev_ats_cfs)
+    _, ev_ou_bkt = _ev_make_buckets(ev_ou_cfs)
+    _, ev_ml_bkt = _ev_make_buckets(ev_ml_cfs)
 
     def _profit_per_100(odds: int | None) -> float:
         if not odds: return 0.0
@@ -2133,9 +2269,9 @@ async def get_prediction_ev_distribution(
 
     # Track per-confidence-bin: wins, losses, total for each pick type
     calibrations: dict[str, list[dict]] = {
-        "ats": [{"w": 0, "l": 0} for _ in range(BIN_COUNT)],
-        "ou": [{"w": 0, "l": 0} for _ in range(BIN_COUNT)],
-        "ml": [{"w": 0, "l": 0} for _ in range(BIN_COUNT)] if use_ml else None,
+        "ats": [{"w": 0, "l": 0} for _ in range(ev_bin_count)],
+        "ou": [{"w": 0, "l": 0} for _ in range(ev_bin_count)],
+        "ml": [{"w": 0, "l": 0} for _ in range(ev_bin_count)] if use_ml else None,
     }
     ev_dist_picks: dict[str, list[dict]] = {
         "ats": [] if use_ats else None,
@@ -2143,7 +2279,7 @@ async def get_prediction_ev_distribution(
         "ml": [] if use_ml else None,
     }
 
-    for r in rows.fetchall():
+    for r in _all_rows:
         mc = float(getattr(r, conf_main, 0.50)) if getattr(r, conf_main, None) is not None else 0.50
         rl_cf = float(r.rl_conf) if r.rl_conf is not None else mc
         ml_cf = float(r.ml_conf) if r.ml_conf is not None else mc
@@ -2160,7 +2296,7 @@ async def get_prediction_ev_distribution(
         if ml_r: ml_r = ml_r.strip().title()
 
         # ATS
-        bi = _bucket_index(rl_cf)
+        bi = ev_ats_bkt(rl_cf)
         if ats_r in ("Win", "Loss"):
             cal = calibrations["ats"][bi]
             if ats_r == "Win": cal["w"] += 1
@@ -2174,7 +2310,7 @@ async def get_prediction_ev_distribution(
             ev_dist_picks["ats"].append({"result": ats_r, "ev": ev, "r": rl_cf, "profit": float(r.ats_profit or 0)})
 
         # OU
-        bi = _bucket_index(ou_cf)
+        bi = ev_ou_bkt(ou_cf)
         if ou_r in ("Win", "Loss"):
             cal = calibrations["ou"][bi]
             if ou_r == "Win": cal["w"] += 1
@@ -2189,7 +2325,7 @@ async def get_prediction_ev_distribution(
 
         # ML
         if use_ml:
-            bi = _bucket_index(ml_cf)
+            bi = ev_ml_bkt(ml_cf)
             if ml_r in ("Win", "Loss"):
                 cal = calibrations["ml"][bi]
                 if ml_r == "Win": cal["w"] += 1
@@ -3169,7 +3305,15 @@ async def db_get_table(
         text(f"SELECT {cols_quoted} FROM \"{schema_name}\".\"{table_name}\" ORDER BY 1 OFFSET :offset LIMIT :limit"),
         {"offset": offset, "limit": limit},
     )
-    rows = [dict(zip(raw_columns, r)) for r in data_result.fetchall()]
+    import math
+    rows = []
+    for r in data_result.fetchall():
+        row = dict(zip(raw_columns, r))
+        # Replace NaN and Infinity float values with None (not JSON-compliant)
+        for k, v in row.items():
+            if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+                row[k] = None
+        rows.append(row)
 
     return {
         "schema_name": schema_name,

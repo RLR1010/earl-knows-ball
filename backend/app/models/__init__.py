@@ -1,5 +1,6 @@
 from .nfl import *
 from .user import User
+from .token_usage import UserTokenUsage
 from .chat_history import ChatHistory
 from .training_run import TrainingRun
 

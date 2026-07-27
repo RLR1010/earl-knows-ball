@@ -181,9 +181,17 @@ async def run_backtest(
 
     # ATS: use spread to check if predicted margin > spread
     spread = test_feats["spread"].values
+    # Drop games with NaN spread (no betting data available) — NaN comparisons
+    # always return False, deflating accuracy.
+    valid_spread = ~np.isnan(spread)
+    y_pred_ats = y_pred[valid_spread]
+    y_test_ats = y_test[valid_spread]
+    spread_ats = spread[valid_spread]
+    n_ats_with_data = int(np.sum(valid_spread))
+
     # ATS: home team covers if margin + spread > 0 (i.e., actual result beats the spread).
     # The spread is from the home team's perspective: negative = home favored, positive = home underdog.
-    ats_correct = np.sign(y_pred + spread) == np.sign(y_test + spread)
+    ats_correct = np.sign(y_pred_ats + spread_ats) == np.sign(y_test_ats + spread_ats)
     ats_acc = np.mean(ats_correct) if len(ats_correct) > 0 else 0.5
 
     # ML: model predicts margin — positive margin = model picks home team to win
@@ -204,11 +212,12 @@ async def run_backtest(
             "test": n_test,
         },
         "total_games": n_test,
+        "n_ats_with_data": n_ats_with_data,
         "mae": round(float(mae), 3),
         "ats": {
-            "total": n_test,
+            "total": n_ats_with_data,
             "correct": n_correct_ats,
-            "incorrect": n_test - n_correct_ats,
+            "incorrect": n_ats_with_data - n_correct_ats,
             "pct": round(float(ats_acc * 100), 2),
         },
         "ml": {

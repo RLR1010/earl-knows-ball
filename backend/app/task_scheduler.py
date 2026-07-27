@@ -285,9 +285,32 @@ async def get_task_runs(task_name: str, limit: int = 20) -> list[dict[str, Any]]
 
 # ── Lifecycle ───────────────────────────────────────────────────────
 
+_SCHEDULER_LOCK_ID = 0x45A71E31  # Unique advisory lock ID for multi-worker safety
+_scheduler_lock_conn = None
+
+
 async def start_scheduler():
-    """Start the scheduler and register all tasks."""
-    global _scheduler
+    """Start the scheduler and register all tasks.
+
+    Uses a PostgreSQL advisory lock so only one Granian worker runs the
+    scheduler across --workers > 1 deployments.
+    """
+    global _scheduler, _scheduler_lock_conn
+
+    # Try to acquire a PostgreSQL advisory lock (session-level).
+    # If another worker already holds it, skip scheduler startup.
+    import asyncpg
+    try:
+        lock_conn = await asyncpg.connect(SYNC_DB_URL.replace("+psycopg2", ""), timeout=5)
+        acquired = await lock_conn.fetchval("SELECT pg_try_advisory_lock($1)", _SCHEDULER_LOCK_ID)
+        if not acquired:
+            await lock_conn.close()
+            logger.info("Scheduler already running in another worker, skipping")
+            return
+        _scheduler_lock_conn = lock_conn  # keep connection open to hold the lock
+    except Exception as exc:
+        logger.warning("Could not acquire scheduler advisory lock: %s — starting scheduler anyway", exc)
+
     _scheduler = create_scheduler()
     await load_tasks(_scheduler)
     _scheduler.start()
@@ -303,12 +326,23 @@ async def start_scheduler():
 
 
 async def stop_scheduler():
-    """Gracefully shut down the scheduler."""
-    global _scheduler
+    """Gracefully shut down the scheduler and release the advisory lock."""
+    global _scheduler, _scheduler_lock_conn
     if _scheduler:
         _scheduler.shutdown(wait=False)
         _scheduler = None
         logger.info("Scheduler shut down")
+
+    if _scheduler_lock_conn:
+        try:
+            await _scheduler_lock_conn.execute("SELECT pg_advisory_unlock($1)", _SCHEDULER_LOCK_ID)
+        except Exception:
+            pass
+        try:
+            await _scheduler_lock_conn.close()
+        except Exception:
+            pass
+        _scheduler_lock_conn = None
 
 
 async def trigger_task(task_name: str) -> bool:

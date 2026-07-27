@@ -27,11 +27,12 @@ import numpy as np
 import pandas as pd
 from sqlalchemy import select as sa_select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-# Local helpers
+# App helpers
+from app.database import async_session
 from app.handicapping.mlb.data_loader import MLBDataLoader, build_features, get_data_loader, get_model_features
-from app.handicapping.calibrate_confidence import calibrate
+from app.handicapping.calibrate_confidence import calibrate, build_calibration
 from app.models.mlb.consolidated import MLBBettingLineConsolidated
 
 # ── Cached pick-card feature names ──
@@ -435,9 +436,10 @@ async def _save_api_prediction(
 
     # Calibrate confidence against empirical win rate
     # Raw confidence (used by Predictions page)
-    rl_conf = min(0.5 + abs(pred_margin + spread) * 0.4, 0.90) if spread else 0.5
-    ml_conf = min(0.5 + abs(pred_margin) * 0.25, 0.92)
-    ou_conf = min(0.5 + abs(pred_total - total) * 0.25, 0.92) if total else 0.5
+    rl_conf = round(min(0.5 + abs(pred_margin + spread) * 0.04, 0.90), 4) if spread else 0.5
+    ml_conf = round(min(0.5 + abs(pred_margin) * 0.025, 0.92), 4)
+    ou_conf_diff = abs(pred_total - total) if pred_total is not None and total else None
+    ou_conf = round(min(0.5 + ou_conf_diff * 0.07, 0.92), 4) if ou_conf_diff is not None else 0.5
     # Calibrated confidence (used for EV calculation)
     rl_conf_cal = calibrate(rl_conf, "ats", "mlb")
     ml_conf_cal = calibrate(ml_conf, "ml", "mlb")
@@ -528,15 +530,17 @@ async def _save_api_prediction(
     return 1
 
 
-async def backtest_season(
+async def _backtest_single_season(
     db: AsyncSession,
     year: int,
-    resume: bool = True,
+    resume: bool = False,
     num_games: int = 10,
+    curve_data: dict = None,
 ) -> Dict[str, Any]:
-    """Backtest MLB models over a full season using year-specific pkl files.
+    """Backtest MLB models over a single season using year-specific pkl files.
 
-    Called from ``GET /handicapping/mlb/backtest/{year}``.
+    Called internally by ``_backtest_season_inner`` for each year in the
+    multi-year backtest loop.
 
     The pkl files are year-specific (one per year) — the current
     ``training_runs.pkl_filename`` is a comma-separated list, and we pick
@@ -600,6 +604,21 @@ async def backtest_season(
         if resume and gid in existing_preds:
             continue
 
+        # ── Skip games without a full set of betting lines/odds ──
+        # "Full set" for MLB: spread (run line), over_under (total),
+        # and moneyline (home + away).  spread/over_under are NaN
+        # when the corresponding line is missing; moneyline columns
+        # are filled to 0.0 by build_features (0 is invalid American odds).
+        _sp = row.get("spread")
+        _ou = row.get("over_under")
+        _hml = row.get("home_moneyline", 0) or 0
+        _aml = row.get("away_moneyline", 0) or 0
+        if (
+            pd.isna(_sp) or pd.isna(_ou)
+            or _hml == 0.0 or _aml == 0.0
+        ):
+            continue
+
         home_score = int(row.get("home_score", 0))
         away_score = int(row.get("away_score", 0))
         margin = home_score - away_score
@@ -652,6 +671,7 @@ async def backtest_season(
             pred_margin, pred_total, pred_home_covers, pred_over, pred_home_wins,
             home_covers, actual_over, home_wins,
             pick_card_features_meta=pick_card_feats,
+            curve_data=curve_data,
         )
 
     await db.commit()
@@ -806,6 +826,7 @@ async def _save_backtest_prediction(
     pred_home_covers: bool, pred_over: bool, pred_home_wins: bool,
     home_covers: bool, actual_over: bool, home_wins: bool,
     pick_card_features_meta: Dict[str, Dict[str, str]] | None = None,
+    curve_data: dict = None,
 ) -> int:
     """Save a single game\'s prediction to ``mlb.game_predictions``.
 
@@ -817,7 +838,7 @@ async def _save_backtest_prediction(
     away_team = str(row.get("aa", ""))
     margin = home_score - away_score
 
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
 
     # Real odds from betting lines
     home_rl_odds = _safe_int(row.get("closing_spread_home_odds"), -110)
@@ -866,13 +887,23 @@ async def _save_backtest_prediction(
     # Confidence heuristic (matches old MLBPickCard)
     # Calibrate confidence against empirical win rate
     # Raw confidence (used by Predictions page)
-    rl_conf = min(0.5 + abs(pred_margin + spread) * 0.4, 0.90) if spread else 0.5
-    ml_conf = min(0.5 + abs(pred_margin) * 0.25, 0.92)
-    ou_conf = min(0.5 + abs(pred_total - total) * 0.25, 0.92) if total else 0.5
+    rl_conf = round(min(0.5 + abs(pred_margin + spread) * 0.04, 0.90), 4) if spread else 0.5
+    ml_conf = round(min(0.5 + abs(pred_margin) * 0.025, 0.92), 4)
+    ou_conf_diff = abs(pred_total - total) if pred_total is not None and total else None
+    ou_conf = round(min(0.5 + ou_conf_diff * 0.07, 0.92), 4) if ou_conf_diff is not None else 0.5
     # Calibrated confidence (used for EV calculation)
-    rl_conf_cal = calibrate(rl_conf, "ats", "mlb")
-    ml_conf_cal = calibrate(ml_conf, "ml", "mlb")
-    ou_conf_cal = calibrate(ou_conf, "ou", "mlb")
+    # First backtest year (2021): no prior-season data → calibrated columns are
+    # left NULL so the DB has no calibrated values for those games.
+    # calibrate() without curve_data falls back to the file cache, so we pass
+    # it explicitly for all subsequent years.
+    if curve_data is not None:
+        rl_conf_cal = calibrate(rl_conf, "ats", "mlb", curve_data=curve_data)
+        ml_conf_cal = calibrate(ml_conf, "ml", "mlb", curve_data=curve_data)
+        ou_conf_cal = calibrate(ou_conf, "ou", "mlb", curve_data=curve_data)
+    else:
+        rl_conf_cal = None
+        ml_conf_cal = None
+        ou_conf_cal = None
     overall_conf = max(rl_conf, ou_conf, ml_conf)
 
     # EV at $100 stake
@@ -880,9 +911,9 @@ async def _save_backtest_prediction(
         profit_if_win = 100.0 * _profit_per_100(odds_)
         return round((conf_ * profit_if_win) - ((1.0 - conf_) * 100.0), 2)
 
-    ats_ev = _ev(rl_conf_cal, rl_odds)
-    ou_ev = _ev(ou_conf_cal, ou_odds)
-    ml_ev = _ev(ml_conf_cal, ml_odds)
+    ats_ev = _ev(rl_conf_cal if rl_conf_cal is not None else rl_conf, rl_odds)
+    ou_ev = _ev(ou_conf_cal if ou_conf_cal is not None else ou_conf, ou_odds)
+    ml_ev = _ev(ml_conf_cal if ml_conf_cal is not None else ml_conf, ml_odds)
 
     # Predicted score (inferred from margin + total)
     home_score_raw = (pred_total + pred_margin) / 2.0
@@ -926,9 +957,9 @@ async def _save_backtest_prediction(
         rl_conf=round(rl_conf, 4),
         ou_conf=round(ou_conf, 4),
         ml_conf=round(ml_conf, 4),
-        rl_conf_cal=round(rl_conf_cal, 4),
-        ml_conf_cal=round(ml_conf_cal, 4),
-        ou_conf_cal=round(ou_conf_cal, 4),
+        rl_conf_cal=round(rl_conf_cal, 4) if rl_conf_cal is not None else None,
+        ml_conf_cal=round(ml_conf_cal, 4) if ml_conf_cal is not None else None,
+        ou_conf_cal=round(ou_conf_cal, 4) if ou_conf_cal is not None else None,
         ats_ev=ats_ev,
         ou_ev=ou_ev,
         ml_ev=ml_ev,
@@ -991,34 +1022,118 @@ def _safe_int(val, default: int = -110) -> int:
         return default
 
 
+def _zeros_return() -> Dict[str, Any]:
+    """Return an empty results dict matching ``_backtest_single_season`` return shape."""
+    return {"run_line": {"pct": 0.0, "w": 0, "l": 0, "push": 0},
+            "over_under": {"pct": 0.0, "w": 0, "l": 0, "push": 0},
+            "moneyline": {"pct": 0.0, "w": 0, "l": 0, "push": 0}}
+
+
 def _compat_build_extra_features(df: pd.DataFrame) -> pd.DataFrame:
     """No-op: all feature engineering is in ``build_features()`` from
     ``data_loader``.  Kept for backward API compatibility."""
     return df
 
 
+async def _backtest_season_inner(
+    db: AsyncSession,
+    years: Optional[List[int]] = None,
+    limit: Optional[int] = None,
+    save_results: bool = True,
+) -> Dict[str, Any]:
+    """Multi-year backtest with cumulative calibration curves.
+
+    Models are year-specific pkl files.  The first year (2021) uses raw
+    confidence only (no prior-season data to calibrate with).  From 2022
+    onward we build a calibration curve from all prior seasons and
+    apply it to the current year's predictions.
+
+    At the end we save the final calibration curve to
+    ``{sport}_confidence_calibration.json`` so live API predictions use it.
+    """
+    from sqlalchemy import text
+
+    if years is None:
+        # 2021 uses raw confidence (no prior data). From 2022 onward we
+        # build a calibration curve from all prior-season predictions.
+        years = [2021, 2022, 2023, 2024, 2025, 2026]
+
+    total_game_preds = 0
+    first_test_year = min(years)
+
+    for year in years:
+        logger.info("\n========== Backtesting MLB %d ==========", year)
+
+        # Build calibration curve from ALL prior seasons
+        if year > first_test_year:
+            try:
+                logger.info("  Building MLB calibration curve from seasons before %d...", year)
+                curve_data = await build_calibration(db, "mlb", max_exclusive_season=year, skip_file_save=True)
+            except Exception as e:
+                logger.warning("  Could not build MLB calibration curve for %d: %s (using raw conf)", year, e)
+                await db.rollback()
+                curve_data = None
+        else:
+            curve_data = None
+
+        result = await _backtest_single_season(
+            db, year, resume=False, num_games=limit or 0,
+            curve_data=curve_data,
+        )
+
+        # Extract total game count from individual result counters
+        rl = result.get("run_line", {})
+        ou = result.get("over_under", {})
+        year_total = rl.get("w", 0) + rl.get("l", 0) + rl.get("push", 0)
+        total_game_preds += year_total
+        logger.info("  %d predictions saved for %d", year_total, year)
+
+    # Save final calibration curve for live API predictions
+    try:
+        logger.info("Building final MLB calibration curve from all backtest years...")
+        await build_calibration(db, "mlb", skip_file_save=False)
+    except Exception as e:
+        logger.warning("Could not build final MLB calibration curve: %s", e)
+
+    logger.info("Backtest complete: %d years, %d total predictions",
+                len(years), total_game_preds)
+    return {"run_line": {}, "over_under": {}, "moneyline": {}, "total": total_game_preds}
+
+
+async def backtest_season(
+    years: Optional[List[int]] = None,
+    limit: Optional[int] = None,
+    save_results: bool = True,
+    db: Optional[async_sessionmaker] = None,
+) -> Dict[str, Any]:
+    """Backtest MLB models across one or more seasons.
+
+    Wrapper that creates an AsyncSession if none is given, then delegates
+    to ``_backtest_season_inner`` which handles cumulative calibration curves.
+    """
+    if db is None:
+        async with async_session() as own_db:
+            return await _backtest_season_inner(own_db, years, limit, save_results)
+    async with db() as session:
+        return await _backtest_season_inner(session, years, limit, save_results)
+
+
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
     import argparse, asyncio
-    from app.database import get_db
+    from app.database import async_session
 
     parser = argparse.ArgumentParser(description="MLB backtest runner")
-    parser.add_argument("--years", nargs="*", default=["2025", "2026"],
-                        help="Year(s) to backtest (e.g. 2025 2026)")
-    parser.add_argument("--resume", action="store_true",
-                        help="Skip games that already have a prediction")
+    parser.add_argument("--years", nargs="*", default=["2021", "2022", "2023", "2024", "2025", "2026"],
+                        help="Year(s) to backtest (e.g. 2021 2022 2023)")
     parser.add_argument("--num-games", type=int, default=None,
                         help="Number of games to evaluate (default: all)")
     args = parser.parse_args()
     years = [int(y) for y in args.years]
 
     async def _run():
-        async for db in get_db():
-            for year in years:
-                print(f"\n{'='*60}")
-                print(f"Backtesting {year}...")
-                print(f"{'='*60}")
-                result = await backtest_season(db, year, resume=args.resume, num_games=args.num_games or 0)
-                print(f"{year} done: {result}")
-            break
+        result = await backtest_season(years=years, limit=args.num_games)
+        total = result.get("total", 0)
+        print(f"\nBacktest complete: {len(years)} years, {total} total predictions")
 
     asyncio.run(_run())

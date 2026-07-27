@@ -937,22 +937,40 @@ def build_features(df: pd.DataFrame, log_fn=None) -> pd.DataFrame:
     # First try the persistent mlb.prior_team_stats table (available even on
     # single-season loads). Falls back to computing from prior-season tg data.
 
-    prior_map = {}
-    prior_season = tg[tg["year"] == current_year - 1].copy()
+    # ── Build per-year prior maps ──
+    # For each year Y, the prior comes from year Y-1.  We build
+    # prior_by_year[pYear][team][stat] from both the DB table and in-memory tg
+    # averages.
+    #
+    # ⚠ This fixes a data-leak bug where current_year = tg["year"].max() (2026)
+    #    was used to seed PRIOR stats for ALL years with 2025 data, leaking
+    #    future information into past training years.
 
-    # Load prior-season stats from mlb.prior_team_stats table. This provides
-    # coverage for advanced stats (avg, ops, era, whip, k9, bb9) that the
-    # tg-based method lacks, and works even on single-season loads.
+    years_in_data = sorted(tg["year"].unique())
+    prior_by_year: dict[int, dict[str, dict]] = {}
+
+    # Load ALL years of prior stats from mlb.prior_team_stats table
+    db_priors: dict[int, list] = {}
     try:
         purl = str(cfg.database_url).replace("+asyncpg", "")
         p_eng = create_engine(purl)
         with p_eng.connect() as cxn:
-            dbprior = cxn.execute(
-                text("SELECT * FROM mlb.prior_team_stats WHERE year = :y"),
-                {"y": current_year - 1}
+            all_rows = cxn.execute(
+                text("SELECT * FROM mlb.prior_team_stats ORDER BY year, team_abbr")
             ).fetchall()
-        for r in dbprior:
-            prior_map[r.team_abbr] = {
+        for r in all_rows:
+            db_priors.setdefault(r.year, []).append(r)
+        p_eng.dispose()
+    except Exception:
+        pass
+
+    for y in years_in_data:
+        prior_yr = y - 1
+        py_map: dict[str, dict] = {}
+
+        # ── DB table source ──
+        for r in db_priors.get(prior_yr, []):
+            py_map[r.team_abbr] = {
                 "rf": r.rf, "ra": r.ra,
                 "win": r.win_pct, "over_flag": r.over_pct,
                 "rf_home": r.rf_home, "rf_away": r.rf_away,
@@ -961,30 +979,28 @@ def build_features(df: pd.DataFrame, log_fn=None) -> pd.DataFrame:
                 "k_rate": r.k_rate, "bb_rate": r.bb_rate,
                 "home_runs": r.home_runs,
             }
-        p_eng.dispose()
-    except Exception:
-        pass  # Fall through to in-memory tg-based prior
 
-    # Supplement/override with in-memory prior-season tg averages
-    # (catches any last-season teams before the DB table was populated)
-    if len(prior_season) > 0:
-        if "over_under" in prior_season.columns:
-            prior_season["over_flag"] = ((prior_season["rf"] + prior_season["ra"]) > prior_season["over_under"]).astype(float)
-        elif "over_flag" not in prior_season.columns:
-            prior_season["over_flag"] = 0.0
-        for team, grp in prior_season.groupby("team"):
-            # DB table is authoritative; only fill if team wasn't in DB
-            if team not in prior_map:
-                prior_map[team] = {}
-            # Preserve DB-provided advanced stats; fill only basic keys if missing
-            prior_map[team].setdefault("rf", grp["rf"].mean())
-            prior_map[team].setdefault("ra", grp["ra"].mean())
-            prior_map[team].setdefault("win", grp["win"].mean())
-            prior_map[team].setdefault("over_flag", grp["over_flag"].mean())
-            prior_map[team].setdefault("rf_home", grp[grp["home_ind"] == 1]["rf"].mean() if grp["home_ind"].sum() > 0 else None)
-            prior_map[team].setdefault("rf_away", grp[grp["home_ind"] == 0]["rf"].mean() if (~grp["home_ind"]).sum() > 0 else None)
+        # ── In-memory tg fallback (for teams/years not yet in the DB table) ──
+        prior_season = tg[tg["year"] == prior_yr]
+        if len(prior_season) > 0:
+            ps = prior_season.copy()
+            if "over_under" in ps.columns:
+                ps["over_flag"] = ((ps["rf"] + ps["ra"]) > ps["over_under"]).astype(float)
+            elif "over_flag" not in ps.columns:
+                ps["over_flag"] = 0.0
+            for team, grp in ps.groupby("team"):
+                if team not in py_map:
+                    py_map[team] = {}
+                py_map[team].setdefault("rf", grp["rf"].mean())
+                py_map[team].setdefault("ra", grp["ra"].mean())
+                py_map[team].setdefault("win", grp["win"].mean())
+                py_map[team].setdefault("over_flag", grp["over_flag"].mean())
+                py_map[team].setdefault("rf_home", grp[grp["home_ind"] == 1]["rf"].mean() if grp["home_ind"].sum() > 0 else None)
+                py_map[team].setdefault("rf_away", grp[grp["home_ind"] == 0]["rf"].mean() if (~grp["home_ind"]).sum() > 0 else None)
 
-    # Fill game-1 NaN in expanding stats
+        prior_by_year[y] = py_map
+
+    # Fill game-1 NaN in expanding stats using the correct year's prior
     for col, prior_key in [
         ("rf_avg", "rf"),
         ("ra_avg", "ra"),
@@ -996,23 +1012,26 @@ def build_features(df: pd.DataFrame, log_fn=None) -> pd.DataFrame:
         if col in tg.columns:
             mask = tg[col].isna()
             for idx in tg.index[mask]:
+                row_year = tg.loc[idx, "year"]
                 team = tg.loc[idx, "team"]
-                if team in prior_map and prior_key in prior_map[team]:
-                    pv = prior_map[team][prior_key]
+                py = prior_by_year.get(row_year, {})
+                if team in py and prior_key in py[team]:
+                    pv = py[team][prior_key]
                     if pv is not None and not pd.isna(pv):
                         tg.at[idx, col] = pv
 
-    log("  Expanding stat game-1 NaN filled from prior-season averages")
+    log("  Expanding stat game-1 NaN filled from correct-year prior-season averages")
 # ── 3c. Rolling stats with prior-season seeding ──
 
     log("  Computing rolling stats with prior-season seeding...")
 
-    # prior_map was built in section 3b: team -> {col: val}
+    # prior_by_year is built in section 3b: year -> team -> {col: val}
 
     def prior_for(team, year, col):
-        """Get prior-season stat for a team, or None."""
-        if team in prior_map and col in prior_map[team]:
-            return prior_map[team][col]
+        """Get prior-season stat for a team from the correct prior year, or None."""
+        py = prior_by_year.get(year, {})
+        if team in py and col in py[team]:
+            return py[team][col]
         return None
 
     def seed_prior(series, team_series, prior_col):
@@ -1959,27 +1978,41 @@ def build_features(df: pd.DataFrame, log_fn=None) -> pd.DataFrame:
     if h_col in feats.columns and a_col in feats.columns:
         h = feats[h_col].fillna(0)
         a = feats[a_col].fillna(0)
-        feats["combo_era_r10"] = (h + a) / 2
-        feats["combo_era_r10_diff"] = h - a
+        combo_df = pd.DataFrame({
+            "combo_era_r10": (h + a) / 2,
+            "combo_era_r10_diff": h - a,
+        }, index=feats.index)
     else:
-        feats["combo_era_r10"] = 0.0
-        feats["combo_era_r10_diff"] = 0.0
+        combo_df = pd.DataFrame({
+            "combo_era_r10": 0.0,
+            "combo_era_r10_diff": 0.0,
+        }, index=feats.index)
+    feats = pd.concat([feats, combo_df], axis=1)
 
     # Drop the doubled-up columns
     feats.drop(columns=["total_avg_team_r10_away"], errors="ignore", inplace=True)
 
     # ── 12. Misc aliases ──
-
-    feats["ou_line"] = feats.get("over_under", 8.5)
-    feats["closing_ou"] = feats.get("over_under", 8.5)
-    feats["is_home_fav"] = (feats.get("spread", 0) < 0).astype(int)
-    feats["margin"] = feats["home_score"] - feats["away_score"]
-    feats["actual_margin"] = feats["margin"]
-    feats["actual_total"] = feats["home_score"] + feats["away_score"]
+    # Build all final columns in one shot with pd.concat to avoid frag warnings.
+    misc_df = pd.DataFrame({
+        "ou_line": feats.get("over_under", 8.5),
+        "closing_ou": feats.get("over_under", 8.5),
+        "is_home_fav": (feats.get("spread", 0) < 0).astype(int),
+        "margin": feats["home_score"] - feats["away_score"],
+        "actual_margin": feats["home_score"] - feats["away_score"],
+        "actual_total": feats["home_score"] + feats["away_score"],
+    }, index=feats.index)
+    feats = pd.concat([feats, misc_df], axis=1)
 
     # ── 14. Fill NaNs ──
+    # ⚠ Exclude over_under from the global fillna — games with NULL closing_ou
+    #    in the DB would get over_under=0.0, and the OU evaluation would count
+    #    EVERY such game as a correct "over" prediction (since 0.0 < actual_total
+    #    is always true).  The NaN is left in place so the model's backtest can
+    #    filter those games out.
     float_cols = feats.select_dtypes(include=["float64", "float32"]).columns
-    feats[float_cols] = feats[float_cols].fillna(0.0)
+    cols_to_fill = [c for c in float_cols if c not in ("over_under", "spread", "ou_line", "closing_ou", "opening_ou")]
+    feats[cols_to_fill] = feats[cols_to_fill].fillna(0.0)
 
     log("build_features complete: %d rows × %d cols", len(feats), len(feats.columns))
     return feats

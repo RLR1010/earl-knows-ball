@@ -46,8 +46,8 @@ nohup "$SCRIPT_DIR/run_api.sh" >> "$LOG_FILE" 2>&1 &
 NEW_PID=$!
 echo "Started granian (PID $NEW_PID)"
 
-# 4. Wait for it to be ready
-for i in $(seq 1 10); do
+# 4. Wait for it to be ready (more time for --workers 4)
+for i in $(seq 1 30); do
     if curl -sf http://localhost:8001/health >/dev/null 2>&1; then
         echo "API server is healthy (${i}s)"
         exit 0
@@ -55,5 +55,5 @@ for i in $(seq 1 10); do
     sleep 1
 done
 
-echo "ERROR: API server did not become healthy within 10 seconds" >&2
+echo "ERROR: API server did not become healthy within 30 seconds" >&2
 exit 1

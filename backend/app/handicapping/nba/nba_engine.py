@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from app.handicapping.calibrate_confidence import calibrate
+from app.handicapping.calibrate_confidence import calibrate, build_calibration
 
 import numpy as np
 import pandas as pd
@@ -537,7 +537,8 @@ async def backtest_season(
 ) -> Dict[str, Any]:
     """Backtest NBA models across one or more seasons.
 
-    Mirrors ``nfl/engine.py:backtest_season``.
+    Thin wrapper that creates a DB session if one is not given.
+    Delegates to ``_backtest_season_inner`` (mirrors nfl/engine.py).
 
     Parameters
     ----------
@@ -556,9 +557,39 @@ async def backtest_season(
         ``{"ats": [...], "ou": [...]}`` with per-year evaluation results.
     """
     if years is None:
-        # Test on 2024 and 2025 by default (matching nfl/engine.py)
-        years = [2024, 2025]
+        years = [2021, 2022, 2023, 2024, 2025]
 
+    if db is None:
+        async with _get_async_session()() as own_db:
+            return await _backtest_season_inner(years, limit, save_results, own_db)
+    async with db() as session:
+        return await _backtest_season_inner(years, limit, save_results, session)
+
+
+async def _backtest_season_inner(
+    years: Optional[List[int]] = None,
+    limit: Optional[int] = None,
+    save_results: bool = True,
+    db: AsyncSession = None,
+) -> Dict[str, Any]:
+    """Backtest NBA models across one or more seasons (inner implementation).
+
+    Parameters
+    ----------
+    years : list of int, optional
+        Season years to backtest.
+    limit : int, optional
+        Max games to load.
+    save_results : bool
+        Persist predictions to ``nba.game_predictions``.
+    db : AsyncSession, optional
+        Open async DB session.
+
+    Returns
+    -------
+    dict
+        ``{"ats": [...], "ou": [...]}`` with per-year evaluation results.
+    """
     dl = get_data_loader()
     if limit is not None:
         df = dl.load_games(limit=limit)
@@ -610,22 +641,43 @@ async def backtest_season(
 
         # Optionally save per-game predictions
         if save_results and (ats_model or ou_model):
-            sessionmaker = db or _get_async_session()
-            async with sessionmaker() as session:
-                for idx, row in year_df.iterrows():
-                    ats_feats, ats_names = _extract_feature_vector(row, "ats")
-                    ou_feats, ou_names = _extract_feature_vector(row, "ou")
-                    gid = row.get("game_id")
-                    await _save_backtest_prediction(
-                        game_id=gid,
-                        row=row,
-                        ats_model=ats_model,
-                        ou_model=ou_model,
-                        ats_features=(ats_feats, ats_names),
-                        ou_features=(ou_feats, ou_names),
-                        db=session,
-                    )
-                    total_game_preds += 1
+            first_test_year = min(years)
+            if year > first_test_year:
+                # Build calibration curve from all prior seasons (no look-ahead)
+                try:
+                    logger.info("  Building NBA calibration curve from seasons before %d...", year)
+                    curve_data = await build_calibration(db, "nba", max_exclusive_season=year, skip_file_save=True)
+                except Exception as e:
+                    logger.warning("  Could not build NBA calibration curve for %d: %s (using raw conf)", year, e)
+                    await db.rollback()
+                    curve_data = None
+            else:
+                # First season (2021): no prior data to calibrate with — use raw conf
+                curve_data = None
+
+            for idx, row in year_df.iterrows():
+                ats_feats, ats_names = _extract_feature_vector(row, "ats")
+                ou_feats, ou_names = _extract_feature_vector(row, "ou")
+                gid = row.get("game_id")
+                await _save_backtest_prediction(
+                    game_id=gid,
+                    row=row,
+                    ats_model=ats_model,
+                    ou_model=ou_model,
+                    ats_features=(ats_feats, ats_names),
+                    ou_features=(ou_feats, ou_names),
+                    db=None,
+                    curve_data=curve_data,
+                )
+                total_game_preds += 1
+
+    # Save final calibration curve for future NBA live predictions
+    if save_results:
+        try:
+            logger.info("Building final NBA calibration curve from all backtest years...")
+            await build_calibration(db, "nba", skip_file_save=False)
+        except Exception as e:
+            logger.warning("Could not build final NBA calibration curve: %s", e)
 
     logger.info("Backtest complete: %d years, %d game predictions saved",
                 len(years), total_game_preds)
@@ -945,6 +997,7 @@ async def _save_backtest_prediction(
     ats_features=None,
     ou_features=None,
     db: AsyncSession = None,
+    curve_data: dict = None,
 ) -> None:
     """Save a single backtest prediction using the NBAGamePrediction ORM model.
 
@@ -1107,9 +1160,9 @@ async def _save_backtest_prediction(
         ou_conf_val = round(min(0.5 + abs(ou_total - over_under) * 0.04, 0.92), 4) if (ou_total is not None and over_under) else 0.5
 
         # ── Calibrate raw confidences ──
-        ats_conf_cal = calibrate(float(margin_conf), "ats", "nba") if margin_conf is not None else None
-        ml_conf_cal = calibrate(float(ml_conf_val), "ml", "nba") if ml_conf_val is not None else None
-        ou_conf_cal = calibrate(float(ou_conf_val), "ou", "nba") if ou_conf_val is not None else None
+        ats_conf_cal = calibrate(float(margin_conf), "ats", "nba", curve_data=curve_data) if margin_conf is not None else None
+        ml_conf_cal = calibrate(float(ml_conf_val), "ml", "nba", curve_data=curve_data) if ml_conf_val is not None else None
+        ou_conf_cal = calibrate(float(ou_conf_val), "ou", "nba", curve_data=curve_data) if ou_conf_val is not None else None
 
         # ── Expected value ──
         ats_ev = _ev(ats_conf_cal, ats_odds_value) if ats_conf_cal is not None and ats_odds_value else None
@@ -1362,12 +1415,12 @@ if __name__ == "__main__":
         raw = os.environ.get("DATABASE_URL", "")
         if "+asyncpg" in raw:
             os.environ["DATABASE_URL"] = raw.replace("+asyncpg", "").replace("postgresql+asyncpg://", "postgresql://")
-        # Default: run backtest with 2024,2025 when no args or "backtest" specified
+        # Default: backtest all seasons (years defaults handled by function)
         if len(sys.argv) < 2 or sys.argv[1] == "backtest":
-            kwargs = {"years": [2024, 2025]}
+            kwargs = {}
             if len(sys.argv) > 2:
                 kwargs["years"] = [int(y) for y in sys.argv[2].split(",")]
-            logger.info("Backtesting NBA seasons %s...", kwargs["years"])
+            logger.info("Backtesting NBA seasons %s...", kwargs.get("years", "all"))
             results = await backtest_season(**kwargs, limit=None, save_results=True)
             for mt in ("ats", "ou"):
                 for r in results.get(mt, []):

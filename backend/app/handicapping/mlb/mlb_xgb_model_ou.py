@@ -128,13 +128,22 @@ async def run_backtest(
     mae = float(np.mean(np.abs(y_pred - y_test)))
     rmse = float(np.sqrt(np.mean((y_pred - y_test) ** 2)))
 
-    # Over/Under accuracy (excluding pushes)
-    pushes = y_test == ous
+    # Over/Under accuracy (excluding push games and games with no betting data)
+    # ⚠ NaN closing_ou (NULL in DB) must be dropped — NaN comparisons always
+    # return False, which erroneously inflates accuracy (e.g. 78.7% for 2021
+    # when 58% of games had no betting line data).
+    valid_ou = ~np.isnan(ous)
+    y_pred_ou = y_pred[valid_ou]
+    y_test_ou = y_test[valid_ou]
+    ous_ou = ous[valid_ou]
+    n_with_data = int(np.sum(valid_ou))
+
+    pushes = y_test_ou == ous_ou
     non_push_mask = ~pushes
     n_non_push = int(np.sum(non_push_mask))
     n_pushes = int(np.sum(pushes))
     if n_non_push > 0:
-        ou_correct = (y_pred[non_push_mask] > ous[non_push_mask]) == (y_test[non_push_mask] > ous[non_push_mask])
+        ou_correct = (y_pred_ou[non_push_mask] > ous_ou[non_push_mask]) == (y_test_ou[non_push_mask] > ous_ou[non_push_mask])
         ou_acc = float(np.mean(ou_correct))
         ou_count = int(np.sum(ou_correct))
     else:
@@ -164,9 +173,10 @@ async def run_backtest(
         "n_train": n_train,
         "n_test": n_test,
         "total_games": n_test,
+        "n_with_data": int(n_with_data),
         "mae": mae,
         "rmse": rmse,
-        "ou": {"total": int(n_test), "non_push": n_non_push, "correct": ou_count, "incorrect": int(n_non_push - ou_count), "push": n_pushes, "pct": round(ou_acc * 100, 1)},
+        "ou": {"total": int(n_with_data), "non_push": n_non_push, "correct": ou_count, "incorrect": int(n_non_push - ou_count), "push": n_pushes, "pct": round(ou_acc * 100, 1)},
         "model_file": pkl_path.name,
         "feature_importance": feature_importance,
     }

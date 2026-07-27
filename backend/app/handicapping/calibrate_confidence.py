@@ -29,9 +29,19 @@ BIN_COUNT = 20  # 2.5% per bin from 0.50 to 1.00
 SPORT_CONFIG = {
     "nfl": {"schema": "nfl", "use_per_model": False},
     "nba": {"schema": "nba", "use_per_model": True},
-    "mlb": {"schema": "mlb", "use_per_model": True},
+    "mlb": {"schema": "mlb", "use_per_model": True, "ou_result_is_outcome": True},
 }
 CAL_DIR = Path(__file__).parent.resolve()
+
+
+def _is_nan_value(v) -> bool:
+    """Check if a value is NaN (float('nan') or np.nan), safely."""
+    if v is None:
+        return False
+    try:
+        return math.isnan(float(v))
+    except (ValueError, TypeError):
+        return False
 
 
 def _cal_path(sport: str) -> Path:
@@ -59,6 +69,10 @@ def calibrate(raw_conf: float, pick_type: str, sport: str = "nfl") -> float:
     if len(xs) < 2 or len(ys) < 2:
         return raw_conf
 
+    # Guard against NaN in curve arrays
+    if _is_nan_value(raw_conf):
+        return raw_conf
+
     # Clip raw confidence to the range of the curve
     x = np.clip(raw_conf, xs.min(), xs.max())
 
@@ -71,11 +85,18 @@ def calibrate(raw_conf: float, pick_type: str, sport: str = "nfl") -> float:
 
     x_l, x_r = xs[idx - 1], xs[idx]
     y_l, y_r = ys[idx - 1], ys[idx]
+
+    # Guard against NaN in curve endpoints
+    if _is_nan_value(x_r) or _is_nan_value(x_l):
+        return raw_conf
     if x_r == x_l:
         return float(y_l)
 
     t = (x - x_l) / (x_r - x_l)
-    return float(round(y_l + t * (y_r - y_l), 3))
+    result = y_l + t * (y_r - y_l)
+    if _is_nan_value(result):
+        return raw_conf
+    return float(round(result, 3))
 
 
 # Simple module-level cache
@@ -115,6 +136,10 @@ def calibrate(raw_conf: float, pick_type: str, sport: str = "nfl", curve_data: d
     if len(xs) < 2 or len(ys) < 2:
         return raw_conf
 
+    # Guard against NaN in curve arrays (can happen if build_calibration wrote NaN)
+    if _is_nan_value(raw_conf):
+        return raw_conf
+
     x = np.clip(raw_conf, xs.min(), xs.max())
     idx = np.searchsorted(xs, x)
     if idx == 0:
@@ -124,11 +149,18 @@ def calibrate(raw_conf: float, pick_type: str, sport: str = "nfl", curve_data: d
 
     x_l, x_r = xs[idx - 1], xs[idx]
     y_l, y_r = ys[idx - 1], ys[idx]
+
+    # Guard against NaN in curve endpoints causing NaN interpolation
+    if _is_nan_value(x_r) or _is_nan_value(x_l):
+        return raw_conf
     if x_r == x_l:
         return float(y_l)
 
     t = (x - x_l) / (x_r - x_l)
-    return float(round(y_l + t * (y_r - y_l), 3))
+    result = y_l + t * (y_r - y_l)
+    if _is_nan_value(result):
+        return raw_conf  # fallback if interpolation gave NaN
+    return float(round(result, 3))
 
 
 async def build_calibration(db, sport: str = "nfl", max_exclusive_season: int = None, skip_file_save: bool = False):
@@ -155,8 +187,13 @@ async def build_calibration(db, sport: str = "nfl", max_exclusive_season: int = 
     season_filter = ""
     params = {}
     if max_exclusive_season is not None:
-        season_filter = "  AND gp.season_year < :max_season"
+        season_filter = "  AND s.year < :max_season"
         params["max_season"] = max_exclusive_season
+
+    def _season_join():
+        if max_exclusive_season is None:
+            return ""
+        return f"  JOIN {schema}.games g ON gp.game_id = g.id\n  JOIN {schema}.seasons s ON g.season_id = s.id"
 
     if use_per_model:
         # ── MLB, NBA: per-model confidence columns ──
@@ -169,10 +206,15 @@ async def build_calibration(db, sport: str = "nfl", max_exclusive_season: int = 
             "ou": "ou_conf",
             "ml": "ml_conf",
         }
-        # Map market to result filter condition (NBA uses different casing/values)
+        # Map market to result filter condition (sport-aware for ou_result conventions)
+        ou_filter = (
+            "gp.ou_result IN ('Win','Loss')"
+            if cfg.get("ou_result_is_outcome")
+            else "gp.ou_result IN ('over','under')"
+        )
         result_filters = {
             "rl": f"LOWER(gp.{rl_col}) IN ('win','loss')",
-            "ou": "gp.ou_result IN ('over','under')",
+            "ou": ou_filter,
             "ml": "LOWER(gp.ml_result) IN ('win','loss')",
         }
 
@@ -189,8 +231,13 @@ async def build_calibration(db, sport: str = "nfl", max_exclusive_season: int = 
             elif market == "ml":
                 win_sql = "gp.ml_result = 'Win'"
             else:
-                # ou: compare ou_pick (bet side) with actual outcome
-                win_sql = "LOWER(gp.ou_pick) = LOWER(gp.ou_result)"
+                # ou: compare bet pick with actual outcome
+                if cfg.get("ou_result_is_outcome"):
+                    # ou_result stores bet outcome: Win/Loss/Push
+                    win_sql = "gp.ou_result = 'Win'"
+                else:
+                    # ou_result stores bet side: over/under (NBA-style)
+                    win_sql = "LOWER(gp.ou_pick) = LOWER(gp.ou_result)"
 
             raw_rows = await db.execute(_t(f"""
                 SELECT FLOOR(gp.{col} * {BIN_COUNT}) / {BIN_COUNT} as bucket,
@@ -198,8 +245,10 @@ async def build_calibration(db, sport: str = "nfl", max_exclusive_season: int = 
                        ROUND(AVG(gp.{col})::numeric, 3) as avg_raw,
                        COUNT(*) FILTER (WHERE {win_sql}) as wins
                 FROM {schema}.game_predictions gp
+                {_season_join()}
                 WHERE gp.source IN ('api', 'backtest')
                   AND gp.{col} IS NOT NULL
+                  AND gp.{col}::text <> 'NaN'
                   AND {res_filter}
                 {season_filter}
                 GROUP BY bucket
@@ -251,8 +300,10 @@ async def build_calibration(db, sport: str = "nfl", max_exclusive_season: int = 
                 COUNT(*) FILTER (WHERE gp.ml_result IN ('Win','Loss')) as ml_games,
                 COUNT(*) FILTER (WHERE gp.ml_result='Win') as ml_w
             FROM {schema}.game_predictions gp
+            {_season_join()}
             WHERE gp.source IN ('api', 'backtest')
               AND gp.margin_conf IS NOT NULL
+              AND gp.margin_conf::text <> 'NaN'
               {season_filter}
             GROUP BY bucket
             ORDER BY bucket

@@ -30,6 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sess
 
 from app.models.nfl.game_prediction import NFLGamePrediction
 from app.handicapping.nfl.data_loader import NFLDataLoader, get_data_loader, get_model_features
+from app.database import async_session
 from app.handicapping.calibrate_confidence import calibrate, build_calibration
 
 logger = logging.getLogger(__name__)
@@ -322,6 +323,19 @@ async def backtest_season(
     -------
     dict with ``ats_results``, ``ou_results``, ``test_years``.
     """
+    # Use caller-provided db or create our own
+    if db is None:
+        async with async_session() as own_db:
+            return await _backtest_season_inner(years, limit, save_results, own_db)
+    return await _backtest_season_inner(years, limit, save_results, db)
+
+async def _backtest_season_inner(
+    years: Optional[List[int]] = None,
+    limit: Optional[int] = None,
+    save_results: bool = True,
+    db: AsyncSession = None,
+) -> Dict[str, Any]:
+    """Inner implementation of backtest_season."""
     ats_paths = _resolve_year_pkl_paths("ats")
     ou_paths = _resolve_year_pkl_paths("ou")
 
@@ -329,7 +343,7 @@ async def backtest_season(
         return {"error": "no live training run found with pkl files"}
 
     if years is None:
-        years = [y for y in [2024, 2025] if y in ats_paths or y in ou_paths]
+        years = [y for y in [2021, 2022, 2023, 2024, 2025] if y in ats_paths or y in ou_paths]
 
     logger.info("Backtest years (from pkl): %s", years)
 
@@ -387,6 +401,7 @@ async def backtest_season(
                     curve_data = await build_calibration(db, "nfl", max_exclusive_season=test_year, skip_file_save=True)
                 except Exception as e:
                     logger.warning("  Could not build calibration curve for %d: %s", test_year, e)
+                    await db.rollback()
                     curve_data = None
             else:
                 # First season: no prior data to calibrate with
@@ -403,9 +418,17 @@ async def backtest_season(
                     ou_model=ou_model,
                     ats_features=ats_feats,
                     ou_features=ou_feats,
-                    db=db,
+                    db=None,
                     curve_data=curve_data,
                 )
+
+    # Persist calibration curve from all backtest data so live API uses it
+    if save_results:
+        try:
+            logger.info("Building final calibration curve from all backtest years...")
+            await build_calibration(db, "nfl", skip_file_save=False)
+        except Exception as e:
+            logger.warning("Could not build final calibration curve: %s", e)
 
     return {
         "ats_results": ats_results,
