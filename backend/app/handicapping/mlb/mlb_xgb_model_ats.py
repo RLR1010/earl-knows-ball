@@ -94,6 +94,13 @@ MLB_PKL_DIR.mkdir(parents=True, exist_ok=True)
 _ats_model = None
 _ats_feature_cache: Optional[pd.DataFrame] = None
 CURRENT_YEAR = datetime.now().year
+DEFAULT_TIME_DECAY = 0.96
+
+
+def _compute_decay_weights(df: pd.DataFrame, last_year: int, decay: float = DEFAULT_TIME_DECAY) -> np.ndarray:
+    """Assign higher weight to more recent seasons."""
+    years_ago = last_year - df["season_year"]
+    return np.power(decay, years_ago)
 
 
 async def run_backtest(
@@ -156,17 +163,24 @@ async def run_backtest(
     X_train = train_feats[present].values
     y_train = train_feats["actual_margin"].values
 
+    # Time-decay sample weights — recent seasons matter more
+    last_train_year = max(train_years)
+    sample_weights = _compute_decay_weights(train_feats, last_train_year)
+
     model = xgb.XGBRegressor(
-        n_estimators=300,
+        n_estimators=600,
         max_depth=5,
-        learning_rate=0.06,
-        subsample=0.7,
-        colsample_bytree=0.5,
+        learning_rate=0.04,
+        subsample=0.8,
+        colsample_bytree=0.6,
+        reg_lambda=1.0,
+        gamma=0.1,
+        min_child_weight=3,
         random_state=42,
         verbosity=0,
-        eval_metric="mae",
+        eval_metric="rmse",
     )
-    model.fit(X_train, y_train)
+    model.fit(X_train, y_train, sample_weight=sample_weights)
 
     # Predict
     X_test = test_feats[present].values
@@ -252,7 +266,6 @@ async def run_backtest(
         log(f"  WARNING: failed to save pkl: {e}")
 
     return results
-
 
 async def run_all_years(
     hide_progress: bool = True,
@@ -356,171 +369,6 @@ def _enrich_df(df: pd.DataFrame) -> pd.DataFrame:
     return mlb_build_features(df)
 
 
-async def run_single(
-    test_year: int = 2026,
-    feature_set: str = "full",
-) -> dict:
-    """Load data, build features, run backtest for one year."""
-    # Load data for ALL seasons so we can train on earlier years
-    df = get_data_loader().load_games(
-        status="FINAL",
-        include_upcoming=False,
-    )
-    if df.empty:
-        log(f"No games found")
-        return {}
-    all_seasons = sorted(df["season_year"].dropna().unique().tolist())
-    train_years = [y for y in all_seasons if y < test_year]
-
-    feats = mlb_build_features(df)
-    result = await run_backtest(df, feats, test_year, feature_set, train_years)
-    return result or {}
-
-
-def set_model_path(path: str):
-    global ATS_MODEL_PATH, _ats_model
-    ATS_MODEL_PATH = path
-    _ats_model = None
-
-
-def _load_ats_model():
-    global _ats_model
-    if _ats_model is not None:
-        return _ats_model
-    path = ATS_MODEL_PATH
-    if not os.path.exists(path):
-        log(f"ATS model not found at {path}")
-        return None
-    with open(path, "rb") as f:
-        model = pickle.load(f)
-    _ats_model = model
-    log(f"ATS model loaded from {path}")
-    return _ats_model
-
-
-async def predict_ats(
-    game_id: int,
-    home_abbr: str,
-    away_abbr: str,
-) -> dict[str, Any] | None:
-    """Inference for a single game. Loads data, builds features, returns prediction."""
-    global _ats_feature_cache
-
-    model = _load_ats_model()
-    if model is None:
-        return None
-
-    if _ats_feature_cache is None:
-        log("ATS: building feature cache from all recent games...")
-        raw_df = get_data_loader().load_games(
-            seasons=[CURRENT_YEAR],
-            status=None,
-            include_upcoming=True,
-        )
-        _ats_feature_cache = mlb_build_features(raw_df)
-        log(f"ATS: {len(_ats_feature_cache)} features built")
-
-    feats_df = _ats_feature_cache
-    game_feats = feats_df[feats_df["game_id"] == game_id]
-
-    if game_feats.empty:
-        log(f"ATS: no features for game_id={game_id}, trying by teams...")
-        game_feats = feats_df[
-            (feats_df["ha"] == home_abbr) & (feats_df["aa"] == away_abbr)
-        ].sort_values("game_date", ascending=False)
-        if game_feats.empty:
-            log(f"ATS: no features for {home_abbr} vs {away_abbr}")
-            return None
-        game_feats = game_feats.iloc[:1]
-
-    fcols = _ensure_ats_features()
-    present = [c for c in fcols if c in game_feats.columns]
-    if not present:
-        log(f"ATS: no features available in cache")
-        return None
-
-    X = game_feats[present].values
-    pred_margin = float(model.predict(X)[0])
-
-    spread = float(game_feats["spread"].iloc[0]) if "spread" in game_feats.columns else 0.0
-    ou = float(game_feats["over_under"].iloc[0]) if "over_under" in game_feats.columns else 8.5
-    home_ml = float(game_feats["home_moneyline"].iloc[0]) if "home_moneyline" in game_feats.columns else 0
-    away_ml = float(game_feats["away_moneyline"].iloc[0]) if "away_moneyline" in game_feats.columns else 0
-
-    return {
-        "game_id": game_id,
-        "home_team": home_abbr,
-        "away_team": away_abbr,
-        "predicted_margin": round(pred_margin, 2),
-        "spread": spread,
-        "over_under": ou,
-        "home_moneyline": home_ml,
-        "away_moneyline": away_ml,
-        "ats_pick": "home" if (pred_margin + spread) > 0 else "away",
-        "ou_pick": "over" if pred_margin > 4.5 else "under",
-        "confidence": min(abs(pred_margin + spread) / 3, 0.95),
-    }
-
-
-async def train_model(
-    year: int,
-    train_years: list[int],
-    feature_set: list[str] | None = None,
-) -> dict:
-    """Train and persist the ATS model for season ``year`` using ``train_years`` data."""
-    df = get_data_loader().load_games(seasons=train_years, status="FINAL")
-    feats = mlb_build_features(df)
-
-    fcols = feature_set if feature_set is not None else _ensure_ats_features()
-    present = [c for c in fcols if c in feats.columns]
-
-    # Filter out games without betting lines
-    train_mask = feats["spread"].notna() & feats["home_moneyline"].notna()
-    feats = feats[train_mask].copy()
-
-    target = feats["actual_margin"].values
-    X = feats[present].values
-
-    model = xgb.XGBRegressor(
-        n_estimators=400,
-        max_depth=6,
-        learning_rate=0.05,
-        subsample=0.75,
-        colsample_bytree=0.5,
-        random_state=42,
-        verbosity=0,
-        eval_metric="mae",
-    )
-    model.fit(X, target)
-
-    os.makedirs(os.path.dirname(ATS_MODEL_PATH), exist_ok=True)
-    with open(ATS_MODEL_PATH, "wb") as f:
-        pickle.dump(model, f)
-
-    global _ats_model
-    _ats_model = model
-
-    feature_importance = [
-        {"feature": f, "importance": round(float(imp), 6)}
-        for f, imp in zip(present, model.feature_importances_)
-    ]
-    feature_importance.sort(key=lambda x: -x["importance"])
-    log(f"Model saved to {ATS_MODEL_PATH}")
-    for fi in feature_importance[:15]:
-        log(f"  {fi['feature']:35s} {fi['importance']:.4f}")
-
-    return {
-        "model_type": "ats",
-        "test_year": year,
-        "train_years": train_years,
-        "feature_set": feature_set,
-        "num_features": len(present),
-        "features": present,
-        "feature_importance": feature_importance,
-        "model_params": model.get_params(),
-        "model_path": ATS_MODEL_PATH,
-    }
-
 
 # ── CLI ──
 if __name__ == "__main__":
@@ -529,7 +377,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser("MLB ATS Backtest")
     parser.add_argument("--test-year", type=int, default=None, help="Test year (default: CURRENT_YEAR)")
     parser.add_argument("--features", type=str, default="ats")
-    parser.add_argument("--mode", type=str, default="one",
+    parser.add_argument("--mode", type=str, default="all",
                         choices=["one", "all"])
     parser.add_argument("--train-from", type=int, default=2016, help="First training year")
     parser.add_argument("--test-until", type=int, default=None, help="Last test year (default: CURRENT_YEAR)")
@@ -556,8 +404,4 @@ if __name__ == "__main__":
         for r in results:
             print(f"  {r['test_year']}: MAE={r['mae']:.3f}  ATS={r['ats']['pct']:.3f}  ML={r['ml']['pct']:.3f}")
     else:
-        result = asyncio.run(run_single(args.test_year or test_year, args.features))
-        if result:
-            print(json.dumps(result, indent=2))
-        else:
-            print("No results (check data)")
+        print("No results (check data)")

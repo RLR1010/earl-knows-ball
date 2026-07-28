@@ -719,7 +719,7 @@ if __name__ == "__main__":
         datefmt="%H:%M:%S",
     )
 
-    mode = sys.argv[1] if len(sys.argv) > 1 else "backtest"
+    mode = sys.argv[1] if len(sys.argv) > 1 else "train"
 
     if mode == "backtest":
         results = asyncio.run(run_all_years(train_from=2016))

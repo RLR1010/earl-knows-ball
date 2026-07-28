@@ -26,6 +26,13 @@ from app.handicapping.mlb.data_loader import get_data_loader, build_features as 
 
 # ── Config ──
 CURRENT_YEAR = 2026
+DEFAULT_TIME_DECAY = 0.96
+
+
+def _compute_decay_weights(df: pd.DataFrame, last_year: int, decay: float = DEFAULT_TIME_DECAY) -> np.ndarray:
+    """Assign higher weight to more recent seasons."""
+    years_ago = last_year - df["season_year"]
+    return np.power(decay, years_ago)
 
 # ── OU Feature Set (lazy, loaded on first use) ──
 OU_FEATURES: list[str] = []
@@ -109,20 +116,26 @@ async def run_backtest(
         log(f"    Skipping {test_year}: train={n_train}, test={n_test}")
         return None
 
+    # Time-decay sample weights — recent seasons matter more
+    last_train_year = max(train_years)
+    sample_weights = _compute_decay_weights(train_feats, last_train_year)
+
     # Train XGBoost
     model = xgb.XGBRegressor(
-        n_estimators=400,
+        n_estimators=500,
         max_depth=5,
-        learning_rate=0.05,
+        learning_rate=0.04,
         subsample=0.8,
         colsample_bytree=0.7,
         reg_lambda=1.5,
         reg_alpha=0.5,
-        eval_metric="mae",
+        gamma=0.1,
+        min_child_weight=3,
+        eval_metric="rmse",
         random_state=42,
         verbosity=0,
     )
-    model.fit(X_train, y_train)
+    model.fit(X_train, y_train, sample_weight=sample_weights)
 
     y_pred = model.predict(X_test)
     mae = float(np.mean(np.abs(y_pred - y_test)))
@@ -275,73 +288,6 @@ async def run_all_years(
     return total_results
 
 
-async def run_single(
-    test_year: int = 2026,
-    train_from: int = 2016,
-    feature_set: list[str] = None,
-    skip_db: bool = False,
-    do_save_training_run: bool = True,
-) -> dict | None:
-    """Run a single year of OU backtest."""
-    if feature_set is None:
-        feature_set = _ensure_ou_features()
-
-    train_years = list(range(train_from, test_year))
-    log(f"\n--- Testing {test_year} | Train {train_years[0]}-{train_years[-1]} ---")
-
-    raw = get_data_loader().load_games(status="FINAL")
-    feats = mlb_build_features(raw)
-
-    result = await run_backtest(raw, feats, test_year, feature_set, train_years)
-
-    if result and _DB_HELPERS_AVAILABLE and do_save_training_run and not skip_db:
-        try:
-            def _sanitize(obj):
-                if isinstance(obj, dict):
-                    return {k: _sanitize(v) for k, v in obj.items()}
-                elif isinstance(obj, list):
-                    return [_sanitize(v) for v in obj]
-                elif isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
-                    return None
-                return obj
-
-            results_list = [_sanitize(result)]
-            results_list[0]["name"] = f"{test_year} MLB OU"
-            results_list[0]["ou_pct"] = result["ou"]["pct"]
-
-            db_run_id = save_training_run(
-                sport="mlb",
-                model_type="ou",
-                test_year=test_year,
-                train_years=train_years,
-                results_json=results_list,
-                pkl_filename="",
-                algorithm="xgboost",
-                description=f"OU backtest {test_year}",
-            )
-
-            pkl_names = []
-            stable_name = f"{db_run_id}-{test_year}.pkl"
-            temp_pkls = sorted(MLB_PKL_DIR.glob(f"*-{test_year}.pkl"),
-                               key=lambda p: p.stat().st_mtime, reverse=True)
-            if temp_pkls:
-                try:
-                    temp_pkls[0].rename(MLB_PKL_DIR / stable_name)
-                    pkl_names.append(stable_name)
-                    log(f"  Pkl saved: {stable_name}")
-                except FileNotFoundError:
-                    log(f"  WARNING: temp pkl for {test_year} not found")
-
-            if pkl_names:
-                update_pkl_filename("mlb", db_run_id, ",".join(pkl_names))
-
-            log(f"  Saved training run {db_run_id}")
-        except Exception as e:
-            log(f"  WARNING: failed to save training run: {e}")
-
-    return result
-
-
 # ── CLI ──
 
 if __name__ == "__main__":
@@ -371,105 +317,7 @@ if __name__ == "__main__":
         else:
             log("No results generated.")
     else:
-        result = asyncio.run(run_single(
-            test_year=args.test_year,
-            train_from=args.train_from,
-            skip_db=args.skip_db,
-        ))
-        if result:
-            ou = result["ou"]
-            log(f"\n=== {result['test_year']} Result ===")
-            log(f"  MAE={result['mae']:.3f}, RMSE={result['rmse']:.3f}")
-            log(f"  OU={ou['pct']}% ({ou['correct']}/{ou['non_push']}{' +' + str(ou['push']) + ' push' if ou['push'] else ''})")
-        else:
-            log("No result generated.")
+        log("No result generated.")
 
 
-# ── Engine Interface Functions (used by mlb_engine.py) ──
 
-_MODEL_PATH = None
-_MODEL = None
-
-
-def set_model_path(path: str):
-    """Set the model PKL path for inference. Called by engine on startup."""
-    global _MODEL_PATH, _MODEL
-    _MODEL_PATH = str(path)
-    _MODEL = None  # force reload
-
-
-async def predict_ou(game_id, home_abbr, away_abbr, **kwargs):
-    """Predict OU total for a single game. Returns (predicted_total, confidence)."""
-    global _MODEL_PATH, _MODEL
-    if _MODEL is None and _MODEL_PATH:
-        try:
-            import joblib
-            _MODEL = joblib.load(_MODEL_PATH)
-        except Exception as e:
-            log(f"  WARNING: failed to load OU model: {e}")
-            return None, None
-    if _MODEL is None:
-        return None, None
-
-    try:
-        raw = get_data_loader().load_games(status="FINAL")
-        feats = mlb_build_features(raw)
-
-        home_row = feats[(feats["home_team"] == home_abbr) & (feats["game_id"] == game_id)]
-        if len(home_row) == 0:
-            home_row = feats[feats["home_team"] == home_abbr].iloc[-1:]
-        if len(home_row) == 0:
-            return None, None
-
-        _ou = _ensure_ou_features()
-        missing = [c for c in _ou if c not in feats.columns]
-        available = [c for c in _ou if c in feats.columns]
-        features = home_row[available].fillna(0).values
-
-        pred = _MODEL.predict(features)[0]
-
-        # Confidence: how much total differs from baseline (league avg ~8.5 runs)
-        diff = abs(pred - 8.5)
-        confidence = min(round(diff / 3, 2), 0.95)
-
-        return round(float(pred), 2), confidence
-    except Exception as e:
-        log(f"  ERROR in predict_ou: {e}")
-        return None, None
-
-
-async def train_model(year: int, train_years: list[int]) -> xgb.XGBRegressor:
-    """Train OU model for a given test year and return the model.
-    Called by mlb_engine.train_ou()."""
-    log(f"Training OU model for {year} (train {train_years[0]}-{train_years[-1]})...")
-    raw = get_data_loader().load_games(status="FINAL")
-    feats = mlb_build_features(raw)
-
-    train_feats = feats[feats["season_year"].isin(train_years)].copy()
-    test_feats = feats[feats["season_year"] == year].copy()
-
-    # Filter out games without betting lines
-    train_mask = train_feats["over_under"].notna()
-    train_feats = train_feats[train_mask].copy()
-
-    available = [c for c in _ensure_ou_features() if c in feats.columns]
-
-    X_train = train_feats[available].fillna(0).values
-    y_train = train_feats["actual_total"].values
-
-    model = xgb.XGBRegressor(
-        n_estimators=400,
-        max_depth=5,
-        learning_rate=0.05,
-        subsample=0.8,
-        colsample_bytree=0.7,
-        reg_lambda=1.5,
-        reg_alpha=0.5,
-        eval_metric="mae",
-        random_state=42,
-        verbosity=0,
-    )
-    model.fit(X_train, y_train)
-
-    log(f"Trained OU model for {year}: {len(X_train)} train rows")
-    return model

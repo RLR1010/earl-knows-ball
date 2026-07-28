@@ -1998,7 +1998,6 @@ def build_features(df: pd.DataFrame, log_fn=None) -> pd.DataFrame:
         "ou_line": feats.get("over_under", 8.5),
         "closing_ou": feats.get("over_under", 8.5),
         "is_home_fav": (feats.get("spread", 0) < 0).astype(int),
-        "margin": feats["home_score"] - feats["away_score"],
         "actual_margin": feats["home_score"] - feats["away_score"],
         "actual_total": feats["home_score"] + feats["away_score"],
     }, index=feats.index)
@@ -2010,6 +2009,10 @@ def build_features(df: pd.DataFrame, log_fn=None) -> pd.DataFrame:
     #    EVERY such game as a correct "over" prediction (since 0.0 < actual_total
     #    is always true).  The NaN is left in place so the model's backtest can
     #    filter those games out.
+    # Deduplicate columns — pd.concat(axis=1) can produce duplicates
+    # if both sides share a column name, which breaks the fillna assignment.
+    feats = feats.loc[:, ~feats.columns.duplicated(keep="first")]
+
     float_cols = feats.select_dtypes(include=["float64", "float32"]).columns
     cols_to_fill = [c for c in float_cols if c not in ("over_under", "spread", "ou_line", "closing_ou", "opening_ou")]
     feats[cols_to_fill] = feats[cols_to_fill].fillna(0.0)
