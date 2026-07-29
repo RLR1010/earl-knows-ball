@@ -1791,10 +1791,21 @@ class MLBDataLoader:
         merged.update(COMPUTED_FEATURES_CATALOG)
         # Add auto-generated descriptions for any missing columns
         import re
+        seen = set()
         for m in re.finditer(r'\bAS\s+(\w+)', GAME_QUERY):
             col = m.group(1)
+            seen.add(col)
             if col not in merged:
                 merged[col] = self._auto_description(col)
+        # Also capture bare column references (table.col or alias.col without AS)
+        # from the SELECT list (everything before ORDER BY)
+        select_part = GAME_QUERY.split("ORDER BY")[0] if "ORDER BY" in GAME_QUERY else GAME_QUERY
+        for m in re.finditer(r'(?:\w+\.)?(\w+)(?=\s*[,]\s*|\s*$)', select_part):
+            col = m.group(1)
+            if col and col not in seen and col.isidentifier() and col != col.upper()[:3].lower() and len(col) > 1:
+                seen.add(col)
+                if col not in merged:
+                    merged[col] = self._auto_description(col)
         return merged
 
     def get_feature_names(self) -> List[str]:
