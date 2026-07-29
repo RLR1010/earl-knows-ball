@@ -42,10 +42,11 @@ logger = logging.getLogger(__name__)
 
 # ── Default connection ───────────────────────────────────────────────────────
 
-DEFAULT_DB_URL = os.getenv(
-    "DATABASE_URL",
-    "postgresql://earl:earl_dev_pass@localhost:5432/earl_knows_football",
-)
+# Import sync DB URL from the single source of truth.
+# This avoids picking up +asyncpg from DATABASE_URL in .env.
+from app.db_urls import PSYCOPG2_DATABASE_URL
+
+DEFAULT_DB_URL = PSYCOPG2_DATABASE_URL
 
 
 # ── MLB team → stadium location mapping (lat, lon, timezone offset) ──────────

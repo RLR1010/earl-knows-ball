@@ -31,10 +31,10 @@ from sqlalchemy import create_engine
 logger = logging.getLogger(__name__)
 
 # ── Database connection ────────────────────────────────────────────────────────
-DEFAULT_DB_URL: str = os.environ.get(
-    "DATABASE_URL",
-    "postgresql://earl:earl2025@localhost:5432/earl_knows_football",
-)
+# Single source of truth via db_urls — avoids hardcoded passwords and +asyncpg issues.
+from app.db_urls import PSYCOPG2_DATABASE_URL
+
+DEFAULT_DB_URL: str = PSYCOPG2_DATABASE_URL
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -738,7 +738,7 @@ class NBADataLoader:
         if target in ("ats", "ou"):
             flag = "current_ats" if target == "ats" else "current_ou"
             try:
-                with psycopg2.connect(os.environ.get("DATABASE_URL", "postgresql://earl:earl2025@localhost:5432/earl_knows_football")) as conn:
+                with psycopg2.connect(PSYCOPG2_DATABASE_URL) as conn:
                     with conn.cursor() as cur:
                         cur.execute(
                             f"SELECT name FROM nba.features WHERE {flag} = TRUE "

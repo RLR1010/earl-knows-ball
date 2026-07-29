@@ -53,10 +53,10 @@ from math import asin, cos, radians, sin, sqrt
 logger = logging.getLogger(__name__)
 
 # ── Database connection ────────────────────────────────────────────────────────
-DEFAULT_DB_URL: str = os.environ.get(
-    "DATABASE_URL",
-    "postgresql://earl:earl2025@localhost:5432/earl_knows_football",
-)
+# Single source of truth via db_urls — avoids hardcoded passwords and +asyncpg issues.
+from app.db_urls import PSYCOPG2_DATABASE_URL
+
+DEFAULT_DB_URL: str = PSYCOPG2_DATABASE_URL
 
 
 # ── Team home-stadium coordinates (for travel-distance computations) ────────────
