@@ -784,6 +784,7 @@ async def compute_for_season(db: AsyncSession, season: int) -> dict:
             "rw_def_ypg": 0.0,
         }
         for game in games:
+            cum = accumulate_row(cum, game)
             row_with_rates = compute_rates(cum)
             row_with_rates["game_id"] = game["game_id"]
             row_with_rates["season"] = game["season"]
@@ -792,7 +793,6 @@ async def compute_for_season(db: AsyncSession, season: int) -> dict:
             row_with_rates["team_abbr"] = game["team_abbr"]
             row_with_rates["opponent_abbr"] = game["opponent_abbr"]
             all_cumulative.append(row_with_rates)
-            cum = accumulate_row(cum, game)
 
     # Batch upsert
     batch_size = 500

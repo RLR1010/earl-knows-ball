@@ -681,7 +681,9 @@ async def load_games_for_season(
             wind_dir_val = None
             if wind_str and "," in wind_str:
                 wpart = wind_str.split(",", 1)[1].strip().lower()
-                if "out" in wpart:
+                if "varies" in wpart:
+                    wind_dir_val = "Varies"
+                elif "out" in wpart:
                     wind_dir_val = "out"
                 elif "in" in wpart:
                     wind_dir_val = "in"

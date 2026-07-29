@@ -274,10 +274,20 @@ team_games AS (
     JOIN nba.teams at ON at.id = g.away_team_id
     JOIN nba.seasons s ON s.id = g.season_id
     INNER JOIN betting_agg ba ON ba.game_id = g.id
-    LEFT JOIN nba.cumulative_game_stats hcs
-        ON hcs.game_id = g.id AND hcs.team_side = 'home'
-    LEFT JOIN nba.cumulative_game_stats acs
-        ON acs.game_id = g.id AND acs.team_side = 'away'
+    LEFT JOIN LATERAL (
+        SELECT cgs.* FROM nba.cumulative_game_stats cgs
+        WHERE cgs.team_id = g.home_team_id
+          AND cgs.game_id != g.id
+        ORDER BY cgs.game_date DESC, cgs.game_id DESC
+        LIMIT 1
+    ) hcs ON true
+    LEFT JOIN LATERAL (
+        SELECT cgs.* FROM nba.cumulative_game_stats cgs
+        WHERE cgs.team_id = g.away_team_id
+          AND cgs.game_id != g.id
+        ORDER BY cgs.game_date DESC, cgs.game_id DESC
+        LIMIT 1
+    ) acs ON true
     WHERE g.status = 'FINAL'
       AND g.home_score IS NOT NULL
       AND g.away_score IS NOT NULL

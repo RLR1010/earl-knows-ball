@@ -769,6 +769,34 @@ async def _run_mlb_stats_refresh():
         except Exception as e:
             logger.error(f"  Step 10 cumulative stats refresh failed: {e}")
 
+        # Step 11: Refresh pre-computed rolling team & pitcher stats
+        try:
+            from app.handicapping.mlb.populate_rolling import (
+                populate_team_rolling,
+                populate_pitcher_rolling,
+            )
+            team_rows = populate_team_rolling(incremental=True)
+            pitcher_rows = populate_pitcher_rolling(incremental=True)
+            logger.info(
+                f"  Step 11: Rolling stats refreshed — "
+                f"{team_rows} team rows, {pitcher_rows} pitcher rows"
+            )
+        except Exception as e:
+            logger.error(f"  Step 11 rolling stats refresh failed: {e}")
+
+        # Step 12: Refresh bullpen game stats (from pitcher_game_stats WHERE is_starter=FALSE)
+        try:
+            from app.handicapping.mlb.populate_bullpen_stats import populate_bullpen_stats
+            from app.core.config import settings
+            from sqlalchemy import create_engine
+            engine = create_engine(settings.database_url_sync)
+            bullpen_rows = populate_bullpen_stats(engine)
+            logger.info(
+                f"  Step 12: Bullpen stats refreshed — {bullpen_rows} rows"
+            )
+        except Exception as e:
+            logger.error(f"  Step 12 bullpen stats refresh failed: {e}")
+
         await pconn.close()
 
         # Commit all changes (lineups, pitchers, picks)

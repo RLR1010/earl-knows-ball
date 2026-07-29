@@ -359,8 +359,8 @@ async def process_pitchers(conn, game: dict) -> int:
                 await conn.execute("""
                     INSERT INTO mlb.pitcher_game_stats
                         (game_id, mlb_game_id, pitcher_mlb_id, team_abbr, pitcher_name,
-                         ip, er, h, home_runs, base_on_balls, intentional_walks,
-                         strikeouts, hit_by_pitch, wild_pitches, balks,
+                         ip, er, h, hr, bb, intentional_walks,
+                         k, hit_by_pitch, wild_pitches, balks,
                          runs_allowed, pitches_thrown, strikes,
                          ground_outs, air_outs, fly_outs,
                          ground_into_double_play,
@@ -375,8 +375,8 @@ async def process_pitchers(conn, game: dict) -> int:
                         ip = EXCLUDED.ip,
                         er = EXCLUDED.er,
                         h = EXCLUDED.h,
-                        base_on_balls = EXCLUDED.base_on_balls,
-                        strikeouts = EXCLUDED.strikeouts,
+                        bb = EXCLUDED.bb,
+                        k = EXCLUDED.k,
                         runs_allowed = EXCLUDED.runs_allowed,
                         is_starter = EXCLUDED.is_starter
                 """,

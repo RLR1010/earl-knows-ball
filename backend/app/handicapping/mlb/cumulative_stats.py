@@ -325,6 +325,12 @@ def _populate(
             run = {c: 0.0 for c in BAT_COL_MAP}
             running[key] = run
 
+        # Add this game's stats to running totals FIRST
+        # so cumulative stats INCLUDE this game's performance
+        for alias in BAT_COL_MAP:
+            v = row_vals.get(alias, 0)
+            run[alias] = run[alias] + float(v)
+
         cum_row: dict = {
             "game_id": gid,
             "team_id": int(row_vals["team_id"]),
@@ -333,7 +339,7 @@ def _populate(
             "game_date": row_vals["game_date"],
         }
 
-        # Raw accumulators (current running totals = stats BEFORE this game)
+        # Raw accumulators (running totals now include this game = POST-game)
         for alias in BAT_COL_MAP:
             cum_row[f"bat_{alias}"] = int(run.get(alias, 0))
 
@@ -341,11 +347,6 @@ def _populate(
         cum_row.update(_compute_cumulative_batting(cum_row))
 
         bats_to_write.append(cum_row)
-
-        # Add this game's stats to running totals
-        for alias in BAT_COL_MAP:
-            v = row_vals.get(alias, 0)
-            run[alias] = run[alias] + float(v)
 
     summary["batting_processed"] = len(bats_to_write)
     logger.info("Batting cumulative: %d new rows to insert.", len(bats_to_write))
@@ -388,6 +389,11 @@ def _populate(
             "game_date": row_vals["game_date"],
         }
 
+        # Add this game's stats to running totals FIRST
+        for alias in PITCH_COL_MAP:
+            v = row_vals.get(alias, 0)
+            run[alias] = run[alias] + float(v)
+
         for alias in PITCH_COL_MAP:
             raw = run.get(alias, 0)
             if alias == "ip":
@@ -397,10 +403,6 @@ def _populate(
 
         cum_row.update(_compute_cumulative_pitching(cum_row))
         pitches_to_write.append(cum_row)
-
-        for alias in PITCH_COL_MAP:
-            v = row_vals.get(alias, 0)
-            run[alias] = run[alias] + float(v)
 
     summary["pitching_processed"] = len(pitches_to_write)
 

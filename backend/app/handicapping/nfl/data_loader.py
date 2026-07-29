@@ -849,6 +849,7 @@ class NFLDataLoader:
             ts_df = pd.read_sql(CUM_SQL, self.engine)
             if not ts_df.empty:
                 team_stats = ts_df
+                team_stats["merge_week"] = team_stats["week"] + 1
                 logger.info(
                     "Loaded %d cumulative stat rows from nfl.cumulative_game_stats (%d-%d)",
                     len(team_stats),
@@ -1550,7 +1551,7 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
         df = df.merge(
             home_off[_ho_cols],
             left_on=[season_col, "week", "home_abbr"],
-            right_on=[season_col, "week", "home_abbr"],
+            right_on=[season_col, "merge_week", "home_abbr"],
             how="left",
         )
 
@@ -1603,7 +1604,7 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
         df = df.merge(
             away_off[_ao_cols],
             left_on=[season_col, "week", "away_abbr"],
-            right_on=[season_col, "week", "away_abbr"],
+            right_on=[season_col, "merge_week", "away_abbr"],
             how="left",
         )
 
@@ -1652,7 +1653,7 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
         df = df.merge(
             home_def[_hd_cols],
             left_on=[season_col, "week", "home_abbr"],
-            right_on=[season_col, "week", "home_abbr"],
+            right_on=[season_col, "merge_week", "home_abbr"],
             how="left",
         )
 
@@ -1700,7 +1701,7 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
         df = df.merge(
             away_def[_ad_cols],
             left_on=[season_col, "week", "away_abbr"],
-            right_on=[season_col, "week", "away_abbr"],
+            right_on=[season_col, "merge_week", "away_abbr"],
             how="left",
         )
 

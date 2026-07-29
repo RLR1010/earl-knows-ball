@@ -124,6 +124,8 @@ CREATE TABLE IF NOT EXISTS {CUM_TABLE} (
 
     PRIMARY KEY (game_id, team_side)
 );
+CREATE INDEX IF NOT EXISTS idx_nba_cgs_team_date_game
+    ON nba.cumulative_game_stats (team_id, game_date DESC, game_id DESC);
 """
 
 # ── SQL: per-game team box-score view ───────────────────────────────────────
@@ -576,20 +578,20 @@ def _populate(
 
     # ── Tier 5: Team quality ──
     df_raw["cum_win_pct"] = grouped_raw["won"].transform(
-        lambda s: s.shift(1).expanding(min_periods=1).mean()
+        lambda s: s.expanding(min_periods=1).mean()
     ).fillna(0.0)
     # Round to 4 decimals
     df_raw["cum_win_pct"] = df_raw["cum_win_pct"].round(4)
 
-    # ── Compute cumulative sums (shift(1) = backward-looking) ──
-    # Cumulative: for game N, we want stats from games 1..N-1.
-    # cumsum() gives games 1..N, shift(1) gives 1..N-1.
+    # ── Compute cumulative sums (post-game, includes current game) ──
+    # Cumulative: for game N, cumsum() gives stats for games 1..N.
+    # The LATERAL JOIN in GAME_QUERY excludes the current game (game_id != g.id)
+    # to get pre-game cumulative stats for prediction.
     grouped = df.groupby(["team_id", "season_id"], sort=False)
     cum_sum_cols = CUM_SUM_COLS
 
-    df[cum_sum_cols] = grouped[cum_sum_cols].cumsum()
-    df[cum_sum_cols] = df.groupby(["team_id", "season_id"], sort=False)[cum_sum_cols].shift(1).fillna(0)
-    df["games_played"] = grouped.cumcount()
+    df[cum_sum_cols] = grouped[cum_sum_cols].cumsum().fillna(0)
+    df["games_played"] = grouped.cumcount() + 1
 
     # ── Define Tier 4/5 column names for merge ──
     tier45_cols = [

@@ -20,6 +20,7 @@ from app.models.admin import SubscriptionPlan, UserSubscription, Payment
 from app.core.config import settings
 import json
 import os
+import pandas as _pd
 from psycopg2.extras import RealDictCursor
 
 
@@ -3410,10 +3411,10 @@ async def data_loader_load_game(
                 full_raw_df = dl.load_games(seasons=[season_val], include_upcoming=True)
 
         # Step 3: Build features on the full context
+        full_built_df = _pd.DataFrame()
         if sport == "nfl":
             from app.handicapping.nfl.data_loader import build_features as nfl_build_features
             from sqlalchemy import create_engine as _create_engine, text as _sql_text
-            import pandas as _pd
             _sync_engine = _create_engine(db_url)
             CUM_SQL = _sql_text("""
                 SELECT season, week, team_abbr, opponent_abbr AS opp_abbr,
@@ -3464,14 +3465,26 @@ async def data_loader_load_game(
             full_built_df = nfl_build_features(full_raw_df, team_stats=_ts_df)
         elif sport == "mlb":
             from app.handicapping.mlb.data_loader import build_features as mlb_build_features
-            full_built_df = mlb_build_features(full_raw_df)
+            try:
+                full_built_df = mlb_build_features(full_raw_df)
+            except Exception:
+                log.error("  build_features failed for MLB, falling back to raw data")
+                full_built_df = full_raw_df
         else:  # nba
             from app.handicapping.nba.data_loader import build_features as nba_build_features
-            full_built_df = nba_build_features(full_raw_df)
+            try:
+                full_built_df = nba_build_features(full_raw_df)
+            except Exception:
+                log.error("  build_features failed for NBA, falling back to raw data")
 
         # Step 4: Filter to just our target game
-        built_df = full_built_df[full_built_df["game_id"] == game_id]
-        if built_df.empty:
+        if full_built_df.empty or "game_id" not in full_built_df.columns:
+            built_df = _pd.DataFrame()
+        else:
+            built_df = full_built_df[full_built_df["game_id"] == game_id]
+        if not built_df.empty:
+            pass
+        elif "game_id" in full_built_df.columns:
             # Might be in the index rather than a column
             try:
                 built_df = full_built_df.loc[[game_id]]
@@ -3479,7 +3492,7 @@ async def data_loader_load_game(
                 pass
         if built_df.empty:
             missing_in_raw = game_id not in full_raw_df["game_id"].values
-            missing_in_built = game_id not in full_built_df["game_id"].values
+            missing_in_built = game_id not in full_built_df["game_id"].values if not full_built_df.empty else True
             detail_parts = [f"Game {game_id} disappeared after feature engineering"]
             if missing_in_built:
                 detail_parts.append("— not found in built DataFrame")
@@ -3493,7 +3506,7 @@ async def data_loader_load_game(
         raw_df = full_raw_df[full_raw_df["game_id"] == game_id]
 
         raw_row = raw_df.iloc[0].to_dict()
-        built_row = built_df.iloc[0].to_dict()
+        built_row = built_df.iloc[0].to_dict() if not built_df.empty else {}
 
         # Step 4: Collect feature metadata from the data loader
         catalog = dl.get_features_catalog()  # {name: description}
