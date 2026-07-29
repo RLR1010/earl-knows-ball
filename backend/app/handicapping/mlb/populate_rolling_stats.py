@@ -291,7 +291,7 @@ WITH per_game AS (
             COUNT(*) FILTER (WHERE blc.closing_ou IS NOT NULL) AS over_total
         FROM mlb.cumulative_game_stats cgs2
         JOIN mlb.games g2 ON g2.id = cgs2.game_id
-        LEFT JOIN mlb.betting_lines_consolidated blc ON blc.game_id = g2.id AND blc.sportsbook = 'closing'
+        LEFT JOIN mlb.betting_lines_consolidated blc ON blc.game_id = g2.id
         WHERE g2.status = 'FINAL'
         GROUP BY cgs2.team_id, cgs2.season_id
     ) gw ON gw.team_id = cgs.team_id AND gw.season_id = cgs.season_id
@@ -356,11 +356,12 @@ WITH per_start AS (
 
         -- Raw totals
         pgs.ip,
+        -- ip_outs is computed below from IP string (e.g. 6.1 → 19 outs)
         pgs.er,
         pgs.h AS hits_allowed,
         pgs.bb AS walks_allowed,
         pgs.k AS strikeouts,
-        pgs.hr AS home_runs,
+        pgs.hr AS home_runs_allowed,
         pgs.hit_by_pitch,
         g.day_night,
         (g.home_team_id = t.id) AS is_home,
@@ -411,7 +412,7 @@ SELECT *,
     SUM(walks_allowed) OVER w / NULLIF(SUM(ip_outs) OVER w / 3.0, 0) * 9 AS bb9_ytd,
     SUM(strikeouts) OVER w::DOUBLE PRECISION / NULLIF(SUM(walks_allowed) OVER w, 0) AS kbb_ytd,
     -- FIP simplified: (13*HR + 3*BB - 2*K) / IP + constant (use 3.10 as FIP constant)
-    (13.0 * SUM(home_runs) OVER w + 3.0 * SUM(walks_allowed) OVER w - 2.0 * SUM(strikeouts) OVER w)
+    (13.0 * SUM(home_runs_allowed) OVER w + 3.0 * SUM(walks_allowed) OVER w - 2.0 * SUM(strikeouts) OVER w)
         / NULLIF(SUM(ip_outs) OVER w / 3.0, 0) + 3.10 AS fip_ytd,
     SUM(CASE WHEN is_quality_start THEN 1 ELSE 0 END) OVER w::DOUBLE PRECISION
         / NULLIF(COUNT(*) OVER w::DOUBLE PRECISION, 0) AS qs_rate_ytd,
@@ -451,7 +452,7 @@ SELECT *,
 
     -- Rest days since last start
     CASE WHEN prev_start_date IS NOT NULL
-        THEN game_date - prev_start_date
+        THEN EXTRACT(DAY FROM game_date - prev_start_date)::INTEGER
         ELSE NULL END AS rest_days,
 
     -- Split ERA (cumulative YTD, expanding mean, shift(1))
@@ -513,8 +514,10 @@ ON CONFLICT (game_id, team_side) DO UPDATE SET
 
 
 def get_db_url() -> str:
-    from backend.app.config import DATABASE_URL as url
-    return url
+    return os.environ.get(
+        "SYNC_DATABASE_URL",
+        "postgresql+psycopg2://earl:earl_dev_pass@localhost:5432/earl_knows_football"
+    )
 
 
 def ensure_tables(engine: Engine) -> None:
@@ -560,10 +563,17 @@ def populate_team_rolling(engine: Engine, incremental: bool = False) -> int:
             )
         """
 
+    # Use a more specific match to avoid replacing cgs2 in the subquery
     sql = POPULATE_TEAM_ROLLING_SQL.replace(
-        "FROM mlb.cumulative_game_stats cgs",
-        f"FROM mlb.cumulative_game_stats cgs {extra_filter}"
+        "FROM mlb.cumulative_game_stats cgs\n    JOIN mlb.games",
+        f"FROM mlb.cumulative_game_stats cgs {extra_filter}\n    JOIN mlb.games"
     )
+    # Fallback if the specific match didn't work
+    if sql == POPULATE_TEAM_ROLLING_SQL:
+        sql = POPULATE_TEAM_ROLLING_SQL.replace(
+            "FROM mlb.cumulative_game_stats cgs",
+            f"FROM mlb.cumulative_game_stats cgs {extra_filter}"
+        )
 
     with engine.connect() as conn:
         result = conn.execute(text(sql))
@@ -624,7 +634,10 @@ def populate_pitcher_rolling(engine: Engine, incremental: bool = False) -> int:
         rows = result.fetchall()
         cols = result.keys()
 
-        col_list = [c for c in cols if c not in ('start_n', 'is_starter_filter')]
+        col_list = [c for c in cols if c not in (
+            'start_n', 'is_starter_filter', 'ip', 'prev_start_date',
+            'day_night', 'is_home', 'hit_by_pitch'
+        )]
         col_names = ", ".join(col_list)
         placeholders = ", ".join(f":{c}" for c in col_list)
 
