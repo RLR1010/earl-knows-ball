@@ -469,7 +469,8 @@ if __name__ == "__main__":
 
     from sqlalchemy import create_engine
 
-    engine = create_engine("postgresql://earl:earl2025@localhost/earl_knows_football")
+    engine = from app.db_urls import PSYCOPG2_DATABASE_URL
+create_engine(PSYCOPG2_DATABASE_URL.replace(":5432", ""))
 
     years = [int(a) for a in sys.argv[1:]] if len(sys.argv) > 1 else AVAILABLE_YEARS
 

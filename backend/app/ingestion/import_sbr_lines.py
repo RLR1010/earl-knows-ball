@@ -9,6 +9,7 @@ from datetime import datetime
 from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 
+from app.db_urls import ASYNC_DATABASE_URL
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("import_sbr")
 
@@ -30,10 +31,7 @@ SBR_TO_ABBR = {
     'KCChiefs': 'KC', 'LVRaiders': 'LV',
 }
 
-DB_URL = os.environ.get(
-    "DATABASE_URL",
-    "postgresql+asyncpg://earl:earl@localhost:5432/earl_knows_football"
-)
+DB_URL = ASYNC_DATABASE_URL  # from app.db_urls
 SBR_PATH = os.environ.get(
     "SBR_DATA_PATH",
     "/tmp/nfl_archive_10Y.json"

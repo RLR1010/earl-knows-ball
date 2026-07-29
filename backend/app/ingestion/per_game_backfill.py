@@ -8,6 +8,7 @@ Usage:
     python -m app.ingestion.per_game_backfill --sport mlb --year 2021
     python -m app.ingestion.per_game_backfill --sport mlb --start 2021 --end 2025
 """
+from app.db_urls import ASYNC_DATABASE_URL
 import asyncio, logging, os, sys
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
@@ -94,7 +95,7 @@ SPORT_CONFIG = {
 }
 
 import os as _os
-DB_URL = _os.environ.get("SYNC_DATABASE_URL", "postgresql+asyncpg://earl:earl_dev_pass@localhost:5432/earl_knows_football")
+DB_URL = ASYNC_DATABASE_URL  # from app.db_urls
 
 
 def implied_prob(american_odds: int) -> Optional[float]:

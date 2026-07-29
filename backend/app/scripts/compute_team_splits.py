@@ -14,7 +14,8 @@ import asyncpg
 
 logger = logging.getLogger(__name__)
 
-DB_DSN = "postgresql://earl:earl2025@localhost:5432/earl_knows_football"
+from app.db_urls import PSYCOPG2_DATABASE_URL
+DB_DSN = PSYCOPG2_DATABASE_URL
 
 SPLITS = ["home", "away", "day", "night", "grass", "turf"]
 

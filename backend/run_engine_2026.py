@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Run MLB backtest for all years 2021-2026 in sequence."""
 import asyncio, os
-os.environ["DATABASE_URL"] = "postgresql+asyncpg://earl:earl_dev_pass@localhost:5432/earl_knows_football"
+from app.db_urls import ASYNC_DATABASE_URL
+os.environ["DATABASE_URL"] = ASYNC_DATABASE_URL
 
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from app.handicapping.mlb.mlb_engine import backtest_season

@@ -14,8 +14,9 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from sqlalchemy import create_engine, text
+from app.db_urls import PSYCOPG2_DATABASE_URL
 
-DATABASE_URL = "postgresql://earl:earl2025@localhost:5432/earl_knows_football"
+DATABASE_URL = PSYCOPG2_DATABASE_URL  # from app.db_urls
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 
 def run():

@@ -23,6 +23,7 @@ from collections import defaultdict
 
 import psycopg2
 import psycopg2.extras
+from app.db_urls import PSYCOPG2_DATABASE_URL
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +32,7 @@ DB_CONFIG = {
     "port": 5432,
     "dbname": "earl_knows_football",
     "user": "earl",
-    "password": "earl2025",
+    "password": PSYCOPG2_DATABASE_URL.split("@")[0].split(":")[-1],  # from app.db_urls
 }
 
 TIER_1 = ["fanduel", "draftkings", "betrivers", "williamhill_us"]

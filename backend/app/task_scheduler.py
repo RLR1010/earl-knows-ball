@@ -26,7 +26,8 @@ from sqlalchemy import create_engine
 from app.database import async_session
 
 # Sync engine for APScheduler job store (asyncpg can't be driven synchronously)
-SYNC_DB_URL = "postgresql+psycopg2://earl:earl_dev_pass@127.0.0.1:5432/earl_knows_football"
+from app.db_urls import PSYCOPG2_DATABASE_URL as _SYNC_DB_URL
+SYNC_DB_URL = _SYNC_DB_URL
 # Also used: see settings.database_url for the asyncpg URL
 sync_engine = create_engine(SYNC_DB_URL, pool_pre_ping=True, pool_size=5)
 

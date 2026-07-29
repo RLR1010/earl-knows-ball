@@ -14,6 +14,7 @@ Usage:
     # Re-check missing games only:
     docker exec earl-knows-football-api-1 python -m app.ingestion.boxscore_ingest --fill-missing
 """
+from app.db_urls import PSYCOPG2_DATABASE_URL
 
 import asyncio
 import logging
@@ -34,7 +35,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("earl.boxscore_ingest")
 
-DB = "postgresql://earl:earl_dev_pass@localhost:5432/earl_knows_football"
+DB = PSYCOPG2_DATABASE_URL  # from app.db_urls
 API_BASE = "https://statsapi.mlb.com/api/v1/game"
 
 

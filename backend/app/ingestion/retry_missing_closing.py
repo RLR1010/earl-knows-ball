@@ -3,6 +3,7 @@
 Retry missing MLB closing lines — cached API calls, batch match.
 Queries each unique timestamp once, then matches all games against cached data.
 """
+from app.db_urls import PSYCOPG2_DATABASE_URL
 import os, sys, asyncio, httpx, logging
 from datetime import datetime, timezone, timedelta
 from collections import defaultdict
@@ -27,8 +28,7 @@ log = logging.getLogger(__name__)
 API_KEY = os.environ.get("ODDS_API_KEY")
 if not API_KEY: log.error("ODDS_API_KEY not set"); sys.exit(1)
 
-SYNC_DB_URL = os.environ.get("SYNC_DATABASE_URL",
-    "postgresql://earl:earl_dev_pass@localhost:5432/earl_knows_football")
+SYNC_DB_URL = PSYCOPG2_DATABASE_URL  # from app.db_urls
 BASE_URL = "https://api.the-odds-api.com/v4/historical/sports/baseball_mlb/odds"
 
 TEAM_MAP = {**{

@@ -516,7 +516,7 @@ ON CONFLICT (game_id, team_side) DO UPDATE SET
 def get_db_url() -> str:
     return os.environ.get(
         "SYNC_DATABASE_URL",
-        "postgresql+psycopg2://earl:earl_dev_pass@localhost:5432/earl_knows_football"
+        PSYCOPG2_DATABASE_URL
     )
 
 

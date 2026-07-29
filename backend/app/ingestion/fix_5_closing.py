@@ -4,12 +4,13 @@ Get closing lines for 5 games — 10 min before game time.
 import asyncio, httpx, logging, os
 from datetime import datetime, timedelta, timezone
 import asyncpg
+from app.db_urls import PSYCOPG2_DATABASE_URL
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 log = logging.getLogger(__name__)
 
 API_KEY = os.environ.get("ODDS_API_KEY", "965e3dd1bf2f0813fb208335a18f4ee3")
-DB = "postgresql://earl:earl_dev_pass@localhost:5432/earl_knows_football"
+DB = PSYCOPG2_DATABASE_URL  # from app.db_urls
 
 GAMES = {34962: ("Washington Nationals", "New York Mets"),
          34975: ("Washington Nationals", "New York Mets"),

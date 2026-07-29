@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Run MLB 2026 backtest (no timeout)."""
 import os, asyncio, logging
-os.environ["DATABASE_URL"] = "postgresql+asyncpg://earl:earl_dev_pass@localhost:5432/earl_knows_football"
+from app.db_urls import ASYNC_DATABASE_URL
+os.environ["DATABASE_URL"] = ASYNC_DATABASE_URL
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
 
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession

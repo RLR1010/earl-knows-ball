@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 
 import pandas as pd
 from sqlalchemy import create_engine, text
+from app.db_urls import SYNC_DATABASE_URL
 
 logger = logging.getLogger(__name__)
 
@@ -23,10 +24,7 @@ VALID_OU_MIN = 5.0
 VALID_OU_MAX = 14.0
 VALID_ML_MAX_ABS = 500
 
-SYNC_DB = os.environ.get(
-    "SYNC_DATABASE_URL",
-    "postgresql://earl:earl_dev_pass@localhost:5432/earl_knows_football",
-)
+SYNC_DB = SYNC_DATABASE_URL  # from app.db_urls
 
 
 def consolidate(game_ids: list[int] | None = None):

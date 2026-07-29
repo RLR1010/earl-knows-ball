@@ -16,11 +16,12 @@ from decimal import Decimal, ROUND_HALF_UP
 
 from sqlalchemy import text as sql_text
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+from app.db_urls import ASYNC_DATABASE_URL
 
 logging.basicConfig(level=logging.INFO, format='%(levelname)s %(message)s')
 logger = logging.getLogger('earl.rebuild_game_lines')
 
-DB_URL = "postgresql+asyncpg://earl:earl@localhost:5432/earl_knows_football"
+DB_URL = ASYNC_DATABASE_URL  # from app.db_urls
 
 # Default juice when odds are missing
 DEFAULT_SPREAD_ODDS = -110

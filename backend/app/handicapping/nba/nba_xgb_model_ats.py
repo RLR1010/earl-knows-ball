@@ -55,7 +55,7 @@ CURRENT_YEAR = datetime.now().year
 NBA_SCHEMA = "nba"
 DB_DSN: str = os.environ.get(
     "DATABASE_URL",
-    "postgresql://earl:earl2025@localhost:5432/earl_knows_football",
+    PSYCOPG2_DATABASE_URL,
 )
 
 

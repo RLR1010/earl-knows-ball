@@ -23,16 +23,14 @@ import httpx
 from dotenv import load_dotenv
 from sqlalchemy import text as sql_text
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+from app.db_urls import ASYNC_DATABASE_URL
 
 load_dotenv()
 
 logger = logging.getLogger("backfill_lines_old")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S")
 
-DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "postgresql+asyncpg://earl:earl_dev_pass@localhost:5432/earl_knows_football",
-)
+DATABASE_URL = ASYNC_DATABASE_URL  # from app.db_urls
 
 NFLAYER_GAMES_URL = "https://github.com/nflverse/nfldata/raw/master/data/games.csv"
 

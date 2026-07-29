@@ -46,7 +46,7 @@ CACHE_FILE = CACHE_DIR / "mlb_team_feature_cache.json"
 
 _DEFAULT_DSN = os.environ.get(
     "DATABASE_URL",
-    "postgresql+asyncpg://earl:earl_dev_pass@localhost:5432/earl_knows_football",
+    ASYNC_DATABASE_URL,
 )
 
 

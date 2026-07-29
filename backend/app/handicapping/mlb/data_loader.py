@@ -941,10 +941,9 @@ def _load_park_history() -> pd.DataFrame:
     if _PARK_HISTORY_CACHE is not None:
         return _PARK_HISTORY_CACHE
 
-    db_url = os.getenv(
-        "DATABASE_URL",
-        "postgresql://earl:earl_dev_pass@localhost:5432/earl_knows_football",
-    )
+    from app.db_urls import PSYCOPG2_DATABASE_URL as _FALLBACK_URL
+db_url = os.getenv("DATABASE_URL", _FALLBACK_URL)
+
     engine = create_engine(db_url)
     q = """
         SELECT

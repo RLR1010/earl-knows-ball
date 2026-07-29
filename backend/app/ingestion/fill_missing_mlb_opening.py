@@ -9,13 +9,14 @@ from collections import defaultdict
 import httpx
 from sqlalchemy import text as sql_text
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+from app.db_urls import ASYNC_DATABASE_URL
 
 logging.basicConfig(level=logging.INFO, format='%(levelname)s %(message)s')
 logger = logging.getLogger('earl.mlb_opening_fill')
 
 ODDS_API_KEY = os.environ.get("ODDS_API_KEY", "")
 ODDS_API_BASE = "https://api.the-odds-api.com/v4"
-DB_URL = "postgresql+asyncpg://earl:earl@localhost:5432/earl_knows_football"
+DB_URL = ASYNC_DATABASE_URL  # from app.db_urls
 
 MLB_TEAM_MAP = {
     "Arizona Diamondbacks": "ARI", "Atlanta Braves": "ATL",

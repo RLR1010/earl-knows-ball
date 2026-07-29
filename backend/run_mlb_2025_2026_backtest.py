@@ -13,9 +13,10 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelna
 from app.handicapping.mlb.mlb_engine import backtest_season
 
 # Now override for db_training.py's psycopg2 connection
-os.environ["DATABASE_URL"] = "postgresql://earl:earl_dev_pass@localhost:5432/earl_knows_football"
+from app.db_urls import ASYNC_DATABASE_URL, PSYCOPG2_DATABASE_URL
+os.environ["DATABASE_URL"] = PSYCOPG2_DATABASE_URL
 
-DATABASE_URL_ASYNC = "postgresql+asyncpg://earl:earl_dev_pass@localhost:5432/earl_knows_football"
+DATABASE_URL_ASYNC = ASYNC_DATABASE_URL
 
 async def run():
     engine = create_async_engine(DATABASE_URL_ASYNC, pool_pre_ping=True)

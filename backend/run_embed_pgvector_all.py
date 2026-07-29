@@ -16,13 +16,11 @@ import httpx
 from sqlalchemy import create_engine, text
 import os
 
-# Allow DB host override via env var (for standalone container deployment)
-DB_HOST = os.environ.get("DB_HOST", "localhost")
-DB_USER = os.environ.get("DB_USER", "earl")
-DB_PASS = os.environ.get("DB_PASS", "earl_dev_pass")
-DB_NAME = os.environ.get("DB_NAME", "earl_knows_football")
+# DB URL from single source of truth; DB_HOST override for container deployments
+from app.db_urls import PSYCOPG2_DATABASE_URL
 
-SYNC_DB_URL = f"postgresql+psycopg2://{DB_USER}:{DB_PASS}@{DB_HOST}:5432/{DB_NAME}"
+DB_HOST = os.environ.get("DB_HOST", "localhost")
+SYNC_DB_URL = PSYCOPG2_DATABASE_URL.replace("@localhost:", f"@{DB_HOST}:")
 engine = create_engine(SYNC_DB_URL, pool_pre_ping=True)
 
 logging.basicConfig(

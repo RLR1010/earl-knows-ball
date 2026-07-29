@@ -724,11 +724,12 @@ async def _run_mlb_stats_refresh():
         try:
             import asyncpg
             from urllib.parse import urlparse
-            db_url = os.environ.get("DATABASE_URL", "postgresql://earl:earl_dev_pass@localhost:5432/earl_knows_football")
+            from app.db_urls import PSYCOPG2_DATABASE_URL
+            db_url = os.environ.get("DATABASE_URL", PSYCOPG2_DATABASE_URL)
             parsed = urlparse(db_url)
             pconn = await asyncpg.connect(
                 user=parsed.username or "earl",
-                password=parsed.password or "earl_dev_pass",
+                password=parsed.password or PSYCOPG2_DATABASE_URL.split("@")[0].split(":")[-1],
                 database=parsed.path.lstrip("/") or "earl_knows_football",
                 host=parsed.hostname or "localhost",
                 port=parsed.port or 5432,

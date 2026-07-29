@@ -24,7 +24,7 @@ import pandas as _pd
 from psycopg2.extras import RealDictCursor
 
 
-from app.db_urls import PSYCOPG2_DATABASE_URL
+from app.db_urls import PSYCOPG2_DATABASE_URL, ASYNC_DATABASE_URL
 
 DATABASE_URL = PSYCOPG2_DATABASE_URL
 
@@ -1478,7 +1478,7 @@ async def trigger_training(
         env={
             "PYTHONPATH": "/home/rich/.openclaw/workspace/earl-knows-football/backend",
             "PATH": os.environ.get("PATH", ""),
-            "DATABASE_URL": os.environ.get("DATABASE_URL", "postgresql://earl:earl_dev_pass@localhost:5432/earl_knows_football"),
+            "DATABASE_URL": os.environ.get("DATABASE_URL", ASYNC_DATABASE_URL),
         },
     )
 

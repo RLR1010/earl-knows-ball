@@ -11,13 +11,15 @@ on (player_id, season_id).
 """
 
 import sys
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import logging
 from collections import OrderedDict
 
 import psycopg2
 from psycopg2.extras import RealDictCursor
+from app.db_urls import PSYCOPG2_DATABASE_URL
 
-DB_URL = "postgresql://earl:earl2025@localhost:5432/earl_knows_football"
+DB_URL = PSYCOPG2_DATABASE_URL  # from app.db_urls
 
 logger = logging.getLogger("compute-nba-pss")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")

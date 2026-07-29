@@ -23,7 +23,8 @@ TEAM_MAP = {"Athletics": "OAK", "Milwaukee Brewers": "MIL", "Colorado Rockies": 
     "Baltimore Orioles": "BAL", "Seattle Mariners": "SEA", "Toronto Blue Jays": "TOR",
     "Cleveland Guardians": "CLE"}
 
-DSN = "postgresql://earl:earl_dev_pass@localhost:5432/earl_knows_football"
+from app.db_urls import PSYCOPG2_DATABASE_URL
+DSN = PSYCOPG2_DATABASE_URL
 
 async def run():
     import asyncpg

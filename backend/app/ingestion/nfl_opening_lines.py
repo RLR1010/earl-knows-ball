@@ -142,7 +142,8 @@ async def run():
 
     from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
     from sqlalchemy import text as sql_text
-    DB = "postgresql+asyncpg://earl:earl@localhost:5432/earl_knows_football"
+from app.db_urls import ASYNC_DATABASE_URL
+    DB = ASYNC_DATABASE_URL  # from app.db_urls
     engine = create_async_engine(DB)
     Session = async_sessionmaker(engine, expire_on_commit=False)
 

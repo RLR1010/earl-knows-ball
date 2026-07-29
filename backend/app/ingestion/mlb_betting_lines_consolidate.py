@@ -30,6 +30,7 @@ from datetime import datetime
 
 import psycopg2
 from psycopg2.extras import execute_values
+from app.db_urls import PSYCOPG2_DATABASE_URL
 
 logging.basicConfig(
     level=logging.INFO,
@@ -38,10 +39,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ── DB ──
-DB_URL = os.environ.get(
-    "SYNC_DATABASE_URL",
-    "postgresql://earl:earl@localhost:5432/earl_knows_football",
-)
+DB_URL = PSYCOPG2_DATABASE_URL  # from app.db_urls
 
 # ── Sportsbook priority tiers ──
 # Within each tier, order controls preference.

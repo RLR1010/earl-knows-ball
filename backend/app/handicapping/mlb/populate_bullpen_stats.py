@@ -172,7 +172,7 @@ def main():
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
 
-    db_url = os.environ.get("DATABASE_URL", "postgresql://earl:earl_dev_pass@localhost:5432/earl_knows_football")
+    db_url = os.environ.get("DATABASE_URL", PSYCOPG2_DATABASE_URL)
     engine = create_engine(db_url)
 
     if args.backfill:

@@ -564,7 +564,7 @@ class NFLDataLoader:
     ----------
     db_url : str, optional
         PostgreSQL connection URL.  Defaults to ``DATABASE_URL`` or the
-        local ``earl:earl2025@localhost:5432/earl_knows_football`` fallback.
+        local ``earl:***@localhost:5432/earl_knows_football`` fallback (password from db_urls).
     ats_only : bool
         If True, default feature selection is ATS-only.
     ou_only : bool

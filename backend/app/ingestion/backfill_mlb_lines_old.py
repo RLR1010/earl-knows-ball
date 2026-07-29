@@ -24,16 +24,14 @@ import pandas as pd
 from dotenv import load_dotenv
 from sqlalchemy import text as sql_text
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+from app.db_urls import ASYNC_DATABASE_URL
 
 load_dotenv()
 
 logger = logging.getLogger("backfill_mlb_lines_old")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S")
 
-DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "postgresql+asyncpg://earl:earl_dev_pass@localhost:5432/earl_knows_football",
-)
+DATABASE_URL = ASYNC_DATABASE_URL  # from app.db_urls
 
 KAGGLE_VERSION = "versions/13"
 KAGGLE_PATH = os.path.expanduser(

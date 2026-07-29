@@ -8,11 +8,12 @@ import asyncio
 import logging
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy import text, select
+from app.db_urls import ASYNC_DATABASE_URL
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("compute_rankings")
 
-DB = "postgresql+asyncpg://earl:earl@localhost:5432/earl_knows_football"
+DB = ASYNC_DATABASE_URL  # from app.db_urls
 
 
 async def compute_rankings():

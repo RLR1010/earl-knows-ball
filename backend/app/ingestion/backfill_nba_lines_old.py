@@ -23,16 +23,14 @@ from datetime import date, datetime, timezone
 from dotenv import load_dotenv
 from sqlalchemy import text as sql_text
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+from app.db_urls import ASYNC_DATABASE_URL
 
 load_dotenv()
 
 logger = logging.getLogger("backfill_nba_lines_old")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S")
 
-DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "postgresql+asyncpg://earl:earl_dev_pass@localhost:5432/earl_knows_football",
-)
+DATABASE_URL = ASYNC_DATABASE_URL  # from app.db_urls
 
 KAGGLE_CACHE = os.path.expanduser("~/.cache/kagglehub/datasets/visualize25/basketball-betting-dataset/versions/2/basketball-final.sqlite")
 

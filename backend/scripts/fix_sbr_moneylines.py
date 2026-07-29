@@ -26,14 +26,12 @@ import sys
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
+from app.db_urls import ASYNC_DATABASE_URL
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("fix_sbr")
 
-DB_URL = os.environ.get(
-    "DATABASE_URL",
-    "postgresql+asyncpg://earl:earl@localhost:5432/earl_knows_football",
-)
+DB_URL = ASYNC_DATABASE_URL  # from app.db_urls
 
 
 def _implied_probability(american_odds: int) -> float | None:

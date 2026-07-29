@@ -13,10 +13,11 @@ import pandas as pd
 import numpy as np
 from sqlalchemy import create_engine, text as sa_text
 from datetime import datetime
+from app.db_urls import SYNC_DATABASE_URL
 
 logger = logging.getLogger(__name__)
 
-SYNC_DATABASE_URL = "postgresql+psycopg2://earl:earl_dev_pass@localhost:5432/earl_knows_football"
+# SYNC_DATABASE_URL provided by app.db_urls import
 DROP_AND_REPLACE = True
 
 

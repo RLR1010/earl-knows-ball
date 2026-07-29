@@ -81,7 +81,7 @@ log = logging.getLogger(__name__).info
 # ── Sync DB URL for inference path ──
 DSN = os.environ.get(
     "DATABASE_URL",
-    "postgresql://earl:earl_dev_pass@localhost:5432/earl_knows_football",
+    PSYCOPG2_DATABASE_URL,
 )
 
 # ── Model globals ──

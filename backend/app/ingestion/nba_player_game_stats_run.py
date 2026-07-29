@@ -14,12 +14,13 @@ from typing import Optional
 
 import httpx
 from sqlalchemy import create_engine, text
+from app.db_urls import PSYCOPG2_DATABASE_URL
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger("nba-espn-stats")
 
-DB_URL = "postgresql://earl:earl2025@localhost:5432/earl_knows_football"
+DB_URL = PSYCOPG2_DATABASE_URL  # from app.db_urls
 CORE_BASE = "https://sports.core.api.espn.com/v2/sports/basketball/leagues/nba"
 
 

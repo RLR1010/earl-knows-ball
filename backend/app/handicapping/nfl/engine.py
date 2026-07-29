@@ -44,7 +44,7 @@ _now = datetime.now()
 CURRENT_SEASON = _now.year if _now.month >= 4 else _now.year - 1
 DB_DSN: str = os.environ.get(
     "DATABASE_URL",
-    "postgresql://earl:earl2025@localhost:5432/earl_knows_football",
+    PSYCOPG2_DATABASE_URL,
 )
 NFL_SCHEMA = "nfl"
 

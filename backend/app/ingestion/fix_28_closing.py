@@ -10,10 +10,11 @@ log = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
 import os
+from app.db_urls import PSYCOPG2_DATABASE_URL
 ODDS_API_KEY = os.environ.get("ODDS_API_KEY", "965e3dd1bf2f0813fb208335a18f4ee3")
 HISTORICAL_URL = "https://api.the-odds-api.com/v4/historical/sports/baseball_mlb/odds"
 REQUIRED_MARKETS = "h2h,spreads,totals"
-DATABASE_URL = "postgresql://earl:earl_dev_pass@localhost:5432/earl_knows_football"
+DATABASE_URL = PSYCOPG2_DATABASE_URL  # alias for backward compat
 
 GAME_IDS = [
     34940, 34941, 34962, 34975, 34989,

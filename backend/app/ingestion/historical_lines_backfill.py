@@ -15,6 +15,7 @@ Usage:
     python -m app.ingestion.historical_lines_backfill --sport nba --season 2023 --closing-only
     python -m app.ingestion.historical_lines_backfill --sport nfl --season 2023 --dry-run
 """
+from app.db_urls import ASYNC_DATABASE_URL
 import asyncio, logging, os, sys
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -355,7 +356,7 @@ async def backfill_sport(
     close_offset = cfg["closing_offset_minutes"]
     open_days = cfg["opening_days_before"]
 
-    DB_URL = "postgresql+asyncpg://earl:earl@localhost:5432/earl_knows_football"
+    DB_URL = ASYNC_DATABASE_URL  # from app.db_urls
     engine = create_async_engine(DB_URL, pool_size=5, max_overflow=10)
     SessionMaker = async_sessionmaker(engine, expire_on_commit=False)
 

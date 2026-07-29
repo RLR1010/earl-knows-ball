@@ -5,14 +5,12 @@ Uses SQL DISTINCT ON with ordered priority so all heavy lifting is in the DB.
 """
 import os, logging
 from sqlalchemy import create_engine, text
+from app.db_urls import SYNC_DATABASE_URL
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
-DB_URL = os.environ.get(
-    "SYNC_DATABASE_URL",
-    "postgresql+psycopg2://earl:earl_dev_pass@localhost:5432/earl_knows_football",
-)
+DB_URL = SYNC_DATABASE_URL  # from app.db_urls
 
 # Ordered priority: first available wins
 SPORTSBOOK_ORDER = (

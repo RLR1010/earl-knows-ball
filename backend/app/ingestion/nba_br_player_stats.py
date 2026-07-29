@@ -18,11 +18,12 @@ from typing import Optional
 
 import httpx
 from sqlalchemy import create_engine, text
+from app.db_urls import PSYCOPG2_DATABASE_URL
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
 logger = logging.getLogger("nba-br-stats")
 
-DB_URL = "postgresql://earl:earl2025@localhost:5432/earl_knows_football"
+DB_URL = PSYCOPG2_DATABASE_URL  # from app.db_urls
 
 BR_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",

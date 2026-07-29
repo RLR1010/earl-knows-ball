@@ -52,7 +52,7 @@ DEFAULT_EARLY_STOPPING = 30
 CURRENT_YEAR = datetime.now().year
 DB_DSN: str = os.environ.get(
     "DATABASE_URL",
-    "postgresql://earl:earl2025@localhost:5432/earl_knows_football",
+    PSYCOPG2_DATABASE_URL,
 )
 
 # Module-level model cache for inference

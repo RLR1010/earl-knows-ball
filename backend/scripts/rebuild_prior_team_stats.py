@@ -18,8 +18,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from sqlalchemy import create_engine, text
+from app.db_urls import SYNC_DATABASE_URL
 
-DATABASE_URL = "postgresql+psycopg2://earl:earl_dev_pass@localhost:5432/earl_knows_football?options=-c%20search_path=nfl%2Cpublic"
+DATABASE_URL = SYNC_DATABASE_URL  # from app.db_urls
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 
 

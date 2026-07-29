@@ -9,6 +9,7 @@ Usage:
     docker exec earl-knows-football-api-1 python -m app.ingestion.mlb_pitcher_stats --games 500
     docker exec earl-knows-football-api-1 python -m app.ingestion.mlb_pitcher_stats --year 2024
 """
+from app.db_urls import ASYNC_DATABASE_URL
 import asyncio
 import logging
 import time
@@ -21,7 +22,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 log = logging.getLogger().info
 
-DB = "postgresql+asyncpg://earl:earl@localhost:5432/earl_knows_football"
+DB = ASYNC_DATABASE_URL  # from app.db_urls
 API_BASE = "https://statsapi.mlb.com/api/v1.1/game"
 
 # Rate limiting: max 10 calls/sec, but be nice
