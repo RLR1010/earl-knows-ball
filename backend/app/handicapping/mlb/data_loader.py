@@ -226,6 +226,11 @@ SELECT
     trs_h.win_pct         AS h_win_pct,
     trs_h.over_pct        AS h_over_pct,
     trs_h.spread_pct      AS h_spread_pct,
+    trs_h.rf20            AS h_rf20,
+    trs_h.ra20            AS h_ra20,
+    trs_h.slg10           AS h_slg_l10,
+    trs_h.slg20           AS h_slg_l20,
+    trs_h.ops20           AS h_ops_l20,
 
     trs_a.rf              AS a_rf,
     trs_a.ra              AS a_ra,
@@ -256,6 +261,11 @@ SELECT
     trs_a.win_pct         AS a_win_pct,
     trs_a.over_pct        AS a_over_pct,
     trs_a.spread_pct      AS a_spread_pct,
+    trs_a.rf20            AS a_rf20,
+    trs_a.ra20            AS a_ra20,
+    trs_a.slg10           AS a_slg_l10,
+    trs_a.slg20           AS a_slg_l20,
+    trs_a.ops20           AS a_ops_l20,
 
     -- ──────────────────────────────────────────────────────────────────────
     -- PRIOR SEASON STATS (for early-season blending)
@@ -1215,6 +1225,75 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     # Home/away runs — requires expanding mean from CGS with team_side filter.
     # Not currently available in the query. These will need a new subquery.
     # TODO: Add home/away CGS split for h_home_rf / a_away_rf
+
+    # ── 11. Group 5 — Extended Rolling Team Stats ────────────────────────
+    # OPS L10 alias (already in query as h_ops_10 / a_ops_10)
+    if "h_ops_10" in result.columns:
+        result["h_ops_l10"] = result["h_ops_10"]
+    if "a_ops_10" in result.columns:
+        result["a_ops_l10"] = result["a_ops_10"]
+
+    # Season avg runs for/against — use 15-game rolling avg as fallback
+    # TODO: compute from cumulative runs / games_played for true season avg
+    if "h_rf15" in result.columns:
+        result["h_rf_avg"] = result["h_rf15"]
+    else:
+        result["h_rf_avg"] = 0.0
+    if "a_rf15" in result.columns:
+        result["a_rf_avg"] = result["a_rf15"]
+    else:
+        result["a_rf_avg"] = 0.0
+    if "h_ra15" in result.columns:
+        result["h_ra_avg"] = result["h_ra15"]
+    else:
+        result["h_ra_avg"] = 0.0
+    if "a_ra15" in result.columns:
+        result["a_ra_avg"] = result["a_ra15"]
+    else:
+        result["a_ra_avg"] = 0.0
+
+    # ── 12. Group 6 — Extra Pitcher Stats ────────────────────────────────
+    # L20 pitcher windows — PRS only goes up to 15 starts, so use L15 as fallback.
+    # TODO: add 20-start rolling to populate_pitcher_rolling_stats
+    for side, prefix in [("h", "h_"), ("a", "a_")]:
+        ps = f"{prefix}p_"
+        pt = f"{prefix}pitcher_"
+        for stat in ["era", "whip", "k9", "bb9"]:
+            src15 = f"{ps}{stat}_15"
+            dst20 = f"{pt}{stat}_l20"
+            if src15 in result.columns:
+                result[dst20] = result[src15]
+            else:
+                result[dst20] = 0.0
+        # kbb_l20 — use YTD as best available
+        src_kbb = f"{ps}kbb_ytd"
+        dst_kbb = f"{pt}kbb_l20"
+        if src_kbb in result.columns:
+            result[dst_kbb] = result[src_kbb]
+        else:
+            result[dst_kbb] = 0.0
+
+    # Pitcher rest — computed from schedule in rolling L10 logic
+    # TODO: compute actual days of rest (last game date - this game date)
+    result["h_pitcher_rest"] = 0
+    result["a_pitcher_rest"] = 0
+
+    # Pitcher split stats — not in PRS, use YTD ERA as fallback
+    # TODO: add home/road, day/night, venue to populate_pitcher_rolling_stats
+    for side, prefix in [("h", "h_"), ("a", "a_")]:
+        ps = f"{prefix}p_"
+        pt = f"{prefix}pitcher_"
+        src_ytd = f"{ps}era_ytd"
+        fallback_era = result.get(src_ytd, 0) if src_ytd in result.columns else 0.0
+
+    result["h_pitcher_home_era"] = result.get("h_p_era_ytd", 0)
+    result["a_pitcher_road_era"] = result.get("a_p_era_ytd", 0)
+    result["h_pitcher_venue_era"] = result.get("h_p_era_ytd", 0)
+    result["a_pitcher_venue_era"] = result.get("a_p_era_ytd", 0)
+    result["h_pitcher_day_era"] = result.get("h_p_era_ytd", 0)
+    result["a_pitcher_night_era"] = result.get("a_p_era_ytd", 0)
+    result["h_pitcher_day_night_era"] = 0.0
+    result["a_pitcher_day_night_era"] = 0.0
 
     # ── 10. Derived weather: wind_calculated ──────────────────────────────
     # Wind effect: +speed for out, -speed for in, 0 otherwise
