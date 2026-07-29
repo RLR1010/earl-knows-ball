@@ -164,9 +164,9 @@ SELECT
     g.temperature,
     
 
-    -- Rest days
-    0 AS h_rest,  -- TODO: compute from schedule
-    0 AS a_rest,  -- TODO: compute from schedule
+    -- Rest days (calendar days since each team's last game)
+    COALESCE((g.date::date - h_last_game.h_prev_game_date::date)::integer, 90) AS h_rest,
+    COALESCE((g.date::date - a_last_game.a_prev_game_date::date)::integer, 90) AS a_rest,
 
     -- ──────────────────────────────────────────────────────────────────────
     -- CUMULATIVE STATS (season-to-date entering this game)
@@ -310,6 +310,7 @@ SELECT
     prs_h.k9_ytd          AS h_p_k9_ytd,
     prs_h.bb9_ytd         AS h_p_bb9_ytd,
     prs_h.kbb_ytd         AS h_p_kbb_ytd,
+    prs_h.kbb_10          AS h_p_kbb_10,
     prs_h.fip_ytd         AS h_p_fip_ytd,
     prs_h.qs_rate_ytd     AS h_p_qs_rate_ytd,
     prs_h.starts_ytd      AS h_p_starts_ytd,
@@ -341,6 +342,7 @@ SELECT
     prs_a.k9_ytd          AS a_p_k9_ytd,
     prs_a.bb9_ytd         AS a_p_bb9_ytd,
     prs_a.kbb_ytd         AS a_p_kbb_ytd,
+    prs_a.kbb_10          AS a_p_kbb_10,
     prs_a.fip_ytd         AS a_p_fip_ytd,
     prs_a.qs_rate_ytd     AS a_p_qs_rate_ytd,
     prs_a.starts_ytd      AS a_p_starts_ytd,
@@ -419,6 +421,28 @@ JOIN mlb.seasons s ON s.id = g.season_id
 JOIN mlb.teams ht ON ht.id = g.home_team_id
 JOIN mlb.teams at ON at.id = g.away_team_id
 LEFT JOIN mlb.venues v ON v.id = g.venue_id
+
+-- ──────────────────────────────────────────────────────────────────────
+-- REST DAYS (find each team's last game before this one)
+-- ──────────────────────────────────────────────────────────────────────
+LEFT JOIN LATERAL (
+    SELECT g_prev.date AS h_prev_game_date
+    FROM mlb.games g_prev
+    WHERE (g_prev.home_team_id = g.home_team_id OR g_prev.away_team_id = g.home_team_id)
+      AND g_prev.date < g.date
+      AND g_prev.status = 'FINAL'
+    ORDER BY g_prev.date DESC, g_prev.id DESC
+    LIMIT 1
+) h_last_game ON TRUE
+LEFT JOIN LATERAL (
+    SELECT g_prev.date AS a_prev_game_date
+    FROM mlb.games g_prev
+    WHERE (g_prev.home_team_id = g.away_team_id OR g_prev.away_team_id = g.away_team_id)
+      AND g_prev.date < g.date
+      AND g_prev.status = 'FINAL'
+    ORDER BY g_prev.date DESC, g_prev.id DESC
+    LIMIT 1
+) a_last_game ON TRUE
 
 -- Cumulative stats through PREVIOUS game (home / away) — LATERAL finds the most recent completed game for this team
 LEFT JOIN LATERAL (
@@ -1409,6 +1433,15 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
             result[dst_kbb] = result[src_kbb_ytd]
         else:
             result[dst_kbb] = 0.0
+        # kbb_l10 — prefer 10-start, fall back to YTD
+        src_kbb10 = f"{ps}kbb_10"
+        dst_kbb10 = f"{pt}kbb_l10"
+        if src_kbb10 in result.columns:
+            result[dst_kbb10] = result[src_kbb10]
+        elif src_kbb_ytd in result.columns:
+            result[dst_kbb10] = result[src_kbb_ytd]
+        else:
+            result[dst_kbb10] = 0.0
 
     # Pitcher rest — from PRS rest_days (days since last start)
     if "h_p_rest" in result.columns:
