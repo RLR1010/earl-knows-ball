@@ -301,6 +301,11 @@ SELECT
     prs_h.whip_20         AS h_p_whip_20,
     prs_h.k9_20           AS h_p_k9_20,
     prs_h.bb9_20          AS h_p_bb9_20,
+    prs_h.rest_days        AS h_p_rest,
+    prs_h.home_era_ytd     AS h_p_home_era_ytd,
+    prs_h.road_era_ytd     AS h_p_road_era_ytd,
+    prs_h.day_era_ytd      AS h_p_day_era_ytd,
+    prs_h.night_era_ytd    AS h_p_night_era_ytd,
     prs_h.is_quality_start AS h_p_quality_start,
 
     prs_a.era_ytd         AS a_p_era_ytd,
@@ -327,6 +332,11 @@ SELECT
     prs_a.whip_20         AS a_p_whip_20,
     prs_a.k9_20           AS a_p_k9_20,
     prs_a.bb9_20          AS a_p_bb9_20,
+    prs_a.rest_days        AS a_p_rest,
+    prs_a.home_era_ytd     AS a_p_home_era_ytd,
+    prs_a.road_era_ytd     AS a_p_road_era_ytd,
+    prs_a.day_era_ytd      AS a_p_day_era_ytd,
+    prs_a.night_era_ytd    AS a_p_night_era_ytd,
     prs_a.is_quality_start AS a_p_quality_start,
 
     -- Current-game pitcher names (from pitcher_game_stats)
@@ -1277,27 +1287,42 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
         else:
             result[dst_kbb] = 0.0
 
-    # Pitcher rest — computed from schedule in rolling L10 logic
-    # TODO: compute actual days of rest (last game date - this game date)
-    result["h_pitcher_rest"] = 0
-    result["a_pitcher_rest"] = 0
+    # Pitcher rest — from PRS rest_days (days since last start)
+    if "h_p_rest" in result.columns:
+        result["h_pitcher_rest"] = result["h_p_rest"].fillna(0).astype(int)
+    else:
+        result["h_pitcher_rest"] = 0
+    if "a_p_rest" in result.columns:
+        result["a_pitcher_rest"] = result["a_p_rest"].fillna(0).astype(int)
+    else:
+        result["a_pitcher_rest"] = 0
 
-    # Pitcher split stats — not in PRS, use YTD ERA as fallback
-    # TODO: add home/road, day/night, venue to populate_pitcher_rolling_stats
-    for side, prefix in [("h", "h_"), ("a", "a_")]:
-        ps = f"{prefix}p_"
-        pt = f"{prefix}pitcher_"
-        src_ytd = f"{ps}era_ytd"
-        fallback_era = result.get(src_ytd, 0) if src_ytd in result.columns else 0.0
+    # Pitcher split ERA — from PRS split columns
+    h_src = [("h_pitcher_home_era", "h_p_home_era_ytd"),
+             ("h_pitcher_venue_era", "h_p_home_era_ytd"),  # venue ~ home split proxy
+             ("h_pitcher_day_era", "h_p_day_era_ytd"),
+             ("a_pitcher_road_era", "a_p_road_era_ytd"),
+             ("a_pitcher_night_era", "a_p_night_era_ytd"),
+             ("a_pitcher_venue_era", "a_p_road_era_ytd")]  # venue ~ road split proxy
+    for dest, src in h_src:
+        if src in result.columns:
+            result[dest] = result[src].fillna(0)
+        else:
+            result[dest] = 0.0
 
-    result["h_pitcher_home_era"] = result.get("h_p_era_ytd", 0)
-    result["a_pitcher_road_era"] = result.get("a_p_era_ytd", 0)
-    result["h_pitcher_venue_era"] = result.get("h_p_era_ytd", 0)
-    result["a_pitcher_venue_era"] = result.get("a_p_era_ytd", 0)
-    result["h_pitcher_day_era"] = result.get("h_p_era_ytd", 0)
-    result["a_pitcher_night_era"] = result.get("a_p_era_ytd", 0)
-    result["h_pitcher_day_night_era"] = 0.0
-    result["a_pitcher_day_night_era"] = 0.0
+    # Day/ERA and Night/ERA for the opposite side (need cross-side data from PRS)
+    result["h_pitcher_night_era"] = result.get("h_p_night_era_ytd", result.get("h_pitcher_day_era", 0))
+    result["a_pitcher_day_era"] = result.get("a_p_day_era_ytd", result.get("a_pitcher_night_era", 0))
+
+    # Day vs Night ERA differential
+    if "h_pitcher_day_era" in result and "h_pitcher_night_era" in result:
+        result["h_pitcher_day_night_era"] = result["h_pitcher_day_era"] - result["h_pitcher_night_era"]
+    else:
+        result["h_pitcher_day_night_era"] = 0.0
+    if "a_pitcher_day_era" in result and "a_pitcher_night_era" in result:
+        result["a_pitcher_day_night_era"] = result["a_pitcher_day_era"] - result["a_pitcher_night_era"]
+    else:
+        result["a_pitcher_day_night_era"] = 0.0
 
     # ── 10. Derived weather: wind_calculated ──────────────────────────────
     # Wind effect: +speed for out, -speed for in, 0 otherwise
