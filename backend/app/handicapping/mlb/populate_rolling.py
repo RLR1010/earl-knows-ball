@@ -495,7 +495,18 @@ SELECT *,
     CASE WHEN SUM(ip_outs) OVER w15 > 0
         THEN SUM(strikeouts) OVER w15::DOUBLE PRECISION / (SUM(ip_outs) OVER w15::DOUBLE PRECISION / 3) * 9 END AS k9_15,
     CASE WHEN SUM(ip_outs) OVER w15 > 0
-        THEN SUM(walks_allowed) OVER w15::DOUBLE PRECISION / (SUM(ip_outs) OVER w15::DOUBLE PRECISION / 3) * 9 END AS bb9_15
+        THEN SUM(walks_allowed) OVER w15::DOUBLE PRECISION / (SUM(ip_outs) OVER w15::DOUBLE PRECISION / 3) * 9 END AS bb9_15,
+
+    -- 20-start rolling (for 20-game consistency)
+    CASE WHEN SUM(ip_outs) OVER w20 > 0
+        THEN 9.0 * SUM(er) OVER w20::DOUBLE PRECISION / (SUM(ip_outs) OVER w20::DOUBLE PRECISION / 3) END AS era_20,
+    CASE WHEN SUM(ip_outs) OVER w20 > 0
+        THEN (SUM(hits_allowed) OVER w20 + SUM(walks_allowed) OVER w20)::DOUBLE PRECISION
+             / (SUM(ip_outs) OVER w20::DOUBLE PRECISION / 3) END AS whip_20,
+    CASE WHEN SUM(ip_outs) OVER w20 > 0
+        THEN SUM(strikeouts) OVER w20::DOUBLE PRECISION / (SUM(ip_outs) OVER w20::DOUBLE PRECISION / 3) * 9 END AS k9_20,
+    CASE WHEN SUM(ip_outs) OVER w20 > 0
+        THEN SUM(walks_allowed) OVER w20::DOUBLE PRECISION / (SUM(ip_outs) OVER w20::DOUBLE PRECISION / 3) * 9 END AS bb9_20
 
 FROM per_start
 WINDOW
@@ -506,7 +517,9 @@ WINDOW
     w10 AS (PARTITION BY player_id, season_id ORDER BY game_date, game_id
             ROWS BETWEEN 10 PRECEDING AND 1 PRECEDING),
     w15 AS (PARTITION BY player_id, season_id ORDER BY game_date, game_id
-            ROWS BETWEEN 15 PRECEDING AND 1 PRECEDING)
+            ROWS BETWEEN 15 PRECEDING AND 1 PRECEDING),
+    w20 AS (PARTITION BY player_id, season_id ORDER BY game_date, game_id
+            ROWS BETWEEN 20 PRECEDING AND 1 PRECEDING)
 ORDER BY player_id, season_id, game_date, game_id
 ;
 """
