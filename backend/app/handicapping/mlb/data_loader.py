@@ -1606,7 +1606,6 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
         h_lons = result["ha"].map(lambda c: TEAM_LOCATIONS.get(c, {}).get("lon", 0))
         a_lats = result["aa"].map(lambda c: TEAM_LOCATIONS.get(c, {}).get("lat", 0))
         a_lons = result["aa"].map(lambda c: TEAM_LOCATIONS.get(c, {}).get("lon", 0))
-        import numpy as np
         miles = haversine_miles(a_lats, a_lons, h_lats, h_lons)
         result["travel_miles"] = np.where(miles >= 50, miles, 0)
     else:

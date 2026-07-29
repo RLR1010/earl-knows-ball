@@ -621,11 +621,32 @@ async def load_games_for_season(
             if not game_pk:
                 continue
 
-            # Check if already loaded
+            # Check if already loaded – update scores/status or insert new
             r = await db.execute(
                 select(MLBGames).where(MLBGames.mlb_game_id == game_pk)
             )
-            if r.scalar_one_or_none():
+            existing_game = r.scalar_one_or_none()
+            if existing_game:
+                # Update scores, status, weather, records from fresh API data
+                if home_score is not None:
+                    existing_game.home_score = _safe_int(home_score)
+                if away_score is not None:
+                    existing_game.away_score = _safe_int(away_score)
+                existing_game.status = status
+                if game_date:
+                    existing_game.date = game_date
+                existing_game.venue = venue_name
+                existing_game.venue_id = venue_id
+                existing_game.scheduled_innings = game.get("scheduledInnings", 9)
+                existing_game.day_night = game.get("dayNight")
+                existing_game.home_wins = _safe_int(home_record.get("wins"))
+                existing_game.home_losses = _safe_int(home_record.get("losses"))
+                existing_game.away_wins = _safe_int(away_record.get("wins"))
+                existing_game.away_losses = _safe_int(away_record.get("losses"))
+                existing_game.temperature = _safe_int(temp_str)
+                existing_game.wind_speed = wind_speed_val
+                existing_game.weather_condition = weather_data.get("condition")
+                existing_game.wind_direction = wind_dir_val
                 continue
 
             teams_data = game.get("teams", {})
