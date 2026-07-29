@@ -269,6 +269,9 @@ SELECT
     trs_h.bb9_10          AS h_bb9_10,
     trs_h.win_pct         AS h_win_pct,
     trs_h.over_pct        AS h_over_pct,
+    trs_h.over_pct5       AS h_over_pct5,
+    trs_h.over_pct10      AS h_over_pct10,
+    trs_h.over_pct15      AS h_over_pct15,
     trs_h.spread_pct      AS h_spread_pct,
     trs_h.rf20            AS h_rf20,
     trs_h.ra20            AS h_ra20,
@@ -304,6 +307,9 @@ SELECT
     trs_a.bb9_10          AS a_bb9_10,
     trs_a.win_pct         AS a_win_pct,
     trs_a.over_pct        AS a_over_pct,
+    trs_a.over_pct5       AS a_over_pct5,
+    trs_a.over_pct10      AS a_over_pct10,
+    trs_a.over_pct15      AS a_over_pct15,
     trs_a.spread_pct      AS a_spread_pct,
     trs_a.rf20            AS a_rf20,
     trs_a.ra20            AS a_ra20,
@@ -1355,21 +1361,22 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
         result["h_form_l10"] = result["h_winpct_l10"]
         result["a_form_l10"] = result["a_winpct_l10"]
 
-    # Over frequency — from team_rolling_stats.over_pct (season-level).
+    # Over frequency — from team_rolling_stats.over_pct (season-level) / over_pct5 (L5).
     if "h_over_pct" in result.columns and "a_over_pct" in result.columns:
         result["h_over_freq"] = result["h_over_pct"]
         result["a_over_freq"] = result["a_over_pct"]
-        # over_freq5: Stubbed to season-level until L5 rolling over% is added to TRS.
-        result["h_over_freq5"] = result["h_over_freq"]
-        result["a_over_freq5"] = result["a_over_freq"]
+        # over_freq5 — use L5 rolling over% if available, else fall back to season
+        result["h_over_freq5"] = (
+            result["h_over_pct5"] if "h_over_pct5" in result.columns else result["h_over_pct"]
+        ).fillna(0.5)
+        result["a_over_freq5"] = (
+            result["a_over_pct5"] if "a_over_pct5" in result.columns else result["a_over_pct"]
+        ).fillna(0.5)
     else:
         result["h_over_freq"] = 0.5
         result["a_over_freq"] = 0.5
         result["h_over_freq5"] = 0.5
         result["a_over_freq5"] = 0.5
-
-    result["h_over_freq5"] = result["h_over_freq"]  # TODO: real L5
-    result["a_over_freq5"] = result["a_over_freq"]  # TODO: real L5
 
     # ── 9. Group 4 — Home/Away Split Stats ────────────────────────────────
     # Implied probabilities — directly from the closing moneyline (already in query)
