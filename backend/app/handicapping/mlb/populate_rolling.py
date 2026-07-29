@@ -385,6 +385,15 @@ WITH per_start AS (
         pgs.k AS strikeouts,
         pgs.hr AS home_runs_allowed,
 
+        -- Situational flags and rest days
+        CASE WHEN pgs.team_abbr = (SELECT abbreviation FROM mlb.teams WHERE id = g.home_team_id)
+             THEN TRUE ELSE FALSE END AS is_home_pitcher,
+        CASE WHEN g.day_night = 'day' THEN TRUE ELSE FALSE END AS is_day_game,
+        LAG(g.date) OVER (
+            PARTITION BY pgs.pitcher_mlb_id, g.season_id
+            ORDER BY g.date, pgs.game_id
+        ) AS prev_start_date,
+
         ROW_NUMBER() OVER (
             PARTITION BY pgs.pitcher_mlb_id, g.season_id
             ORDER BY g.date, pgs.game_id
@@ -427,6 +436,29 @@ SELECT *,
     CASE WHEN COUNT(*) OVER w > 0
         THEN SUM(CASE WHEN ip_outs >= 18 AND er <= 3 THEN 1 ELSE 0 END) OVER w::DOUBLE PRECISION
              / COUNT(*) OVER w END AS qs_rate_ytd,
+
+    -- Home/road splits
+    CASE WHEN SUM(ip_outs) FILTER (WHERE is_home_pitcher) OVER w > 0
+        THEN 9.0 * SUM(er) FILTER (WHERE is_home_pitcher) OVER w
+             / (SUM(ip_outs) FILTER (WHERE is_home_pitcher) OVER w / 3.0)
+    END AS home_era_ytd,
+    CASE WHEN SUM(ip_outs) FILTER (WHERE NOT is_home_pitcher) OVER w > 0
+        THEN 9.0 * SUM(er) FILTER (WHERE NOT is_home_pitcher) OVER w
+             / (SUM(ip_outs) FILTER (WHERE NOT is_home_pitcher) OVER w / 3.0)
+    END AS road_era_ytd,
+
+    -- Day/night splits
+    CASE WHEN SUM(ip_outs) FILTER (WHERE is_day_game) OVER w > 0
+        THEN 9.0 * SUM(er) FILTER (WHERE is_day_game) OVER w
+             / (SUM(ip_outs) FILTER (WHERE is_day_game) OVER w / 3.0)
+    END AS day_era_ytd,
+    CASE WHEN SUM(ip_outs) FILTER (WHERE NOT is_day_game) OVER w > 0
+        THEN 9.0 * SUM(er) FILTER (WHERE NOT is_day_game) OVER w
+             / (SUM(ip_outs) FILTER (WHERE NOT is_day_game) OVER w / 3.0)
+    END AS night_era_ytd,
+
+    -- Rest days
+    EXTRACT(DAY FROM (game_date - prev_start_date))::INTEGER AS rest_days,
 
     -- 5-start rolling
     CASE WHEN SUM(ip_outs) OVER w5 > 0
@@ -491,7 +523,7 @@ def populate_pitcher_rolling(engine=None, incremental=False) -> int:
     return _bulk_upsert(
         sql=sql,
         table="mlb.pitcher_rolling_stats",
-        exclude_cols={"start_n"},
+        exclude_cols={"start_n", "is_home_pitcher", "is_day_game", "prev_start_date"},
         truncate=not incremental,
     )
 
