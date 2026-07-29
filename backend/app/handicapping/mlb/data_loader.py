@@ -98,7 +98,7 @@ def haversine_miles(lat1: float, lon1: float, lat2: float, lon2: float) -> float
 
 GAME_QUERY = """
 SELECT
-    -- Game identity
+    # -- Game identity
     g.id               AS game_id,
     g.season_id,
     s.year             AS season_year,
@@ -530,6 +530,85 @@ FEATURES_CATALOG: Dict[str, str] = {
     "a_cum_k9": "Away cumulative K/9",
     "h_cum_bb9": "Home cumulative BB/9",
     "a_cum_bb9": "Away cumulative BB/9",
+
+    # -- Game context additions
+    "game_number": "Game number in season",
+    "venue_id": "Venue ID",
+    "season_id": "Season ID",
+    "actual_innings": "Actual innings played",
+    "scheduled_innings": "Scheduled innings",
+    "duration_minutes": "Game duration in minutes",
+    "mlb_game_id": "MLB game ID",
+
+    # -- Betting additions
+    "closing_over_odds": "Closing over odds",
+    "closing_under_odds": "Closing under odds",
+    "closing_spread_home_odds": "Closing run line home odds",
+    "closing_spread_away_odds": "Closing run line away odds",
+    "opening_ou": "Opening total (O/U)",
+    "opening_home_implied_probability": "Opening home implied probability",
+    "opening_away_implied_probability": "Opening away implied probability",
+    "opening_spread": "Opening run line",
+    "opening_home_ml": "Opening home ML",
+    "opening_away_ml": "Opening away ML",
+
+    # -- Rolling team stats (produced by GAME_QUERY)
+    "h_rf5": "Home runs for (rolling avg last 5)",
+    "a_rf5": "Away runs for (rolling avg last 5)",
+    "h_ra5": "Home runs against (rolling avg last 5)",
+    "a_ra5": "Away runs against (rolling avg last 5)",
+    "h_rf10": "Home runs for (rolling avg last 10)",
+    "a_rf10": "Away runs for (rolling avg last 10)",
+    "h_ra10": "Home runs against (rolling avg last 10)",
+    "a_ra10": "Away runs against (rolling avg last 10)",
+    "h_rf15": "Home runs for (rolling avg last 15)",
+    "a_rf15": "Away runs for (rolling avg last 15)",
+    "h_ra15": "Home runs against (rolling avg last 15)",
+    "a_ra15": "Away runs against (rolling avg last 15)",
+    "h_rf20": "Home runs for (rolling avg last 20)",
+    "a_rf20": "Away runs for (rolling avg last 20)",
+    "h_ra20": "Home runs against (rolling avg last 20)",
+    "a_ra20": "Away runs against (rolling avg last 20)",
+
+    # -- Rolling hitting stats (from GAME_QUERY)
+    "h_avg5": "Home AVG (rolling avg last 5)",
+    "a_avg5": "Away AVG (rolling avg last 5)",
+    "h_avg10": "Home AVG (rolling avg last 10)",
+    "a_avg10": "Away AVG (rolling avg last 10)",
+    "h_avg15": "Home AVG (rolling avg last 15)",
+    "a_avg15": "Away AVG (rolling avg last 15)",
+    "h_obp5": "Home OBP (rolling avg last 5)",
+    "a_obp5": "Away OBP (rolling avg last 5)",
+    "h_obp10": "Home OBP (rolling avg last 10)",
+    "a_obp10": "Away OBP (rolling avg last 10)",
+    "h_ops5": "Home OPS (rolling avg last 5)",
+    "a_ops5": "Away OPS (rolling avg last 5)",
+    "h_ops10": "Home OPS (rolling avg last 10)",
+    "a_ops10": "Away OPS (rolling avg last 10)",
+    "h_ops15": "Home OPS (rolling avg last 15)",
+    "a_ops15": "Away OPS (rolling avg last 15)",
+
+    # -- Rolling pitching stats (from GAME_QUERY)
+    "h_era5": "Home ERA (rolling avg last 5)",
+    "a_era5": "Away ERA (rolling avg last 5)",
+    "h_era10": "Home ERA (rolling avg last 10)",
+    "a_era10": "Away ERA (rolling avg last 10)",
+    "h_era15": "Home ERA (rolling avg last 15)",
+    "a_era15": "Away ERA (rolling avg last 15)",
+    "h_whip5": "Home WHIP (rolling avg last 5)",
+    "a_whip5": "Away WHIP (rolling avg last 5)",
+    "h_whip10": "Home WHIP (rolling avg last 10)",
+    "a_whip10": "Away WHIP (rolling avg last 10)",
+    "h_whip15": "Home WHIP (rolling avg last 15)",
+    "a_whip15": "Away WHIP (rolling avg last 15)",
+    "h_k9_5": "Home K/9 (rolling avg last 5)",
+    "a_k9_5": "Away K/9 (rolling avg last 5)",
+    "h_k9_10": "Home K/9 (rolling avg last 10)",
+    "a_k9_10": "Away K/9 (rolling avg last 10)",
+    "h_bb9_5": "Home BB/9 (rolling avg last 5)",
+    "a_bb9_5": "Away BB/9 (rolling avg last 5)",
+    "h_bb9_10": "Home BB/9 (rolling avg last 10)",
+    "a_bb9_10": "Away BB/9 (rolling avg last 10)",
 }
 
 # Features added during featurization (computed by build_features)
