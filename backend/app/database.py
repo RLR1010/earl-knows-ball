@@ -4,6 +4,7 @@ from sqlalchemy.orm import declarative_base, sessionmaker
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 
 from app.core.config import settings
+from app.db_urls import ASYNC_DATABASE_URL as DB_URLS_ASYNC
 
 database_url = settings.database_url
 logger = logging.getLogger("earl.database")

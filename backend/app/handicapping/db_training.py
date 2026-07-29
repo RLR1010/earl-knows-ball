@@ -36,10 +36,9 @@ def _log_flush():
 atexit.register(_log_flush)
 
 
-DATABASE_URL = os.environ.get(
-    "DATABASE_URL",
-    "postgresql://earl:earl_dev_pass@localhost:5432/earl_knows_football",
-)
+from app.db_urls import PSYCOPG2_DATABASE_URL
+
+DATABASE_URL = PSYCOPG2_DATABASE_URL
 
 
 def _get_conn():

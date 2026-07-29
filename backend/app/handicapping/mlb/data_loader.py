@@ -1626,11 +1626,11 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
         "h_bullpen_er", "h_bullpen_ip", "a_bullpen_er", "a_bullpen_ip",
         "home_team_id", "away_team_id", "game_id"
     ])
-    result["h_bullpen_er_l5"] = 0
-    result["h_bullpen_ip_l5"] = 0
-    result["a_bullpen_er_l5"] = 0
-    result["a_bullpen_ip_l5"] = 0
-    
+    result = result.assign(
+        h_bullpen_er_l5=0, h_bullpen_ip_l5=0,
+        a_bullpen_er_l5=0, a_bullpen_ip_l5=0,
+    )
+
     if bp_ready:
         # Build long-form with side marker: side=0 for home, side=1 for away
         h_bp = result[["game_id", "home_team_id", "h_bullpen_er", "h_bullpen_ip"]].copy()

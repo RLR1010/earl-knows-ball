@@ -24,10 +24,9 @@ import pandas as _pd
 from psycopg2.extras import RealDictCursor
 
 
-DATABASE_URL = os.environ.get(
-    "DATABASE_URL",
-    "dbname=earl_knows_football user=earl password=earl_dev_pass host=localhost port=5432"
-)
+from app.db_urls import PSYCOPG2_DATABASE_URL
+
+DATABASE_URL = PSYCOPG2_DATABASE_URL
 
 
 def _pg_conn():
