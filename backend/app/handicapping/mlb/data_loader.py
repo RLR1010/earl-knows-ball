@@ -1356,15 +1356,17 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
         result["a_form_l10"] = result["a_winpct_l10"]
 
     # Over frequency — from team_rolling_stats.over_pct (season-level).
-    # TODO: Add 5-game rolling over% to TRS for over_freq5.
-    if "h_over_pct" in result.columns:
-        result["h_over_freq"] = result["h_over_pct"].fillna(0.5)
+    if "h_over_pct" in result.columns and "a_over_pct" in result.columns:
+        result["h_over_freq"] = result["h_over_pct"]
+        result["a_over_freq"] = result["a_over_pct"]
+        # over_freq5: Stubbed to season-level until L5 rolling over% is added to TRS.
+        result["h_over_freq5"] = result["h_over_freq"]
+        result["a_over_freq5"] = result["a_over_freq"]
     else:
         result["h_over_freq"] = 0.5
-    if "a_over_pct" in result.columns:
-        result["a_over_freq"] = result["a_over_pct"].fillna(0.5)
-    else:
         result["a_over_freq"] = 0.5
+        result["h_over_freq5"] = 0.5
+        result["a_over_freq5"] = 0.5
 
     result["h_over_freq5"] = result["h_over_freq"]  # TODO: real L5
     result["a_over_freq5"] = result["a_over_freq"]  # TODO: real L5
