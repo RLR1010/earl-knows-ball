@@ -223,6 +223,9 @@ SELECT
     trs_h.k9_10           AS h_k9_10,
     trs_h.bb9_5           AS h_bb9_5,
     trs_h.bb9_10          AS h_bb9_10,
+    trs_h.win_pct         AS h_win_pct,
+    trs_h.over_pct        AS h_over_pct,
+    trs_h.spread_pct      AS h_spread_pct,
 
     trs_a.rf              AS a_rf,
     trs_a.ra              AS a_ra,
@@ -250,6 +253,9 @@ SELECT
     trs_a.k9_10           AS a_k9_10,
     trs_a.bb9_5           AS a_bb9_5,
     trs_a.bb9_10          AS a_bb9_10,
+    trs_a.win_pct         AS a_win_pct,
+    trs_a.over_pct        AS a_over_pct,
+    trs_a.spread_pct      AS a_spread_pct,
 
     -- ──────────────────────────────────────────────────────────────────────
     -- PRIOR SEASON STATS (for early-season blending)
@@ -1095,7 +1101,68 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
         if src in result.columns and dst not in result.columns:
             result[dst] = result[src]
 
-    # ── 9. Derived weather: wind_calculated ────────────────────────────────
+    # ── 8. Group 3 — Win% / Form / Over Freq ──────────────────────────────
+    # Season win percentages — prefer team_rolling_stats (pre-computed),
+    # fall back to W/L from the games table.
+    if "h_win_pct" in result.columns:
+        result["h_winpct"] = result["h_win_pct"]
+    elif "home_wins" in result.columns and "home_losses" in result.columns:
+        denom = (result["home_wins"] + result["home_losses"]).clip(lower=1)
+        result["h_winpct"] = result["home_wins"] / denom
+    else:
+        result["h_winpct"] = 0.5
+
+    if "a_win_pct" in result.columns:
+        result["a_winpct"] = result["a_win_pct"]
+    elif "away_wins" in result.columns and "away_losses" in result.columns:
+        denom = (result["away_wins"] + result["away_losses"]).clip(lower=1)
+        result["a_winpct"] = result["away_wins"] / denom
+    else:
+        result["a_winpct"] = 0.5
+
+    result["winpct_diff"] = result["h_winpct"] - result["a_winpct"]
+
+    # Win% L10 — not directly available from TRS (it only has season win_pct).
+    # TODO: Add rolling W/L to team_rolling_stats to compute true L10 win%.
+    # For now, use season win% as a fallback.
+    result["h_winpct_l10"] = result["h_winpct"]
+    result["a_winpct_l10"] = result["a_winpct"]
+    result["winpct_l10_diff"] = result["winpct_diff"]
+
+    # Form (synonymous with winpct_l10 for now)
+    result["h_form_l10"] = result["h_winpct"]
+    result["a_form_l10"] = result["a_winpct"]
+
+    # Over frequency — from team_rolling_stats.over_pct (season-level).
+    # TODO: Add 5-game rolling over% to TRS for over_freq5.
+    if "h_over_pct" in result.columns:
+        result["h_over_freq"] = result["h_over_pct"]
+    else:
+        result["h_over_freq"] = 0.5
+    if "a_over_pct" in result.columns:
+        result["a_over_freq"] = result["a_over_pct"]
+    else:
+        result["a_over_freq"] = 0.5
+
+    result["h_over_freq5"] = result["h_over_freq"]  # TODO: real L5
+    result["a_over_freq5"] = result["a_over_freq"]  # TODO: real L5
+
+    # ── 9. Group 4 — Home/Away Split Stats ────────────────────────────────
+    # Implied probabilities — directly from the closing moneyline (already in query)
+    if "closing_home_implied_probability" in result.columns:
+        result["h_implied"] = result["closing_home_implied_probability"]
+    else:
+        result["h_implied"] = 0.5
+    if "closing_away_implied_probability" in result.columns:
+        result["a_implied"] = result["closing_away_implied_probability"]
+    else:
+        result["a_implied"] = 0.5
+
+    # Home/away runs — requires expanding mean from CGS with team_side filter.
+    # Not currently available in the query. These will need a new subquery.
+    # TODO: Add home/away CGS split for h_home_rf / a_away_rf
+
+    # ── 10. Derived weather: wind_calculated ──────────────────────────────
     # Wind effect: +speed for out, -speed for in, 0 otherwise
     # This gives the model a numeric signal for park/environment impact.
     if "wind_speed" in result.columns and "wind_direction" in result.columns:
