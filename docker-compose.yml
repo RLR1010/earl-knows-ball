@@ -4,6 +4,7 @@ services:
       context: .
       dockerfile: docker_db/Dockerfile
     image: earl-postgres-pgvector
+    shm_size: 256m
     environment:
       POSTGRES_USER: earl
       POSTGRES_PASSWORD: "earl_dev_pass"

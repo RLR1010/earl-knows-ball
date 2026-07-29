@@ -460,10 +460,10 @@ SELECT *,
         / NULLIF(SUM(CASE WHEN is_home THEN ip_outs ELSE 0 END) OVER w / 3.0, 0) AS home_era_ytd,
     9.0 * SUM(CASE WHEN NOT is_home THEN er ELSE 0 END) OVER w
         / NULLIF(SUM(CASE WHEN NOT is_home THEN ip_outs ELSE 0 END) OVER w / 3.0, 0) AS road_era_ytd,
-    9.0 * SUM(CASE WHEN day_night = 'Day' THEN er ELSE 0 END) OVER w
-        / NULLIF(SUM(CASE WHEN day_night = 'Day' THEN ip_outs ELSE 0 END) OVER w / 3.0, 0) AS day_era_ytd,
-    9.0 * SUM(CASE WHEN day_night = 'Night' THEN er ELSE 0 END) OVER w
-        / NULLIF(SUM(CASE WHEN day_night = 'Night' THEN ip_outs ELSE 0 END) OVER w / 3.0, 0) AS night_era_ytd
+    9.0 * SUM(CASE WHEN day_night = 'day' THEN er ELSE 0 END) OVER w
+        / NULLIF(SUM(CASE WHEN day_night = 'day' THEN ip_outs ELSE 0 END) OVER w / 3.0, 0) AS day_era_ytd,
+    9.0 * SUM(CASE WHEN day_night = 'night' THEN er ELSE 0 END) OVER w
+        / NULLIF(SUM(CASE WHEN day_night = 'night' THEN ip_outs ELSE 0 END) OVER w / 3.0, 0) AS night_era_ytd
 FROM with_derived
 WINDOW
     w  AS (PARTITION BY player_id, season_id ORDER BY game_date, game_id
@@ -618,16 +618,12 @@ def populate_pitcher_rolling(engine: Engine, incremental: bool = False) -> int:
 
     extra_filter = ""
     if incremental:
-        extra_filter = """
-            AND pgs.game_id NOT IN (
-                SELECT game_id FROM mlb.pitcher_rolling_stats
-            )
-        """
-
-    sql = POPULATE_PITCHER_ROLLING_SQL.replace(
-        "FROM mlb.pitcher_game_stats pgs",
-        f"FROM mlb.pitcher_game_stats pgs {extra_filter}"
-    )
+        sql = POPULATE_PITCHER_ROLLING_SQL.replace(
+            "WHERE pgs.is_starter = TRUE",
+            "WHERE pgs.is_starter = TRUE\n            AND pgs.game_id NOT IN (\n                SELECT game_id FROM mlb.pitcher_rolling_stats\n            )"
+        )
+    else:
+        sql = POPULATE_PITCHER_ROLLING_SQL
 
     with engine.connect() as conn:
         result = conn.execute(text(sql))

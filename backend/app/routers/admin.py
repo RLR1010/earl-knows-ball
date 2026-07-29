@@ -3468,14 +3468,14 @@ async def data_loader_load_game(
             try:
                 full_built_df = mlb_build_features(full_raw_df)
             except Exception:
-                log.error("  build_features failed for MLB, falling back to raw data")
+                logger.error("  build_features failed for MLB, falling back to raw data")
                 full_built_df = full_raw_df
         else:  # nba
             from app.handicapping.nba.data_loader import build_features as nba_build_features
             try:
                 full_built_df = nba_build_features(full_raw_df)
             except Exception:
-                log.error("  build_features failed for NBA, falling back to raw data")
+                logger.error("  build_features failed for NBA, falling back to raw data")
 
         # Step 4: Filter to just our target game
         if full_built_df.empty or "game_id" not in full_built_df.columns:
@@ -3519,29 +3519,35 @@ async def data_loader_load_game(
 
         # Build feature list
         features = []
+        def _safe_val(v):
+            if v is None:
+                return None
+            try:
+                if v != v or v == float('inf') or v == float('-inf'):
+                    return None
+            except (TypeError, ValueError):
+                pass
+            if isinstance(v, (_pd.Timestamp, _pd.Series, _pd.DataFrame)):
+                return None
+            return v
+
         for col_name in sorted(raw_columns):
-            val = raw_row.get(col_name)
-            if isinstance(val, (float, int)) and val != val:  # NaN check
-                val = None
             features.append({
                 "name": col_name,
-                "display_name": dl.get_display_name(col_name),
+                "display_name": catalog.get(col_name, ""),
                 "group": "raw",
                 "description": catalog.get(col_name, ""),
-                "value": val,
+                "value": _safe_val(raw_row.get(col_name)),
                 "type": "raw",
             })
 
         for col_name in sorted(computed_cols):
-            val = built_row.get(col_name)
-            if isinstance(val, (float, int)) and val != val:  # NaN check
-                val = None
             features.append({
                 "name": col_name,
                 "display_name": dl.get_display_name(col_name),
                 "group": "computed",
                 "description": catalog.get(col_name, ""),
-                "value": val,
+                "value": _safe_val(built_row.get(col_name)),
                 "type": "computed",
             })
 
@@ -3553,7 +3559,6 @@ async def data_loader_load_game(
                 return None
             return v
 
-        # Build a summary for the frontend
         game_info = {}
         sport_lower = sport
         if sport == "nfl":

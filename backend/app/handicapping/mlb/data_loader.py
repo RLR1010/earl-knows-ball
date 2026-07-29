@@ -32,6 +32,7 @@ from typing import Any, Dict, List, Optional
 
 import math
 
+import numpy as np
 import pandas as pd
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -200,34 +201,10 @@ SELECT
     cgs_a.cum_k9           AS a_cum_k9,
     cgs_a.cum_bb9          AS a_cum_bb9,
 
-    -- Home/away game counts (for per-game averaging and venue win%)
-    -- games table uses `date` (not game_date) for the game date column
-    (
-        SELECT COUNT(*)::int FROM mlb.games g2
-        WHERE g2.home_team_id = g.home_team_id
-          AND g2.season_id = g.season_id
-          AND g2.date < g.date
-          AND g2.status = 'FINAL'
-    ) AS h_home_games,
-    (
-        SELECT COUNT(*)::int FROM mlb.games g2
-        WHERE g2.away_team_id = g.away_team_id
-          AND g2.season_id = g.season_id
-          AND g2.date < g.date
-          AND g2.status = 'FINAL'
-    ) AS a_away_games,
-    (
-        SELECT CASE WHEN COUNT(*) = 0 THEN 0.5
-               ELSE SUM(CASE WHEN g2.away_team_id = g.away_team_id
-                             AND g2.away_score > g2.home_score THEN 1.0 ELSE 0.0 END)
-                      / COUNT(*)::float
-               END
-        FROM mlb.games g2
-        WHERE g2.venue_id = g.venue_id
-          AND g2.away_team_id = g.away_team_id
-          AND g2.date < g.date
-          AND g2.status = 'FINAL'
-    ) AS a_team_venue_winpct,
+    -- Home/away game counts & venue win% (pre-computed in mlb.team_rolling_stats)
+    COALESCE(trs_h.home_games_sofar, 0)       AS h_home_games,
+    COALESCE(trs_a.away_games_sofar, 0)       AS a_away_games,
+    COALESCE(trs_a.game_away_venue_pct, 0.5)   AS a_team_venue_winpct,
 
     -- Bullpen
     bg_h.bullpen_er        AS h_bullpen_er,
@@ -1457,15 +1434,12 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     # If day_night = 'Day', assign day_era; if 'Night', assign night_era
     day_col = "day_night"
     if day_col in result.columns:
-        h_d = result.get("h_pitcher_day_era", 0)
-        h_n = result.get("h_pitcher_night_era", 0)
-        a_d = result.get("a_pitcher_day_era", 0)
-        a_n = result.get("a_pitcher_night_era", 0)
-        result["h_pitcher_day_night_era"] = result[day_col].map(
-            lambda v: h_d if str(v).lower() == "day" else h_n
+        day_mask = result[day_col].str.lower() == "day"
+        result["h_pitcher_day_night_era"] = np.where(
+            day_mask, result["h_pitcher_day_era"], result["h_pitcher_night_era"]
         )
-        result["a_pitcher_day_night_era"] = result[day_col].map(
-            lambda v: a_d if str(v).lower() == "day" else a_n
+        result["a_pitcher_day_night_era"] = np.where(
+            day_mask, result["a_pitcher_day_era"], result["a_pitcher_night_era"]
         )
     else:
         result["h_pitcher_day_night_era"] = result.get("h_pitcher_day_era", 0)
@@ -1747,10 +1721,80 @@ class MLBDataLoader:
 
     # ── Public methods ──────────────────────────────────────────────────────
 
+    @staticmethod
+    def _auto_munge(name: str) -> str:
+        """Turn a snake_case column name into a human label."""
+        import re
+
+        # Abbreviations to uppercase after title-casing
+        _ABBR_UPPERS = {"Era", "Whip", "Fip", "Obp", "Ops", "Slg", "Babip", "Er", "Bb", "K9", "Bb9", "Rf"}
+        # Split the trailing window number from stat names like rf5, era10, ops15
+        _NUMBER_TAIL = re.compile(r"(\d+)$")
+
+        # Detect prefix and compute rest
+        if name.startswith("h_p_"):
+            prefix = "Home Pitcher"
+            rest = name[4:]
+        elif name.startswith("a_p_"):
+            prefix = "Away Pitcher"
+            rest = name[4:]
+        elif name.startswith("h_"):
+            prefix = "Home"
+            rest = name[2:]
+        elif name.startswith("a_"):
+            prefix = "Away"
+            rest = name[2:]
+        else:
+            prefix = ""
+            rest = name
+
+        # Replace underscores with spaces
+        desc = rest.replace("_", " ")
+
+        # Insert space between a stat abbreviation and trailing window number
+        # e.g. rf5 → rf 5, era10 → era 10
+        desc = _NUMBER_TAIL.sub(r" \1", desc)
+
+        # Normalize special tokens
+        desc = desc.replace("ytd", " YTD ").replace("pct", "%")
+
+        nice = desc.title()
+
+        # Apply abbreviation uppercasing
+        for abbr in _ABBR_UPPERS:
+            nice = nice.replace(abbr, abbr.upper())
+        nice = nice.replace("Ytd", "YTD")
+        # Clean up extra spaces from replacements
+        nice = " ".join(nice.split())
+
+        # If the prefix matches the start of the rest, omit it
+        # e.g. h_home_games → prefix="Home", rest="home_games" → skip prefix
+        if prefix and rest.lower().startswith(prefix.lower().split()[0]):
+            return nice
+
+        return f"{prefix} {nice}" if prefix else nice
+
+    def _auto_description(self, name: str) -> str:
+        return self._auto_munge(name)
+
+    def _auto_display(self, name: str) -> str:
+        return self._auto_munge(name)
+
     def get_features_catalog(self) -> Dict[str, str]:
-        """Return the full feature catalog (raw + computed)."""
+        """Return the full feature catalog (raw + computed).
+
+        Columns that appear in the GAME_QUERY but lack an explicit
+        FEATURES_CATALOG / COMPUTED_FEATURES_CATALOG entry get an
+        auto-generated description so nothing comes back blank.
+        """
         merged = dict(FEATURES_CATALOG)
         merged.update(COMPUTED_FEATURES_CATALOG)
+        # Add auto-generated descriptions for any missing columns
+        import re
+        for m in re.finditer(r'\bAS\s+(\w+)', GAME_QUERY):
+            col = m.group(1)
+            if col not in merged:
+                merged[col] = self._auto_description(col)
         return merged
 
     def get_feature_names(self) -> List[str]:
@@ -1764,9 +1808,9 @@ class MLBDataLoader:
     def get_display_name(self, name: str) -> str:
         """Return the customer-facing display name for a feature.
 
-        Falls back to title-casing the snake_case name if not in the catalog.
+        Falls back to a smart auto-generated label if not in DISPLAY_NAMES.
         """
-        return DISPLAY_NAMES.get(name, name.replace("_", " ").title())
+        return DISPLAY_NAMES.get(name, self._auto_display(name))
 
     def get_all_with_display(self) -> List[Dict[str, str]]:
         """Return a list of dicts with name, description, display_name for every feature."""

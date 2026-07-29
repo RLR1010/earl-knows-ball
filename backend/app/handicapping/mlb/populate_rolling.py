@@ -77,6 +77,9 @@ WITH games_with_status AS (
         cgs.pitch_ip, cgs.pitch_er,
         cgs.pitch_hits_allowed, cgs.pitch_walks_allowed,
         cgs.pitch_strikeouts, cgs.pitch_home_runs_allowed,
+        g.venue_id,
+        g.home_score, g.away_score,
+        blc.closing_ou,
         cgs.cum_avg, cgs.cum_obp, cgs.cum_slg, cgs.cum_ops,
         cgs.cum_era, cgs.cum_whip, cgs.cum_k9, cgs.cum_bb9,
         cgs.cum_babip, cgs.cum_k_rate, cgs.cum_bb_rate,
@@ -85,6 +88,11 @@ WITH games_with_status AS (
             PARTITION BY cgs.team_id, cgs.season_id
             ORDER BY cgs.game_date, cgs.game_id
         ) AS game_n,
+
+        ROW_NUMBER() OVER (
+            PARTITION BY cgs.team_id, cgs.season_id, cgs.team_side
+            ORDER BY cgs.game_date, cgs.game_id
+        ) AS side_game_n,
 
         -- Previous cumulative values (for computing per-game deltas)
         LAG(cgs.bat_runs) OVER w AS prev_bat_runs,
@@ -103,6 +111,7 @@ WITH games_with_status AS (
 
     FROM mlb.cumulative_game_stats cgs
     JOIN mlb.games g ON g.id = cgs.game_id
+    LEFT JOIN mlb.betting_lines_consolidated blc ON blc.game_id = cgs.game_id
     WINDOW w AS (PARTITION BY cgs.team_id, cgs.season_id
                  ORDER BY cgs.game_date, cgs.game_id)
 )
@@ -190,18 +199,75 @@ SELECT *,
     AVG(slg_this)  OVER w20 AS slg20,
     AVG(ops_this)  OVER w20 AS ops20,
     AVG(era_this)  OVER w20 AS era20,
-    AVG(whip_this) OVER w20 AS whip20
+    AVG(whip_this) OVER w20 AS whip20,
 
-FROM per_game_rate
+    -- Pre-computed game counts (replaces correlated subqueries in GAME_QUERY)
+    CASE WHEN team_side = 'home' THEN GREATEST(0, side_game_n - 1) END AS home_games_sofar,
+    CASE WHEN team_side = 'away' THEN GREATEST(0, side_game_n - 1) END AS away_games_sofar,
+    CASE WHEN team_side = 'away' THEN (
+        SELECT CASE WHEN COUNT(*) = 0 THEN 0.5
+                 ELSE SUM(CASE WHEN g2.away_score > g2.home_score THEN 1.0 ELSE 0.0 END)::float / COUNT(*)::float
+                 END
+        FROM mlb.games g2
+        WHERE g2.venue_id = pgr.venue_id
+          AND g2.away_team_id = pgr.team_id
+          AND g2.date < pgr.game_date
+          AND g2.status = 'FINAL'
+    ) END AS game_away_venue_pct,
+
+    -- Pre-computed season-wide win/over/spread percentages
+    -- (window frames exclude current row: ROWS ... AND 1 PRECEDING)
+    -- win_this / over_this / spread_this computed inline because
+    -- SQL can't reference same-level aliases in window functions
+    AVG(CASE WHEN is_final THEN
+            CASE WHEN is_home THEN (home_score > away_score)::int
+                 ELSE (away_score > home_score)::int END
+        END) OVER w_full  AS win_pct,
+    AVG(CASE WHEN is_final AND closing_ou IS NOT NULL THEN
+            ((home_score + away_score) > closing_ou)::int
+        END) OVER w_full  AS over_pct,
+    AVG(CASE WHEN is_final THEN
+            CASE WHEN is_home THEN (home_score - away_score)::float
+                 ELSE (away_score - home_score)::float END
+        END) OVER w_full  AS spread_pct,
+    AVG(CASE WHEN is_final THEN
+            CASE WHEN is_home THEN (home_score > away_score)::int
+                 ELSE (away_score > home_score)::int END
+        END) OVER w5      AS win_pct5,
+    AVG(CASE WHEN is_final AND closing_ou IS NOT NULL THEN
+            ((home_score + away_score) > closing_ou)::int
+        END) OVER w5      AS over_pct5,
+    AVG(CASE WHEN is_final THEN
+            CASE WHEN is_home THEN (home_score - away_score)::float
+                 ELSE (away_score - home_score)::float END
+        END) OVER w5      AS spread_pct5,
+    AVG(CASE WHEN is_final THEN
+            CASE WHEN is_home THEN (home_score > away_score)::int
+                 ELSE (away_score > home_score)::int END
+        END) OVER w10     AS win_pct10,
+    AVG(CASE WHEN is_final AND closing_ou IS NOT NULL THEN
+            ((home_score + away_score) > closing_ou)::int
+        END) OVER w10     AS over_pct10,
+    AVG(CASE WHEN is_final THEN
+            CASE WHEN is_home THEN (home_score > away_score)::int
+                 ELSE (away_score > home_score)::int END
+        END) OVER w15     AS win_pct15,
+    AVG(CASE WHEN is_final AND closing_ou IS NOT NULL THEN
+            ((home_score + away_score) > closing_ou)::int
+        END) OVER w15     AS over_pct15
+
+FROM per_game_rate pgr
 WINDOW
-    w5  AS (PARTITION BY team_id, season_id ORDER BY game_date, game_id
-            ROWS BETWEEN 5 PRECEDING AND 1 PRECEDING),
-    w10 AS (PARTITION BY team_id, season_id ORDER BY game_date, game_id
-            ROWS BETWEEN 10 PRECEDING AND 1 PRECEDING),
-    w15 AS (PARTITION BY team_id, season_id ORDER BY game_date, game_id
-            ROWS BETWEEN 15 PRECEDING AND 1 PRECEDING),
-    w20 AS (PARTITION BY team_id, season_id ORDER BY game_date, game_id
-            ROWS BETWEEN 20 PRECEDING AND 1 PRECEDING)
+    w_full AS (PARTITION BY team_id, season_id ORDER BY game_date, game_id
+               ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),
+    w5     AS (PARTITION BY team_id, season_id ORDER BY game_date, game_id
+               ROWS BETWEEN 5 PRECEDING AND 1 PRECEDING),
+    w10    AS (PARTITION BY team_id, season_id ORDER BY game_date, game_id
+               ROWS BETWEEN 10 PRECEDING AND 1 PRECEDING),
+    w15    AS (PARTITION BY team_id, season_id ORDER BY game_date, game_id
+               ROWS BETWEEN 15 PRECEDING AND 1 PRECEDING),
+    w20    AS (PARTITION BY team_id, season_id ORDER BY game_date, game_id
+               ROWS BETWEEN 20 PRECEDING AND 1 PRECEDING)
 ORDER BY team_id, season_id, game_date, game_id
 ;
 """
@@ -282,7 +348,7 @@ def populate_team_rolling(engine=None, incremental=False) -> int:
     return _bulk_upsert(
         sql=sql,
         table="mlb.team_rolling_stats",
-        exclude_cols={"is_home", "is_final", "game_n",
+        exclude_cols={"is_home", "is_final", "game_n", "side_game_n", 
                      "bat_runs", "bat_hits", "bat_at_bats", "bat_walks",
                      "bat_strikeouts", "bat_home_runs", "bat_total_bases",
                      "pitch_ip", "pitch_er",

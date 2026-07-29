@@ -17,6 +17,12 @@ CREATE TABLE IF NOT EXISTS mlb.team_rolling_stats (
     team_side        TEXT    NOT NULL CHECK (team_side IN ('home', 'away')),
     season_id        INTEGER NOT NULL,
     game_date        DATE    NOT NULL,
+    venue_id         INTEGER,
+
+    -- Pre-computed game counters (replaces correlated subqueries in GAME_QUERY)
+    home_games_sofar        INTEGER,
+    away_games_sofar        INTEGER,
+    game_away_venue_pct     DOUBLE PRECISION,
 
     -- Per-game totals (derived from cumulative_game_stats)
     rf               INTEGER,       -- runs scored this game
@@ -82,6 +88,13 @@ CREATE TABLE IF NOT EXISTS mlb.team_rolling_stats (
     win_pct          DOUBLE PRECISION,
     spread_pct       DOUBLE PRECISION,
     over_pct         DOUBLE PRECISION,
+    win_pct5         DOUBLE PRECISION,
+    spread_pct5      DOUBLE PRECISION,
+    over_pct5        DOUBLE PRECISION,
+    win_pct10        DOUBLE PRECISION,
+    over_pct10       DOUBLE PRECISION,
+    win_pct15        DOUBLE PRECISION,
+    over_pct15       DOUBLE PRECISION,
 
     PRIMARY KEY (game_id, team_side)
 );
