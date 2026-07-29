@@ -419,11 +419,23 @@ JOIN mlb.teams ht ON ht.id = g.home_team_id
 JOIN mlb.teams at ON at.id = g.away_team_id
 LEFT JOIN mlb.venues v ON v.id = g.venue_id
 
--- Cumulative stats (home / away)
-LEFT JOIN mlb.cumulative_game_stats cgs_h
-    ON cgs_h.game_id = g.id AND cgs_h.team_side = 'home'
-LEFT JOIN mlb.cumulative_game_stats cgs_a
-    ON cgs_a.game_id = g.id AND cgs_a.team_side = 'away'
+-- Cumulative stats through PREVIOUS game (home / away) — LATERAL finds the most recent completed game for this team
+LEFT JOIN LATERAL (
+    SELECT cgs_prev.*
+    FROM mlb.cumulative_game_stats cgs_prev
+    WHERE cgs_prev.team_id = ht.id
+      AND cgs_prev.game_date < g.date
+    ORDER BY cgs_prev.game_date DESC, cgs_prev.game_id DESC
+    LIMIT 1
+) cgs_h ON TRUE
+LEFT JOIN LATERAL (
+    SELECT cgs_prev.*
+    FROM mlb.cumulative_game_stats cgs_prev
+    WHERE cgs_prev.team_id = at.id
+      AND cgs_prev.game_date < g.date
+    ORDER BY cgs_prev.game_date DESC, cgs_prev.game_id DESC
+    LIMIT 1
+) cgs_a ON TRUE
 
 -- Team rolling stats (home / away)
 LEFT JOIN mlb.team_rolling_stats trs_h
@@ -1065,6 +1077,9 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
         "h_p_whip_10": "h_pitcher_whip_l10",
         "h_p_k9_5": "h_pitcher_k9_l5",
         "h_p_k9_10": "h_pitcher_k9_l10",
+        "h_p_era_20": "h_pitcher_era_l20",
+        "h_p_whip_20": "h_pitcher_whip_l20",
+        "h_p_k9_20": "h_pitcher_k9_l20",
         "h_p_kbb_10": "h_pitcher_kbb_l10",
         "h_p_fip_ytd": "h_pitcher_fip_ytd",
         "h_p_era_ytd": "h_pitcher_era_ytd",
@@ -1078,6 +1093,9 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
         "a_p_whip_10": "a_pitcher_whip_l10",
         "a_p_k9_5": "a_pitcher_k9_l5",
         "a_p_k9_10": "a_pitcher_k9_l10",
+        "a_p_era_20": "a_pitcher_era_l20",
+        "a_p_whip_20": "a_pitcher_whip_l20",
+        "a_p_k9_20": "a_pitcher_k9_l20",
         "a_p_kbb_10": "a_pitcher_kbb_l10",
         "a_p_fip_ytd": "a_pitcher_fip_ytd",
         "a_p_era_ytd": "a_pitcher_era_ytd",

@@ -26,13 +26,22 @@ from psycopg2.extras import RealDictCursor
 
 DATABASE_URL = os.environ.get(
     "DATABASE_URL",
-    "dbname=earl_knows_football user=earl host=localhost port=5432"
+    "dbname=earl_knows_football user=earl password=earl_dev_pass host=localhost port=5432"
 )
 
 
 def _pg_conn():
     import psycopg2
-    return psycopg2.connect(DATABASE_URL)
+    # Strip async driver suffix (e.g. postgresql+asyncpg -> postgresql)
+    # for psycopg2 compatibility when DATABASE_URL comes from env.
+    url = DATABASE_URL
+    if url and "+asyncpg" in url:
+        url = url.replace("+asyncpg", "")
+    # Also handle libpq key=value format with no password
+    if url and "password=" not in url and "postgresql://" in url:
+        # URL format without password — try connection anyway
+        pass
+    return psycopg2.connect(url)
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
@@ -3135,7 +3144,10 @@ def _get_nba_model_detail() -> SportModelDetailOut:
 
 def _pg_conn():
     import psycopg2
-    return psycopg2.connect(DATABASE_URL)
+    url = DATABASE_URL
+    if url and "+asyncpg" in url:
+        url = url.replace("+asyncpg", "")
+    return psycopg2.connect(url)
 
 class TaskStatusOut(BaseModel):
     id: int
