@@ -207,12 +207,12 @@ SELECT
     COALESCE(trs_a.game_away_venue_pct, 0.5)   AS a_team_venue_winpct,
 
     -- Bullpen
-    bg_h.bullpen_er        AS h_bullpen_er,
-    bg_h.bullpen_ip_outs   AS h_bullpen_ip,
-    bg_h.num_pitchers      AS h_bullpen_num_pitchers,
-    bg_a.bullpen_er        AS a_bullpen_er,
-    bg_a.bullpen_ip_outs   AS a_bullpen_ip,
-    bg_a.num_pitchers      AS a_bullpen_num_pitchers,
+    h_bullpen_er        AS h_bullpen_er,
+    h_bullpen_ip   AS h_bullpen_ip,
+    h_bullpen_num_pitchers      AS h_bullpen_num_pitchers,
+    a_bullpen_er        AS a_bullpen_er,
+    a_bullpen_ip   AS a_bullpen_ip,
+    a_bullpen_num_pitchers      AS a_bullpen_num_pitchers,
 
     -- ──────────────────────────────────────────────────────────────────────
     -- TEAM ROLLING STATS (rolling windows)
@@ -367,8 +367,8 @@ SELECT
     prs_a.is_quality_start AS a_p_quality_start,
 
     -- Current-game pitcher names (from pitcher_game_stats)
-    pgs_h.pitcher_name    AS home_starter_name,
-    pgs_a.pitcher_name    AS away_starter_name,
+    home_starter_name    AS home_starter_name,
+    away_starter_name    AS away_starter_name,
 
     -- ──────────────────────────────────────────────────────────────────────
     -- BETTING LINES (consolidated)
