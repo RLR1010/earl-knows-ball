@@ -28,6 +28,7 @@ from app.models.mlb import (
     MLBInjury,
     MLBBattingStats,
     MLBPitchingStats,
+    MLBVenue,
 )
 
 logger = logging.getLogger("earl.mlb_stats")
@@ -615,38 +616,15 @@ async def load_games_for_season(
         return 0
 
     count = 0
+
+    # Pre-load valid venue IDs to avoid FK violations on historical venues
+    venue_id_rows = await db.execute(select(MLBVenue.mlb_venue_id))
+    valid_venue_ids = set(row[0] for row in venue_id_rows)
+
     for date_entry in data.get("dates", []):
         for game in date_entry.get("games", []):
             game_pk = game.get("gamePk")
             if not game_pk:
-                continue
-
-            # Check if already loaded – update scores/status or insert new
-            r = await db.execute(
-                select(MLBGames).where(MLBGames.mlb_game_id == game_pk)
-            )
-            existing_game = r.scalar_one_or_none()
-            if existing_game:
-                # Update scores, status, weather, records from fresh API data
-                if home_score is not None:
-                    existing_game.home_score = _safe_int(home_score)
-                if away_score is not None:
-                    existing_game.away_score = _safe_int(away_score)
-                existing_game.status = status
-                if game_date:
-                    existing_game.date = game_date
-                existing_game.venue = venue_name
-                existing_game.venue_id = venue_id
-                existing_game.scheduled_innings = game.get("scheduledInnings", 9)
-                existing_game.day_night = game.get("dayNight")
-                existing_game.home_wins = _safe_int(home_record.get("wins"))
-                existing_game.home_losses = _safe_int(home_record.get("losses"))
-                existing_game.away_wins = _safe_int(away_record.get("wins"))
-                existing_game.away_losses = _safe_int(away_record.get("losses"))
-                existing_game.temperature = _safe_int(temp_str)
-                existing_game.wind_speed = wind_speed_val
-                existing_game.weather_condition = weather_data.get("condition")
-                existing_game.wind_direction = wind_dir_val
                 continue
 
             teams_data = game.get("teams", {})
@@ -714,6 +692,30 @@ async def load_games_for_season(
                     elif wpart.startswith("r") and "l" in wpart:
                         wind_dir_val = "r_to_l"
 
+            # Check if already loaded – update scores/status or insert new
+            r = await db.execute(
+                select(MLBGames).where(MLBGames.mlb_game_id == game_pk)
+            )
+            existing_game = r.scalar_one_or_none()
+            if existing_game:
+                # Update scores, status, weather, records from fresh API data
+                if home_score is not None:
+                    existing_game.home_score = _safe_int(home_score)
+                if away_score is not None:
+                    existing_game.away_score = _safe_int(away_score)
+                existing_game.status = status
+                if game_date:
+                    existing_game.date = game_date
+                existing_game.home_wins = _safe_int(home_record.get("wins"))
+                existing_game.home_losses = _safe_int(home_record.get("losses"))
+                existing_game.away_wins = _safe_int(away_record.get("wins"))
+                existing_game.away_losses = _safe_int(away_record.get("losses"))
+                existing_game.temperature = _safe_int(temp_str)
+                existing_game.wind_speed = wind_speed_val
+                existing_game.weather_condition = weather_data.get("condition")
+                existing_game.wind_direction = wind_dir_val
+                continue
+
             db_game = MLBGames(
                 mlb_game_id=game_pk,
                 season_id=season_id,
@@ -726,7 +728,7 @@ async def load_games_for_season(
                 home_score=_safe_int(home_score),
                 away_score=_safe_int(away_score),
                 venue=venue_name,
-                venue_id=venue_id,
+                venue_id=venue_id if venue_id in valid_venue_ids else None,
                 scheduled_innings=game.get("scheduledInnings", 9),
                 day_night=game.get("dayNight"),
                 home_wins=_safe_int(home_record.get("wins")),

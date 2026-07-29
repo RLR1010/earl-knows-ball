@@ -147,9 +147,9 @@ async def run_backtest(
 
     present = [c for c in fcols if c in train_feats.columns]
 
-    # Filter out games without betting lines or without actual scores — they can't be used for ATS training
-    train_mask = train_feats["spread"].notna() & train_feats["home_moneyline"].notna() & train_feats["actual_margin"].notna()
-    test_mask = test_feats["spread"].notna() & test_feats["home_moneyline"].notna() & test_feats["actual_margin"].notna()
+    # Filter out games without betting lines — they can't be used for ATS training
+    train_mask = train_feats["spread"].notna() & train_feats["home_moneyline"].notna()
+    test_mask = test_feats["spread"].notna() & test_feats["home_moneyline"].notna()
     train_feats = train_feats[train_mask].copy()
     test_feats = test_feats[test_mask].copy()
 
