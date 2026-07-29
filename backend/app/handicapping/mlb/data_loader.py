@@ -1314,15 +1314,23 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     result["h_pitcher_night_era"] = result.get("h_p_night_era_ytd", result.get("h_pitcher_day_era", 0))
     result["a_pitcher_day_era"] = result.get("a_p_day_era_ytd", result.get("a_pitcher_night_era", 0))
 
-    # Day vs Night ERA differential
-    if "h_pitcher_day_era" in result and "h_pitcher_night_era" in result:
-        result["h_pitcher_day_night_era"] = result["h_pitcher_day_era"] - result["h_pitcher_night_era"]
+    # Day/Night ERA — use the ERA matching this game's time of day
+    # If day_night = 'Day', assign day_era; if 'Night', assign night_era
+    day_col = "day_night"
+    if day_col in result.columns:
+        h_d = result.get("h_pitcher_day_era", 0)
+        h_n = result.get("h_pitcher_night_era", 0)
+        a_d = result.get("a_pitcher_day_era", 0)
+        a_n = result.get("a_pitcher_night_era", 0)
+        result["h_pitcher_day_night_era"] = result[day_col].map(
+            lambda v: h_d if str(v).lower() == "day" else h_n
+        )
+        result["a_pitcher_day_night_era"] = result[day_col].map(
+            lambda v: a_d if str(v).lower() == "day" else a_n
+        )
     else:
-        result["h_pitcher_day_night_era"] = 0.0
-    if "a_pitcher_day_era" in result and "a_pitcher_night_era" in result:
-        result["a_pitcher_day_night_era"] = result["a_pitcher_day_era"] - result["a_pitcher_night_era"]
-    else:
-        result["a_pitcher_day_night_era"] = 0.0
+        result["h_pitcher_day_night_era"] = result.get("h_pitcher_day_era", 0)
+        result["a_pitcher_day_night_era"] = result.get("a_pitcher_night_era", 0)
 
     # ── 10. Derived weather: wind_calculated ──────────────────────────────
     # Wind effect: +speed for out, -speed for in, 0 otherwise

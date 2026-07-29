@@ -524,6 +524,25 @@ def ensure_tables(engine: Engine) -> None:
         conn.execute(text(CREATE_TEAM_ROLLING_INDEXES_SQL))
         conn.execute(text(CREATE_PITCHER_ROLLING_STATS_SQL))
         conn.execute(text(CREATE_PITCHER_ROLLING_INDEXES_SQL))
+        # Migration: add new columns if the table already exists
+        for col, dtype in [
+            ("era_20", "DOUBLE PRECISION"),
+            ("whip_20", "DOUBLE PRECISION"),
+            ("k9_20", "DOUBLE PRECISION"),
+            ("bb9_20", "DOUBLE PRECISION"),
+            ("kbb_20", "DOUBLE PRECISION"),
+            ("rest_days", "INTEGER"),
+            ("home_era_ytd", "DOUBLE PRECISION"),
+            ("road_era_ytd", "DOUBLE PRECISION"),
+            ("day_era_ytd", "DOUBLE PRECISION"),
+            ("night_era_ytd", "DOUBLE PRECISION"),
+        ]:
+            try:
+                conn.execute(text(
+                    f"ALTER TABLE mlb.pitcher_rolling_stats ADD COLUMN {col} {dtype}"
+                ))
+            except Exception:
+                pass  # column already exists
         conn.commit()
     logger.info("Tables ensured.")
 
