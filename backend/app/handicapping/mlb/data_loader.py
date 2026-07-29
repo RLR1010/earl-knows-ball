@@ -85,20 +85,23 @@ TEAM_LOCATIONS = {
 }
 
 
-def haversine_miles(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """Great-circle distance in miles between two lat/lon points."""
+def haversine_miles(lat1, lon1, lat2, lon2):
+    """Great-circle distance in miles between lat/lon points.  Accepts scalars or arrays."""
+    import numpy as np
     R = 3958.8  # Earth radius in miles
-    dlat = math.radians(lat2 - lat1)
-    dlon = math.radians(lon2 - lon1)
-    a = math.sin(dlat / 2) ** 2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2) ** 2
-    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    dlat = np.radians(np.asarray(lat2, dtype=float) - np.asarray(lat1, dtype=float))
+    dlon = np.radians(np.asarray(lon2, dtype=float) - np.asarray(lon1, dtype=float))
+    lat1_r = np.radians(np.asarray(lat1, dtype=float))
+    lat2_r = np.radians(np.asarray(lat2, dtype=float))
+    a = np.sin(dlat / 2) ** 2 + np.cos(lat1_r) * np.cos(lat2_r) * np.sin(dlon / 2) ** 2
+    return R * 2 * np.arctan2(np.sqrt(a), np.sqrt(1 - a))
 
 
 # ── Master game-level SQL query ──────────────────────────────────────────────
 
 GAME_QUERY = """
 SELECT
-    # -- Game identity
+    -- Game identity
     g.id               AS game_id,
     g.season_id,
     s.year             AS season_year,
@@ -134,6 +137,8 @@ SELECT
     at.name       AS away_team_name,
     at.abbreviation    AS away_abbr,
     at.logo_url        AS away_logo,
+    ht.division        AS hdiv,
+    at.division        AS adiv,
 
     -- Score
     g.home_score,
@@ -147,6 +152,8 @@ SELECT
     v.surface          AS venue_surface,
     v.roof_type        AS venue_roof,
     v.capacity         AS venue_capacity,
+    v.latitude         AS venue_latitude,
+    v.longitude        AS venue_longitude,
     
 
     g.weather_condition AS weather_condition,
@@ -192,6 +199,43 @@ SELECT
     cgs_a.cum_whip         AS a_cum_whip,
     cgs_a.cum_k9           AS a_cum_k9,
     cgs_a.cum_bb9          AS a_cum_bb9,
+
+    -- Home/away game counts (for per-game averaging and venue win%)
+    -- games table uses `date` (not game_date) for the game date column
+    (
+        SELECT COUNT(*)::int FROM mlb.games g2
+        WHERE g2.home_team_id = g.home_team_id
+          AND g2.season_id = g.season_id
+          AND g2.date < g.date
+          AND g2.status = 'FINAL'
+    ) AS h_home_games,
+    (
+        SELECT COUNT(*)::int FROM mlb.games g2
+        WHERE g2.away_team_id = g.away_team_id
+          AND g2.season_id = g.season_id
+          AND g2.date < g.date
+          AND g2.status = 'FINAL'
+    ) AS a_away_games,
+    (
+        SELECT CASE WHEN COUNT(*) = 0 THEN 0.5
+               ELSE SUM(CASE WHEN g2.away_team_id = g.away_team_id
+                             AND g2.away_score > g2.home_score THEN 1.0 ELSE 0.0 END)
+                      / COUNT(*)::float
+               END
+        FROM mlb.games g2
+        WHERE g2.venue_id = g.venue_id
+          AND g2.away_team_id = g.away_team_id
+          AND g2.date < g.date
+          AND g2.status = 'FINAL'
+    ) AS a_team_venue_winpct,
+
+    -- Bullpen
+    bg_h.bullpen_er        AS h_bullpen_er,
+    bg_h.bullpen_ip_outs   AS h_bullpen_ip,
+    bg_h.num_pitchers      AS h_bullpen_num_pitchers,
+    bg_a.bullpen_er        AS a_bullpen_er,
+    bg_a.bullpen_ip_outs   AS a_bullpen_ip,
+    bg_a.num_pitchers      AS a_bullpen_num_pitchers,
 
     -- ──────────────────────────────────────────────────────────────────────
     -- TEAM ROLLING STATS (rolling windows)
@@ -366,6 +410,7 @@ SELECT
     blc.opening_away_ml,
     blc.opening_home_implied_probability,
     blc.opening_away_implied_probability,
+    blc.has_verified_ou,
     (blc.closing_ou - blc.opening_ou) AS ou_movement,
     (blc.closing_home_ml - blc.opening_home_ml) AS ml_movement,
 
@@ -430,6 +475,12 @@ LEFT JOIN mlb.pitcher_rolling_stats prs_a
     ON prs_a.game_id = g.id
     AND prs_a.team_abbr = at.abbreviation
     AND prs_a.is_starter = TRUE
+
+-- Bullpen game stats (home / away)
+LEFT JOIN mlb.bullpen_game_stats bg_h
+    ON bg_h.game_id = g.id AND bg_h.team_id = ht.id
+LEFT JOIN mlb.bullpen_game_stats bg_a
+    ON bg_a.game_id = g.id AND bg_a.team_id = at.id
 
 -- Betting lines
 LEFT JOIN mlb.betting_lines_consolidated blc
@@ -571,36 +622,36 @@ FEATURES_CATALOG: Dict[str, str] = {
     "a_ra20": "Away runs against (rolling avg last 20)",
 
     # -- Rolling hitting stats (from GAME_QUERY)
-    "h_avg5": "Home AVG (rolling avg last 5)",
-    "a_avg5": "Away AVG (rolling avg last 5)",
-    "h_avg10": "Home AVG (rolling avg last 10)",
-    "a_avg10": "Away AVG (rolling avg last 10)",
-    "h_avg15": "Home AVG (rolling avg last 15)",
-    "a_avg15": "Away AVG (rolling avg last 15)",
-    "h_obp5": "Home OBP (rolling avg last 5)",
-    "a_obp5": "Away OBP (rolling avg last 5)",
-    "h_obp10": "Home OBP (rolling avg last 10)",
-    "a_obp10": "Away OBP (rolling avg last 10)",
-    "h_ops5": "Home OPS (rolling avg last 5)",
-    "a_ops5": "Away OPS (rolling avg last 5)",
-    "h_ops10": "Home OPS (rolling avg last 10)",
-    "a_ops10": "Away OPS (rolling avg last 10)",
-    "h_ops15": "Home OPS (rolling avg last 15)",
-    "a_ops15": "Away OPS (rolling avg last 15)",
+    "h_avg_5": "Home AVG (rolling avg last 5)",
+    "a_avg_5": "Away AVG (rolling avg last 5)",
+    "h_avg_10": "Home AVG (rolling avg last 10)",
+    "a_avg_10": "Away AVG (rolling avg last 10)",
+    "h_avg_15": "Home AVG (rolling avg last 15)",
+    "a_avg_15": "Away AVG (rolling avg last 15)",
+    "h_obp_5": "Home OBP (rolling avg last 5)",
+    "a_obp_5": "Away OBP (rolling avg last 5)",
+    "h_obp_10": "Home OBP (rolling avg last 10)",
+    "a_obp_10": "Away OBP (rolling avg last 10)",
+    "h_ops_5": "Home OPS (rolling avg last 5)",
+    "a_ops_5": "Away OPS (rolling avg last 5)",
+    "h_ops_10": "Home OPS (rolling avg last 10)",
+    "a_ops_10": "Away OPS (rolling avg last 10)",
+    "h_ops_15": "Home OPS (rolling avg last 15)",
+    "a_ops_15": "Away OPS (rolling avg last 15)",
 
     # -- Rolling pitching stats (from GAME_QUERY)
-    "h_era5": "Home ERA (rolling avg last 5)",
-    "a_era5": "Away ERA (rolling avg last 5)",
-    "h_era10": "Home ERA (rolling avg last 10)",
-    "a_era10": "Away ERA (rolling avg last 10)",
-    "h_era15": "Home ERA (rolling avg last 15)",
-    "a_era15": "Away ERA (rolling avg last 15)",
-    "h_whip5": "Home WHIP (rolling avg last 5)",
-    "a_whip5": "Away WHIP (rolling avg last 5)",
-    "h_whip10": "Home WHIP (rolling avg last 10)",
-    "a_whip10": "Away WHIP (rolling avg last 10)",
-    "h_whip15": "Home WHIP (rolling avg last 15)",
-    "a_whip15": "Away WHIP (rolling avg last 15)",
+    "h_era_5": "Home ERA (rolling avg last 5)",
+    "a_era_5": "Away ERA (rolling avg last 5)",
+    "h_era_10": "Home ERA (rolling avg last 10)",
+    "a_era_10": "Away ERA (rolling avg last 10)",
+    "h_era_15": "Home ERA (rolling avg last 15)",
+    "a_era_15": "Away ERA (rolling avg last 15)",
+    "h_whip_5": "Home WHIP (rolling avg last 5)",
+    "a_whip_5": "Away WHIP (rolling avg last 5)",
+    "h_whip_10": "Home WHIP (rolling avg last 10)",
+    "a_whip_10": "Away WHIP (rolling avg last 10)",
+    "h_whip_15": "Home WHIP (rolling avg last 15)",
+    "a_whip_15": "Away WHIP (rolling avg last 15)",
     "h_k9_5": "Home K/9 (rolling avg last 5)",
     "a_k9_5": "Away K/9 (rolling avg last 5)",
     "h_k9_10": "Home K/9 (rolling avg last 10)",
@@ -1183,22 +1234,22 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     # ── 7. Additional stat aliases for backward compat ───────────────────
     # The engine looks for 'h_era10' but DB has 'h_era_10'
     _STAT_ALIASES = {
-        "h_era_10": "h_era10",
-        "a_era_10": "a_era10",
-        "h_whip_10": "h_whip10",
-        "a_whip_10": "a_whip10",
+        "h_era_10": "h_era_10",
+        "a_era_10": "a_era_10",
+        "h_whip_10": "h_whip_10",
+        "a_whip_10": "a_whip_10",
         "h_k9_10": "h_k9_10",
         "a_k9_10": "a_k9_10",
-        "h_avg_10": "h_avg10",
-        "a_avg_10": "a_avg10",
-        "h_ops_10": "h_ops10",
-        "a_ops_10": "a_ops10",
-        "h_era_5": "h_era5",
-        "a_era_5": "a_era5",
-        "h_whip_5": "h_whip5",
-        "a_whip_5": "a_whip5",
-        "h_avg_5": "h_avg5",
-        "a_avg_5": "a_avg5",
+        "h_avg_10": "h_avg_10",
+        "a_avg_10": "a_avg_10",
+        "h_ops_10": "h_ops_10",
+        "a_ops_10": "a_ops_10",
+        "h_era_5": "h_era_5",
+        "a_era_5": "a_era_5",
+        "h_whip_5": "h_whip_5",
+        "a_whip_5": "a_whip_5",
+        "h_avg_5": "h_avg_5",
+        "a_avg_5": "a_avg_5",
         "h_rf5": "h_rf_5",
         "a_rf5": "a_rf_5",
         "h_ra5": "h_ra_5",
@@ -1422,6 +1473,189 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
         result["wind_calculated"] = result["wind_speed"].fillna(0) * wind_dir_factor
     else:
         result["wind_calculated"] = 0
+
+    # ── Group 7 — Calendar/Situational features ────────────────────────────────
+    if "game_date" in result.columns:
+        result["month"] = result["game_date"].dt.month
+        result["is_summer"] = result["month"].isin([6, 7, 8]).astype(int)
+        result["week_number"] = result["game_date"].dt.isocalendar().week.astype(int)
+    else:
+        result["month"] = 6
+        result["is_summer"] = 1
+        result["week_number"] = 0
+
+    # ── Group 8 — Venue features ───────────────────────────────────────────────
+    # is_dome: roof_type in (\"Dome\", \"Retractable\")
+    roof_col = "roof_type" if "roof_type" in result.columns else "venue_roof"
+    if roof_col in result.columns:
+        result["is_dome"] = result[roof_col].str.lower().isin([
+            "dome", "retractable"
+        ]).astype(int)
+    else:
+        result["is_dome"] = 0
+
+    # ── Group 9 — Line-derived features ────────────────────────────────────────
+    # is_home_fav: negative home moneyline means favorite
+    if "home_moneyline" in result.columns:
+        result["is_home_fav"] = (result["home_moneyline"] < 0).astype(int)
+    elif "spread" in result.columns:
+        result["is_home_fav"] = (result["spread"] < 0).astype(int)
+    else:
+        result["is_home_fav"] = 0
+
+    # implied_total: already in SQL as closing_ou/over_under
+    if "closing_ou" in result.columns:
+        result["implied_total"] = result["closing_ou"]
+    elif "over_under" in result.columns:
+        result["implied_total"] = result["over_under"]
+    else:
+        result["implied_total"] = 8.0
+
+    # ml_implied_movement: closing - opening implied probability for home team
+    close_implied = "closing_home_implied_probability"
+    open_implied = "opening_home_implied" in result.columns and "opening_home_implied" or \
+                   ("opening_home_implied_probability" in result.columns and "opening_home_implied_probability" or None)
+    open_implied_col = None
+    for col in ["opening_home_implied", "opening_home_implied_probability"]:
+        if col in result.columns:
+            open_implied_col = col
+            break
+    if close_implied in result.columns and open_implied_col:
+        result["ml_implied_movement"] = result[close_implied] - result[open_implied_col]
+    else:
+        result["ml_implied_movement"] = 0.0
+
+    # home/away_implied_probability alias
+    if "closing_home_implied_probability" in result.columns:
+        result["home_implied_probability"] = result["closing_home_implied_probability"]
+    if "closing_away_implied_probability" in result.columns:
+        result["away_implied_probability"] = result["closing_away_implied_probability"]
+
+    # ── Group 10 — Combo ERA (rolling) ─────────────────────────────────────────
+    for window in [5, 10]:
+        h_key = f"h_era_{window}"
+        a_key = f"a_era_{window}"
+        combo_key = f"combo_era_r{window}"
+        if h_key in result.columns and a_key in result.columns:
+            result[combo_key] = (result[h_key] + result[a_key]) / 2.0
+        else:
+            result[combo_key] = 4.5
+    if "h_era_10" in result.columns and "a_era_10" in result.columns and "combo_era_r5" in result.columns:
+        result["combo_era_r10_diff"] = result["combo_era_r10"] - result["combo_era_r5"]
+    else:
+        result["combo_era_r10_diff"] = 0.0
+    # h/a_combo_era_r15 = just the individual team's ERA component over L15
+    h_key_15 = "h_era_15"
+    a_key_15 = "a_era_15"
+    if h_key_15 in result.columns:
+        result["h_combo_era_r15"] = result[h_key_15]
+    else:
+        result["h_combo_era_r15"] = 4.5
+    if a_key_15 in result.columns:
+        result["a_combo_era_r15"] = result[a_key_15]
+    else:
+        result["a_combo_era_r15"] = 4.5
+
+    # ── Group 11 — Rest hours ──────────────────────────────────────────────────
+    if "h_rest" in result.columns:
+        result["rest_h_hours"] = result["h_rest"] * 24
+    else:
+        result["rest_h_hours"] = 0
+    if "a_rest" in result.columns:
+        result["rest_a_hours"] = result["a_rest"] * 24
+    else:
+        result["rest_a_hours"] = 0
+    if "rest_h_hours" in result.columns and "rest_a_hours" in result.columns:
+        result["rest_diff_hours"] = result["rest_h_hours"] - result["rest_a_hours"]
+    else:
+        result["rest_diff_hours"] = 0
+
+    # ── Season average run aliases ─────────────────────────────────────────────
+    # h_rf / a_rf are season averages (per-game), so rf_avg is just an alias
+    for src, dst in [("h_rf", "h_rf_avg"), ("a_rf", "a_rf_avg"),
+                     ("h_ra", "h_ra_avg"), ("a_ra", "a_ra_avg")]:
+        if src in result.columns:
+            result[dst] = result[src]
+
+    # ── h_home_rf / a_away_rf (per-game averages from CGS / game count) ──────
+    # h_home_rf = home team's avg runs scored when playing at home
+    # a_away_rf = away team's avg runs scored when playing on the road
+    if "h_cum_runs" in result.columns and "h_home_games" in result.columns:
+        safe_g = result["h_home_games"].fillna(0).replace(0, 1)
+        result["h_home_rf"] = result["h_cum_runs"].fillna(0) / safe_g
+    else:
+        result["h_home_rf"] = 0
+    if "a_cum_runs" in result.columns and "a_away_games" in result.columns:
+        safe_g = result["a_away_games"].fillna(0).replace(0, 1)
+        result["a_away_rf"] = result["a_cum_runs"].fillna(0) / safe_g
+    else:
+        result["a_away_rf"] = 0
+
+    # ── a_team_venue_winpct (comes from SQL subquery, just pass through) ────────
+    if "a_team_venue_winpct" not in result.columns:
+        result["a_team_venue_winpct"] = 0.5
+
+    # ── ha/aa aliases (team abbreviations) ─────────────────────────────────────
+    if "home_abbr" in result.columns:
+        result["ha"] = result["home_abbr"]
+    if "away_abbr" in result.columns:
+        result["aa"] = result["away_abbr"]
+
+    # ── hdiv/adiv (team divisions) ──────────────────────────────────────────────
+    if "hdiv" in result.columns:
+        result["hdiv"] = result["hdiv"]
+    else:
+        result["hdiv"] = "Unknown"
+    if "adiv" in result.columns:
+        result["adiv"] = result["adiv"]
+    else:
+        result["adiv"] = "Unknown"
+
+    # ── has_verified_ou (fill nulls with False) ────────────────────────────────
+    if "has_verified_ou" in result.columns:
+        result["has_verified_ou"] = result["has_verified_ou"].fillna(False)
+    else:
+        result["has_verified_ou"] = False
+
+    # ── travel_miles (away team's travel distance) ───────────────────────────────
+    if "ha" in result.columns and "aa" in result.columns:
+        h_lats = result["ha"].map(lambda c: TEAM_LOCATIONS.get(c, {}).get("lat", 0))
+        h_lons = result["ha"].map(lambda c: TEAM_LOCATIONS.get(c, {}).get("lon", 0))
+        a_lats = result["aa"].map(lambda c: TEAM_LOCATIONS.get(c, {}).get("lat", 0))
+        a_lons = result["aa"].map(lambda c: TEAM_LOCATIONS.get(c, {}).get("lon", 0))
+        import numpy as np
+        miles = haversine_miles(a_lats, a_lons, h_lats, h_lons)
+        result["travel_miles"] = np.where(miles >= 50, miles, 0)
+    else:
+        result["travel_miles"] = 0
+
+    # ── tz_diff (home timezone - away timezone in hours) ────────────────────────
+    if "ha" in result.columns and "aa" in result.columns:
+        h_tz = result["ha"].map(lambda c: TEAM_LOCATIONS.get(c, {}).get("tz", 0))
+        a_tz = result["aa"].map(lambda c: TEAM_LOCATIONS.get(c, {}).get("tz", 0))
+        result["tz_diff"] = h_tz - a_tz
+    else:
+        result["tz_diff"] = 0
+
+    # ── Bullpen features (per-game data, L5 from rolling in future) ────────────
+    # h_bullpen_era from current game bullpen data; L5 rolling will be added
+    # to team_rolling_stats later.  For now use the game's own bullpen data.
+    for side, prefix in [("h", "h"), ("h", ""), ("a", "a"), ("a", "")]:
+        pass
+    for side, pfx in [("h", "h_"), ("a", "a_")]:
+        er_col = f"{pfx}bullpen_er"
+        ip_col = f"{pfx}bullpen_ip"
+        era_l5 = f"{pfx}bullpen_era_l5"
+        ip_l5 = f"{pfx}bullpen_ip_l5"
+        if er_col in result.columns and ip_col in result.columns:
+            # ERA = 9 * ER / (IP_outs / 3), but replace NaN/0 IP with league avg
+            safe_ip = result[ip_col].fillna(0).replace(0, 9)  # ~3 IP default
+            result[era_l5] = (9.0 * result[er_col].fillna(0) / (safe_ip / 3.0)).fillna(4.5)
+            result[era_l5] = result[era_l5].clip(lower=0, upper=27)
+            result[ip_l5] = result[ip_col].fillna(0) / 3.0  # outs → IP
+        else:
+            result[era_l5] = 4.5
+            result[ip_l5] = 1.5
 
     # PRIME DIRECTIVE: Every pick card MUST include complete handicapping data.
     # So we keep all the raw columns too for the pick card builder.
