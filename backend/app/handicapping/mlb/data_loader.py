@@ -1148,17 +1148,6 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
                     result[w_col] = result[rf_col].notna().astype(int) * 5
                     result[l_col] = result[rf_col].notna().astype(int) * 5
 
-    # Average runs scored/allowed (from cumulative_game_stats or rolling)
-    # h_cum_avg is batting avg. We need rf_avg = avg runs per game.
-    # Use rolling 10-game avg as proxy for season avg
-    for prefix in ("h", "a"):
-        rf_col = f"{prefix}_rf10"
-        ra_col = f"{prefix}_ra10"
-        if rf_col in result.columns:
-            result[f"{prefix}_rf_avg"] = result[rf_col]
-        if ra_col in result.columns:
-            result[f"{prefix}_ra_avg"] = result[ra_col]
-
     # Rest days — computed in query as h_rest, a_rest (or 0 placeholder)
     if "h_rest" in result.columns:
         result["rest_h"] = result["h_rest"]
