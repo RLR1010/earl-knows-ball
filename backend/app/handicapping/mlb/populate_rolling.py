@@ -460,53 +460,53 @@ SELECT *,
     -- Rest days
     EXTRACT(DAY FROM (game_date - prev_start_date))::INTEGER AS rest_days,
 
-    -- 5-start rolling
+    -- 5-start rolling (COALESCE to 0 to handle NULL strikeout/walk data in source)
     CASE WHEN SUM(ip_outs) OVER w5 > 0
         THEN 9.0 * SUM(er) OVER w5::DOUBLE PRECISION / (SUM(ip_outs) OVER w5::DOUBLE PRECISION / 3) END AS era_5,
     CASE WHEN SUM(ip_outs) OVER w5 > 0
-        THEN (SUM(hits_allowed) OVER w5 + SUM(walks_allowed) OVER w5)::DOUBLE PRECISION
-             / (SUM(ip_outs) OVER w5::DOUBLE PRECISION / 3) END AS whip_5,
+        THEN (COALESCE(SUM(hits_allowed) OVER w5, 0) + COALESCE(SUM(walks_allowed) OVER w5, 0))::DOUBLE PRECISION
+             / (COALESCE(SUM(ip_outs) OVER w5, 0)::DOUBLE PRECISION / 3) END AS whip_5,
     CASE WHEN SUM(ip_outs) OVER w5 > 0
-        THEN SUM(strikeouts) OVER w5::DOUBLE PRECISION / (SUM(ip_outs) OVER w5::DOUBLE PRECISION / 3) * 9 END AS k9_5,
+        THEN COALESCE(SUM(strikeouts) OVER w5, 0)::DOUBLE PRECISION / (COALESCE(SUM(ip_outs) OVER w5, 0)::DOUBLE PRECISION / 3) * 9 END AS k9_5,
     CASE WHEN SUM(ip_outs) OVER w5 > 0
-        THEN SUM(walks_allowed) OVER w5::DOUBLE PRECISION / (SUM(ip_outs) OVER w5::DOUBLE PRECISION / 3) * 9 END AS bb9_5,
-    CASE WHEN SUM(walks_allowed) OVER w5 > 0
-        THEN SUM(strikeouts) OVER w5::DOUBLE PRECISION / SUM(walks_allowed) OVER w5 END AS kbb_5,
+        THEN COALESCE(SUM(walks_allowed) OVER w5, 0)::DOUBLE PRECISION / (COALESCE(SUM(ip_outs) OVER w5, 0)::DOUBLE PRECISION / 3) * 9 END AS bb9_5,
+    CASE WHEN COALESCE(SUM(walks_allowed) OVER w5, 0) > 0
+        THEN COALESCE(SUM(strikeouts) OVER w5, 0)::DOUBLE PRECISION / COALESCE(SUM(walks_allowed) OVER w5, 0) END AS kbb_5,
 
     -- 10-start rolling
     CASE WHEN SUM(ip_outs) OVER w10 > 0
         THEN 9.0 * SUM(er) OVER w10::DOUBLE PRECISION / (SUM(ip_outs) OVER w10::DOUBLE PRECISION / 3) END AS era_10,
     CASE WHEN SUM(ip_outs) OVER w10 > 0
-        THEN (SUM(hits_allowed) OVER w10 + SUM(walks_allowed) OVER w10)::DOUBLE PRECISION
-             / (SUM(ip_outs) OVER w10::DOUBLE PRECISION / 3) END AS whip_10,
+        THEN (COALESCE(SUM(hits_allowed) OVER w10, 0) + COALESCE(SUM(walks_allowed) OVER w10, 0))::DOUBLE PRECISION
+             / (COALESCE(SUM(ip_outs) OVER w10, 0)::DOUBLE PRECISION / 3) END AS whip_10,
     CASE WHEN SUM(ip_outs) OVER w10 > 0
-        THEN SUM(strikeouts) OVER w10::DOUBLE PRECISION / (SUM(ip_outs) OVER w10::DOUBLE PRECISION / 3) * 9 END AS k9_10,
+        THEN COALESCE(SUM(strikeouts) OVER w10, 0)::DOUBLE PRECISION / (COALESCE(SUM(ip_outs) OVER w10, 0)::DOUBLE PRECISION / 3) * 9 END AS k9_10,
     CASE WHEN SUM(ip_outs) OVER w10 > 0
-        THEN SUM(walks_allowed) OVER w10::DOUBLE PRECISION / (SUM(ip_outs) OVER w10::DOUBLE PRECISION / 3) * 9 END AS bb9_10,
-    CASE WHEN SUM(walks_allowed) OVER w10 > 0
-        THEN SUM(strikeouts) OVER w10::DOUBLE PRECISION / SUM(walks_allowed) OVER w10 END AS kbb_10,
+        THEN COALESCE(SUM(walks_allowed) OVER w10, 0)::DOUBLE PRECISION / (COALESCE(SUM(ip_outs) OVER w10, 0)::DOUBLE PRECISION / 3) * 9 END AS bb9_10,
+    CASE WHEN COALESCE(SUM(walks_allowed) OVER w10, 0) > 0
+        THEN COALESCE(SUM(strikeouts) OVER w10, 0)::DOUBLE PRECISION / COALESCE(SUM(walks_allowed) OVER w10, 0) END AS kbb_10,
 
     -- 15-start rolling
     CASE WHEN SUM(ip_outs) OVER w15 > 0
         THEN 9.0 * SUM(er) OVER w15::DOUBLE PRECISION / (SUM(ip_outs) OVER w15::DOUBLE PRECISION / 3) END AS era_15,
     CASE WHEN SUM(ip_outs) OVER w15 > 0
-        THEN (SUM(hits_allowed) OVER w15 + SUM(walks_allowed) OVER w15)::DOUBLE PRECISION
-             / (SUM(ip_outs) OVER w15::DOUBLE PRECISION / 3) END AS whip_15,
+        THEN (COALESCE(SUM(hits_allowed) OVER w15, 0) + COALESCE(SUM(walks_allowed) OVER w15, 0))::DOUBLE PRECISION
+             / (COALESCE(SUM(ip_outs) OVER w15, 0)::DOUBLE PRECISION / 3) END AS whip_15,
     CASE WHEN SUM(ip_outs) OVER w15 > 0
-        THEN SUM(strikeouts) OVER w15::DOUBLE PRECISION / (SUM(ip_outs) OVER w15::DOUBLE PRECISION / 3) * 9 END AS k9_15,
+        THEN COALESCE(SUM(strikeouts) OVER w15, 0)::DOUBLE PRECISION / (COALESCE(SUM(ip_outs) OVER w15, 0)::DOUBLE PRECISION / 3) * 9 END AS k9_15,
     CASE WHEN SUM(ip_outs) OVER w15 > 0
-        THEN SUM(walks_allowed) OVER w15::DOUBLE PRECISION / (SUM(ip_outs) OVER w15::DOUBLE PRECISION / 3) * 9 END AS bb9_15,
+        THEN COALESCE(SUM(walks_allowed) OVER w15, 0)::DOUBLE PRECISION / (COALESCE(SUM(ip_outs) OVER w15, 0)::DOUBLE PRECISION / 3) * 9 END AS bb9_15,
 
     -- 20-start rolling (for 20-game consistency)
     CASE WHEN SUM(ip_outs) OVER w20 > 0
         THEN 9.0 * SUM(er) OVER w20::DOUBLE PRECISION / (SUM(ip_outs) OVER w20::DOUBLE PRECISION / 3) END AS era_20,
     CASE WHEN SUM(ip_outs) OVER w20 > 0
-        THEN (SUM(hits_allowed) OVER w20 + SUM(walks_allowed) OVER w20)::DOUBLE PRECISION
-             / (SUM(ip_outs) OVER w20::DOUBLE PRECISION / 3) END AS whip_20,
+        THEN (COALESCE(SUM(hits_allowed) OVER w20, 0) + COALESCE(SUM(walks_allowed) OVER w20, 0))::DOUBLE PRECISION
+             / (COALESCE(SUM(ip_outs) OVER w20, 0)::DOUBLE PRECISION / 3) END AS whip_20,
     CASE WHEN SUM(ip_outs) OVER w20 > 0
-        THEN SUM(strikeouts) OVER w20::DOUBLE PRECISION / (SUM(ip_outs) OVER w20::DOUBLE PRECISION / 3) * 9 END AS k9_20,
+        THEN COALESCE(SUM(strikeouts) OVER w20, 0)::DOUBLE PRECISION / (COALESCE(SUM(ip_outs) OVER w20, 0)::DOUBLE PRECISION / 3) * 9 END AS k9_20,
     CASE WHEN SUM(ip_outs) OVER w20 > 0
-        THEN SUM(walks_allowed) OVER w20::DOUBLE PRECISION / (SUM(ip_outs) OVER w20::DOUBLE PRECISION / 3) * 9 END AS bb9_20
+        THEN COALESCE(SUM(walks_allowed) OVER w20, 0)::DOUBLE PRECISION / (COALESCE(SUM(ip_outs) OVER w20, 0)::DOUBLE PRECISION / 3) * 9 END AS bb9_20
 
 FROM per_start
 WINDOW
