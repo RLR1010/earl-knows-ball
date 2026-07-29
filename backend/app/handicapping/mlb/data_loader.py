@@ -1637,25 +1637,74 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     else:
         result["tz_diff"] = 0
 
-    # ── Bullpen features (per-game data, L5 from rolling in future) ────────────
-    # h_bullpen_era from current game bullpen data; L5 rolling will be added
-    # to team_rolling_stats later.  For now use the game's own bullpen data.
-    for side, prefix in [("h", "h"), ("h", ""), ("a", "a"), ("a", "")]:
-        pass
-    for side, pfx in [("h", "h_"), ("a", "a_")]:
-        er_col = f"{pfx}bullpen_er"
-        ip_col = f"{pfx}bullpen_ip"
-        era_l5 = f"{pfx}bullpen_era_l5"
+    # ── Bullpen L5 rolling features ────────────────────────────────────────────
+    # Build per-team rolling L5 of bullpen ER and IP outs using grouped rolling
+    # on a long-form DataFrame.  shift(1) avoids look-ahead bias.
+    bp_ready = all(c in result.columns for c in [
+        "h_bullpen_er", "h_bullpen_ip", "a_bullpen_er", "a_bullpen_ip",
+        "home_team_id", "away_team_id", "game_id"
+    ])
+    result["h_bullpen_er_l5"] = 0
+    result["h_bullpen_ip_l5"] = 0
+    result["a_bullpen_er_l5"] = 0
+    result["a_bullpen_ip_l5"] = 0
+    
+    if bp_ready:
+        # Build long-form with side marker: side=0 for home, side=1 for away
+        h_bp = result[["game_id", "home_team_id", "h_bullpen_er", "h_bullpen_ip"]].copy()
+        h_bp.columns = ["game_id", "team_id", "bp_er", "bp_ip"]
+        h_bp["side"] = 0
+        a_bp = result[["game_id", "away_team_id", "a_bullpen_er", "a_bullpen_ip"]].copy()
+        a_bp.columns = ["game_id", "team_id", "bp_er", "bp_ip"]
+        a_bp["side"] = 1
+        long_bp = pd.concat([h_bp, a_bp], ignore_index=True)
+        long_bp["bp_er"] = long_bp["bp_er"].fillna(0)
+        long_bp["bp_ip"] = long_bp["bp_ip"].fillna(0)
+        long_bp = long_bp.sort_values(["team_id", "game_id"])
+        
+        # Rolling L5 per team, shift(1) excludes current game
+        long_bp["er_l5"] = (
+            long_bp.groupby("team_id")["bp_er"]
+            .transform(lambda x: x.shift(1).rolling(5, min_periods=1).sum())
+        )
+        long_bp["ip_l5"] = (
+            long_bp.groupby("team_id")["bp_ip"]
+            .transform(lambda x: x.shift(1).rolling(5, min_periods=1).sum())
+        )
+        
+        # Index by (game_id, side) for efficient lookup
+        bp_indexed = long_bp.set_index(["game_id", "side"])[["er_l5", "ip_l5"]]
+        
+        # Map back: home side=0, away side=1
+        for side, pfx, l5er, l5ip, side_idx in [
+            (0, "h_", "h_bullpen_er_l5", "h_bullpen_ip_l5", 0),
+            (1, "a_", "a_bullpen_er_l5", "a_bullpen_ip_l5", 1),
+        ]:
+            vals_er = result["game_id"].map(
+                lambda gid: bp_indexed.loc[(gid, side_idx), "er_l5"]
+                if (gid, side_idx) in bp_indexed.index else 0
+            )
+            vals_ip = result["game_id"].map(
+                lambda gid: bp_indexed.loc[(gid, side_idx), "ip_l5"]
+                if (gid, side_idx) in bp_indexed.index else 0
+            )
+            result[l5er] = vals_er
+            result[l5ip] = vals_ip
+    
+    # Convert L5 sums to bullpen ERA rate
+    for pfx in ["h_", "a_"]:
+        er_l5 = f"{pfx}bullpen_er_l5"
         ip_l5 = f"{pfx}bullpen_ip_l5"
-        if er_col in result.columns and ip_col in result.columns:
-            # ERA = 9 * ER / (IP_outs / 3), but replace NaN/0 IP with league avg
-            safe_ip = result[ip_col].fillna(0).replace(0, 9)  # ~3 IP default
-            result[era_l5] = (9.0 * result[er_col].fillna(0) / (safe_ip / 3.0)).fillna(4.5)
-            result[era_l5] = result[era_l5].clip(lower=0, upper=27)
-            result[ip_l5] = result[ip_col].fillna(0) / 3.0  # outs → IP
+        era = f"{pfx}bullpen_era_l5"
+        ip_outs = f"{pfx}bullpen_ip_l5"
+        if er_l5 in result.columns:
+            safe_ip = result[ip_l5].fillna(0).replace(0, 9)
+            result[era] = (9.0 * result[er_l5].fillna(0) / (safe_ip / 3.0)).fillna(4.5)
+            result[era] = result[era].clip(lower=0, upper=27)
+            result[ip_outs] = result[ip_l5].fillna(0) / 3.0
         else:
-            result[era_l5] = 4.5
-            result[ip_l5] = 1.5
+            result[era] = 4.5
+            result[ip_outs] = 1.5
 
     # PRIME DIRECTIVE: Every pick card MUST include complete handicapping data.
     # So we keep all the raw columns too for the pick card builder.
