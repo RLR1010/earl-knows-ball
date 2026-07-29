@@ -497,10 +497,27 @@ LEFT JOIN mlb.pitcher_rolling_stats prs_a
     AND prs_a.is_starter = TRUE
 
 -- Bullpen game stats (home / away)
-LEFT JOIN mlb.bullpen_game_stats bg_h
-    ON bg_h.game_id = g.id AND bg_h.team_id = ht.id
-LEFT JOIN mlb.bullpen_game_stats bg_a
-    ON bg_a.game_id = g.id AND bg_a.team_id = at.id
+-- Bullpen stats from the MOST RECENT completed game (no lookahead)
+LEFT JOIN LATERAL (
+    SELECT bg.bullpen_er, bg.bullpen_ip_outs, bg.num_pitchers
+    FROM mlb.bullpen_game_stats bg
+    JOIN mlb.games g_prev ON g_prev.id = bg.game_id
+    WHERE bg.team_id = g.home_team_id
+      AND g_prev.date < g.date
+      AND g_prev.status = 'FINAL'
+    ORDER BY g_prev.date DESC, g_prev.id DESC
+    LIMIT 1
+) bg_h ON TRUE
+LEFT JOIN LATERAL (
+    SELECT bg.bullpen_er, bg.bullpen_ip_outs, bg.num_pitchers
+    FROM mlb.bullpen_game_stats bg
+    JOIN mlb.games g_prev ON g_prev.id = bg.game_id
+    WHERE bg.team_id = g.away_team_id
+      AND g_prev.date < g.date
+      AND g_prev.status = 'FINAL'
+    ORDER BY g_prev.date DESC, g_prev.id DESC
+    LIMIT 1
+) bg_a ON TRUE
 
 -- Betting lines
 LEFT JOIN mlb.betting_lines_consolidated blc
@@ -1654,7 +1671,8 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
 
     # ── Bullpen L5 rolling features ────────────────────────────────────────────
     # Build per-team rolling L5 of bullpen ER and IP outs using grouped rolling
-    # on a long-form DataFrame.  shift(1) avoids look-ahead bias.
+    # on a long-form DataFrame.  No shift needed — the LATERAL join in the
+    # GAME_QUERY already resolves to the most recent completed game.
     bp_ready = all(c in result.columns for c in [
         "h_bullpen_er", "h_bullpen_ip", "a_bullpen_er", "a_bullpen_ip",
         "home_team_id", "away_team_id", "game_id"
@@ -1677,14 +1695,14 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
         long_bp["bp_ip"] = long_bp["bp_ip"].fillna(0)
         long_bp = long_bp.sort_values(["team_id", "game_id"])
         
-        # Rolling L5 per team, shift(1) excludes current game
+        # Rolling L5 per team — no shift needed, LATERAL already gives prior game
         long_bp["er_l5"] = (
             long_bp.groupby("team_id")["bp_er"]
-            .transform(lambda x: x.shift(1).rolling(5, min_periods=1).sum())
+            .transform(lambda x: x.rolling(5, min_periods=1).sum())
         )
         long_bp["ip_l5"] = (
             long_bp.groupby("team_id")["bp_ip"]
-            .transform(lambda x: x.shift(1).rolling(5, min_periods=1).sum())
+            .transform(lambda x: x.rolling(5, min_periods=1).sum())
         )
         
         # Index by (game_id, side) for efficient lookup
