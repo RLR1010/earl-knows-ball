@@ -1140,14 +1140,14 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
         away_wins = (result["away_score"] > result["home_score"]).astype(int)
 
         # Stacked: home-team games
-        home_df = result[["game_id", "game_date", "home_team_id"]].copy()
-        home_df.columns = ["game_id", "game_date", "team_id"]
+        home_df = result[["game_id", "game_date", "home_team_id", "home_score", "away_score"]].copy()
+        home_df.columns = ["game_id", "game_date", "team_id", "rf", "ra"]
         home_df["win"] = home_wins.values
         home_df["loss"] = (1 - home_wins.values)
 
         # Stacked: away-team games
-        away_df = result[["game_id", "game_date", "away_team_id"]].copy()
-        away_df.columns = ["game_id", "game_date", "team_id"]
+        away_df = result[["game_id", "game_date", "away_team_id", "away_score", "home_score"]].copy()
+        away_df.columns = ["game_id", "game_date", "team_id", "rf", "ra"]
         away_df["win"] = away_wins.values
         away_df["loss"] = (1 - away_wins.values)
 
@@ -1165,16 +1165,26 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
             lambda x: x.shift(1).rolling(10, min_periods=1).sum()
         )
 
-        # Join home-team L10 back
-        home_l10 = team_games[["game_id", "team_id", "wins_l10", "losses_l10"]]\
+        # Per-team expanding mean of runs for/against, lagged by 1
+        team_games["rf_avg"] = team_games.groupby("team_id")["rf"].transform(
+            lambda x: x.shift(1).expanding(min_periods=1).mean()
+        )
+        team_games["ra_avg"] = team_games.groupby("team_id")["ra"].transform(
+            lambda x: x.shift(1).expanding(min_periods=1).mean()
+        )
+
+        # Join home-team stats back
+        home_l10 = team_games[["game_id", "team_id", "wins_l10", "losses_l10", "rf_avg", "ra_avg"]]\
             .rename(columns={"team_id": "home_team_id", "wins_l10": "h_wins_l10",
-                            "losses_l10": "h_losses_l10"})
+                            "losses_l10": "h_losses_l10",
+                            "rf_avg": "h_rf_avg", "ra_avg": "h_ra_avg"})
         result = result.merge(home_l10, on=["game_id", "home_team_id"], how="left")
 
-        # Join away-team L10 back
-        away_l10 = team_games[["game_id", "team_id", "wins_l10", "losses_l10"]]\
+        # Join away-team stats back
+        away_l10 = team_games[["game_id", "team_id", "wins_l10", "losses_l10", "rf_avg", "ra_avg"]]\
             .rename(columns={"team_id": "away_team_id", "wins_l10": "a_wins_l10",
-                            "losses_l10": "a_losses_l10"})
+                            "losses_l10": "a_losses_l10",
+                            "rf_avg": "a_rf_avg", "ra_avg": "a_ra_avg"})
         result = result.merge(away_l10, on=["game_id", "away_team_id"], how="left")
 
         # Compute L10 win percentages
@@ -1232,25 +1242,6 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
         result["h_ops_l10"] = result["h_ops_10"]
     if "a_ops_10" in result.columns:
         result["a_ops_l10"] = result["a_ops_10"]
-
-    # Season avg runs for/against — use 15-game rolling avg as fallback
-    # TODO: compute from cumulative runs / games_played for true season avg
-    if "h_rf15" in result.columns:
-        result["h_rf_avg"] = result["h_rf15"]
-    else:
-        result["h_rf_avg"] = 0.0
-    if "a_rf15" in result.columns:
-        result["a_rf_avg"] = result["a_rf15"]
-    else:
-        result["a_rf_avg"] = 0.0
-    if "h_ra15" in result.columns:
-        result["h_ra_avg"] = result["h_ra15"]
-    else:
-        result["h_ra_avg"] = 0.0
-    if "a_ra15" in result.columns:
-        result["a_ra_avg"] = result["a_ra15"]
-    else:
-        result["a_ra_avg"] = 0.0
 
     # ── 12. Group 6 — Extra Pitcher Stats ────────────────────────────────
     # L20 pitcher windows — PRS only goes up to 15 starts, so use L15 as fallback.
