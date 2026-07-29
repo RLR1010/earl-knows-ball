@@ -983,7 +983,7 @@ def _load_park_history() -> pd.DataFrame:
         return _PARK_HISTORY_CACHE
 
     from app.db_urls import PSYCOPG2_DATABASE_URL as _FALLBACK_URL
-db_url = os.getenv("DATABASE_URL", _FALLBACK_URL)
+    db_url = os.getenv("DATABASE_URL", _FALLBACK_URL)
 
     engine = create_engine(db_url)
     q = """
