@@ -494,25 +494,53 @@ LEFT JOIN mlb.prior_team_stats pts_a
     ON pts_a.team_abbr = at.abbreviation
     AND pts_a.year = s.year - 1
 
--- Pitcher rolling stats (home / away starters via pitcher_game_stats)
-LEFT JOIN mlb.pitcher_game_stats pgs_h
-    ON pgs_h.game_id = g.id
-    AND pgs_h.team_abbr = ht.abbreviation
-    AND pgs_h.is_starter = TRUE
-LEFT JOIN mlb.pitcher_game_stats pgs_a
-    ON pgs_a.game_id = g.id
-    AND pgs_a.team_abbr = at.abbreviation
-    AND pgs_a.is_starter = TRUE
+-- Pitcher game stats (home / away starter name from most recent completed game)
+LEFT JOIN LATERAL (
+    SELECT pgs.*
+    FROM mlb.pitcher_game_stats pgs
+    JOIN mlb.games gp ON gp.id = pgs.game_id
+    WHERE pgs.team_abbr = ht.abbreviation
+      AND pgs.is_starter = TRUE
+      AND gp.date < g.date
+      AND gp.status = 'FINAL'
+    ORDER BY gp.date DESC, pgs.game_id DESC
+    LIMIT 1
+) pgs_h ON TRUE
+LEFT JOIN LATERAL (
+    SELECT pgs.*
+    FROM mlb.pitcher_game_stats pgs
+    JOIN mlb.games gp ON gp.id = pgs.game_id
+    WHERE pgs.team_abbr = at.abbreviation
+      AND pgs.is_starter = TRUE
+      AND gp.date < g.date
+      AND gp.status = 'FINAL'
+    ORDER BY gp.date DESC, pgs.game_id DESC
+    LIMIT 1
+) pgs_a ON TRUE
 
--- Pitcher rolling stats tables (home / away starters)
-LEFT JOIN mlb.pitcher_rolling_stats prs_h
-    ON prs_h.game_id = g.id
-    AND prs_h.team_abbr = ht.abbreviation
-    AND prs_h.is_starter = TRUE
-LEFT JOIN mlb.pitcher_rolling_stats prs_a
-    ON prs_a.game_id = g.id
-    AND prs_a.team_abbr = at.abbreviation
-    AND prs_a.is_starter = TRUE
+-- Pitcher rolling stats (home / away starter cumulative stats from most recent completed game)
+LEFT JOIN LATERAL (
+    SELECT prs.*
+    FROM mlb.pitcher_rolling_stats prs
+    JOIN mlb.games gp ON gp.id = prs.game_id
+    WHERE prs.team_abbr = ht.abbreviation
+      AND prs.is_starter = TRUE
+      AND gp.date < g.date
+      AND gp.status = 'FINAL'
+    ORDER BY gp.date DESC, prs.game_id DESC
+    LIMIT 1
+) prs_h ON TRUE
+LEFT JOIN LATERAL (
+    SELECT prs.*
+    FROM mlb.pitcher_rolling_stats prs
+    JOIN mlb.games gp ON gp.id = prs.game_id
+    WHERE prs.team_abbr = at.abbreviation
+      AND prs.is_starter = TRUE
+      AND gp.date < g.date
+      AND gp.status = 'FINAL'
+    ORDER BY gp.date DESC, prs.game_id DESC
+    LIMIT 1
+) prs_a ON TRUE
 
 -- Bullpen game stats (home / away)
 -- Bullpen stats from the MOST RECENT completed game (no lookahead)
