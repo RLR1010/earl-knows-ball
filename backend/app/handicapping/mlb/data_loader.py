@@ -1553,13 +1553,6 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     else:
         result["rest_diff_hours"] = 0
 
-    # ── Season average run aliases ─────────────────────────────────────────────
-    # h_rf / a_rf are season averages (per-game), so rf_avg is just an alias
-    for src, dst in [("h_rf", "h_rf_avg"), ("a_rf", "a_rf_avg"),
-                     ("h_ra", "h_ra_avg"), ("a_ra", "a_ra_avg")]:
-        if src in result.columns:
-            result[dst] = result[src]
-
     # ── h_home_rf / a_away_rf (per-game averages from CGS / game count) ──────
     # h_home_rf = home team's avg runs scored when playing at home
     # a_away_rf = away team's avg runs scored when playing on the road

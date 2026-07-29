@@ -38,13 +38,17 @@ atexit.register(_log_flush)
 
 DATABASE_URL = os.environ.get(
     "DATABASE_URL",
-    "postgresql://earl:earl2025@localhost:5432/earl_knows_football",
+    "postgresql://earl:earl_dev_pass@localhost:5432/earl_knows_football",
 )
 
 
 def _get_conn():
     """Get a synchronous database connection."""
-    return psycopg2.connect(DATABASE_URL)
+    # Strip async driver suffix if present (e.g. postgresql+asyncpg → postgresql)
+    url = DATABASE_URL
+    if url and "+asyncpg" in url:
+        url = url.replace("+asyncpg", "")
+    return psycopg2.connect(url)
 
 
 def save_training_run(
