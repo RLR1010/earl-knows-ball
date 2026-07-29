@@ -222,38 +222,38 @@ async def process_game(conn, game: dict) -> int:
                 if r:
                     our_pid = r["id"]
 
-            # ---- core counting ----
-            pa = stats.get("plateAppearances", 0)
-            ab = stats.get("atBats", 0)
-            runs = stats.get("runs", 0)
-            h = stats.get("hits", 0)
-            dbl = stats.get("doubles", 0)
-            tri = stats.get("triples", 0)
-            hr = stats.get("homeRuns", 0)
-            rbi = stats.get("rbi", 0)
-            bb = stats.get("baseOnBalls", 0)
-            ibb = stats.get("intentionalWalks", 0)
-            so = stats.get("strikeOuts", 0)
-            sb = stats.get("stolenBases", 0)
-            cs = stats.get("caughtStealing", 0)
-            hbp = stats.get("hitByPitch", 0)
-            sf = stats.get("sacrificeFlies", 0)
-            sh = stats.get("sacrificeBunts", 0)
-            lob = stats.get("leftOnBase", 0)
-            tb = stats.get("totalBases", 0)
+            # ---- core counting (all use `or 0` to guard against JSON null values) ----
+            pa = stats.get("plateAppearances", 0) or 0
+            ab = stats.get("atBats", 0) or 0
+            runs = stats.get("runs", 0) or 0
+            h = stats.get("hits", 0) or 0
+            dbl = stats.get("doubles", 0) or 0
+            tri = stats.get("triples", 0) or 0
+            hr = stats.get("homeRuns", 0) or 0
+            rbi = stats.get("rbi", 0) or 0
+            bb = stats.get("baseOnBalls", 0) or 0
+            ibb = stats.get("intentionalWalks", 0) or 0
+            so = stats.get("strikeOuts", 0) or 0
+            sb = stats.get("stolenBases", 0) or 0
+            cs = stats.get("caughtStealing", 0) or 0
+            hbp = stats.get("hitByPitch", 0) or 0
+            sf = stats.get("sacrificeFlies", 0) or 0
+            sh = stats.get("sacrificeBunts", 0) or 0
+            lob = stats.get("leftOnBase", 0) or 0
+            tb = stats.get("totalBases", 0) or 0
 
             # ---- batted ball type ----
-            go = stats.get("groundOuts", 0)
-            ao = stats.get("airOuts", 0)
-            fo = stats.get("flyOuts", 0)
-            lo = stats.get("lineOuts", 0)
-            po = stats.get("popOuts", 0)
+            go = stats.get("groundOuts", 0) or 0
+            ao = stats.get("airOuts", 0) or 0
+            fo = stats.get("flyOuts", 0) or 0
+            lo = stats.get("lineOuts", 0) or 0
+            po = stats.get("popOuts", 0) or 0
 
             # ---- situational ----
-            gidp = stats.get("groundIntoDoublePlay", 0)
-            gitp = stats.get("groundIntoTriplePlay", 0)
-            ci = stats.get("catchersInterference", 0)
-            pick = stats.get("pickoffs", 0)
+            gidp = stats.get("groundIntoDoublePlay", 0) or 0
+            gitp = stats.get("groundIntoTriplePlay", 0) or 0
+            ci = stats.get("catchersInterference", 0) or 0
+            pick = stats.get("pickoffs", 0) or 0
 
             # ---- derived slash line ----
             # MLB Stats API doesn't return avg/obp/slg/ops in the boxscore endpoint,
@@ -333,24 +333,24 @@ async def process_pitchers(conn, game: dict) -> int:
                 else:
                     ip = float(parts[0])
 
-            er = stats.get("earnedRuns", 0)
-            h = stats.get("hits", 0)
-            hr = stats.get("homeRuns", 0)
-            bb = stats.get("baseOnBalls", 0)
-            ibb = stats.get("intentionalWalks", 0)
-            so = stats.get("strikeOuts", 0)
-            hbp = stats.get("hitByPitch", 0)
-            wp = stats.get("wildPitches", 0)
-            balk = stats.get("balks", 0)
-            runs_allowed = stats.get("runs", 0)
-            pitches_thrown = stats.get("numberOfPitches", 0)
-            strikes = stats.get("strikes", 0)
-            go = stats.get("groundOuts", 0)
-            ao = stats.get("airOuts", 0)
-            fo = stats.get("flyOuts", 0)
-            gidp = stats.get("groundIntoDoublePlay", 0)
-            inherited_runners = stats.get("inheritedRunners", 0)
-            inherited_scored = stats.get("inheritedRunnersScored", 0)
+            er = stats.get("earnedRuns", 0) or 0
+            h = stats.get("hits", 0) or 0
+            hr = stats.get("homeRuns", 0) or 0
+            bb = stats.get("baseOnBalls", 0) or 0
+            ibb = stats.get("intentionalWalks", 0) or 0
+            so = stats.get("strikeOuts", 0) or 0
+            hbp = stats.get("hitByPitch", 0) or 0
+            wp = stats.get("wildPitches", 0) or 0
+            balk = stats.get("balks", 0) or 0
+            runs_allowed = stats.get("runs", 0) or 0
+            pitches_thrown = stats.get("numberOfPitches", 0) or 0
+            strikes = stats.get("strikes", 0) or 0
+            go = stats.get("groundOuts", 0) or 0
+            ao = stats.get("airOuts", 0) or 0
+            fo = stats.get("flyOuts", 0) or 0
+            gidp = stats.get("groundIntoDoublePlay", 0) or 0
+            inherited_runners = stats.get("inheritedRunners", 0) or 0
+            inherited_scored = stats.get("inheritedRunnersScored", 0) or 0
             is_starter = stats.get("gamesStarted", 0) > 0
             decision = stats.get("note", "")
 
