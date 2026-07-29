@@ -462,11 +462,29 @@ LEFT JOIN LATERAL (
     LIMIT 1
 ) cgs_a ON TRUE
 
--- Team rolling stats (home / away)
-LEFT JOIN mlb.team_rolling_stats trs_h
-    ON trs_h.game_id = g.id AND trs_h.team_side = 'home'
-LEFT JOIN mlb.team_rolling_stats trs_a
-    ON trs_a.game_id = g.id AND trs_a.team_side = 'away'
+-- Team rolling stats (home / away) — LATERAL finds most recent completed game for this team side
+LEFT JOIN LATERAL (
+    SELECT trs.*
+    FROM mlb.team_rolling_stats trs
+    JOIN mlb.games gp ON gp.id = trs.game_id
+    WHERE trs.team_id = g.home_team_id
+      AND trs.team_side = 'home'
+      AND gp.date < g.date
+      AND gp.status = 'FINAL'
+    ORDER BY gp.date DESC, trs.game_id DESC
+    LIMIT 1
+) trs_h ON TRUE
+LEFT JOIN LATERAL (
+    SELECT trs.*
+    FROM mlb.team_rolling_stats trs
+    JOIN mlb.games gp ON gp.id = trs.game_id
+    WHERE trs.team_id = g.away_team_id
+      AND trs.team_side = 'away'
+      AND gp.date < g.date
+      AND gp.status = 'FINAL'
+    ORDER BY gp.date DESC, trs.game_id DESC
+    LIMIT 1
+) trs_a ON TRUE
 
 -- Prior season stats (for early-season blending)
 LEFT JOIN mlb.prior_team_stats pts_h

@@ -3637,11 +3637,20 @@ async def data_loader_game_info(
     table_name = "games"
 
     try:
+        # Column name: all sports use 'id' as PK; some older code expects 'game_id' too
+        id_col = "id"
         result = await db.execute(
-            text(f'SELECT * FROM "{schema_name}"."{table_name}" WHERE game_id = :gid'),
+            text(f'SELECT * FROM "{schema_name}"."{table_name}" WHERE {id_col} = :gid'),
             {"gid": game_id},
         )
         row = result.mappings().first()
+        if not row:
+            # Fallback: try 'game_id' column name
+            result = await db.execute(
+                text(f'SELECT * FROM "{schema_name}"."{table_name}" WHERE game_id = :gid'),
+                {"gid": game_id},
+            )
+            row = result.mappings().first()
         if not row:
             raise HTTPException(
                 status_code=404,
