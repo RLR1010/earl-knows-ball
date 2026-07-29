@@ -11,6 +11,7 @@ import asyncio
 import json
 import logging
 import os
+from app.db_urls import PSYCOPG2_DATABASE_URL
 import pickle
 import time
 from datetime import datetime

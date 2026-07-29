@@ -76,6 +76,8 @@ try:
 except ImportError:
     _DB_HELPERS_AVAILABLE = False
 
+from app.db_urls import PSYCOPG2_DATABASE_URL
+
 log = logging.getLogger(__name__).info
 
 # ── Sync DB URL for inference path ──
