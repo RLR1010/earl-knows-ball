@@ -297,6 +297,10 @@ SELECT
     prs_h.whip_15         AS h_p_whip_15,
     prs_h.k9_15           AS h_p_k9_15,
     prs_h.bb9_15          AS h_p_bb9_15,
+    prs_h.era_20          AS h_p_era_20,
+    prs_h.whip_20         AS h_p_whip_20,
+    prs_h.k9_20           AS h_p_k9_20,
+    prs_h.bb9_20          AS h_p_bb9_20,
     prs_h.is_quality_start AS h_p_quality_start,
 
     prs_a.era_ytd         AS a_p_era_ytd,
@@ -319,6 +323,10 @@ SELECT
     prs_a.whip_15         AS a_p_whip_15,
     prs_a.k9_15           AS a_p_k9_15,
     prs_a.bb9_15          AS a_p_bb9_15,
+    prs_a.era_20          AS a_p_era_20,
+    prs_a.whip_20         AS a_p_whip_20,
+    prs_a.k9_20           AS a_p_k9_20,
+    prs_a.bb9_20          AS a_p_bb9_20,
     prs_a.is_quality_start AS a_p_quality_start,
 
     -- Current-game pitcher names (from pitcher_game_stats)
@@ -1244,23 +1252,28 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
         result["a_ops_l10"] = result["a_ops_10"]
 
     # ── 12. Group 6 — Extra Pitcher Stats ────────────────────────────────
-    # L20 pitcher windows — PRS only goes up to 15 starts, so use L15 as fallback.
-    # TODO: add 20-start rolling to populate_pitcher_rolling_stats
+    # L20 pitcher windows — prefer real 20-start from PRS, fall back to L15
     for side, prefix in [("h", "h_"), ("a", "a_")]:
         ps = f"{prefix}p_"
         pt = f"{prefix}pitcher_"
         for stat in ["era", "whip", "k9", "bb9"]:
+            src20 = f"{ps}{stat}_20"
             src15 = f"{ps}{stat}_15"
             dst20 = f"{pt}{stat}_l20"
-            if src15 in result.columns:
+            if src20 in result.columns:
+                result[dst20] = result[src20]
+            elif src15 in result.columns:
                 result[dst20] = result[src15]
             else:
                 result[dst20] = 0.0
-        # kbb_l20 — use YTD as best available
-        src_kbb = f"{ps}kbb_ytd"
+        # kbb_l20 — prefer 20-start, fall back to YTD
+        src_kbb20 = f"{ps}kbb_20"
+        src_kbb_ytd = f"{ps}kbb_ytd"
         dst_kbb = f"{pt}kbb_l20"
-        if src_kbb in result.columns:
-            result[dst_kbb] = result[src_kbb]
+        if src_kbb20 in result.columns:
+            result[dst_kbb] = result[src_kbb20]
+        elif src_kbb_ytd in result.columns:
+            result[dst_kbb] = result[src_kbb_ytd]
         else:
             result[dst_kbb] = 0.0
 
