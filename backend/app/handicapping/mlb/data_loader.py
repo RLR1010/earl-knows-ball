@@ -1122,16 +1122,70 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
 
     result["winpct_diff"] = result["h_winpct"] - result["a_winpct"]
 
-    # Win% L10 — not directly available from TRS (it only has season win_pct).
-    # TODO: Add rolling W/L to team_rolling_stats to compute true L10 win%.
-    # For now, use season win% as a fallback.
-    result["h_winpct_l10"] = result["h_winpct"]
-    result["a_winpct_l10"] = result["a_winpct"]
-    result["winpct_l10_diff"] = result["winpct_diff"]
+    # ── Rolling L10 W/L via stacked team-game-log ──────────────────────
+    # Build a long-form (stacked) table: one row per (game, team) so we can
+    # roll up wins/losses per team over the preceding 10 games.
+    if "home_score" in result.columns and "away_score" in result.columns:
+        home_wins = (result["home_score"] > result["away_score"]).astype(int)
+        away_wins = (result["away_score"] > result["home_score"]).astype(int)
 
-    # Form (synonymous with winpct_l10 for now)
-    result["h_form_l10"] = result["h_winpct"]
-    result["a_form_l10"] = result["a_winpct"]
+        # Stacked: home-team games
+        home_df = result[["game_id", "game_date", "home_team_id"]].copy()
+        home_df.columns = ["game_id", "game_date", "team_id"]
+        home_df["win"] = home_wins.values
+        home_df["loss"] = (1 - home_wins.values)
+
+        # Stacked: away-team games
+        away_df = result[["game_id", "game_date", "away_team_id"]].copy()
+        away_df.columns = ["game_id", "game_date", "team_id"]
+        away_df["win"] = away_wins.values
+        away_df["loss"] = (1 - away_wins.values)
+
+        team_games = (
+            pd.concat([home_df, away_df], ignore_index=True)
+            .sort_values(["team_id", "game_date", "game_id"])
+            .reset_index(drop=True)
+        )
+
+        # Per-team rolling 10-game W/L, lagged by 1 (exclude current game)
+        team_games["wins_l10"] = team_games.groupby("team_id")["win"].transform(
+            lambda x: x.shift(1).rolling(10, min_periods=1).sum()
+        )
+        team_games["losses_l10"] = team_games.groupby("team_id")["loss"].transform(
+            lambda x: x.shift(1).rolling(10, min_periods=1).sum()
+        )
+
+        # Join home-team L10 back
+        home_l10 = team_games[["game_id", "team_id", "wins_l10", "losses_l10"]]\
+            .rename(columns={"team_id": "home_team_id", "wins_l10": "h_wins_l10",
+                            "losses_l10": "h_losses_l10"})
+        result = result.merge(home_l10, on=["game_id", "home_team_id"], how="left")
+
+        # Join away-team L10 back
+        away_l10 = team_games[["game_id", "team_id", "wins_l10", "losses_l10"]]\
+            .rename(columns={"team_id": "away_team_id", "wins_l10": "a_wins_l10",
+                            "losses_l10": "a_losses_l10"})
+        result = result.merge(away_l10, on=["game_id", "away_team_id"], how="left")
+
+        # Compute L10 win percentages
+        denom_h = (result["h_wins_l10"] + result["h_losses_l10"]).clip(lower=1)
+        result["h_winpct_l10"] = result["h_wins_l10"] / denom_h
+
+        denom_a = (result["a_wins_l10"] + result["a_losses_l10"]).clip(lower=1)
+        result["a_winpct_l10"] = result["a_wins_l10"] / denom_a
+
+        result["winpct_l10_diff"] = result["h_winpct_l10"] - result["a_winpct_l10"]
+
+        # Form = L10 winpct for now (can be refined to EMA later)
+        result["h_form_l10"] = result["h_winpct_l10"]
+        result["a_form_l10"] = result["a_winpct_l10"]
+    else:
+        # Fallback if home_score/away_score not available
+        result["h_winpct_l10"] = result.get("h_winpct", 0.5)
+        result["a_winpct_l10"] = result.get("a_winpct", 0.5)
+        result["winpct_l10_diff"] = result.get("winpct_diff", 0.0)
+        result["h_form_l10"] = result["h_winpct_l10"]
+        result["a_form_l10"] = result["a_winpct_l10"]
 
     # Over frequency — from team_rolling_stats.over_pct (season-level).
     # TODO: Add 5-game rolling over% to TRS for over_freq5.
