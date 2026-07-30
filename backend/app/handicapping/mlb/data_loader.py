@@ -429,7 +429,7 @@ LEFT JOIN LATERAL (
     SELECT g_prev.date AS h_prev_game_date
     FROM mlb.games g_prev
     WHERE (g_prev.home_team_id = g.home_team_id OR g_prev.away_team_id = g.home_team_id)
-      AND g_prev.date < g.date
+      AND g_prev.date < g.date - INTERVAL '30 minutes'
       AND g_prev.status = 'FINAL'
     ORDER BY g_prev.date DESC, g_prev.id DESC
     LIMIT 1
@@ -438,7 +438,7 @@ LEFT JOIN LATERAL (
     SELECT g_prev.date AS a_prev_game_date
     FROM mlb.games g_prev
     WHERE (g_prev.home_team_id = g.away_team_id OR g_prev.away_team_id = g.away_team_id)
-      AND g_prev.date < g.date
+      AND g_prev.date < g.date - INTERVAL '30 minutes'
       AND g_prev.status = 'FINAL'
     ORDER BY g_prev.date DESC, g_prev.id DESC
     LIMIT 1
@@ -448,17 +448,21 @@ LEFT JOIN LATERAL (
 LEFT JOIN LATERAL (
     SELECT cgs_prev.*
     FROM mlb.cumulative_game_stats cgs_prev
+    JOIN mlb.games gp_cum ON gp_cum.id = cgs_prev.game_id
     WHERE cgs_prev.team_id = ht.id
-      AND cgs_prev.game_date < g.date
-    ORDER BY cgs_prev.game_date DESC, cgs_prev.game_id DESC
+      AND gp_cum.date < g.date - INTERVAL '30 minutes'
+      AND gp_cum.status = 'FINAL'
+    ORDER BY gp_cum.date DESC, gp_cum.id DESC
     LIMIT 1
 ) cgs_h ON TRUE
 LEFT JOIN LATERAL (
     SELECT cgs_prev.*
     FROM mlb.cumulative_game_stats cgs_prev
+    JOIN mlb.games gp_cum ON gp_cum.id = cgs_prev.game_id
     WHERE cgs_prev.team_id = at.id
-      AND cgs_prev.game_date < g.date
-    ORDER BY cgs_prev.game_date DESC, cgs_prev.game_id DESC
+      AND gp_cum.date < g.date - INTERVAL '30 minutes'
+      AND gp_cum.status = 'FINAL'
+    ORDER BY gp_cum.date DESC, gp_cum.id DESC
     LIMIT 1
 ) cgs_a ON TRUE
 
@@ -469,9 +473,9 @@ LEFT JOIN LATERAL (
     JOIN mlb.games gp ON gp.id = trs.game_id
     WHERE trs.team_id = g.home_team_id
       AND trs.team_side = 'home'
-      AND gp.date < g.date
+      AND gp.date < g.date - INTERVAL '30 minutes'
       AND gp.status = 'FINAL'
-    ORDER BY gp.date DESC, trs.game_id DESC
+    ORDER BY gp.date DESC, gp.id DESC
     LIMIT 1
 ) trs_h ON TRUE
 LEFT JOIN LATERAL (
@@ -480,9 +484,9 @@ LEFT JOIN LATERAL (
     JOIN mlb.games gp ON gp.id = trs.game_id
     WHERE trs.team_id = g.away_team_id
       AND trs.team_side = 'away'
-      AND gp.date < g.date
+      AND gp.date < g.date - INTERVAL '30 minutes'
       AND gp.status = 'FINAL'
-    ORDER BY gp.date DESC, trs.game_id DESC
+    ORDER BY gp.date DESC, gp.id DESC
     LIMIT 1
 ) trs_a ON TRUE
 
@@ -501,9 +505,9 @@ LEFT JOIN LATERAL (
     JOIN mlb.games gp ON gp.id = pgs.game_id
     WHERE pgs.team_abbr = ht.abbreviation
       AND pgs.is_starter = TRUE
-      AND gp.date < g.date
+      AND gp.date < g.date - INTERVAL '30 minutes'
       AND gp.status = 'FINAL'
-    ORDER BY gp.date DESC, pgs.game_id DESC
+    ORDER BY gp.date DESC, gp.id DESC
     LIMIT 1
 ) pgs_h ON TRUE
 LEFT JOIN LATERAL (
@@ -512,9 +516,9 @@ LEFT JOIN LATERAL (
     JOIN mlb.games gp ON gp.id = pgs.game_id
     WHERE pgs.team_abbr = at.abbreviation
       AND pgs.is_starter = TRUE
-      AND gp.date < g.date
+      AND gp.date < g.date - INTERVAL '30 minutes'
       AND gp.status = 'FINAL'
-    ORDER BY gp.date DESC, pgs.game_id DESC
+    ORDER BY gp.date DESC, gp.id DESC
     LIMIT 1
 ) pgs_a ON TRUE
 
@@ -525,9 +529,9 @@ LEFT JOIN LATERAL (
     JOIN mlb.games gp ON gp.id = prs.game_id
     WHERE prs.team_abbr = ht.abbreviation
       AND prs.is_starter = TRUE
-      AND gp.date < g.date
+      AND gp.date < g.date - INTERVAL '30 minutes'
       AND gp.status = 'FINAL'
-    ORDER BY gp.date DESC, prs.game_id DESC
+    ORDER BY gp.date DESC, gp.id DESC
     LIMIT 1
 ) prs_h ON TRUE
 LEFT JOIN LATERAL (
@@ -536,9 +540,9 @@ LEFT JOIN LATERAL (
     JOIN mlb.games gp ON gp.id = prs.game_id
     WHERE prs.team_abbr = at.abbreviation
       AND prs.is_starter = TRUE
-      AND gp.date < g.date
+      AND gp.date < g.date - INTERVAL '30 minutes'
       AND gp.status = 'FINAL'
-    ORDER BY gp.date DESC, prs.game_id DESC
+    ORDER BY gp.date DESC, gp.id DESC
     LIMIT 1
 ) prs_a ON TRUE
 
@@ -549,7 +553,7 @@ LEFT JOIN LATERAL (
     FROM mlb.bullpen_game_stats bg
     JOIN mlb.games g_prev ON g_prev.id = bg.game_id
     WHERE bg.team_id = g.home_team_id
-      AND g_prev.date < g.date
+      AND g_prev.date < g.date - INTERVAL '30 minutes'
       AND g_prev.status = 'FINAL'
     ORDER BY g_prev.date DESC, g_prev.id DESC
     LIMIT 1
@@ -559,7 +563,7 @@ LEFT JOIN LATERAL (
     FROM mlb.bullpen_game_stats bg
     JOIN mlb.games g_prev ON g_prev.id = bg.game_id
     WHERE bg.team_id = g.away_team_id
-      AND g_prev.date < g.date
+      AND g_prev.date < g.date - INTERVAL '30 minutes'
       AND g_prev.status = 'FINAL'
     ORDER BY g_prev.date DESC, g_prev.id DESC
     LIMIT 1

@@ -106,11 +106,12 @@ async def get_results_yearly(
         ) gp
         JOIN {schema}.games g ON g.id = gp.game_id
         JOIN {schema}.seasons s ON s.id = g.season_id
-        WHERE gp.{rl_col} IS NOT NULL
+        WHERE (gp.{rl_col} IS NOT NULL
            OR gp.ou_result IS NOT NULL
-           OR gp.ml_result IS NOT NULL
+           OR gp.ml_result IS NOT NULL)
+          AND s.year != 2021
         GROUP BY s.year
-        ORDER BY s.year DESC
+        ORDER BY s.year ASC
     """))
 
     def _pick(plays, wins, losses, pushes, profit, ev_sum):
@@ -403,7 +404,8 @@ async def get_results_ev_distribution_by_year(
         ) gp
         JOIN {schema}.games g ON g.id = gp.game_id
         JOIN {schema}.seasons s ON s.id = g.season_id
-        WHERE gp.ats_ev IS NOT NULL OR gp.ou_ev IS NOT NULL OR gp.ml_ev IS NOT NULL
+        WHERE (gp.ats_ev IS NOT NULL OR gp.ou_ev IS NOT NULL OR gp.ml_ev IS NOT NULL)
+          AND s.year != 2021
     """))
 
     all_rows = list(rows_result.fetchall())
@@ -524,6 +526,9 @@ async def get_results_summary(
             FROM {schema}.game_predictions gp_inner
             ORDER BY gp_inner.game_id, gp_inner.created_at DESC
         ) gp
+        JOIN {schema}.games g ON g.id = gp.game_id
+        JOIN {schema}.seasons s ON s.id = g.season_id
+        WHERE s.year != 2021
     """))
 
     r = rows.fetchone()
@@ -585,8 +590,9 @@ async def get_results_calibration_by_year(
         ) gp
         JOIN {schema}.games g ON g.id = gp.game_id
         JOIN {schema}.seasons s ON s.id = g.season_id
-        WHERE gp.{cal_main} IS NOT NULL
-          OR gp.ou_conf_cal IS NOT NULL OR gp.ml_conf_cal IS NOT NULL
+        WHERE (gp.{cal_main} IS NOT NULL
+          OR gp.ou_conf_cal IS NOT NULL OR gp.ml_conf_cal IS NOT NULL)
+          AND s.year != 2021
     """))
 
     BIN_COUNT = 20
