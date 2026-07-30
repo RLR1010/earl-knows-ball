@@ -3366,7 +3366,7 @@ async def data_loader_load_game(
     try:
         # Import and instantiate the right data loader
         if sport == "nfl":
-            from app.handicapping.nfl.data_loader import NFLDataLoader
+            from app.handicapping.nfl.data_loader import NFLDataLoader, TEAM_STATS_OUTPUT_COLUMNS as nfl_team_stat_cols, FEATURE_ALIASES
             dl = NFLDataLoader(db_url=db_url)
         elif sport == "mlb":
             from app.handicapping.mlb.data_loader import MLBDataLoader
@@ -3387,28 +3387,15 @@ async def data_loader_load_game(
 
         game_row = raw_df.iloc[0]
 
-        # The `seasons` parameter semantics differ by sport:
-        #   NFL, NBA: internal DB season_id (e.g. 1, 2)
-        #   MLB: calendar year (e.g. 2025, 2026)
         # We need current + previous season so rolling stats compute correctly.
-        # NOTE: season ID's are NOT sequential (2025=id:1, 2024=id:2), so we
-        # look up the previous season by year, not by subtracting from the ID.
+        # _build_query filters on s.year (calendar year), not internal season_id.
         if sport in ("nfl", "nba"):
-            from sqlalchemy import create_engine as _ce, text as _sql_text
-            season_id = int(game_row["season_id"])
-            _tmp_engine = _ce(db_url)
-            with _tmp_engine.connect() as _conn:
-                _prev_row = _conn.execute(_sql_text(
-                    f"SELECT id FROM {sport}.seasons "
-                    f"WHERE year = (SELECT year FROM {sport}.seasons WHERE id = :cur) - 1"
-                ), {"cur": season_id}).fetchone()
-            _tmp_engine.dispose()
-            prev_id = _prev_row[0] if _prev_row else season_id
-            full_raw_df = dl.load_games(seasons=[prev_id, season_id], include_upcoming=True)
+            season_val = int(game_row["season_year"])
+            full_raw_df = dl.load_games(seasons=[season_val - 1, season_val], include_upcoming=True)
             logger.info(
                 "Data loader for %s game_id=%d — loaded %d game rows "
                 "from seasons [%d, %d]",
-                sport, game_id, len(full_raw_df), prev_id, season_id,
+                sport, game_id, len(full_raw_df), season_val - 1, season_val,
             )
         else:  # mlb - uses calendar year, sequential IDs
             season_val = int(game_row["season_year"])
@@ -3428,49 +3415,62 @@ async def data_loader_load_game(
             from sqlalchemy import create_engine as _create_engine, text as _sql_text
             _sync_engine = _create_engine(db_url)
             CUM_SQL = _sql_text("""
-                SELECT season, week, team_abbr, opponent_abbr AS opp_abbr,
-                    off_ypg, off_ypp AS ypp, off_pass_ypg AS pass_ypg,
-                    off_rush_ypg AS rush_ypg, off_ypa AS pass_ypa,
-                    off_ypc AS rush_ypa,
-                    turnover_margin_avg AS turnover_diff,
-                    def_ypg_allowed AS def_ypg,
-                    def_ypp_allowed AS def_ypp,
-                    def_pass_ypg_allowed AS def_pass_ypg,
-                    def_rush_ypg_allowed AS def_rush_ypg,
-                    off_first_downs AS first_downs,
-                    off_third_down_pct AS third_down_pct,
-                    off_fourth_down_pct AS fourth_down_pct,
-                    off_red_zone_trips AS rz_trips,
-                    off_rz_td_pct AS rz_td_pct,
-                    off_explosive_rate AS explosive_plays,
-                    off_three_and_out_rate AS three_and_outs,
-                    off_int_rate AS ints_thrown,
-                    def_first_downs_allowed AS def_first_downs,
-                    def_third_down_pct,
-                    def_fourth_down_pct,
-                    def_red_zone_trips AS def_rz_trips,
-                    def_rz_td_pct,
-                    def_explosive_rate AS def_explosive_plays,
-                    def_three_and_out_rate AS def_three_and_outs,
-                    def_takeaway_rate AS def_ints_thrown,
-                    off_epa_per_play, win_streak,
-                    off_pts_stddev_5, off_yds_stddev_5,
-                    rw_off_ppg, rw_off_ypg,
-                    adj_off_ppg, adj_off_ypg,
-                    def_epa_per_play,
-                    def_pts_stddev_5, def_yds_stddev_5,
-                    rw_def_ppg, rw_def_ypg,
-                    adj_def_ppg, adj_def_ypg,
-                    off_yardage_rank,
-                    def_yardage_rank,
-                    off_scoring_rank,
-                    def_scoring_rank,
-                    off_rushing_rank,
-                    def_rushing_rank,
-                    off_passing_rank,
-                    def_passing_rating_rank
-                FROM nfl.cumulative_game_stats
-                ORDER BY season, week, team_abbr
+                SELECT t.season, t.week, t.team_abbr,
+                    t.off_yds_r5          AS off_ypg,
+                    t.ypp_r5              AS ypp,
+                    t.pass_yds_r5         AS pass_ypg,
+                    t.rush_yds_r5         AS rush_ypg,
+                    t.pass_ypa_r5         AS pass_ypa,
+                    t.rush_ypa_r5         AS rush_ypa,
+                    t.turnover_margin_r5  AS turnover_diff,
+                    t.def_yds_r5          AS def_ypg,
+                    t.def_ypp_r5          AS def_ypp,
+                    t.def_pass_yds_r5     AS def_pass_ypg,
+                    t.def_rush_yds_r5     AS def_rush_ypg,
+                    t.first_downs_r5      AS first_downs,
+                    t.third_down_pct_r5   AS third_down_pct,
+                    t.fourth_down_pct_r5  AS fourth_down_pct,
+                    t.rz_trips_r5         AS rz_trips,
+                    t.rz_td_pct_r5        AS rz_td_pct,
+                    t.explosive_rate_r5   AS explosive_plays,
+                    t.three_and_out_rate_r5 AS three_and_outs,
+                    t.ints_thrown_r5      AS ints_thrown,
+                    t.def_first_downs_r5   AS def_first_downs,
+                    t.def_third_down_pct_r5 AS def_third_down_pct,
+                    t.def_fourth_down_pct_r5 AS def_fourth_down_pct,
+                    t.def_rz_trips_r5      AS def_rz_trips,
+                    t.def_rz_td_pct_r5    AS def_rz_td_pct,
+                    t.def_explosive_rate_r5 AS def_explosive_plays,
+                    t.def_three_and_outs_r5 AS def_three_and_outs,
+                    t.def_ints_thrown_r5   AS def_ints_thrown,
+                    t.epa_per_play_r5     AS off_epa_per_play,
+                    t.win_streak,
+                    t.off_pts_stddev_r5   AS off_pts_stddev_5,
+                    t.off_yds_stddev_r5   AS off_yds_stddev_5,
+                    c.rw_off_ppg,
+                    c.rw_off_ypg,
+                    c.adj_off_ppg,
+                    c.adj_off_ypg,
+                    t.def_epa_per_play_r5 AS def_epa_per_play,
+                    t.opp_pts_stddev_r5   AS def_pts_stddev_5,
+                    t.opp_yds_stddev_r5   AS def_yds_stddev_5,
+                    c.rw_def_ppg,
+                    c.rw_def_ypg,
+                    c.adj_def_ppg,
+                    c.adj_def_ypg,
+                    t.off_yardage_rank,
+                    t.def_yardage_rank,
+                    t.off_scoring_rank,
+                    t.def_scoring_rank,
+                    t.off_rushing_rank,
+                    t.def_rushing_rank,
+                    t.off_passing_rank,
+                    t.def_passing_rating_rank,
+                    t.feeds_into_game_id
+                FROM nfl.team_rolling_stats t
+                LEFT JOIN nfl.cumulative_game_stats c
+                    ON t.game_id = c.game_id AND t.team_abbr = c.team_abbr
+                ORDER BY t.season, t.week, t.team_abbr
             """)
             _ts_df = _pd.read_sql(CUM_SQL, _sync_engine)
             full_built_df = nfl_build_features(full_raw_df, team_stats=_ts_df)
@@ -3528,6 +3528,29 @@ async def data_loader_load_game(
         built_columns = set(built_row.keys())
         computed_cols = built_columns - raw_columns
 
+        # ── Raw feature subgroups ────────────────────────────────────────────
+        # Columns describing the game itself (identifiers, teams, venue, weather)
+        GAME_IDENTITY_COLUMNS = {
+            "game_id", "season_id", "week", "game_type", "status", "game_date",
+            "season_year", "home_team_id", "away_team_id",
+            "home_abbr", "away_abbr", "home_conf", "away_conf",
+            "home_div", "away_div",
+            "venue", "surface", "roof_type", "temperature", "wind_speed",
+            "weather_condition",
+            "venue_lat", "venue_lng", "venue_tz",
+            "away_home_lat", "away_home_lng", "away_home_tz",
+            "travel_miles", "tz_diff", "home_last_game", "away_last_game",
+        }
+        # Current game result stats (NOT used for training/inference — these are outcomes)
+        RESULT_COLUMNS = {
+            "home_score", "away_score",
+        }
+        # Computed result-derived features (also current game outcomes)
+        COMPUTED_RESULT_COLUMNS = {
+            "home_score_margin", "home_ats_cover", "away_ats_cover",
+            "over_result", "ou_margin",
+        }
+
         # Build feature list
         features = []
         def _safe_val(v):
@@ -3543,23 +3566,37 @@ async def data_loader_load_game(
             return v
 
         for col_name in sorted(raw_columns):
-            features.append({
-                "name": col_name,
-                "display_name": catalog.get(col_name, ""),
-                "group": "raw",
-                "description": catalog.get(col_name, ""),
-                "value": _safe_val(raw_row.get(col_name)),
-                "type": "raw",
-            })
-
-        for col_name in sorted(computed_cols):
+            if col_name in GAME_IDENTITY_COLUMNS:
+                subgroup = "game"
+            elif col_name in RESULT_COLUMNS:
+                subgroup = "result"
+            else:
+                subgroup = "lines"
             features.append({
                 "name": col_name,
                 "display_name": dl.get_display_name(col_name),
-                "group": "computed",
+                "group": subgroup,
+                "description": catalog.get(col_name, ""),
+                "value": _safe_val(raw_row.get(col_name)),
+                "type": "raw",
+                "aliases": FEATURE_ALIASES.get(col_name, []),
+            })
+
+        for col_name in sorted(computed_cols):
+            if col_name in COMPUTED_RESULT_COLUMNS:
+                grp = "result"
+            elif col_name in nfl_team_stat_cols:
+                grp = "team_stats"
+            else:
+                grp = "computed"
+            features.append({
+                "name": col_name,
+                "display_name": dl.get_display_name(col_name),
+                "group": grp,
                 "description": catalog.get(col_name, ""),
                 "value": _safe_val(built_row.get(col_name)),
                 "type": "computed",
+                "aliases": FEATURE_ALIASES.get(col_name, []),
             })
 
         def _clean_val(v):
@@ -3605,6 +3642,9 @@ async def data_loader_load_game(
             "game_info": game_info,
             "total_features": len(features),
             "raw_features": sum(1 for f in features if f["type"] == "raw"),
+            "game_features": sum(1 for f in features if f["group"] == "game"),
+            "stats_features": sum(1 for f in features if f["group"] == "lines"),
+            "result_features": sum(1 for f in features if f["group"] == "result"),
             "computed_features": sum(1 for f in features if f["type"] == "computed"),
             "features": features,
         }

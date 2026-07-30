@@ -11,6 +11,7 @@ interface FeatureItem {
   description: string;
   value: unknown;
   type: "raw" | "computed";
+  aliases?: string[];
 }
 
 interface GameInfo {
@@ -34,6 +35,10 @@ interface DataLoaderResponse {
   game_info: GameInfo;
   total_features: number;
   raw_features: number;
+  game_features: number;
+  stats_features: number;
+  lines_features: number;
+  result_features: number;
   computed_features: number;
   features: FeatureItem[];
 }
@@ -70,17 +75,30 @@ const Spinner = () => (
 
 function FeatureRow({ feat }: { feat: FeatureItem }) {
   const [expanded, setExpanded] = useState(false);
+  const isTeamStats = feat.group === "team_stats";
+  const dotColor = isTeamStats ? "bg-purple-500" : feat.type === "raw" ? "bg-blue-500" : "bg-amber-500";
+  const dotTitle = isTeamStats ? "Team stat (DB)" : feat.type === "raw" ? "Raw DB column" : "Computed feature";
+  const labelColor = isTeamStats ? "text-purple-500/60" : feat.type === "raw" ? "text-blue-500/60" : "text-amber-500/60";
+  const groupLabel = isTeamStats ? "team stats" : feat.group;
   return (
     <tr className="border-b border-white/5 hover:bg-white/[0.02] transition-colors">
-      <td className="py-2 pr-4">
-        <div className="flex items-center gap-2">
+      <td className="py-2 pr-4 min-w-[200px]">
+        <div className="flex items-start gap-2">
           <span
-            className={`w-2 h-2 rounded-full shrink-0 ${
-              feat.type === "raw" ? "bg-blue-500" : "bg-amber-500"
-            }`}
-            title={feat.type === "raw" ? "Raw DB column" : "Computed feature"}
+            className={`w-2 h-2 rounded-full shrink-0 mt-1.5 ${dotColor}`}
+            title={dotTitle}
           />
-          <span className="text-sm text-gray-300">{feat.display_name}</span>
+          <div className="flex flex-col min-w-0">
+            <span className="text-sm text-gray-300 truncate">{feat.display_name}</span>
+            <div className="flex items-center gap-1.5 text-[11px]">
+              <code className="text-gray-600">{feat.name}</code>
+              {feat.aliases && feat.aliases.length > 0 && (
+                <span className="text-gray-500">
+                  ({feat.aliases.join(", ")})
+                </span>
+              )}
+            </div>
+          </div>
         </div>
       </td>
       <td className="py-2 pr-4">
@@ -89,7 +107,7 @@ function FeatureRow({ feat }: { feat: FeatureItem }) {
         </code>
       </td>
       <td className="py-2 pr-4 hidden md:table-cell">
-        <span className="text-xs text-gray-600">{feat.group}</span>
+        <span className="text-xs text-gray-600">{groupLabel}</span>
       </td>
       <td className="py-2 pr-4 hidden lg:table-cell max-w-[260px]">
         <div className="flex items-center gap-2">
@@ -112,11 +130,9 @@ function FeatureRow({ feat }: { feat: FeatureItem }) {
       </td>
       <td className="py-2 text-right">
         <span
-          className={`text-[10px] uppercase tracking-wider font-semibold ${
-            feat.type === "raw" ? "text-blue-500/60" : "text-amber-500/60"
-          }`}
+          className={`text-[10px] uppercase tracking-wider font-semibold ${labelColor}`}
         >
-          {feat.type}
+          {groupLabel}
         </span>
       </td>
     </tr>
@@ -181,7 +197,11 @@ export default function DataLoaderPage() {
     : [];
 
   const rawFeatures = filteredFeatures.filter((f) => f.type === "raw");
-  const computedFeatures = filteredFeatures.filter((f) => f.type === "computed");
+  const gameFeatures = filteredFeatures.filter((f) => f.group === "game");
+  const linesFeatures = filteredFeatures.filter((f) => f.group === "lines");
+  const resultFeatures = filteredFeatures.filter((f) => f.group === "result");
+  const teamStatsFeatures = filteredFeatures.filter((f) => f.group === "team_stats");
+  const computedFeatures = filteredFeatures.filter((f) => f.type === "computed" && f.group !== "team_stats" && f.group !== "result");
 
   /* ── Render ──────────────────────────────────────────────────────── */
   return (
@@ -298,7 +318,9 @@ export default function DataLoaderPage() {
               <span className="text-xs text-gray-500">
                 {result.total_features} feature{result.total_features !== 1 ? "s" : ""} total
                 {" · "}
-                <span className="text-blue-400">{result.raw_features} raw</span>
+                <span className="text-cyan-400">{result.game_features} game</span>
+                <span className="text-blue-400">{result.lines_features || result.stats_features} lines</span>
+                <span className="text-rose-400">{result.result_features} result</span>
                 {" · "}
                 <span className="text-amber-400">{result.computed_features} computed</span>
               </span>
@@ -427,17 +449,68 @@ export default function DataLoaderPage() {
                   </tr>
                 </thead>
 
-                {rawFeatures.length > 0 && (
+                {gameFeatures.length > 0 && (
                   <>
                     <tbody>
-                      <tr className="bg-blue-900/10">
-                        <td colSpan={5} className="py-2 px-4 text-xs text-blue-400 font-semibold uppercase tracking-wider">
-                          📦 Raw Columns ({rawFeatures.length})
+                      <tr className="bg-cyan-900/10">
+                        <td colSpan={5} className="py-2 px-4 text-xs text-cyan-400 font-semibold uppercase tracking-wider">
+                          🏷️ Game Info ({gameFeatures.length})
                         </td>
                       </tr>
                     </tbody>
                     <tbody>
-                      {rawFeatures.map((f) => (
+                      {gameFeatures.map((f) => (
+                        <FeatureRow key={f.name} feat={f} />
+                      ))}
+                    </tbody>
+                  </>
+                )}
+
+                {linesFeatures.length > 0 && (
+                  <>
+                    <tbody>
+                      <tr className="bg-blue-900/10">
+                        <td colSpan={5} className="py-2 px-4 text-xs text-blue-400 font-semibold uppercase tracking-wider">
+                          📊 Betting Lines ({linesFeatures.length})
+                        </td>
+                      </tr>
+                    </tbody>
+                    <tbody>
+                      {linesFeatures.map((f) => (
+                        <FeatureRow key={f.name} feat={f} />
+                      ))}
+                    </tbody>
+                  </>
+                )}
+
+                {resultFeatures.length > 0 && (
+                  <>
+                    <tbody>
+                      <tr className="bg-rose-900/10">
+                        <td colSpan={5} className="py-2 px-4 text-xs text-rose-400 font-semibold uppercase tracking-wider">
+                          🎯 Game Results ({resultFeatures.length})
+                        </td>
+                      </tr>
+                    </tbody>
+                    <tbody>
+                      {resultFeatures.map((f) => (
+                        <FeatureRow key={f.name} feat={f} />
+                      ))}
+                    </tbody>
+                  </>
+                )}
+
+                {teamStatsFeatures.length > 0 && (
+                  <>
+                    <tbody>
+                      <tr className="bg-purple-900/10">
+                        <td colSpan={5} className="py-2 px-4 text-xs text-purple-400 font-semibold uppercase tracking-wider">
+                          📊 Team Stats ({teamStatsFeatures.length})
+                        </td>
+                      </tr>
+                    </tbody>
+                    <tbody>
+                      {teamStatsFeatures.map((f) => (
                         <FeatureRow key={f.name} feat={f} />
                       ))}
                     </tbody>
@@ -479,8 +552,20 @@ export default function DataLoaderPage() {
           {/* Legend */}
           <div className="mt-4 flex items-center gap-6 text-xs text-gray-500">
             <div className="flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-cyan-500 shrink-0" />
+              Game Info — identifiers & venue/weather
+            </div>
+            <div className="flex items-center gap-2">
               <span className="w-2 h-2 rounded-full bg-blue-500 shrink-0" />
-              Raw — loaded directly from the games table
+              Betting Lines — market data used for predictions
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-rose-500 shrink-0" />
+              Game Results — current game outcomes (NOT used for training)
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-purple-500 shrink-0" />
+              Team Stats — loaded from team_rolling_stats
             </div>
             <div className="flex items-center gap-2">
               <span className="w-2 h-2 rounded-full bg-amber-500 shrink-0" />
