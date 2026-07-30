@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS nfl.team_rolling_stats (
     game_date        DATE,
     is_home          BOOLEAN,
     games_played     INTEGER,
+    feeds_into_game_id INTEGER,
 
     -- Offensive rolling: points & yards
     off_pts_r3       REAL,
@@ -515,7 +516,7 @@ season_ranks AS (
     FROM rolling r
 )
 INSERT INTO nfl.team_rolling_stats (
-    game_id, team_abbr, season, week, game_date, is_home, games_played,
+    game_id, team_abbr, season, week, game_date, is_home, games_played, feeds_into_game_id,
     off_pts_r3, off_pts_r5, off_pts_r10,
     off_yds_r3, off_yds_r5, off_yds_r10,
     pass_yds_r3, pass_yds_r5, pass_yds_r10,
@@ -567,6 +568,7 @@ INSERT INTO nfl.team_rolling_stats (
 )
 SELECT
     r.game_id, r.team_abbr, r.season, r.week, r.game_date, r.is_home, r.games_played,
+    LEAD(r.game_id) OVER (PARTITION BY r.team_abbr, r.season ORDER BY r.game_date) AS feeds_into_game_id,
     r.off_pts_r3, r.off_pts_r5, r.off_pts_r10,
     r.off_yds_r3, r.off_yds_r5, r.off_yds_r10,
     r.pass_yds_r3, r.pass_yds_r5, r.pass_yds_r10,

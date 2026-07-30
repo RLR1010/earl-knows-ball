@@ -652,7 +652,7 @@ class NFLDataLoader:
 
         if seasons:
             placeholders = ", ".join(str(s) for s in seasons)
-            conditions.append(f"g.season_id IN ({placeholders})")
+            conditions.append(f"s.year IN ({placeholders})")
 
         if status is not None:
             conditions.append(f"g.status = '{status}'")
@@ -794,70 +794,79 @@ class NFLDataLoader:
             logger.warning("No games returned — returning empty DataFrame")
             return df
 
-        # 2. Load team stats from nfl.cumulative_game_stats (pre-computed, backward-looking)
+        # 2. Load team stats from nfl.team_rolling_stats (pre-computed, backward-looking)
         team_stats = None
         try:
             CUM_SQL = """
                 SELECT
-                    season, week, game_id, team_abbr, opponent_abbr AS opp_abbr,
-                    off_ypg,
-                    off_ypp                                 AS ypp,
-                    off_pass_ypg                            AS pass_ypg,
-                    off_rush_ypg                            AS rush_ypg,
-                    off_ypa                                 AS pass_ypa,
-                    off_ypc                                 AS rush_ypa,
-                    turnover_margin_avg                     AS turnover_diff,
-                    def_ypg_allowed                         AS def_ypg,
-                    def_ypp_allowed                         AS def_ypp,
-                    def_pass_ypg_allowed                    AS def_pass_ypg,
-                    def_rush_ypg_allowed                    AS def_rush_ypg,
-                    off_first_downs                         AS first_downs,
-                    off_third_down_pct                      AS third_down_pct,
-                    off_fourth_down_pct                     AS fourth_down_pct,
-                    off_red_zone_trips                      AS rz_trips,
-                    off_rz_td_pct                           AS rz_td_pct,
-                    off_explosive_rate                      AS explosive_plays,
-                    off_three_and_out_rate                  AS three_and_outs,
-                    off_int_rate                            AS ints_thrown,
-                    def_first_downs_allowed                 AS def_first_downs,
-                    def_third_down_pct,
-                    def_fourth_down_pct,
-                    def_red_zone_trips                      AS def_rz_trips,
-                    def_rz_td_pct,
-                    def_explosive_rate                      AS def_explosive_plays,
-                    def_three_and_out_rate                  AS def_three_and_outs,
-                    def_takeaway_rate                       AS def_ints_thrown,
-                    off_epa_per_play, win_streak,
-                    off_pts_stddev_5, off_yds_stddev_5,
-                    rw_off_ppg, rw_off_ypg,
-                    adj_off_ppg, adj_off_ypg,
-                    def_epa_per_play,
-                    def_pts_stddev_5, def_yds_stddev_5,
-                    rw_def_ppg, rw_def_ypg,
-                    adj_def_ppg, adj_def_ypg,
-                    off_yardage_rank,
-                    def_yardage_rank,
-                    off_scoring_rank,
-                    def_scoring_rank,
-                    off_rushing_rank,
-                    def_rushing_rank,
-                    off_passing_rank,
-                    def_passing_rating_rank
-                FROM nfl.cumulative_game_stats
-                ORDER BY season, week, team_abbr
+                    t.season, t.week, t.game_id, t.team_abbr,
+                    CASE WHEN t.is_home THEN at.abbreviation ELSE ht.abbreviation END AS opp_abbr,
+                    t.off_yds_r5                             AS off_ypg,
+                    t.ypp_r5                                 AS ypp,
+                    t.pass_yds_r5                            AS pass_ypg,
+                    t.rush_yds_r5                            AS rush_ypg,
+                    t.pass_ypa_r5                            AS pass_ypa,
+                    t.rush_ypa_r5                            AS rush_ypa,
+                    t.turnover_margin_r5                     AS turnover_diff,
+                    t.def_yds_r5                             AS def_ypg,
+                    t.def_ypp_r5                             AS def_ypp,
+                    t.def_pass_yds_r5                        AS def_pass_ypg,
+                    t.def_rush_yds_r5                        AS def_rush_ypg,
+                    t.first_downs_r5                         AS first_downs,
+                    t.third_down_pct_r5                      AS third_down_pct,
+                    t.fourth_down_pct_r5                     AS fourth_down_pct,
+                    NULL::REAL                               AS rz_trips,
+                    t.rz_td_pct_r5                           AS rz_td_pct,
+                    t.explosive_rate_r5                      AS explosive_plays,
+                    t.three_and_out_rate_r5                  AS three_and_outs,
+                    NULL::REAL                               AS ints_thrown,
+                    NULL::REAL                               AS def_first_downs,
+                    t.def_third_down_pct_r5                  AS def_third_down_pct,
+                    NULL::REAL                               AS def_fourth_down_pct,
+                    NULL::REAL                               AS def_rz_trips,
+                    t.def_rz_td_pct_r5                       AS def_rz_td_pct,
+                    t.def_explosive_rate_r5                  AS def_explosive_plays,
+                    NULL::REAL                               AS def_three_and_outs,
+                    NULL::REAL                               AS def_ints_thrown,
+                    t.epa_per_play_r5                        AS off_epa_per_play,
+                    t.win_streak,
+                    t.off_pts_stddev_r5                      AS off_pts_stddev_5,
+                    t.off_yds_stddev_r5                      AS off_yds_stddev_5,
+                    NULL::REAL                               AS rw_off_ppg,
+                    NULL::REAL                               AS rw_off_ypg,
+                    NULL::REAL                               AS adj_off_ppg,
+                    NULL::REAL                               AS adj_off_ypg,
+                    t.def_epa_per_play_r5                    AS def_epa_per_play,
+                    t.opp_pts_stddev_r5                      AS def_pts_stddev_5,
+                    t.opp_yds_stddev_r5                      AS def_yds_stddev_5,
+                    NULL::REAL                               AS rw_def_ppg,
+                    NULL::REAL                               AS rw_def_ypg,
+                    NULL::REAL                               AS adj_def_ppg,
+                    NULL::REAL                               AS adj_def_ypg,
+                    t.sacks_r5                               AS def_sacks,
+                    t.takeaways_r5                           AS def_takeaways,
+                    t.sacks_r5                               AS off_sacks_allowed,
+                    t.off_yardage_rank,
+                    t.def_yardage_rank,
+                    t.off_scoring_rank,
+                    t.def_scoring_rank,
+                    t.off_rushing_rank,
+                    t.def_rushing_rank,
+                    t.off_passing_rank,
+                    t.def_passing_rating_rank,
+                    t.feeds_into_game_id
+                FROM nfl.team_rolling_stats t
+                LEFT JOIN nfl.games g ON t.game_id = g.id
+                LEFT JOIN nfl.teams ht ON g.home_team_id = ht.id
+                LEFT JOIN nfl.teams at ON g.away_team_id = at.id
+                ORDER BY t.season, t.week, t.team_abbr
             """
             ts_df = pd.read_sql(CUM_SQL, self.engine)
             if not ts_df.empty:
-                team_stats = ts_df
-                # Compute feeds_into_game_id: the game_id of this team's next game
-                # Each cumulative row for (team, game_id) feeds into the NEXT game that team plays.
-                # This properly handles bye weeks (unlike merge_week = week + 1).
-                team_stats = team_stats.sort_values(["season", "team_abbr", "game_id"])
-                team_stats["feeds_into_game_id"] = team_stats.groupby(["season", "team_abbr"])["game_id"].shift(-1)
-                team_stats = team_stats.dropna(subset=["feeds_into_game_id"])
+                team_stats = ts_df.dropna(subset=["feeds_into_game_id"])
                 team_stats["feeds_into_game_id"] = team_stats["feeds_into_game_id"].astype(int)
                 logger.info(
-                    "Loaded %d cumulative stat rows from nfl.cumulative_game_stats (%d-%d)",
+                    "Loaded %d cumulative stat rows from nfl.team_rolling_stats (%d-%d)",
                     len(team_stats),
                     int(team_stats["season"].min()),
                     int(team_stats["season"].max()),
@@ -1580,6 +1589,7 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
             right_on=[season_col, "feeds_into_game_id", "home_abbr"],
             how="left",
         )
+        df = df.drop(columns=["feeds_into_game_id"], errors="ignore")
 
         # ── Away team offensive stats ──
         away_off = _ts.rename(columns={
@@ -1633,6 +1643,7 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
             right_on=[season_col, "feeds_into_game_id", "away_abbr"],
             how="left",
         )
+        df = df.drop(columns=["feeds_into_game_id"], errors="ignore")
 
         # ── Home team defensive stats ──
         # Home team's defense = the home team's own def_ypg (yards allowed)
@@ -1682,6 +1693,7 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
             right_on=[season_col, "feeds_into_game_id", "home_abbr"],
             how="left",
         )
+        df = df.drop(columns=["feeds_into_game_id"], errors="ignore")
 
         # ── Away team defensive stats ──
         away_def = _ts.rename(columns={
