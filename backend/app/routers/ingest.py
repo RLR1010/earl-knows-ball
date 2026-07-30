@@ -701,10 +701,12 @@ async def _run_mlb_stats_refresh():
         logger.info("[Step 6] Updating probable pitchers for upcoming games...")
         pitcher_result = await update_probable_pitchers(db)
         pitchers_changed = pitcher_result.get('games_updated', 0)
+        pitcher_changed_ids = pitcher_result.get('updated_game_ids', [])
         logger.info(f"  Probable pitchers updated: {pitchers_changed}")
 
         # Step 7: Starting lineups (always run)
         logger.info("[Step 7] Fetching starting lineups...")
+        all_changed_ids = list(pitcher_changed_ids)
         from datetime import date
         try:
             from app.ingestion.mlb_lineups import update_lineups_for_date
@@ -712,11 +714,31 @@ async def _run_mlb_stats_refresh():
             lineup_result = await update_lineups_for_date(db, today)
             logger.info(f"  Lineups: {lineup_result.get('lineups_saved', 0)} saved, {lineup_result.get('pitchers_updated', 0)} pitchers updated")
             pitchers_changed += lineup_result.get('pitchers_updated', 0)
+            for gid in lineup_result.get('updated_game_ids', []):
+                if gid not in all_changed_ids:
+                    all_changed_ids.append(gid)
         except Exception as e:
             logger.error(f"  Lineups fetch failed: {e}")
 
+        # Step 7b: Regenerate pick cards for games where pitcher changed
+        if all_changed_ids:
+            logger.info(f"[Step 7b] {len(all_changed_ids)} games had pitcher changes — regenerating pick cards...")
+            try:
+                from app.handicapping.mlb.mlb_engine import batch_predict_upcoming_games
+                year = date.today().year
+                pick_results = await batch_predict_upcoming_games(
+                    db=db,
+                    game_ids=all_changed_ids,
+                    _logger=logger,
+                    year=year,
+                )
+                regenerated = len([p for p in pick_results if 'error' not in p])
+                logger.info(f"  Pick cards regenerated: {regenerated}/{len(all_changed_ids)}")
+            except Exception as e:
+                import traceback
+                logger.error(f"  Pick card regeneration failed: {e}\n{traceback.format_exc()}")
         else:
-            logger.info("[Step 7] No pitcher changes — picks unchanged")
+            logger.info("[Step 7b] No pitcher changes — picks unchanged")
 
         # Step 8: Load boxscore stats for FINAL games (batting_game_stats, pitcher_game_stats)
         # Uses asyncpg to match boxscore_ingest's connection type

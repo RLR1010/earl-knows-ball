@@ -173,7 +173,7 @@ async def update_lineups_for_date(db: AsyncSession, game_date: date) -> dict:
     from sqlalchemy import select
     from app.models.mlb import MLBGames
 
-    stats = {"games_checked": 0, "lineups_saved": 0, "pitchers_updated": 0, "errors": 0}
+    stats = {"games_checked": 0, "lineups_saved": 0, "pitchers_updated": 0, "updated_game_ids": [], "errors": 0}
 
     # Fetch schedule from MLB API
     games = await fetch_schedule(game_date)
@@ -207,6 +207,8 @@ async def update_lineups_for_date(db: AsyncSession, game_date: date) -> dict:
                 changed = True
             if changed:
                 stats["pitchers_updated"] += 1
+                if db_game.id not in stats["updated_game_ids"]:
+                    stats["updated_game_ids"].append(db_game.id)
 
             # Fetch full lineups (batting order)
             lineup_data = await fetch_lineups(game_pk)

@@ -3,7 +3,7 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     app_name: str = "EarlKnowsBall"
-    database_url: str = "postgresql+asyncpg://earl:earl@localhost:5432/earl_knows_football"
+    database_url: str = "postgresql+asyncpg://earl:earl_dev_pass@localhost:5432/earl_knows_football"
 
     @property
     def database_url_sync(self) -> str:
