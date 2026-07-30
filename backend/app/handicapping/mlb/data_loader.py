@@ -448,21 +448,17 @@ LEFT JOIN LATERAL (
 LEFT JOIN LATERAL (
     SELECT cgs_prev.*
     FROM mlb.cumulative_game_stats cgs_prev
-    JOIN mlb.games gp_cum ON gp_cum.id = cgs_prev.game_id
     WHERE cgs_prev.team_id = ht.id
-      AND gp_cum.date < g.date - INTERVAL '30 minutes'
-      AND gp_cum.status = 'FINAL'
-    ORDER BY gp_cum.date DESC, gp_cum.id DESC
+      AND cgs_prev.game_timestamp < g.date - INTERVAL '30 minutes'
+    ORDER BY cgs_prev.game_timestamp DESC
     LIMIT 1
 ) cgs_h ON TRUE
 LEFT JOIN LATERAL (
     SELECT cgs_prev.*
     FROM mlb.cumulative_game_stats cgs_prev
-    JOIN mlb.games gp_cum ON gp_cum.id = cgs_prev.game_id
     WHERE cgs_prev.team_id = at.id
-      AND gp_cum.date < g.date - INTERVAL '30 minutes'
-      AND gp_cum.status = 'FINAL'
-    ORDER BY gp_cum.date DESC, gp_cum.id DESC
+      AND cgs_prev.game_timestamp < g.date - INTERVAL '30 minutes'
+    ORDER BY cgs_prev.game_timestamp DESC
     LIMIT 1
 ) cgs_a ON TRUE
 

@@ -67,7 +67,7 @@ WITH games_with_status AS (
         cgs.team_id,
         cgs.team_side,
         cgs.season_id,
-        cgs.game_date,
+        cgs.game_timestamp AS game_date,
         g.home_team_id = cgs.team_id AS is_home,
         g.status = 'FINAL' AS is_final,
 
@@ -86,12 +86,12 @@ WITH games_with_status AS (
 
         ROW_NUMBER() OVER (
             PARTITION BY cgs.team_id, cgs.season_id
-            ORDER BY cgs.game_date, cgs.game_id
+            ORDER BY cgs.game_timestamp, cgs.game_id
         ) AS game_n,
 
         ROW_NUMBER() OVER (
             PARTITION BY cgs.team_id, cgs.season_id, cgs.team_side
-            ORDER BY cgs.game_date, cgs.game_id
+            ORDER BY cgs.game_timestamp, cgs.game_id
         ) AS side_game_n,
 
         -- Previous cumulative values (for computing per-game deltas)
@@ -113,7 +113,7 @@ WITH games_with_status AS (
     JOIN mlb.games g ON g.id = cgs.game_id
     LEFT JOIN mlb.betting_lines_consolidated blc ON blc.game_id = cgs.game_id
     WINDOW w AS (PARTITION BY cgs.team_id, cgs.season_id
-                 ORDER BY cgs.game_date, cgs.game_id)
+                 ORDER BY cgs.game_timestamp, cgs.game_id)
 )
 , per_game AS (
     SELECT *,

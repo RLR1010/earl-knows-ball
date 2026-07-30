@@ -59,7 +59,7 @@ CREATE TABLE IF NOT EXISTS {CUM_TABLE} (
     team_id     INTEGER NOT NULL,
     team_side   TEXT    NOT NULL CHECK (team_side IN ('home', 'away')),
     season_id   INTEGER NOT NULL,
-    game_date   DATE    NOT NULL,
+    game_timestamp   TIMESTAMPTZ    NOT NULL,
 
     -- Batting accumulators
     bat_at_bats              INTEGER DEFAULT 0,
@@ -114,7 +114,7 @@ SELECT
     sub.team_id,
     sub.team_side,
     sub.season_id,
-    sub.game_date,
+    sub.game_timestamp,
     {', '.join(f'sub.{alias}' for alias in BAT_COL_MAP)}
 FROM (
     SELECT
@@ -124,7 +124,7 @@ FROM (
         END            AS team_id,
         bg.team_side   AS team_side,
         g.season_id    AS season_id,
-        g.date         AS game_date,
+        g.date         AS game_timestamp,
         {', '.join(f'SUM(bg.{db}) AS {alias}' for alias, db in BAT_COL_MAP.items())}
     FROM mlb.batting_game_stats bg
     JOIN mlb.games g ON g.id = bg.game_id
@@ -132,7 +132,7 @@ FROM (
       AND g.season_id IS NOT NULL
     GROUP BY g.id, bg.team_side, g.season_id, g.date, g.home_team_id, g.away_team_id
 ) sub
-ORDER BY sub.season_id, sub.team_id, sub.game_date, sub.game_id
+ORDER BY sub.season_id, sub.team_id, sub.game_timestamp, sub.game_id
 """
 
 # ── Abbreviation mapping ──────────────────────────────────────────────────
@@ -150,7 +150,7 @@ SELECT
     t.id           AS team_id,
     CASE WHEN g.home_team_id = t.id THEN 'home' ELSE 'away' END AS team_side,
     g.season_id    AS season_id,
-    g.date         AS game_date,
+    g.date         AS game_timestamp,
     {', '.join(f'SUM(pg.{db}) AS {alias}' for alias, db in PITCH_COL_MAP.items())}
 FROM mlb.pitcher_game_stats pg
 JOIN mlb.teams t ON t.abbreviation = {TEAM_ABBR_MAP_SQL}
@@ -295,7 +295,7 @@ def _populate(
 
     # ── Process batting: compute running totals ──
     batting_df = batting_df.sort_values(
-        ["team_id", "season_id", "game_date", "game_id"]
+        ["team_id", "season_id", "game_timestamp", "game_id"]
     )
 
     bats_to_write: list[dict] = []
@@ -336,7 +336,7 @@ def _populate(
             "team_id": int(row_vals["team_id"]),
             "team_side": side,
             "season_id": int(row_vals["season_id"]),
-            "game_date": row_vals["game_date"],
+            "game_timestamp": row_vals["game_timestamp"],
         }
 
         # Raw accumulators (running totals now include this game = POST-game)
@@ -353,7 +353,7 @@ def _populate(
 
     # ── Process pitching: compute running totals ──
     pitching_df = pitching_df.sort_values(
-        ["team_id", "season_id", "game_date", "game_id"]
+        ["team_id", "season_id", "game_timestamp", "game_id"]
     )
 
     pitches_to_write: list[dict] = []
@@ -386,7 +386,7 @@ def _populate(
             "team_id": int(row_vals["team_id"]),
             "team_side": side,
             "season_id": int(row_vals["season_id"]),
-            "game_date": row_vals["game_date"],
+            "game_timestamp": row_vals["game_timestamp"],
         }
 
         # Add this game's stats to running totals FIRST
@@ -423,7 +423,7 @@ def _populate(
             d[k] = 0.0
         return d
 
-    meta_cols = ["game_id", "team_id", "team_side", "season_id", "game_date"]
+    meta_cols = ["game_id", "team_id", "team_side", "season_id", "game_timestamp"]
 
     for row in bats_to_write:
         key = (row["game_id"], row["team_side"])
@@ -462,7 +462,7 @@ def _populate(
 # ── Helper columns list (for INSERT) ────────────────────────────────────────
 
 def _all_columns() -> list[str]:
-    cols = ["game_id", "team_id", "team_side", "season_id", "game_date"]
+    cols = ["game_id", "team_id", "team_side", "season_id", "game_timestamp"]
     cols += [f"bat_{a}" for a in BAT_COL_MAP]
     cols += [f"pitch_{a}" for a in PITCH_COL_MAP]
     cols += [

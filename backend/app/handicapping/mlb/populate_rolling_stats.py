@@ -201,7 +201,7 @@ WITH per_game AS (
         cgs.team_id,
         cgs.team_side,
         cgs.season_id,
-        cgs.game_date,
+        cgs.game_timestamp AS game_date,
         g.home_team_id = cgs.team_id AS is_home,
         g.home_score,
         g.away_score,
@@ -269,7 +269,7 @@ WITH per_game AS (
         gw.ats_wins::DOUBLE PRECISION / NULLIF(gw.ats_games, 0) AS spread_pct,
         gw.over_games::DOUBLE PRECISION / NULLIF(gw.over_total, 0) AS over_pct,
 
-        ROW_NUMBER() OVER (PARTITION BY cgs.team_id, cgs.season_id ORDER BY cgs.game_date, cgs.game_id) AS game_n
+        ROW_NUMBER() OVER (PARTITION BY cgs.team_id, cgs.season_id ORDER BY cgs.game_timestamp, cgs.game_id) AS game_n
 
     FROM mlb.cumulative_game_stats cgs
     JOIN mlb.games g ON g.id = cgs.game_id
@@ -296,7 +296,7 @@ WITH per_game AS (
         GROUP BY cgs2.team_id, cgs2.season_id
     ) gw ON gw.team_id = cgs.team_id AND gw.season_id = cgs.season_id
 
-    WINDOW w AS (PARTITION BY cgs.team_id, cgs.season_id ORDER BY cgs.game_date, cgs.game_id)
+    WINDOW w AS (PARTITION BY cgs.team_id, cgs.season_id ORDER BY cgs.game_timestamp, cgs.game_id)
 )
 SELECT *,
     -- 5-game rolling averages
