@@ -503,15 +503,15 @@ streaks AS (
 ),
 season_ranks AS (
     SELECT
-        game_id, team_abbr,
-        DENSE_RANK()  OVER (PARTITION BY season ORDER BY r.off_yds_r5 ASC)  AS off_yardage_rank,
-        DENSE_RANK()  OVER (PARTITION BY season ORDER BY r.off_yds_r5 DESC) AS def_yardage_rank,
-        DENSE_RANK()  OVER (PARTITION BY season ORDER BY r.off_pts_r5 ASC)  AS off_scoring_rank,
-        DENSE_RANK()  OVER (PARTITION BY season ORDER BY r.off_pts_r5 DESC) AS def_scoring_rank,
-        DENSE_RANK()  OVER (PARTITION BY season ORDER BY r.rush_yds_r5 ASC)  AS off_rushing_rank,
-        DENSE_RANK()  OVER (PARTITION BY season ORDER BY r.rush_yds_r5 DESC) AS def_rushing_rank,
-        DENSE_RANK()  OVER (PARTITION BY season ORDER BY r.pass_yds_r5 ASC)  AS off_passing_rank,
-        DENSE_RANK()  OVER (PARTITION BY season ORDER BY r.opp_ypa_r5 DESC) AS def_passing_rating_rank
+        r.game_id, r.team_abbr, r.season, r.week,
+        DENSE_RANK()  OVER (PARTITION BY season, r.week ORDER BY r.off_yds_r5 DESC)  AS off_yardage_rank,
+        DENSE_RANK()  OVER (PARTITION BY season, r.week ORDER BY r.def_yds_r5 DESC) AS def_yardage_rank,
+        DENSE_RANK()  OVER (PARTITION BY season, r.week ORDER BY r.off_pts_r5 DESC)  AS off_scoring_rank,
+        DENSE_RANK()  OVER (PARTITION BY season, r.week ORDER BY r.def_pts_r5 DESC) AS def_scoring_rank,
+        DENSE_RANK()  OVER (PARTITION BY season, r.week ORDER BY r.rush_yds_r5 DESC)  AS off_rushing_rank,
+        DENSE_RANK()  OVER (PARTITION BY season, r.week ORDER BY r.def_rush_yds_r5 DESC) AS def_rushing_rank,
+        DENSE_RANK()  OVER (PARTITION BY season, r.week ORDER BY r.pass_yds_r5 DESC)  AS off_passing_rank,
+        DENSE_RANK()  OVER (PARTITION BY season, r.week ORDER BY r.def_ypp_r5 DESC) AS def_passing_rating_rank
     FROM rolling r
 )
 INSERT INTO nfl.team_rolling_stats (
@@ -559,7 +559,11 @@ INSERT INTO nfl.team_rolling_stats (
     ats_margin_r3, ats_margin_r5, ats_margin_r10,
     season_wins, season_losses, season_win_pct,
     season_ats_pct, season_ou_over_pct,
-    win_streak, loss_streak, cover_streak, ou_streak
+    win_streak, loss_streak, cover_streak, ou_streak,
+    off_yardage_rank, def_yardage_rank,
+    off_scoring_rank, def_scoring_rank,
+    off_rushing_rank, def_rushing_rank,
+    off_passing_rank, def_passing_rating_rank
 )
 SELECT
     r.game_id, r.team_abbr, r.season, r.week, r.game_date, r.is_home, r.games_played,
