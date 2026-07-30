@@ -1242,6 +1242,16 @@ async def ingest_nfl_cumulative_stats(
     return {"status": "ok", "seasons": results}
 
 
+@router.post("/ingest/nfl/qb-rolling-stats")
+def ingest_nfl_qb_rolling_stats(
+    seasons: list[int] = Query(default=None, description="Seasons to compute. None = all"),
+):
+    """Populate nfl.qb_cumulative_stats and nfl.qb_rolling_stats."""
+    from app.handicapping.nfl.populate_qb_rolling_stats import populate_qb_tables
+    result = populate_qb_tables(seasons=seasons)
+    return {"status": "ok", "cumulative": result["cumulative"], "rolling": result["rolling"]}
+
+
 @router.post("/ingest/mlb/games/backfill-years")
 async def ingest_mlb_games_backfill_years(
     db: AsyncSession = Depends(get_db),

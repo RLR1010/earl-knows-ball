@@ -799,7 +799,7 @@ class NFLDataLoader:
         try:
             CUM_SQL = """
                 SELECT
-                    season, week, team_abbr, opponent_abbr AS opp_abbr,
+                    season, week, game_id, team_abbr, opponent_abbr AS opp_abbr,
                     off_ypg,
                     off_ypp                                 AS ypp,
                     off_pass_ypg                            AS pass_ypg,
@@ -849,7 +849,13 @@ class NFLDataLoader:
             ts_df = pd.read_sql(CUM_SQL, self.engine)
             if not ts_df.empty:
                 team_stats = ts_df
-                team_stats["merge_week"] = team_stats["week"] + 1
+                # Compute feeds_into_game_id: the game_id of this team's next game
+                # Each cumulative row for (team, game_id) feeds into the NEXT game that team plays.
+                # This properly handles bye weeks (unlike merge_week = week + 1).
+                team_stats = team_stats.sort_values(["season", "team_abbr", "game_id"])
+                team_stats["feeds_into_game_id"] = team_stats.groupby(["season", "team_abbr"])["game_id"].shift(-1)
+                team_stats = team_stats.dropna(subset=["feeds_into_game_id"])
+                team_stats["feeds_into_game_id"] = team_stats["feeds_into_game_id"].astype(int)
                 logger.info(
                     "Loaded %d cumulative stat rows from nfl.cumulative_game_stats (%d-%d)",
                     len(team_stats),
@@ -879,6 +885,26 @@ class NFLDataLoader:
                          "def_explosive_plays", "def_three_and_outs", "def_ints_thrown",
                          ]
                     ].copy()
+                    # Add game_id from the games table so we can compute feeds_into_game_id
+                    try:
+                        game_id_q = """
+                            SELECT g.id AS game_id, g.season, g.week,
+                                   g.home_team_abbr AS team_abbr
+                            FROM nfl.games g
+                            UNION
+                            SELECT g.id AS game_id, g.season, g.week,
+                                   g.away_team_abbr AS team_abbr
+                            FROM nfl.games g
+                        """
+                        game_ids = pd.read_sql(game_id_q, self.engine)
+                        team_stats = team_stats.merge(
+                            game_ids, on=["season", "week", "team_abbr"], how="left"
+                        )
+                        # Rolling-averages already exclude current game,
+                        # so stats feed into the SAME game_id
+                        team_stats["feeds_into_game_id"] = team_stats["game_id"]
+                    except Exception as exc3:
+                        logger.warning("Failed to add game_id to fallback stats: %s", exc3)
                     logger.info(
                         "Loaded %d team-game stat rows from nfl.game_stats (%d-%d)",
                         len(team_stats),
@@ -1533,7 +1559,7 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
             "off_rushing_rank": "home_off_rushing_rank",
             "off_passing_rank": "home_off_passing_rank",
         })
-        _ho_cols = [season_col, "week", "home_abbr",
+        _ho_cols = [season_col, "feeds_into_game_id", "home_abbr",
                     "home_off_ypg", "home_ypp", "home_pass_ypg",
                     "home_rush_ypg", "home_pass_ypa", "home_rush_ypa",
                     "home_turnover_diff_r5",
@@ -1550,8 +1576,8 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
         _ho_cols = [c for c in _ho_cols if c in home_off.columns]
         df = df.merge(
             home_off[_ho_cols],
-            left_on=[season_col, "week", "home_abbr"],
-            right_on=[season_col, "merge_week", "home_abbr"],
+            left_on=[season_col, "game_id", "home_abbr"],
+            right_on=[season_col, "feeds_into_game_id", "home_abbr"],
             how="left",
         )
 
@@ -1586,7 +1612,7 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
             "off_rushing_rank": "away_off_rushing_rank",
             "off_passing_rank": "away_off_passing_rank",
         })
-        _ao_cols = [season_col, "week", "away_abbr",
+        _ao_cols = [season_col, "feeds_into_game_id", "away_abbr",
                     "away_off_ypg", "away_ypp", "away_pass_ypg",
                     "away_rush_ypg", "away_pass_ypa", "away_rush_ypa",
                     "away_turnover_diff_r5",
@@ -1603,8 +1629,8 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
         _ao_cols = [c for c in _ao_cols if c in away_off.columns]
         df = df.merge(
             away_off[_ao_cols],
-            left_on=[season_col, "week", "away_abbr"],
-            right_on=[season_col, "merge_week", "away_abbr"],
+            left_on=[season_col, "game_id", "away_abbr"],
+            right_on=[season_col, "feeds_into_game_id", "away_abbr"],
             how="left",
         )
 
@@ -1636,7 +1662,7 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
             "def_rushing_rank": "home_def_rushing_rank",
             "def_passing_rating_rank": "home_def_passing_rating_rank",
         })
-        _hd_cols = [season_col, "week", "home_abbr",
+        _hd_cols = [season_col, "feeds_into_game_id", "home_abbr",
                     "home_def_ypg", "home_def_ypp",
                     "home_def_pass_ypg", "home_def_rush_ypg",
                     "home_def_first_downs", "home_def_third_down_pct",
@@ -1652,8 +1678,8 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
         _hd_cols = [c for c in _hd_cols if c in home_def.columns]
         df = df.merge(
             home_def[_hd_cols],
-            left_on=[season_col, "week", "home_abbr"],
-            right_on=[season_col, "merge_week", "home_abbr"],
+            left_on=[season_col, "game_id", "home_abbr"],
+            right_on=[season_col, "feeds_into_game_id", "home_abbr"],
             how="left",
         )
 
@@ -1684,7 +1710,7 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
             "def_rushing_rank": "away_def_rushing_rank",
             "def_passing_rating_rank": "away_def_passing_rating_rank",
         })
-        _ad_cols = [season_col, "week", "away_abbr",
+        _ad_cols = [season_col, "feeds_into_game_id", "away_abbr",
                     "away_def_ypg", "away_def_ypp",
                     "away_def_pass_ypg", "away_def_rush_ypg",
                     "away_def_first_downs", "away_def_third_down_pct",
@@ -1700,8 +1726,8 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
         _ad_cols = [c for c in _ad_cols if c in away_def.columns]
         df = df.merge(
             away_def[_ad_cols],
-            left_on=[season_col, "week", "away_abbr"],
-            right_on=[season_col, "merge_week", "away_abbr"],
+            left_on=[season_col, "game_id", "away_abbr"],
+            right_on=[season_col, "feeds_into_game_id", "away_abbr"],
             how="left",
         )
 
