@@ -346,45 +346,58 @@ async def scrape_missing_games(season_year: int = 2025):
             # Respect BR
             if idx > 1:
                 await asyncio.sleep(3.5)
-            
-            try:
-                async with httpx.AsyncClient(timeout=30) as client:
-                    resp = await client.get(url, headers=BR_HEADERS)
-                    
-                    if resp.status_code == 404:
-                        logger.warning(f"  [{idx}/{len(games)}] {date} {away}@{home}: 404")
-                        skip_404 += 1
-                        continue
-                    
-                    if resp.status_code != 200:
-                        logger.warning(f"  [{idx}/{len(games)}] {date} {away}@{home}: {resp.status_code}")
-                        continue
-                    
-                    html_text = resp.text
-                    
-                    # Verify the page has basic stats tables
-                    if 'basic' not in html_text or not re.search(r'id="box-[A-Z]+-game-basic"', html_text):
-                        logger.warning(f"  [{idx}/{len(games)}] {date} {away}@{home}: No basic stats tables found")
-                        continue
-                    
-                    rows_inserted = process_game_page(
-                        html_text, db_conn, db_gid, nba_gid,
-                        home_id, away_id, season_year, {}
-                    )
-                    
-                    if rows_inserted > 0:
-                        total += rows_inserted
-                        success += 1
-                        db_conn.commit()
-                        logger.info(f"  [{idx}/{len(games)}] {date} {away}@{home}: {rows_inserted} rows ({success} games, {total} total)")
-                    else:
-                        logger.warning(f"  [{idx}/{len(games)}] {date} {away}@{home}: 0 rows matched")
-            
-            except httpx.TimeoutException:
-                logger.warning(f"  [{idx}/{len(games)}] {date} {away}@{home}: Timeout")
-            except Exception as e:
-                logger.warning(f"  [{idx}/{len(games)}] {date} {away}@{home}: {e}")
-        
+
+            html_text = None
+            for attempt in range(1, 4):
+                try:
+                    async with httpx.AsyncClient(timeout=30) as client:
+                        resp = await client.get(url, headers=BR_HEADERS)
+
+                        if resp.status_code == 429:
+                            # BR rate limit — back off and retry a couple times
+                            wait_s = 60 * attempt
+                            logger.warning(
+                                f"  [{idx}/{len(games)}] {date} {away}@{home}: 429, retry in {wait_s}s (attempt {attempt}/3)"
+                            )
+                            await asyncio.sleep(wait_s)
+                            continue
+
+                        if resp.status_code == 404:
+                            logger.warning(f"  [{idx}/{len(games)}] {date} {away}@{home}: 404")
+                            skip_404 += 1
+                            break
+
+                        if resp.status_code != 200:
+                            logger.warning(f"  [{idx}/{len(games)}] {date} {away}@{home}: {resp.status_code}")
+                            break
+
+                        html_text = resp.text
+                        break
+                except Exception as e:
+                    logger.warning(f"  [{idx}/{len(games)}] {date} {away}@{home}: fetch error {e}, retrying")
+                    await asyncio.sleep(10)
+
+            if html_text is None:
+                continue
+
+            # Verify the page has basic stats tables
+            if 'basic' not in html_text or not re.search(r'id="box-[A-Z]+-game-basic"', html_text):
+                logger.warning(f"  [{idx}/{len(games)}] {date} {away}@{home}: No basic stats tables found")
+                continue
+
+            rows_inserted = process_game_page(
+                html_text, db_conn, db_gid, nba_gid,
+                home_id, away_id, season_year, {}
+            )
+
+            if rows_inserted > 0:
+                total += rows_inserted
+                success += 1
+                db_conn.commit()
+                logger.info(f"  [{idx}/{len(games)}] {date} {away}@{home}: {rows_inserted} rows ({success} games, {total} total)")
+            else:
+                logger.warning(f"  [{idx}/{len(games)}] {date} {away}@{home}: 0 rows matched")
+
         db_conn.commit()
         logger.info(f"\nDone: {total} rows from {success} games, {skip_404} 404s, {len(games) - success - skip_404} other failures")
     
