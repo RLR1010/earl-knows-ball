@@ -139,6 +139,16 @@ export default function ChatPage() {
   }, []);
   const bottomRef = useRef<HTMLDivElement>(null);
   const statusRef = useRef<HTMLSpanElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [focusPending, setFocusPending] = useState(false);
+
+  // Focus the chat input after selecting a conversation (waits for loading to finish)
+  useEffect(() => {
+    if (focusPending && !loading) {
+      inputRef.current?.focus();
+      setFocusPending(false);
+    }
+  }, [focusPending, loading]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -165,6 +175,7 @@ export default function ChatPage() {
   const loadConversation = useCallback(async (convId: string | null) => {
     if (!convId) {
       startNewChat();
+      setFocusPending(true);
       return;
     }
 
@@ -190,6 +201,7 @@ export default function ChatPage() {
     } finally {
       setLoading(false);
       setStatusText(null);
+      setFocusPending(true);
     }
   }, [sport, token, startNewChat]);
 
@@ -510,6 +522,7 @@ export default function ChatPage() {
           <div className="border-t border-white/10 p-4">
             <div className="flex gap-2">
               <input
+                ref={inputRef}
                 type="text"
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
