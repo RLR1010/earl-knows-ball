@@ -57,6 +57,40 @@ BR_TEAM = {
 }
 
 
+def _br_abbr(our_abbr: str, season_year: int) -> str:
+    """Our teams.abbreviation -> BR boxscore URL suffix for a given season.
+
+    Era-aware: Charlotte was the Bobcats (BR id CHA) through 2013-14 and the
+    Hornets (BR id CHO) from 2014-15; New Orleans was the Hornets (BR id NOH)
+    through 2012-13 and the Pelicans (BR id NOP) from 2013-14.
+    """
+    if our_abbr == "CHA":
+        return "CHA" if season_year <= 2013 else "CHO"
+    if our_abbr == "NOP":
+        return "NOH" if season_year <= 2012 else "NOP"
+    return BR_TEAM.get(our_abbr, our_abbr)
+
+
+def _db_abbr(br_abbr: str, season_year: int) -> str:
+    """BR page table-id abbreviation -> our teams.abbreviation for a season.
+
+    This is the reverse of _br_abbr. Returns None when the BR id should not
+    appear in that era's pages (e.g. CHO before 2014-15).
+    """
+    if br_abbr == "CHA":
+        return "CHA" if season_year <= 2013 else None
+    if br_abbr == "CHO":
+        return "CHA" if season_year > 2013 else None
+    if br_abbr == "NOH":
+        return "NOP" if season_year <= 2012 else None
+    if br_abbr == "NOP":
+        return "NOP" if season_year > 2012 else None
+    for our, br in BR_TEAM.items():
+        if br == br_abbr:
+            return our
+    return br_abbr
+
+
 def _extract_table(html: str, table_id: str) -> list[dict]:
     """Extract player rows from a Basketball Reference basic stats table."""
     m = re.search(r'<table[^>]*id="' + re.escape(table_id) + r'"[^>]*>(.*?)</table>', html, re.DOTALL)
@@ -135,6 +169,7 @@ def process_game_page(
     nba_game_id: str,
     db_home_team_id: int,
     db_away_team_id: int,
+    season_year: int,
     player_cache: dict,
 ) -> int:
     """Parse BR boxscore page and insert player stats.
@@ -156,10 +191,10 @@ def process_game_page(
         # Determine team from table ID (box-BOS-game-basic -> BOS)
         team_abbr = t_id.split("-")[1]
         
-        # Map to DB team ID
-        db_abbr = BR_TEAM.get(team_abbr)
+        # Map to DB team ID (era-aware reverse of the URL mapping)
+        db_abbr = _db_abbr(team_abbr, season_year)
         if not db_abbr:
-            logger.debug(f"  Unknown BR team abbreviation: {team_abbr}")
+            logger.debug(f"  Unknown BR team abbreviation for season {season_year}: {team_abbr}")
             continue
         
         db_team_id = None
@@ -305,10 +340,7 @@ async def scrape_missing_games(season_year: int = 2025):
             
             # Build BR URL: /boxscores/YYYYMMDD{HOME}.html
             date_str = date.strftime("%Y%m%d")
-            br_abbr = BR_TEAM.get(home, home)
-            # New Orleans was the Hornets (BR abbr NOH) through 2012-13
-            if home == "NOP" and season_year <= 2012:
-                br_abbr = "NOH"
+            br_abbr = _br_abbr(home, season_year)
             url = f"https://www.basketball-reference.com/boxscores/{date_str}0{br_abbr}.html"
             
             # Respect BR
@@ -337,7 +369,7 @@ async def scrape_missing_games(season_year: int = 2025):
                     
                     rows_inserted = process_game_page(
                         html_text, db_conn, db_gid, nba_gid,
-                        home_id, away_id, {}
+                        home_id, away_id, season_year, {}
                     )
                     
                     if rows_inserted > 0:
