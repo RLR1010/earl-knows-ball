@@ -274,7 +274,7 @@ async def scrape_missing_games(season_year: int = 2025):
     with engine.connect() as db_conn:
         # Get games missing player stats
         games = db_conn.execute(text("""
-            SELECT g.id, g.nba_game_id, g.date::date,
+            SELECT g.id, g.nba_game_id, (g.date AT TIME ZONE 'America/New_York')::date AS game_date,
                    h.abbreviation as home, a.abbreviation as away,
                    h.id as home_id, a.id as away_id
             FROM nba.games g
@@ -306,6 +306,9 @@ async def scrape_missing_games(season_year: int = 2025):
             # Build BR URL: /boxscores/YYYYMMDD{HOME}.html
             date_str = date.strftime("%Y%m%d")
             br_abbr = BR_TEAM.get(home, home)
+            # New Orleans was the Hornets (BR abbr NOH) through 2012-13
+            if home == "NOP" and season_year <= 2012:
+                br_abbr = "NOH"
             url = f"https://www.basketball-reference.com/boxscores/{date_str}0{br_abbr}.html"
             
             # Respect BR
