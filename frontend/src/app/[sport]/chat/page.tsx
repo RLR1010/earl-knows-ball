@@ -35,9 +35,9 @@ const SPORT_CHAT_ENDPOINTS: Record<Sport, string> = {
 };
 
 const SPORT_WELCOME: Record<Sport, string> = {
-  nfl: "I'm Earl. I know ball. Ask me about spreads, player props, DFS lineups, or matchups — I've got the data to back it up.",
-  nba: "I'm Earl. I know NBA. Ask me about spreads, player props, DFS builds, or matchups for basketball.",
-  mlb: "I'm Earl. I know MLB. Ask me about moneyline bets, pitcher props, DFS stacks, or matchups for baseball.",
+  nfl: "I'm Earl. I know ball. Ask me about spreads, player props, or matchups — I've got the data to back it up.",
+  nba: "I'm Earl. I know NBA. Ask me about spreads, player props, or matchups for basketball.",
+  mlb: "I'm Earl. I know MLB. Ask me about moneyline bets, pitcher props, or matchups for baseball.",
 };
 
 const SPORT_PLACEHOLDERS: Record<Sport, string> = {
