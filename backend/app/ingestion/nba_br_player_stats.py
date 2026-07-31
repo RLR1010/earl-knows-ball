@@ -357,5 +357,10 @@ async def scrape_missing_games(season_year: int = 2025):
 
 
 if __name__ == "__main__":
-    logger.info("Starting BR scrape for missing 2025-26 REG games...")
-    asyncio.run(scrape_missing_games(2025))
+    import sys
+    # Backfill multiple seasons, e.g.:
+    #   python -m backend.app.ingestion.nba_br_player_stats 2016 2017 2018 2019
+    years = [int(a) for a in sys.argv[1:]] or [2025]
+    logger.info(f"Starting BR scrape for missing REG games: {years}")
+    for y in years:
+        asyncio.run(scrape_missing_games(y))
