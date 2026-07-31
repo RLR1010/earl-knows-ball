@@ -24,6 +24,11 @@ CREATE TABLE IF NOT EXISTS mlb.team_rolling_stats (
     away_games_sofar        INTEGER,
     game_away_venue_pct     DOUBLE PRECISION,
 
+    -- Per-game context
+    home_score       INTEGER,       -- final home team score
+    away_score       INTEGER,       -- final away team score
+    closing_ou       NUMERIC,       -- closing over/under line
+
     -- Per-game totals (derived from cumulative_game_stats)
     rf               INTEGER,       -- runs scored this game
     ra               INTEGER,       -- earned runs allowed this game
