@@ -295,6 +295,22 @@ export default function ChatPage() {
                 }
                 return updated;
               });
+            } else if (data.type === "answer") {
+              // Backend emits a single "answer" event (no token streaming)
+              gotAnswer.value = true;
+              setStatusText(null);
+              if (statusRef.current) statusRef.current.textContent = "";
+              setMessages((prev) => {
+                const updated = [...prev];
+                const last = updated[updated.length - 1];
+                if (last?.role === "assistant") {
+                  updated[updated.length - 1] = { ...last, content: data.content || "" };
+                } else {
+                  updated.push({ role: "assistant", content: data.content || "" });
+                }
+                return updated;
+              });
+              setLoading(false);
             }
           } catch {
             // skip malformed events
@@ -319,6 +335,21 @@ export default function ChatPage() {
               }
               return updated;
             });
+          } else if (data.type === "answer") {
+            gotAnswer.value = true;
+            setStatusText(null);
+            if (statusRef.current) statusRef.current.textContent = "";
+            setMessages((prev) => {
+              const updated = [...prev];
+              const last = updated[updated.length - 1];
+              if (last?.role === "assistant") {
+                updated[updated.length - 1] = { ...last, content: data.content || "" };
+              } else {
+                updated.push({ role: "assistant", content: data.content || "" });
+              }
+              return updated;
+            });
+            setLoading(false);
           } else if (data.type === "conv_id" || data.id) {
             newConvId = data.conversation_id || data.id;
           }
