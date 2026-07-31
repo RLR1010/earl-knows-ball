@@ -55,7 +55,8 @@ TEAM_ABBREV_MAP = {
 
 
 def _implied_probability(american_odds):
-    """Convert American odds to implied probability (0-100)."""
+    """Convert American odds to implied probability (0-1 fraction, matching
+    the convention used by nba_betting_lines.py for odds-API rows)."""
     if american_odds is None:
         return None
     try:
@@ -63,9 +64,9 @@ def _implied_probability(american_odds):
     except (ValueError, TypeError):
         return None
     if ao > 0:
-        return round(100 / (ao / 100 + 1) * 100, 2)
+        return round(100 / (ao + 100), 4)
     else:
-        return round(abs(ao) / (abs(ao) + 100) * 100, 2)
+        return round(abs(ao) / (abs(ao) + 100), 4)
 
 
 async def _prep_lookups(db) -> dict:
@@ -95,7 +96,11 @@ async def _match_game(db, team_map: dict, home_team: str, away_team: str, game_d
         sql_text(
             "SELECT id FROM nba.games "
             "WHERE home_team_id = :ht AND away_team_id = :at "
-            "AND DATE(date) = :gdate LIMIT 1"
+            # nba.games.date is a UTC timestamptz (ESPN tips normalized to UTC);
+            # a 10:30pm ET tip is already next-day UTC. Kaggle dates are US
+            # local dates, so convert to ET before comparing calendar dates.
+            "AND (date AT TIME ZONE 'America/New_York')::date = :gdate "
+            "AND game_type IN ('REG', 'POST') LIMIT 1"
         ),
         {"ht": home_id, "at": away_id, "gdate": parsed_date},
     )

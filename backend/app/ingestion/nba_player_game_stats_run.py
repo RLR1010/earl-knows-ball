@@ -312,4 +312,9 @@ async def run_remaining(season_year: int = 2025):
 
 
 if __name__ == "__main__":
-    asyncio.run(run_remaining())
+    import sys
+    # Allow backfill of multiple seasons, e.g.:
+    #   python -m backend.app.ingestion.nba_player_game_stats_run 2016 2017 2018 2019
+    years = [int(a) for a in sys.argv[1:]] or [2025]
+    for y in years:
+        asyncio.run(run_remaining(y))
