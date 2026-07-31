@@ -212,6 +212,9 @@ async def chat_nba(
 
             # --- Save conversation history ---
             await db.rollback()
+            # Rollback expired all ORM objects, incl. current_user. Reload it so
+            # save_token_usage() below doesn't trigger a sync lazy-load (MissingGreenlet).
+            await db.refresh(current_user)
             now = datetime.now(timezone.utc)
             db.add(ChatHistory(
                 conversation_id=conv_id,

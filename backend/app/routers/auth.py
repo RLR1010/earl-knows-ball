@@ -330,6 +330,22 @@ async def logout(response: Response):
 
 
 @router.get("/me", response_model=UserResponse)
-async def get_me(user: User = Depends(get_current_user)):
+async def get_me(
+    user: User = Depends(get_current_user),
+    response: Response = None,
+):
     """Return the currently authenticated user."""
+    # Sliding session: refresh the JWT cookie on every successful auth check so
+    # active users never get dropped (30-day rolling window). Also re-issues the
+    # cookie when auth came via the Authorization header (localStorage token).
+    response.set_cookie(
+        key=COOKIE_NAME,
+        value=_create_jwt(user),
+        max_age=COOKIE_MAX_AGE,
+        expires=COOKIE_MAX_AGE,
+        path="/",
+        secure=settings.base_url.startswith("https"),
+        httponly=True,
+        samesite="lax",
+    )
     return user

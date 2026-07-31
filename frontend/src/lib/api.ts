@@ -1,9 +1,32 @@
 const API_BASE = "";
 
+/**
+ * Return the JWT from localStorage if present and not expired.
+ * The backend accepts it as `Authorization: Bearer`, which lets API calls
+ * succeed even when the httpOnly cookie is missing (e.g. cookie cleared).
+ */
+function getStoredToken(): string | null {
+  if (typeof window === "undefined") return null;
+  const t = localStorage.getItem("earl_token");
+  if (!t) return null;
+  try {
+    const payload = JSON.parse(atob(t.split(".")[1]));
+    if (payload.exp && payload.exp * 1000 < Date.now()) return null;
+  } catch {
+    return null;
+  }
+  return t;
+}
+
 async function fetchAPI<T>(path: string, options?: RequestInit): Promise<T> {
+  const token = getStoredToken();
   const res = await fetch(`${API_BASE}${path}`, {
-    headers: { "Content-Type": "application/json", ...options?.headers },
     ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...options?.headers,
+    },
   });
   if (!res.ok) {
     throw new Error(`API error: ${res.status} ${res.statusText}`);
