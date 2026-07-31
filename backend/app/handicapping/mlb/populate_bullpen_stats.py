@@ -172,7 +172,8 @@ def main():
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
 
-    db_url = os.environ.get("DATABASE_URL", PSYCOPG2_DATABASE_URL)
+    # PSYCOPG2_DATABASE_URL already reflects .env DATABASE_URL (asyncpg suffix stripped)
+    db_url = PSYCOPG2_DATABASE_URL
     engine = create_engine(db_url)
 
     if args.backfill:

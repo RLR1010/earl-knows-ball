@@ -401,11 +401,11 @@ SELECT
 FROM qb_games
 WINDOW
     w3  AS (PARTITION BY player_id, season ORDER BY game_date, game_id
-            ROWS BETWEEN 3 PRECEDING AND CURRENT ROW),
+            ROWS BETWEEN 2 PRECEDING AND CURRENT ROW),
     w5  AS (PARTITION BY player_id, season ORDER BY game_date, game_id
-            ROWS BETWEEN 5 PRECEDING AND CURRENT ROW),
+            ROWS BETWEEN 4 PRECEDING AND CURRENT ROW),
     w10 AS (PARTITION BY player_id, season ORDER BY game_date, game_id
-            ROWS BETWEEN 10 PRECEDING AND CURRENT ROW)
+            ROWS BETWEEN 9 PRECEDING AND CURRENT ROW)
 ORDER BY player_id, season, game_date, game_id
 ON CONFLICT (player_id, season, game_id) DO UPDATE SET
     week            = EXCLUDED.week,

@@ -398,19 +398,33 @@ export default function AdminContent() {
     )
       return;
 
+    const failed: number[] = [];
     for (const game of missing) {
       setGenerating(game.id);
       try {
-        await fetch(`/api/writeups/${sport}/generate/${game.id}`, {
+        const res = await fetch(`/api/writeups/${sport}/generate/${game.id}`, {
           method: "POST",
           headers: { Authorization: `Bearer ${token()}` },
         });
+        if (!res.ok) {
+          const errText = await res.text();
+          throw new Error(errText || `HTTP ${res.status}`);
+        }
       } catch (e: any) {
         console.error(`Failed for game ${game.id}:`, e);
+        failed.push(game.id);
       }
     }
     setGenerating(null);
     await fetchGames();
+
+    if (failed.length > 0) {
+      alert(
+        `⚠️ ${failed.length} of ${missing.length} write-ups failed: ${failed.join(", ")}\n\nClick Generate All again to retry the failed games.`
+      );
+    } else {
+      alert(`✅ All ${missing.length} write-ups generated successfully.`);
+    }
   };
 
   const handleGenerateDay = async (daysGames: Game[]) => {
@@ -426,19 +440,33 @@ export default function AdminContent() {
     )
       return;
 
+    const failed: number[] = [];
     for (const game of missing) {
       setGenerating(game.id);
       try {
-        await fetch(`/api/writeups/${sport}/generate/${game.id}`, {
+        const res = await fetch(`/api/writeups/${sport}/generate/${game.id}`, {
           method: "POST",
           headers: { Authorization: `Bearer ${token()}` },
         });
+        if (!res.ok) {
+          const errText = await res.text();
+          throw new Error(errText || `HTTP ${res.status}`);
+        }
       } catch (e: any) {
         console.error(`Failed for game ${game.id}:`, e);
+        failed.push(game.id);
       }
     }
     setGenerating(null);
     await fetchGames();
+
+    if (failed.length > 0) {
+      alert(
+        `⚠️ ${failed.length} of ${missing.length} write-ups failed: ${failed.join(", ")}\n\nClick Generate Day again to retry the failed games.`
+      );
+    } else {
+      alert(`✅ All ${missing.length} write-ups generated successfully.`);
+    }
   };
 
   // ── Render ─────────────────────────────────────────────

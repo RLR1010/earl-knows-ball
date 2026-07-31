@@ -52,10 +52,7 @@ DEFAULT_TIME_DECAY = 0.96
 
 CURRENT_YEAR = datetime.now().year
 NFL_SCHEMA = "nfl"
-DB_DSN: str = os.environ.get(
-    "DATABASE_URL",
-    PSYCOPG2_DATABASE_URL,
-)
+DB_DSN: str = PSYCOPG2_DATABASE_URL
 
 
 # ── Helper: ensure ATS feature columns exist ────────────────────────────────────
@@ -622,7 +619,9 @@ async def train_model(
             # Recompute home_ats_cover inline to match engine's margin_vs_spread logic
             # (same formula as data_loader: home_score - away_score + closing_spread > 0)
             actual_ats = ((y_test + spread_vals) > 0).astype(int) if spread_col in df_test.columns else (y_test > 0).astype(int)
-            ats_correct = int((pred_ats == actual_ats).sum())
+            # Pushes (margin lands exactly on the spread) are EXCLUDED from results, matching engine.py
+            ats_push_mask = (y_test + spread_vals) == 0
+            ats_correct = int(((pred_ats == actual_ats) & ~ats_push_mask).sum())
 
             # Moneyline: positive margin = home win (exclude ties)
             pred_ml = (pred_margins > 0).astype(int)
@@ -631,6 +630,8 @@ async def train_model(
             ml_total = int(tie_mask.sum())
             ml_correct = int(((pred_ml == actual_home_won) & tie_mask).sum())
 
+        ats_push = int(ats_push_mask.sum())
+        ats_total = ats_total - ats_push  # pushes excluded from denominator, matching engine.py
         ats_incorrect = ats_total - ats_correct
         ats_pct = round(100 * ats_correct / ats_total, 2) if ats_total > 0 else 0.0
         ml_incorrect = ml_total - ml_correct
@@ -660,6 +661,7 @@ async def train_model(
                 "total": ats_total,
                 "correct": ats_correct,
                 "incorrect": ats_incorrect,
+                "push": ats_push,
                 "pct": ats_pct,
             },
             "ml": {

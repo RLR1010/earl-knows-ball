@@ -327,6 +327,90 @@ FEATURES_CATALOG: Dict[str, str] = {
     "away_adj_def_ppg": "Away opponent-adjusted defensive PPG allowed",
     "home_adj_def_ypg": "Home opponent-adjusted defensive YPG allowed",
     "away_adj_def_ypg": "Away opponent-adjusted defensive YPG allowed",
+
+    # ── Team Off/Def Advanced Stats (added 2026-07-30) ──
+    "home_third_down_pct": "Home third down % (5-game avg)",
+    "away_third_down_pct": "Away third down % (5-game avg)",
+    "home_fourth_down_pct": "Home fourth down % (5-game avg)",
+    "away_fourth_down_pct": "Away fourth down % (5-game avg)",
+    "home_rz_trips": "Home red zone trips (5-game avg)",
+    "away_rz_trips": "Away red zone trips (5-game avg)",
+    "home_rz_td_pct": "Home red zone TD % (5-game avg)",
+    "away_rz_td_pct": "Away red zone TD % (5-game avg)",
+    "home_explosive_plays": "Home explosive play rate (5-game avg)",
+    "away_explosive_plays": "Away explosive play rate (5-game avg)",
+    "home_three_and_outs": "Home three-and-out rate (5-game avg)",
+    "away_three_and_outs": "Away three-and-out rate (5-game avg)",
+    "home_ints_thrown": "Home INTs thrown (5-game avg)",
+    "away_ints_thrown": "Away INTs thrown (5-game avg)",
+    "home_def_first_downs": "Home def first downs allowed (5-game avg)",
+    "away_def_first_downs": "Away def first downs allowed (5-game avg)",
+    "home_def_third_down_pct": "Home def third down % allowed (5-game avg)",
+    "away_def_third_down_pct": "Away def third down % allowed (5-game avg)",
+    "home_def_fourth_down_pct": "Home def fourth down % allowed (5-game avg)",
+    "away_def_fourth_down_pct": "Away def fourth down % allowed (5-game avg)",
+    "home_def_rz_trips": "Home def red zone trips allowed (5-game avg)",
+    "away_def_rz_trips": "Away def red zone trips allowed (5-game avg)",
+    "home_def_rz_td_pct": "Home def red zone TD % allowed (5-game avg)",
+    "away_def_rz_td_pct": "Away def red zone TD % allowed (5-game avg)",
+    "home_def_explosive_plays": "Home def explosive plays allowed (5-game avg)",
+    "away_def_explosive_plays": "Away def explosive plays allowed (5-game avg)",
+    "home_def_three_and_outs": "Home def 3-and-out forced rate (5-game avg)",
+    "away_def_three_and_outs": "Away def 3-and-out forced rate (5-game avg)",
+    "home_def_ints_thrown": "Home def INTs forced (5-game avg)",
+    "away_def_ints_thrown": "Away def INTs forced (5-game avg)",
+
+    # ── QB: 5-game rolling ──
+    "home_qb_passer_rating_5": "Home QB passer rating over last 5 games",
+    "away_qb_passer_rating_5": "Away QB passer rating over last 5 games",
+    "home_qb_any_a_5": "Home QB adj net yards/att over last 5",
+    "away_qb_any_a_5": "Away QB adj net yards/att over last 5",
+    "home_qb_ypa_5": "Home QB yards per pass attempt over last 5",
+    "away_qb_ypa_5": "Away QB yards per pass attempt over last 5",
+    "home_qb_td_pct_5": "Home QB touchdown pct over last 5",
+    "away_qb_td_pct_5": "Away QB touchdown pct over last 5",
+    "home_qb_int_pct_5": "Home QB interception pct over last 5",
+    "away_qb_int_pct_5": "Away QB interception pct over last 5",
+    "home_qb_sack_rate_5": "Home QB sack rate over last 5",
+    "away_qb_sack_rate_5": "Away QB sack rate over last 5",
+    "home_qb_rush_ypg_5": "Home QB rush yds/game over last 5",
+    "away_qb_rush_ypg_5": "Away QB rush yds/game over last 5",
+    "home_qb_rush_att_5": "Home QB rush attempts last 5 (total)",
+    "away_qb_rush_att_5": "Away QB rush attempts last 5 (total)",
+    "home_qb_games_5": "Home QB games played in last 5",
+    "away_qb_games_5": "Away QB games played in last 5",
+
+    # ── QB: season-long cumulative ──
+    "home_qb_passer_rating_season": "Home QB passer rating YTD",
+    "away_qb_passer_rating_season": "Away QB passer rating YTD",
+    "home_qb_any_a_season": "Home QB adj net yards/att YTD",
+    "away_qb_any_a_season": "Away QB adj net yards/att YTD",
+    "home_qb_ypa_season": "Home QB yds/att YTD",
+    "away_qb_ypa_season": "Away QB yds/att YTD",
+    "home_qb_td_pct_season": "Home QB touchdown pct YTD",
+    "away_qb_td_pct_season": "Away QB touchdown pct YTD",
+    "home_qb_int_pct_season": "Home QB interception pct YTD",
+    "away_qb_int_pct_season": "Away QB interception pct YTD",
+    "home_qb_sack_rate_season": "Home QB sack rate YTD",
+    "away_qb_sack_rate_season": "Away QB sack rate YTD",
+    "home_qb_rush_ypg_season": "Home QB rush yds/game YTD",
+    "away_qb_rush_ypg_season": "Away QB rush yds/game YTD",
+    "home_qb_rush_att_pg_season": "Home QB rush att/game YTD",
+    "away_qb_rush_att_pg_season": "Away QB rush att/game YTD",
+    "home_qb_games_season": "Home QB games played YTD",
+    "away_qb_games_season": "Away QB games played YTD",
+
+    # ── QB: differentials (home minus away) ──
+    "qb_passer_rating_5_diff": "Home minus away QB passer rating (5-game)",
+    "qb_any_a_5_diff": "Home minus away QB ANY/A (5-game)",
+    "qb_passer_rating_season_diff": "Home minus away QB passer rating YTD",
+    "qb_any_a_season_diff": "Home minus away QB ANY/A YTD",
+
+    # ── QB: trends (5-game minus season avg) ──
+    "home_qb_passer_rating_trend": "Home QB recent rating minus season avg",
+    "away_qb_passer_rating_trend": "Away QB recent rating minus season avg",
+    "home_qb_ypa_trend": "Home QB recent YPA minus season avg",
+    "away_qb_ypa_trend": "Away QB recent YPA minus season avg",
 }
 
 # Features that are computed from raw columns rather than read directly.
@@ -578,6 +662,38 @@ DISPLAY_NAMES: Dict[str, str] = {
     "home_def_passing_rating_rank": "Def Pass QBR Rn H",
     "away_def_passing_rating_rank": "Def Pass QBR Rn A",
 
+    # ── Team Off/Def Advanced Stats ──
+    "home_third_down_pct": "3D% H",
+    "away_third_down_pct": "3D% A",
+    "home_fourth_down_pct": "4D% H",
+    "away_fourth_down_pct": "4D% A",
+    "home_rz_trips": "RZ Tps H",
+    "away_rz_trips": "RZ Tps A",
+    "home_rz_td_pct": "RZ TD% H",
+    "away_rz_td_pct": "RZ TD% A",
+    "home_explosive_plays": "Exp% H",
+    "away_explosive_plays": "Exp% A",
+    "home_three_and_outs": "3&Out% H",
+    "away_three_and_outs": "3&Out% A",
+    "home_ints_thrown": "INTs H",
+    "away_ints_thrown": "INTs A",
+    "home_def_first_downs": "D-1stD H",
+    "away_def_first_downs": "D-1stD A",
+    "home_def_third_down_pct": "D-3D% H",
+    "away_def_third_down_pct": "D-3D% A",
+    "home_def_fourth_down_pct": "D-4D% H",
+    "away_def_fourth_down_pct": "D-4D% A",
+    "home_def_rz_trips": "D-RZ Tps H",
+    "away_def_rz_trips": "D-RZ Tps A",
+    "home_def_rz_td_pct": "D-RZ TD% H",
+    "away_def_rz_td_pct": "D-RZ TD% A",
+    "home_def_explosive_plays": "D-Exp% H",
+    "away_def_explosive_plays": "D-Exp% A",
+    "home_def_three_and_outs": "D-3&Out% H",
+    "away_def_three_and_outs": "D-3&Out% A",
+    "home_def_ints_thrown": "D-INTs H",
+    "away_def_ints_thrown": "D-INTs A",
+
     # ── Raw GAME_QUERY columns ──
     "season_type": "Season Type",
     "game_date": "Game Date",
@@ -618,6 +734,58 @@ DISPLAY_NAMES: Dict[str, str] = {
     "bt_away_score": "BT Away Score",
     "venue_elevation_ft": "Elevation",
     "is_early_season": "Early Season",
+
+    # ── QB: 5-game rolling ──
+    "home_qb_passer_rating_5": "QB Rtg 5G H",
+    "away_qb_passer_rating_5": "QB Rtg 5G A",
+    "home_qb_any_a_5": "QB ANY/A 5G H",
+    "away_qb_any_a_5": "QB ANY/A 5G A",
+    "home_qb_ypa_5": "QB YPA 5G H",
+    "away_qb_ypa_5": "QB YPA 5G A",
+    "home_qb_td_pct_5": "QB TD% 5G H",
+    "away_qb_td_pct_5": "QB TD% 5G A",
+    "home_qb_int_pct_5": "QB INT% 5G H",
+    "away_qb_int_pct_5": "QB INT% 5G A",
+    "home_qb_sack_rate_5": "QB SCK% 5G H",
+    "away_qb_sack_rate_5": "QB SCK% 5G A",
+    "home_qb_rush_ypg_5": "QB RuYPG 5G H",
+    "away_qb_rush_ypg_5": "QB RuYPG 5G A",
+    "home_qb_rush_att_5": "QB RuAtt 5G H",
+    "away_qb_rush_att_5": "QB RuAtt 5G A",
+    "home_qb_games_5": "QB Gms 5G H",
+    "away_qb_games_5": "QB Gms 5G A",
+
+    # ── QB: season-long cumulative ──
+    "home_qb_passer_rating_season": "QB Rtg Seas H",
+    "away_qb_passer_rating_season": "QB Rtg Seas A",
+    "home_qb_any_a_season": "QB ANY/A Seas H",
+    "away_qb_any_a_season": "QB ANY/A Seas A",
+    "home_qb_ypa_season": "QB YPA Seas H",
+    "away_qb_ypa_season": "QB YPA Seas A",
+    "home_qb_td_pct_season": "QB TD% Seas H",
+    "away_qb_td_pct_season": "QB TD% Seas A",
+    "home_qb_int_pct_season": "QB INT% Seas H",
+    "away_qb_int_pct_season": "QB INT% Seas A",
+    "home_qb_sack_rate_season": "QB SCK% Seas H",
+    "away_qb_sack_rate_season": "QB SCK% Seas A",
+    "home_qb_rush_ypg_season": "QB RuYPG Seas H",
+    "away_qb_rush_ypg_season": "QB RuYPG Seas A",
+    "home_qb_rush_att_pg_season": "QB RuAtt/G Seas H",
+    "away_qb_rush_att_pg_season": "QB RuAtt/G Seas A",
+    "home_qb_games_season": "QB GP Seas H",
+    "away_qb_games_season": "QB GP Seas A",
+
+    # ── QB: differentials ──
+    "qb_passer_rating_5_diff": "QB Rtg Diff 5G",
+    "qb_any_a_5_diff": "QB ANY/A Diff 5G",
+    "qb_passer_rating_season_diff": "QB Rtg Diff Seas",
+    "qb_any_a_season_diff": "QB ANY/A Diff Seas",
+
+    # ── QB: trends ──
+    "home_qb_passer_rating_trend": "QB Rtg Trend H",
+    "away_qb_passer_rating_trend": "QB Rtg Trend A",
+    "home_qb_ypa_trend": "QB YPA Trend H",
+    "away_qb_ypa_trend": "QB YPA Trend A",
 }
 
 # ── Feature Aliases ─────────────────────────────────────────────────────────────
@@ -1160,9 +1328,159 @@ class NFLDataLoader:
             except Exception as exc2:
                 logger.warning("Failed to load team stats: %s", exc2)
 
-        # 3. Run feature engineering
+        # 3. Load QB pre-game stats
+        qb_stats = None
+        try:
+            QB_SQL = """
+                WITH actual_starters AS (
+                    -- Actual game starters from player participation data
+                    SELECT DISTINCT ON (pws.game_id, pws.team_id)
+                        pws.game_id,
+                        pws.team_id,
+                        pws.player_id
+                    FROM nfl.player_weekly_stats pws
+                    JOIN nfl.players pl ON pl.id = pws.player_id
+                    WHERE pl.position = 'QB'
+                    ORDER BY pws.game_id, pws.team_id, pws.pass_attempts DESC NULLS LAST
+                ),
+                projected_starter AS (
+                    -- Per (game, team): actual starter if available,
+                    -- else depth-chart QB1 (always-updated for upcoming games)
+                    SELECT
+                        g.id AS game_id,
+                        g.home_team_id AS team_id,
+                        COALESCE(as_.player_id, dc.player_id) AS player_id
+                    FROM nfl.games g
+                    LEFT JOIN actual_starters as_
+                        ON as_.game_id = g.id AND as_.team_id = g.home_team_id
+                    LEFT JOIN nfl.depth_charts dc
+                        ON dc.team_id = g.home_team_id
+                        AND dc.position = 'QB'
+                        AND dc.slot = 1
+                    UNION ALL
+                    SELECT
+                        g.id AS game_id,
+                        g.away_team_id AS team_id,
+                        COALESCE(as_.player_id, dc.player_id) AS player_id
+                    FROM nfl.games g
+                    LEFT JOIN actual_starters as_
+                        ON as_.game_id = g.id AND as_.team_id = g.away_team_id
+                    LEFT JOIN nfl.depth_charts dc
+                        ON dc.team_id = g.away_team_id
+                        AND dc.position = 'QB'
+                        AND dc.slot = 1
+                )
+                SELECT
+                    g.id AS game_id,
+                    -- Home QB: cumulative pre-game stats
+                    h_cum.games_played       AS home_qb_games_season,
+                    h_cum.passer_rating_cum   AS home_qb_passer_rating_season,
+                    h_cum.any_a               AS home_qb_any_a_season,
+                    h_cum.ypa                 AS home_qb_ypa_season,
+                    h_cum.td_pct              AS home_qb_td_pct_season,
+                    h_cum.int_pct             AS home_qb_int_pct_season,
+                    h_cum.sack_rate           AS home_qb_sack_rate_season,
+                    CASE WHEN h_cum.games_played > 0
+                        THEN h_cum.cum_rush_yds / h_cum.games_played
+                        ELSE 0 END            AS home_qb_rush_ypg_season,
+                    CASE WHEN h_cum.games_played > 0
+                        THEN h_cum.cum_rush_att / h_cum.games_played
+                        ELSE 0 END            AS home_qb_rush_att_pg_season,
+                    -- Home QB: rolling 5-game pre-game stats
+                    h_roll.games_5            AS home_qb_games_5,
+                    h_roll.passer_rating_5    AS home_qb_passer_rating_5,
+                    h_roll.any_a_5            AS home_qb_any_a_5,
+                    h_roll.ypa_5              AS home_qb_ypa_5,
+                    h_roll.td_pct_5           AS home_qb_td_pct_5,
+                    h_roll.int_pct_5          AS home_qb_int_pct_5,
+                    h_roll.sack_rate_5        AS home_qb_sack_rate_5,
+                    CASE WHEN h_roll.games_5 > 0
+                        THEN h_roll.rush_yds_5 / h_roll.games_5
+                        ELSE 0 END            AS home_qb_rush_ypg_5,
+                    h_roll.rush_att_5         AS home_qb_rush_att_5,
+                    -- Away QB: cumulative pre-game stats
+                    a_cum.games_played       AS away_qb_games_season,
+                    a_cum.passer_rating_cum   AS away_qb_passer_rating_season,
+                    a_cum.any_a               AS away_qb_any_a_season,
+                    a_cum.ypa                 AS away_qb_ypa_season,
+                    a_cum.td_pct              AS away_qb_td_pct_season,
+                    a_cum.int_pct             AS away_qb_int_pct_season,
+                    a_cum.sack_rate           AS away_qb_sack_rate_season,
+                    CASE WHEN a_cum.games_played > 0
+                        THEN a_cum.cum_rush_yds / a_cum.games_played
+                        ELSE 0 END            AS away_qb_rush_ypg_season,
+                    CASE WHEN a_cum.games_played > 0
+                        THEN a_cum.cum_rush_att / a_cum.games_played
+                        ELSE 0 END            AS away_qb_rush_att_pg_season,
+                    -- Away QB: rolling 5-game pre-game stats
+                    a_roll.games_5            AS away_qb_games_5,
+                    a_roll.passer_rating_5    AS away_qb_passer_rating_5,
+                    a_roll.any_a_5            AS away_qb_any_a_5,
+                    a_roll.ypa_5              AS away_qb_ypa_5,
+                    a_roll.td_pct_5           AS away_qb_td_pct_5,
+                    a_roll.int_pct_5          AS away_qb_int_pct_5,
+                    a_roll.sack_rate_5        AS away_qb_sack_rate_5,
+                    CASE WHEN a_roll.games_5 > 0
+                        THEN a_roll.rush_yds_5 / a_roll.games_5
+                        ELSE 0 END            AS away_qb_rush_ypg_5,
+                    a_roll.rush_att_5         AS away_qb_rush_att_5
+                FROM nfl.games g
+                JOIN nfl.seasons s ON s.id = g.season_id
+                -- Home starter + their pre-game stats
+                LEFT JOIN projected_starter h_st
+                    ON h_st.game_id = g.id AND h_st.team_id = g.home_team_id
+                LEFT JOIN LATERAL (
+                    SELECT * FROM nfl.qb_cumulative_stats qc
+                    WHERE qc.player_id = h_st.player_id
+                      AND qc.season = s.year
+                      AND qc.game_date < g.date::date
+                    ORDER BY qc.game_date DESC
+                    LIMIT 1
+                ) h_cum ON true
+                LEFT JOIN LATERAL (
+                    SELECT * FROM nfl.qb_rolling_stats qr
+                    WHERE qr.player_id = h_st.player_id
+                      AND qr.season = s.year
+                      AND qr.game_date < g.date::date
+                    ORDER BY qr.game_date DESC
+                    LIMIT 1
+                ) h_roll ON true
+                -- Away starter + their pre-game stats
+                LEFT JOIN projected_starter a_st
+                    ON a_st.game_id = g.id AND a_st.team_id = g.away_team_id
+                LEFT JOIN LATERAL (
+                    SELECT * FROM nfl.qb_cumulative_stats qc
+                    WHERE qc.player_id = a_st.player_id
+                      AND qc.season = s.year
+                      AND qc.game_date < g.date::date
+                    ORDER BY qc.game_date DESC
+                    LIMIT 1
+                ) a_cum ON true
+                LEFT JOIN LATERAL (
+                    SELECT * FROM nfl.qb_rolling_stats qr
+                    WHERE qr.player_id = a_st.player_id
+                      AND qr.season = s.year
+                      AND qr.game_date < g.date::date
+                    ORDER BY qr.game_date DESC
+                    LIMIT 1
+                ) a_roll ON true
+                ORDER BY g.date
+            """
+            with self.engine.connect() as conn:
+                qb_stats = pd.read_sql_query(QB_SQL, conn)
+            logger.info(
+                "Loaded %d QB stat rows (%d-%d)",
+                len(qb_stats),
+                int(qb_stats["game_id"].min()),
+                int(qb_stats["game_id"].max()),
+            )
+        except Exception as exc:
+            logger.warning("Failed to load QB stats: %s", exc)
+            qb_stats = pd.DataFrame()
+
+        # 4. Run feature engineering
         fn = build_features_fn if build_features_fn is not None else build_features
-        df = fn(df, team_stats=team_stats, **build_kwargs)
+        df = fn(df, team_stats=team_stats, qb_stats=qb_stats, **build_kwargs)
 
         # 3. Determine output columns
         if feature_names is None:
@@ -1187,6 +1505,8 @@ class NFLDataLoader:
             "closing_home_ml", "closing_away_ml",
             "closing_spread_home_odds", "closing_spread_away_odds",
             "closing_over_odds", "closing_under_odds",
+            # Line movement features (kept in loader output so training + engine match)
+            "spread_movement", "sp_h_odds_mvmt", "sp_a_odds_mvmt",
         }
         for c in context_cols:
             if c in df.columns and c not in feature_names:
@@ -1200,8 +1520,11 @@ class NFLDataLoader:
                 "%d feature(s) not found — filling with NaN: %s",
                 len(missing), missing,
             )
-            for col in missing:
-                df[col] = float("nan")
+            missing_df = pd.DataFrame(
+                {col: [float("nan")] * len(df) for col in missing},
+                index=df.index,
+            )
+            df = pd.concat([df, missing_df], axis=1)
 
         return df[feature_names].copy()
 
@@ -2106,6 +2429,86 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
             if c in df.columns and "_x" not in str(c):
                 # season/week might exist from GAME_QUERY — don't drop
                 pass
+
+    # ── 20. QB pre-game stats (cumulative + rolling) ──
+    qb_stats = kwargs.get("qb_stats")
+    if qb_stats is not None and not qb_stats.empty:
+        qb_merge = qb_stats.drop(columns=["team_id"], errors="ignore")
+        df = df.merge(qb_merge, on="game_id", how="left")
+
+        # QB differentials (home minus away)
+        computed_qb = pd.DataFrame({
+            "qb_passer_rating_5_diff": (
+                df["home_qb_passer_rating_5"] - df["away_qb_passer_rating_5"]
+            ),
+            "qb_any_a_5_diff": (
+                df["home_qb_any_a_5"] - df["away_qb_any_a_5"]
+            ),
+            "qb_passer_rating_season_diff": (
+                df["home_qb_passer_rating_season"] - df["away_qb_passer_rating_season"]
+            ),
+            "qb_any_a_season_diff": (
+                df["home_qb_any_a_season"] - df["away_qb_any_a_season"]
+            ),
+            "home_qb_passer_rating_trend": (
+                df["home_qb_passer_rating_5"] - df["home_qb_passer_rating_season"]
+            ),
+            "away_qb_passer_rating_trend": (
+                df["away_qb_passer_rating_5"] - df["away_qb_passer_rating_season"]
+            ),
+            "home_qb_ypa_trend": (
+                df["home_qb_ypa_5"] - df["home_qb_ypa_season"]
+            ),
+            "away_qb_ypa_trend": (
+                df["away_qb_ypa_5"] - df["away_qb_ypa_season"]
+            ),
+        })
+        df = pd.concat([df, computed_qb], axis=1)
+
+        # Fill NaN (Week 1 or no prior QB data)
+        qb_feat_cols = [
+            c for c in qb_merge.columns if c != "game_id"
+        ] + [
+            "qb_passer_rating_5_diff", "qb_any_a_5_diff",
+            "qb_passer_rating_season_diff", "qb_any_a_season_diff",
+            "home_qb_passer_rating_trend", "away_qb_passer_rating_trend",
+            "home_qb_ypa_trend", "away_qb_ypa_trend",
+        ]
+        qb_present = [c for c in qb_feat_cols if c in df.columns]
+        if qb_present:
+            df[qb_present] = df[qb_present].fillna(0.0)
+
+        logger.info("Merged %d QB feature columns", len(qb_present))
+    else:
+        # No QB stats available — zero fill all QB feature columns
+        qb_feat_names = [
+            "home_qb_passer_rating_5", "away_qb_passer_rating_5",
+            "home_qb_any_a_5", "away_qb_any_a_5",
+            "home_qb_ypa_5", "away_qb_ypa_5",
+            "home_qb_td_pct_5", "away_qb_td_pct_5",
+            "home_qb_int_pct_5", "away_qb_int_pct_5",
+            "home_qb_sack_rate_5", "away_qb_sack_rate_5",
+            "home_qb_rush_ypg_5", "away_qb_rush_ypg_5",
+            "home_qb_rush_att_5", "away_qb_rush_att_5",
+            "home_qb_games_5", "away_qb_games_5",
+            "home_qb_passer_rating_season", "away_qb_passer_rating_season",
+            "home_qb_any_a_season", "away_qb_any_a_season",
+            "home_qb_ypa_season", "away_qb_ypa_season",
+            "home_qb_td_pct_season", "away_qb_td_pct_season",
+            "home_qb_int_pct_season", "away_qb_int_pct_season",
+            "home_qb_sack_rate_season", "away_qb_sack_rate_season",
+            "home_qb_rush_ypg_season", "away_qb_rush_ypg_season",
+            "home_qb_rush_att_pg_season", "away_qb_rush_att_pg_season",
+            "home_qb_games_season", "away_qb_games_season",
+            "qb_passer_rating_5_diff", "qb_any_a_5_diff",
+            "qb_passer_rating_season_diff", "qb_any_a_season_diff",
+            "home_qb_passer_rating_trend", "away_qb_passer_rating_trend",
+            "home_qb_ypa_trend", "away_qb_ypa_trend",
+        ]
+        zero_fill = {col: 0.0 for col in qb_feat_names}
+        df = pd.concat([df, pd.DataFrame(zero_fill, index=df.index)], axis=1)
+
+        logger.debug("No QB stats available — zero-filled %d QB features", len(qb_feat_names))
 
     logger.info(
         "build_features complete: %d rows, %d features",

@@ -51,10 +51,8 @@ DEFAULT_COL_SAMPLE = 0.8
 DEFAULT_EARLY_STOPPING = 30
 
 CURRENT_YEAR = datetime.now().year
-DB_DSN: str = os.environ.get(
-    "DATABASE_URL",
-    PSYCOPG2_DATABASE_URL,
-)
+# PSYCOPG2_DATABASE_URL already reflects .env DATABASE_URL (asyncpg suffix stripped)
+DB_DSN: str = PSYCOPG2_DATABASE_URL
 
 # Module-level model cache for inference
 _MODEL: Optional[xgb.Booster] = None

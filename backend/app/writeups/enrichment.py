@@ -6,6 +6,7 @@ of what's pertinent for a game write-up.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from datetime import datetime, timedelta
@@ -201,9 +202,10 @@ async def _call_deepseek_enrichment(
     pitching_block = _format_pitching_block(pitching_matchup)
 
     system_prompt = (
-        "You are a sports research analyst. Your job is to scan recent articles "
-        "about two teams and find information that would be genuinely useful for "
-        "writing a game preview article.\n\n"
+        "You are a sports research analyst. You will be given recent articles "
+        "about two teams playing each other. Your job is to SYNTHESIZE the "
+        "articles into a concise research brief of the key facts and developments "
+        "a game preview writer needs.\n\n"
         "ARTICLE TIMING: These articles were all published BEFORE this game. "
         "They are sorted by proximity to game time (closest first). "
         "Prioritize articles published closest to game time as they have the most "
@@ -223,8 +225,17 @@ async def _call_deepseek_enrichment(
         "- Generic preview content already obvious from team stats\n"
         "- Fluff or clickbait headlines without substance\n"
         "- Speculative trade rumors\n\n"
-        "If there's genuinely useful context, provide a concise summary "
-        "(max {MAX_RETURN_WORDS} words). "
+        "OUTPUT FORMAT — CRITICAL:\n"
+        "- Write a flowing research brief of the SUBSTANCE: what actually "
+        "happened, who's hurt, who's hot, what changed. Synthesize the "
+        "information into your own words.\n"
+        "- NEVER list the articles, NEVER repeat article titles, and NEVER "
+        "mention source names or publication names. The writer does not need "
+        "citations — they need the facts.\n"
+        "- Do not say 'Recent articles include...' or 'According to...' — "
+        "just state the useful information directly.\n"
+        "- Use short bullets of concrete facts, one fact per bullet, max "
+        "{MAX_RETURN_WORDS} words total.\n\n"
         "If nothing substantial is found, still write a brief summary "
         "like 'No newsworthy developments found for this matchup.' "
         "Do NOT respond with NO_RELEVANT_INFO — always write something useful."
@@ -250,55 +261,144 @@ async def _call_deepseek_enrichment(
     )
     user_prompt = "\n".join(user_lines)
 
-    try:
-        client = AsyncOpenAI(
-            api_key=settings.deepseek_api_key,
-            base_url=f"{settings.deepseek_base_url}/v1",
-        )
-        response = await client.chat.completions.create(
-            model=DEEPSEEK_MODEL,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            temperature=0.3,
-            max_tokens=1024,
-            timeout=120.0,  # 2 min — DeepSeek sometimes needs extra time
-        )
+    # Retry with backoff: DeepSeek can return HTTP 200 with empty content,
+    # especially with thinking enabled. If all thinking attempts come back
+    # empty, one final attempt is made without thinking to guarantee content.
+    max_attempts = 3
+    backoff_base = 2.0
+    last_error: Exception | None = None
 
-        content = (response.choices[0].message.content or "").strip()
-        if content in ("NO_RELEVANT_INFO", ""):
-            logger.info("DeepSeek enrichment: no relevant info — building fallback from article text")
-            seen_sources = set()
-            fallback_parts = []
-            for a in (articles or [])[:8]:
-                source = a.get("source_name", "")
-                if source in seen_sources:
+    for attempt in range(1, max_attempts + 1):
+        try:
+            client = AsyncOpenAI(
+                api_key=settings.deepseek_api_key,
+                base_url=f"{settings.deepseek_base_url}/v1",
+            )
+            response = await client.chat.completions.create(
+                model=DEEPSEEK_MODEL,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=0.3,
+                max_tokens=1024,
+                timeout=120.0,  # 2 min — DeepSeek sometimes needs extra time
+            )
+
+            content = (response.choices[0].message.content or "").strip()
+            if content in ("NO_RELEVANT_INFO", ""):
+                logger.warning(
+                    "DeepSeek enrichment: empty response (attempt %d/%d) — %s",
+                    attempt,
+                    max_attempts,
+                    "retrying" if attempt < max_attempts else "trying without thinking",
+                )
+                if attempt < max_attempts:
+                    await asyncio.sleep(backoff_base * attempt)
                     continue
-                seen_sources.add(source)
-                title = a.get("title", "") or ""
-                pub_date = a.get("published_at")
-                snippet = (a.get("body", "") or "")[:200].strip()
-                if isinstance(pub_date, datetime):
-                    date_tag = f" ({pub_date.strftime('%b %d, %Y')})"
-                else:
-                    date_tag = f" ({pub_date})" if pub_date else ""
-                if snippet:
-                    fallback_parts.append(f"• {title}{date_tag} — {source}\n  {snippet}")
-                else:
-                    fallback_parts.append(f"• {title}{date_tag} — {source}")
-            if fallback_parts:
-                result = "Recent articles:\n" + "\n\n".join(fallback_parts)
-                logger.info("Fallback enrichment: built %d chars from %d articles", len(result), len(fallback_parts))
-                return result[:1500]
-            return ""
+                # Final attempt without thinking to guarantee content
+                response = await client.chat.completions.create(
+                    model=DEEPSEEK_MODEL,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    temperature=0.3,
+                    max_tokens=1024,
+                    timeout=120.0,
+                )
+                content = (response.choices[0].message.content or "").strip()
+                if content in ("NO_RELEVANT_INFO", ""):
+                    logger.warning(
+                        "DeepSeek enrichment: still empty without thinking — using fallback"
+                    )
+                    break
 
-        logger.info(
-            "DeepSeek enrichment: found %d chars of context",
-            len(content),
-        )
-        return content[:1500]
+            logger.info(
+                "DeepSeek enrichment: found %d chars of context",
+                len(content),
+            )
+            return content[:1500]
 
-    except Exception as e:
-        logger.warning("DeepSeek enrichment call failed: %s", e)
-        return ""
+        except Exception as e:
+            last_error = e
+            logger.warning(
+                "DeepSeek enrichment call failed (attempt %d/%d): %s",
+                attempt,
+                max_attempts,
+                e,
+            )
+            if attempt < max_attempts:
+                await asyncio.sleep(backoff_base * attempt)
+
+    if last_error is not None:
+        logger.warning("DeepSeek enrichment call failed after %d attempts: %s", max_attempts, last_error)
+
+    logger.info("DeepSeek enrichment: building fallback from article text")
+    return _build_fallback_context(articles)
+
+
+def _build_fallback_context(articles: list[dict]) -> str:
+    """Build a fallback research brief when DeepSeek is unavailable.
+
+    Synthesizes from the article bodies (which the search returns in the
+    ``text`` field) rather than dumping bare titles. Dedupes by source and
+    extracts the most substantive sentence from each article.
+    """
+    seen_sources = set()
+    parts: list[str] = []
+    for a in (articles or [])[:8]:
+        source = a.get("source_name", "") or ""
+        if source in seen_sources:
+            continue
+        seen_sources.add(source)
+
+        title = (a.get("title", "") or "").strip()
+        raw_text = a.get("text", "") or ""
+        snippet = _extract_substantive_sentence(raw_text, 220)
+        if snippet:
+            parts.append(f"• {title}: {snippet}")
+        elif title:
+            parts.append(f"• {title}")
+
+    if not parts:
+        return "No newsworthy developments found for this matchup."
+    return "Key context from recent coverage:\n" + "\n".join(parts)
+
+
+def _extract_substantive_sentence(text: str, max_len: int) -> str:
+    """Pull the most useful sentence(s) out of an article body.
+
+    The search result's ``text`` field is formatted as:
+        # Title\n\nSource: X\n\n<body...>\n\n---\n\n[more]
+    Skip the header lines and grab the first substantive sentences.
+    """
+    body = text
+    # Drop the "# Title" and "Source: X" header if present
+    for marker in ("Source: ", "Published: "):
+        idx = body.find(marker)
+        if idx != -1:
+            # take everything after this header line
+            nl = body.find("\n", idx)
+            body = body[nl + 1:] if nl != -1 else ""
+            break
+
+    # Split into sentences and rebuild up to max_len
+    sentences = body.replace("\n", " ").replace("\r", " ").split(". ")
+    out = []
+    total = 0
+    for s in sentences:
+        s = s.strip()
+        if not s or len(s) < 30:
+            continue
+        if total + len(s) > max_len:
+            break
+        out.append(s.rstrip(".") + ".")
+        total += len(s) + 2
+        if len(out) >= 2:
+            break
+    if out:
+        return " ".join(out)
+    # Last resort: raw prefix
+    flat = " ".join(body.split())
+    return flat[:max_len]

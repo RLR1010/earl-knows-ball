@@ -24,7 +24,7 @@ import time
 
 from sqlalchemy import create_engine, text
 
-from backend.app.core.config import settings
+from app.core.config import settings
 
 DATABASE_URL = settings.database_url_sync
 

@@ -747,7 +747,8 @@ async def _run_mlb_stats_refresh():
             import asyncpg
             from urllib.parse import urlparse
             from app.db_urls import PSYCOPG2_DATABASE_URL
-            db_url = os.environ.get("DATABASE_URL", PSYCOPG2_DATABASE_URL)
+            # PSYCOPG2_DATABASE_URL already reflects .env DATABASE_URL (asyncpg suffix stripped)
+            db_url = PSYCOPG2_DATABASE_URL
             parsed = urlparse(db_url)
             pconn = await asyncpg.connect(
                 user=parsed.username or "earl",

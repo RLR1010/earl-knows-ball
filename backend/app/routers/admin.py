@@ -3473,7 +3473,102 @@ async def data_loader_load_game(
                 ORDER BY t.season, t.week, t.team_abbr
             """)
             _ts_df = _pd.read_sql(CUM_SQL, _sync_engine)
-            full_built_df = nfl_build_features(full_raw_df, team_stats=_ts_df)
+            # Also load QB pre-game stats
+            _qb_stats = _pd.DataFrame()
+            try:
+                QB_SQL = _sql_text("""
+                    WITH actual_starters AS (
+                        SELECT DISTINCT ON (pws.game_id, pws.team_id)
+                            pws.game_id, pws.team_id, pws.player_id
+                        FROM nfl.player_weekly_stats pws
+                        JOIN nfl.players pl ON pl.id = pws.player_id
+                        WHERE pl.position = 'QB'
+                        ORDER BY pws.game_id, pws.team_id, pws.pass_attempts DESC NULLS LAST
+                    ),
+                    projected_starter AS (
+                        SELECT
+                            g.id AS game_id, g.home_team_id AS team_id,
+                            COALESCE(as_.player_id, dc.player_id) AS player_id
+                        FROM nfl.games g
+                        LEFT JOIN actual_starters as_ ON as_.game_id = g.id AND as_.team_id = g.home_team_id
+                        LEFT JOIN nfl.depth_charts dc ON dc.team_id = g.home_team_id AND dc.position = 'QB' AND dc.slot = 1
+                        UNION ALL
+                        SELECT
+                            g.id AS game_id, g.away_team_id AS team_id,
+                            COALESCE(as_.player_id, dc.player_id) AS player_id
+                        FROM nfl.games g
+                        LEFT JOIN actual_starters as_ ON as_.game_id = g.id AND as_.team_id = g.away_team_id
+                        LEFT JOIN nfl.depth_charts dc ON dc.team_id = g.away_team_id AND dc.position = 'QB' AND dc.slot = 1
+                    )
+                    SELECT
+                        g.id AS game_id,
+                        h_cum.games_played       AS home_qb_games_season,
+                        h_cum.passer_rating_cum   AS home_qb_passer_rating_season,
+                        h_cum.any_a               AS home_qb_any_a_season,
+                        h_cum.ypa                 AS home_qb_ypa_season,
+                        h_cum.td_pct              AS home_qb_td_pct_season,
+                        h_cum.int_pct             AS home_qb_int_pct_season,
+                        h_cum.sack_rate           AS home_qb_sack_rate_season,
+                        CASE WHEN h_cum.games_played > 0 THEN h_cum.cum_rush_yds / h_cum.games_played ELSE 0 END AS home_qb_rush_ypg_season,
+                        CASE WHEN h_cum.games_played > 0 THEN h_cum.cum_rush_att / h_cum.games_played ELSE 0 END AS home_qb_rush_att_pg_season,
+                        h_roll.games_5            AS home_qb_games_5,
+                        h_roll.passer_rating_5    AS home_qb_passer_rating_5,
+                        h_roll.any_a_5            AS home_qb_any_a_5,
+                        h_roll.ypa_5              AS home_qb_ypa_5,
+                        h_roll.td_pct_5           AS home_qb_td_pct_5,
+                        h_roll.int_pct_5          AS home_qb_int_pct_5,
+                        h_roll.sack_rate_5        AS home_qb_sack_rate_5,
+                        CASE WHEN h_roll.games_5 > 0 THEN h_roll.rush_yds_5 / h_roll.games_5 ELSE 0 END AS home_qb_rush_ypg_5,
+                        h_roll.rush_att_5         AS home_qb_rush_att_5,
+                        a_cum.games_played       AS away_qb_games_season,
+                        a_cum.passer_rating_cum   AS away_qb_passer_rating_season,
+                        a_cum.any_a               AS away_qb_any_a_season,
+                        a_cum.ypa                 AS away_qb_ypa_season,
+                        a_cum.td_pct              AS away_qb_td_pct_season,
+                        a_cum.int_pct             AS away_qb_int_pct_season,
+                        a_cum.sack_rate           AS away_qb_sack_rate_season,
+                        CASE WHEN a_cum.games_played > 0 THEN a_cum.cum_rush_yds / a_cum.games_played ELSE 0 END AS away_qb_rush_ypg_season,
+                        CASE WHEN a_cum.games_played > 0 THEN a_cum.cum_rush_att / a_cum.games_played ELSE 0 END AS away_qb_rush_att_pg_season,
+                        a_roll.games_5            AS away_qb_games_5,
+                        a_roll.passer_rating_5    AS away_qb_passer_rating_5,
+                        a_roll.any_a_5            AS away_qb_any_a_5,
+                        a_roll.ypa_5              AS away_qb_ypa_5,
+                        a_roll.td_pct_5           AS away_qb_td_pct_5,
+                        a_roll.int_pct_5          AS away_qb_int_pct_5,
+                        a_roll.sack_rate_5        AS away_qb_sack_rate_5,
+                        CASE WHEN a_roll.games_5 > 0 THEN a_roll.rush_yds_5 / a_roll.games_5 ELSE 0 END AS away_qb_rush_ypg_5,
+                        a_roll.rush_att_5         AS away_qb_rush_att_5
+                    FROM nfl.games g
+                    JOIN nfl.seasons s ON s.id = g.season_id
+                    LEFT JOIN projected_starter h_st ON h_st.game_id = g.id AND h_st.team_id = g.home_team_id
+                    LEFT JOIN LATERAL (
+                        SELECT * FROM nfl.qb_cumulative_stats qc
+                        WHERE qc.player_id = h_st.player_id AND qc.season = s.year AND qc.game_date < g.date::date
+                        ORDER BY qc.game_date DESC LIMIT 1
+                    ) h_cum ON true
+                    LEFT JOIN LATERAL (
+                        SELECT * FROM nfl.qb_rolling_stats qr
+                        WHERE qr.player_id = h_st.player_id AND qr.season = s.year AND qr.game_date < g.date::date
+                        ORDER BY qr.game_date DESC LIMIT 1
+                    ) h_roll ON true
+                    LEFT JOIN projected_starter a_st ON a_st.game_id = g.id AND a_st.team_id = g.away_team_id
+                    LEFT JOIN LATERAL (
+                        SELECT * FROM nfl.qb_cumulative_stats qc
+                        WHERE qc.player_id = a_st.player_id AND qc.season = s.year AND qc.game_date < g.date::date
+                        ORDER BY qc.game_date DESC LIMIT 1
+                    ) a_cum ON true
+                    LEFT JOIN LATERAL (
+                        SELECT * FROM nfl.qb_rolling_stats qr
+                        WHERE qr.player_id = a_st.player_id AND qr.season = s.year AND qr.game_date < g.date::date
+                        ORDER BY qr.game_date DESC LIMIT 1
+                    ) a_roll ON true
+                    ORDER BY g.date
+                """)
+                _qb_stats = _pd.read_sql(QB_SQL, _sync_engine)
+                logger.info("Loaded %d QB stat rows for admin inspector", len(_qb_stats))
+            except Exception as exc:
+                logger.warning("Failed to load QB stats in admin route: %s", exc)
+            full_built_df = nfl_build_features(full_raw_df, team_stats=_ts_df, qb_stats=_qb_stats)
         elif sport == "mlb":
             from app.handicapping.mlb.data_loader import build_features as mlb_build_features
             try:

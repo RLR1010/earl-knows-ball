@@ -54,10 +54,8 @@ DEFAULT_COL_SAMPLE = 0.8
 
 CURRENT_YEAR = datetime.now().year
 NBA_SCHEMA = "nba"
-DB_DSN: str = os.environ.get(
-    "DATABASE_URL",
-    PSYCOPG2_DATABASE_URL,
-)
+# PSYCOPG2_DATABASE_URL already reflects .env DATABASE_URL (asyncpg suffix stripped)
+DB_DSN: str = PSYCOPG2_DATABASE_URL
 
 
 # ── Helper: ensure ATS feature columns exist ────────────────────────────────────

@@ -57,10 +57,8 @@ MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
 _now = datetime.now()
 CURRENT_SEASON = _now.year if _now.month >= 10 else _now.year - 1
-DB_DSN: str = os.environ.get(
-    "DATABASE_URL",
-    PSYCOPG2_DATABASE_URL,
-)
+# PSYCOPG2_DATABASE_URL already reflects .env DATABASE_URL (asyncpg suffix stripped)
+DB_DSN: str = PSYCOPG2_DATABASE_URL
 NBA_SCHEMA = "nba"
 
 # ── Async DB setup ───────────────────────────────────────────────────────────────

@@ -1,6 +1,7 @@
 """Base write-up generator — DeepSeek integration, prompt templates, QC."""
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from abc import ABC, abstractmethod
@@ -33,6 +34,11 @@ class BaseWriteupGenerator(ABC):
     TEMPERATURE = 0.5  # moderate creativity for sports writing
     MAX_TOKENS = 16384  # enough for public + premium (4k-6k words total)
     TIMEOUT = 120.0  # generous for longer generation
+    # Retry policy for DeepSeek calls. Empty responses are a known DeepSeek
+    # behavior when thinking mode burns the whole max_tokens budget on
+    # reasoning — retry, then fall back to a no-thinking call.
+    MAX_DEEPSEEK_ATTEMPTS = 3
+    DEEPSEEK_BACKOFF_BASE = 2.0  # seconds; attempt n waits base * n
 
     # ── Subclass hooks ──────────────────────────────────────
 
@@ -265,7 +271,7 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
         public_system = self.public_system_prompt(is_historical)
         public_prompt = self._build_messages(stripped)
 
-        raw_public = await self._call_deepseek(public_system, public_prompt, max_tokens=4096, reasoning="high")
+        raw_public = await self._call_deepseek(public_system, public_prompt, max_tokens=8192, reasoning="high")
         if raw_public is None:
             return {"error": "DeepSeek API call failed for public section"}
 
@@ -357,14 +363,23 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
     async def _call_deepseek(self, system: str, user_prompt: str, *, max_tokens: int | None = None, reasoning: str | None = None) -> str | None:
         """Call DeepSeek via OpenAI SDK and return the raw response content.
 
+        Retries with backoff on API errors and empty responses. A known
+        DeepSeek failure mode is an HTTP 200 with empty ``content`` when
+        thinking mode consumes the entire max_tokens budget on reasoning
+        tokens — so if every thinking-enabled attempt comes back empty, one
+        final attempt is made with thinking disabled to guarantee content.
+
         Returns *None* on failure — caller checks for None.
         """
-        try:
+        max_attempts = getattr(self, "MAX_DEEPSEEK_ATTEMPTS", 3)
+        backoff = getattr(self, "DEEPSEEK_BACKOFF_BASE", 2.0)
+
+        async def _attempt(use_reasoning: str | None) -> str | None:
+            """Single API call; returns content string or None."""
             client = AsyncOpenAI(
                 api_key=settings.deepseek_api_key,
                 base_url=f"{settings.deepseek_base_url}/v1",
             )
-
             kwargs: dict[str, Any] = {
                 "model": self.MODEL,
                 "messages": [
@@ -375,24 +390,58 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
                 "max_tokens": max_tokens or self.MAX_TOKENS,
                 "timeout": self.TIMEOUT,
             }
-            extra_body: dict[str, Any] = {}
-            if reasoning:
-                extra_body["thinking"] = {"type": "enabled"}
-                extra_body["reasoning_effort"] = reasoning
-                kwargs["extra_body"] = extra_body
-
+            if use_reasoning:
+                kwargs["extra_body"] = {
+                    "thinking": {"type": "enabled"},
+                    "reasoning_effort": use_reasoning,
+                }
             response = await client.chat.completions.create(**kwargs)
-
             content = response.choices[0].message.content
             if not content or not content.strip():
-                logger.error("DeepSeek returned empty response")
                 return None
-
             return content
 
-        except Exception as e:
-            logger.error("DeepSeek API call failed: %s", e)
+        last_error: Exception | None = None
+        empty_attempts = 0
+
+        for attempt in range(1, max_attempts + 1):
+            try:
+                content = await _attempt(reasoning)
+                if content is not None:
+                    return content
+                empty_attempts += 1
+                logger.warning(
+                    "DeepSeek returned empty response (attempt %d/%d)%s — %s",
+                    attempt,
+                    max_attempts,
+                    f" with reasoning={reasoning!r}" if reasoning else "",
+                    "retrying" if attempt < max_attempts else "giving up",
+                )
+            except Exception as e:
+                last_error = e
+                logger.warning("DeepSeek API call failed (attempt %d/%d): %s", attempt, max_attempts, e)
+            if attempt < max_attempts:
+                await asyncio.sleep(backoff * attempt)
+
+        # Fallback: thinking mode likely ate the whole token budget. Try once
+        # without thinking to guarantee content comes back.
+        if reasoning and empty_attempts == max_attempts:
+            logger.warning("DeepSeek empty responses with thinking enabled — retrying once without thinking")
+            try:
+                content = await _attempt(None)
+                if content is not None:
+                    return content
+            except Exception as e:
+                last_error = e
+                logger.error("DeepSeek API call failed on no-thinking fallback: %s", e)
+            logger.error("DeepSeek returned empty response after %d attempts (incl. no-thinking fallback)", max_attempts)
             return None
+
+        if empty_attempts == max_attempts:
+            logger.error("DeepSeek returned empty response after %d attempts", max_attempts)
+        else:
+            logger.error("DeepSeek API call failed after %d attempts: %s", max_attempts, last_error)
+        return None
 
     # ── Prompt Building ─────────────────────────────────────
 
