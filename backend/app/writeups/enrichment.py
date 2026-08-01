@@ -281,7 +281,7 @@ async def _call_deepseek_enrichment(
                     {"role": "user", "content": user_prompt},
                 ],
                 temperature=0.3,
-                max_tokens=1024,
+                max_tokens=4096,
                 timeout=120.0,  # 2 min — DeepSeek sometimes needs extra time
             )
 
@@ -304,7 +304,7 @@ async def _call_deepseek_enrichment(
                         {"role": "user", "content": user_prompt},
                     ],
                     temperature=0.3,
-                    max_tokens=1024,
+                    max_tokens=4096,
                     timeout=120.0,
                 )
                 content = (response.choices[0].message.content or "").strip()

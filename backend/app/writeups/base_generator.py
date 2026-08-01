@@ -195,6 +195,7 @@ What to include:
 - In-depth handicapping angles with historical context
 - Betting trends, line movement analysis, and what it means
 - CRITICAL: Use Earl's MODEL PREDICTIONS from the "--- MODEL PREDICTIONS ---" section below as your FOUNDATION for picks. Lead with: "Earl's model says..." or "Our model sees edge on..." Do NOT recommend the opposite side.
+- The "--- MODEL SHAP DRIVERS ---" section explains WHY the model leans the way it does: each feature's contribution, in runs (ATS = home margin, positive favors home; OU = total runs, positive favors Over). Use the top drivers to explain the model's reasoning — e.g. "the model's lean is driven mainly by the home pitcher's recent form (largest single driver, -0.4 runs)". DO NOT claim a negative contribution means a team is bad or will lose, and do NOT present correlated features as independent causes. These are per-game attributions, not team-quality statements.
 - Explicit betting recommendations where supported by the data
 - Why the public is wrong vs right
 - Proprietary handicapping insights that give the reader a real edge
@@ -265,13 +266,13 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
 
         # ---- 2A. Public call — stripped research, no betting data ----
         stripped = dict(research)
-        for key in ("betting_lines", "predictions", "model_predictions", "home_splits", "away_splits"):
+        for key in ("betting_lines", "predictions", "model_predictions", "shap_digest", "home_splits", "away_splits"):
             stripped.pop(key, None)
 
         public_system = self.public_system_prompt(is_historical)
         public_prompt = self._build_messages(stripped)
 
-        raw_public = await self._call_deepseek(public_system, public_prompt, max_tokens=8192, reasoning="high")
+        raw_public = await self._call_deepseek(public_system, public_prompt, max_tokens=16384, reasoning="high")
         if raw_public is None:
             return {"error": "DeepSeek API call failed for public section"}
 
@@ -284,7 +285,12 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
         premium_system = self.premium_system_prompt(is_historical)
         premium_prompt = self._build_messages(research)
 
-        raw_premium = await self._call_deepseek(premium_system, premium_prompt, max_tokens=6144, reasoning="high")
+        # NOTE: deepseek-v4-flash is a reasoning model — it spends a large
+        # chunk of max_tokens on reasoning_content even without the thinking
+        # flag (observed ~7k tokens of reasoning on a 26k-char research brief).
+        # Budgets below 16k caused empty premium content (finish=length with
+        # all tokens consumed by reasoning). 32768 gives ample headroom.
+        raw_premium = await self._call_deepseek(premium_system, premium_prompt, max_tokens=32768, reasoning="high")
         if raw_premium is None:
             logger.warning("premium LLM call failed for game %s — using fallback", game_id)
             premium_content = "Premium content unavailable — API call failed."
@@ -426,14 +432,18 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
         # Fallback: thinking mode likely ate the whole token budget. Try once
         # without thinking to guarantee content comes back.
         if reasoning and empty_attempts == max_attempts:
-            logger.warning("DeepSeek empty responses with thinking enabled — retrying once without thinking")
-            try:
-                content = await _attempt(None)
-                if content is not None:
-                    return content
-            except Exception as e:
-                last_error = e
-                logger.error("DeepSeek API call failed on no-thinking fallback: %s", e)
+            logger.warning("DeepSeek empty responses with thinking enabled — retrying without thinking")
+            for fb_attempt in range(1, max_attempts + 1):
+                try:
+                    content = await _attempt(None)
+                    if content is not None:
+                        return content
+                except Exception as e:
+                    last_error = e
+                    logger.error("DeepSeek API call failed on no-thinking fallback: %s", e)
+                logger.warning("DeepSeek no-thinking fallback empty (attempt %d/%d)", fb_attempt, max_attempts)
+                if fb_attempt < max_attempts:
+                    await asyncio.sleep(backoff * fb_attempt)
             logger.error("DeepSeek returned empty response after %d attempts (incl. no-thinking fallback)", max_attempts)
             return None
 
@@ -567,6 +577,23 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
                         lines.append(f"  {key}: {value}")
             else:
                 lines.append(f"  {predictions}")
+
+        if shap := research.get("shap_digest"):
+            lines.append("\n--- MODEL SHAP DRIVERS (why the model predicts what it predicts) ---")
+            if isinstance(shap, dict) and shap.get("models"):
+                lines.append(f"  NOTE: {shap['note']}")
+                for model_key, m in shap["models"].items():
+                    lines.append(f"  [{model_key.upper()}] expected={m['expected_value']} predicted={m['predicted_value']}")
+                    if m.get("push_up"):
+                        lines.append("    Pushing UP:")
+                        for c in m["push_up"]:
+                            lines.append(f"      {c['display_name']} ({c['name']}) value={c['value']} contrib={c['contribution']:+.4f}")
+                    if m.get("push_down"):
+                        lines.append("    Pushing DOWN:")
+                        for c in m["push_down"]:
+                            lines.append(f"      {c['display_name']} ({c['name']}) value={c['value']} contrib={c['contribution']:+.4f}")
+            else:
+                lines.append(f"  {shap}")
 
         if narrative_data := research.get("narrative_data"):
             lines.append("\n--- NARRATIVE / CONTEXT ---")

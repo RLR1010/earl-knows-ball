@@ -348,9 +348,11 @@ export default function AdminContent() {
   const handleGenerate = async (gameId: number) => {
     setGenerating(gameId);
     try {
-      // Call backend directly (bypass proxy) to avoid the 30s proxy timeout
+      // Call backend directly (bypass proxy) to avoid the 30s proxy timeout.
+      // Generation can take 5-8 min when DeepSeek retries (thinking-mode
+      // empty responses are a known failure mode), so give it 10 minutes.
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 180_000);
+      const timeout = setTimeout(() => controller.abort(), 600_000);
       // is_historical is now auto-detected from game status on the backend
       const res = await fetch(`http://localhost:8001/writeups/${sport}/generate/${gameId}`, {
         method: "POST",
@@ -367,7 +369,7 @@ export default function AdminContent() {
     } catch (e: any) {
       if (e.name === "AbortError") {
         console.error("Generate timeout:", e);
-        alert("Generation timed out after 3 minutes.");
+        alert("Generation timed out after 10 minutes.");
       } else {
         console.error("Generate error:", e);
         alert(`Generation failed: ${e.message}`);
