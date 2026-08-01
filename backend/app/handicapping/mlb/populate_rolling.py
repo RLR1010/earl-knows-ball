@@ -339,11 +339,17 @@ def _bulk_upsert(sql: str, table: str, exclude_cols: set[str], truncate: bool = 
 def populate_team_rolling(engine=None, incremental=False) -> int:
     sql = TEAM_ROLLING_SQL
     if incremental:
-        # Subquery approach: wrap cumulative_game_stats with filter
-        sql = sql.replace(
-            "FROM mlb.cumulative_game_stats cgs",
-            "FROM (SELECT * FROM mlb.cumulative_game_stats WHERE game_id NOT IN"
-            " (SELECT game_id FROM mlb.team_rolling_stats)) cgs"
+        # IMPORTANT: The window functions (cumulative/rolling stats) need the
+        # FULL game history to compute correct values. Filtering the source
+        # table to only new games made every windowed stat come out NULL
+        # (bug found 2026-08-01: all team rolling stats NULL since ~Jul 29).
+        # Instead: compute the full query (windows see all history), then
+        # only emit rows for games not yet in the table.
+        sql = (
+            "SELECT * FROM (\n"
+            + TEAM_ROLLING_SQL.rstrip().rstrip(";")
+            + "\n) AS full_calc\n"
+            "WHERE game_id NOT IN (SELECT game_id FROM mlb.team_rolling_stats)"
         )
     return _bulk_upsert(
         sql=sql,
@@ -528,10 +534,17 @@ ORDER BY player_id, season_id, game_date, game_id
 def populate_pitcher_rolling(engine=None, incremental=False) -> int:
     sql = PITCHER_ROLLING_SQL
     if incremental:
-        sql = sql.replace(
-            "FROM mlb.pitcher_game_stats pgs",
-            "FROM (SELECT * FROM mlb.pitcher_game_stats WHERE game_id NOT IN"
-            " (SELECT game_id FROM mlb.pitcher_rolling_stats)) pgs"
+        # IMPORTANT: The window functions (cumulative/rolling stats) need the
+        # FULL game history to compute correct values. Filtering the source
+        # table to only new games made every windowed stat come out NULL
+        # (bug found 2026-08-01: all pitcher rolling stats NULL since ~Jul 29).
+        # Instead: compute the full query (windows see all history), then
+        # only emit rows for games not yet in the table.
+        sql = (
+            "SELECT * FROM (\n"
+            + PITCHER_ROLLING_SQL.rstrip().rstrip(";")
+            + "\n) AS full_calc\n"
+            "WHERE game_id NOT IN (SELECT game_id FROM mlb.pitcher_rolling_stats)"
         )
     return _bulk_upsert(
         sql=sql,

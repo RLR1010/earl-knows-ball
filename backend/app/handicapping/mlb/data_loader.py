@@ -494,12 +494,12 @@ LEFT JOIN mlb.prior_team_stats pts_a
     ON pts_a.team_abbr = at.abbreviation
     AND pts_a.year = s.year - 1
 
--- Pitcher game stats (home / away starter name from most recent completed game)
+-- Pitcher game stats (home / away starter: the CURRENT game's pitcher, from their own most recent completed start)
 LEFT JOIN LATERAL (
     SELECT pgs.*
     FROM mlb.pitcher_game_stats pgs
     JOIN mlb.games gp ON gp.id = pgs.game_id
-    WHERE pgs.team_abbr = ht.abbreviation
+    WHERE pgs.pitcher_name = g.home_pitcher_name
       AND pgs.is_starter = TRUE
       AND gp.date < g.date - INTERVAL '30 minutes'
       AND gp.status = 'FINAL'
@@ -510,7 +510,7 @@ LEFT JOIN LATERAL (
     SELECT pgs.*
     FROM mlb.pitcher_game_stats pgs
     JOIN mlb.games gp ON gp.id = pgs.game_id
-    WHERE pgs.team_abbr = at.abbreviation
+    WHERE pgs.pitcher_name = g.away_pitcher_name
       AND pgs.is_starter = TRUE
       AND gp.date < g.date - INTERVAL '30 minutes'
       AND gp.status = 'FINAL'
@@ -518,12 +518,12 @@ LEFT JOIN LATERAL (
     LIMIT 1
 ) pgs_a ON TRUE
 
--- Pitcher rolling stats (home / away starter cumulative stats from most recent completed game)
+-- Pitcher rolling stats (home / away: cumulative stats for the CURRENT game's pitcher, from that pitcher's most recent completed start)
 LEFT JOIN LATERAL (
     SELECT prs.*
     FROM mlb.pitcher_rolling_stats prs
     JOIN mlb.games gp ON gp.id = prs.game_id
-    WHERE prs.team_abbr = ht.abbreviation
+    WHERE prs.player_id = pgs_h.pitcher_mlb_id
       AND prs.is_starter = TRUE
       AND gp.date < g.date - INTERVAL '30 minutes'
       AND gp.status = 'FINAL'
@@ -534,7 +534,7 @@ LEFT JOIN LATERAL (
     SELECT prs.*
     FROM mlb.pitcher_rolling_stats prs
     JOIN mlb.games gp ON gp.id = prs.game_id
-    WHERE prs.team_abbr = at.abbreviation
+    WHERE prs.player_id = pgs_a.pitcher_mlb_id
       AND prs.is_starter = TRUE
       AND gp.date < g.date - INTERVAL '30 minutes'
       AND gp.status = 'FINAL'
