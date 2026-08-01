@@ -69,6 +69,7 @@ class NBAGamePrediction(Base):
     situational_json = Column(Text, nullable=True, comment="JSON — NBASituationalAnalyzer.to_dict()")
     splits_json = Column(Text, nullable=True, comment="JSON — NBASplitAnalyzer.to_dict()")
     features_json = Column(Text, nullable=True, comment="JSON — pick_card feature values at prediction time")
+    shap_json = Column(Text, nullable=True, comment="JSON — SHAP feature attribution (top contributors) at prediction time")
     created_at = Column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),

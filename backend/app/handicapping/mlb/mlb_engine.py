@@ -33,6 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.database import async_session
 from app.handicapping.mlb.data_loader import MLBDataLoader, build_features, get_data_loader, get_model_features
 from app.handicapping.calibrate_confidence import calibrate, build_calibration
+from app.handicapping.shap_attribution import compute_attribution
 from app.models.mlb.consolidated import MLBBettingLineConsolidated
 
 # ── Cached pick-card feature names ──
@@ -363,6 +364,23 @@ async def batch_predict_upcoming_games(
             pred_home_wins = pred_margin > 0
 
             pic_feats = await _load_pick_card_feature_metadata(db)  # lazy-cached
+
+            # SHAP attribution: which features drove this prediction
+            shap_info = {}
+            try:
+                ats_names = _get_features()["ats"]
+                ou_names = _get_features()["ou"]
+                if ats_model is not None and ats_feats is not None:
+                    shap_info["ats"] = compute_attribution(
+                        ats_model, ats_feats[np.newaxis, :], ats_names, pic_feats
+                    )
+                if ou_model is not None and ou_feats is not None:
+                    shap_info["ou"] = compute_attribution(
+                        ou_model, ou_feats[np.newaxis, :], ou_names, pic_feats
+                    )
+            except Exception as exc:
+                _logger.warning(f"SHAP attribution failed for game {gid}: {exc}")
+
             await _save_api_prediction(
                 db=db,
                 row=row_s,
@@ -375,6 +393,7 @@ async def batch_predict_upcoming_games(
                 pred_over=pred_over,
                 pred_home_wins=pred_home_wins,
                 pick_card_features_meta=pic_feats,
+                shap_info=shap_info,
             )
 
             pick_results.append(
@@ -385,6 +404,7 @@ async def batch_predict_upcoming_games(
                     "pred_home_covers": pred_home_covers,
                     "pred_over": pred_over,
                     "pred_home_wins": pred_home_wins,
+                    "shap_info": shap_info if shap_info else None,
                 }
             )
         except Exception as exc:
@@ -406,6 +426,7 @@ async def _save_api_prediction(
     pred_over: bool,
     pred_home_wins: bool,
     pick_card_features_meta: Dict[str, Dict[str, str]] | None = None,
+    shap_info: Dict[str, Any] | None = None,
 ) -> int:
     """Save a live (pre-game) prediction to ``mlb.game_predictions``.
 
@@ -522,6 +543,7 @@ async def _save_api_prediction(
         ),
         splits_json=json.dumps(_build_mlb_splits(_row_dict)),
         features_json=_extract_pick_card_features(row, pick_card_features_meta) if pick_card_features_meta else None,
+        shap_json=json.dumps(shap_info, default=str) if shap_info else None,
         source="api",
         created_at=now,
     )
@@ -665,6 +687,23 @@ async def _backtest_single_season(
 
         # ── Save predictions to game_predictions ──
         pick_card_feats = await _load_pick_card_feature_metadata(db)
+
+        # SHAP attribution: which features drove this prediction
+        shap_info = {}
+        try:
+            ats_names = _get_features()["ats"]
+            ou_names = _get_features()["ou"]
+            if ats_model is not None and feats_ats is not None:
+                shap_info["ats"] = compute_attribution(
+                    ats_model, feats_ats[np.newaxis, :], ats_names, pick_card_feats
+                )
+            if ou_model is not None and feats_ou is not None:
+                shap_info["ou"] = compute_attribution(
+                    ou_model, feats_ou[np.newaxis, :], ou_names, pick_card_feats
+                )
+        except Exception as exc:
+            _logger.warning(f"SHAP attribution failed (backtest) for game {row.get('game_id')}: {exc}")
+
         saved += await _save_backtest_prediction(
             db, row, year,
             home_score, away_score, spread, total,
@@ -672,6 +711,7 @@ async def _backtest_single_season(
             home_covers, actual_over, home_wins,
             pick_card_features_meta=pick_card_feats,
             curve_data=curve_data,
+            shap_info=shap_info,
         )
 
     await db.commit()
@@ -827,6 +867,7 @@ async def _save_backtest_prediction(
     home_covers: bool, actual_over: bool, home_wins: bool,
     pick_card_features_meta: Dict[str, Dict[str, str]] | None = None,
     curve_data: dict = None,
+    shap_info: Dict[str, Any] | None = None,
 ) -> int:
     """Save a single game\'s prediction to ``mlb.game_predictions``.
 
@@ -983,6 +1024,7 @@ async def _save_backtest_prediction(
         ),
         splits_json=json.dumps(_build_mlb_splits(_row_dict)),
         features_json=_extract_pick_card_features(row, pick_card_features_meta) if pick_card_features_meta else None,
+        shap_json=json.dumps(shap_info, default=str) if shap_info else None,
         source="backtest",
         created_at=now,
     )

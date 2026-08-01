@@ -31,6 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sess
 
 from app.models.nfl.game_prediction import NFLGamePrediction
 from app.handicapping.nfl.data_loader import NFLDataLoader, get_data_loader, get_model_features
+from app.handicapping.shap_attribution import compute_attribution
 from app.database import async_session
 from app.handicapping.calibrate_confidence import calibrate, build_calibration
 
@@ -142,6 +143,23 @@ def _resolve_year_pkl_paths(model_type: str) -> Dict[int, Path]:
     else:
         logger.warning("  No year pkl files found for nfl/%s", model_type)
     return out
+
+
+def _resolve_live_nfl_year() -> int:
+    """Return the most recent calendar year with a live NFL model pkl.
+
+    Falls back to the current calendar year.  Used by
+    ``batch_predict_upcoming_games`` when the caller omits ``year``.
+    """
+    paths = _resolve_year_pkl_paths("ats") or _resolve_year_pkl_paths("ou")
+    if paths:
+        return max(paths.keys())
+    from datetime import date
+
+    return date.today().year
+
+
+CURRENT_NFL_YEAR = _resolve_live_nfl_year()
 
 
 def _load_model_for_year(model_type: str, year: int) -> Optional[xgb.Booster]:
@@ -471,6 +489,7 @@ async def batch_predict_upcoming_games(
             # ATS prediction
             # ATS prediction (regression: predicted home margin, home_score - away_score)
             ats_margin = 0.0
+            ats_feats = ats_names = None
             if ats_model is not None:
                 feats, names = _extract_feature_vector(row, "ats")
                 if feats is not None:
@@ -482,9 +501,11 @@ async def batch_predict_upcoming_games(
                         names = model_feats
                     dmat = xgb.DMatrix(feats, feature_names=names)
                     ats_margin = float(ats_model.predict(dmat)[0])
+                    ats_feats, ats_names = feats, names
 
             # OU prediction (regression: predicts total_points directly)
             predicted_total = None
+            ou_feats = ou_names = None
             if ou_model is not None:
                 feats, names = _extract_feature_vector(row, "ou")
                 if feats is not None:
@@ -496,6 +517,7 @@ async def batch_predict_upcoming_games(
                         names = model_feats
                     dmat = xgb.DMatrix(feats, feature_names=names)
                     predicted_total = float(ou_model.predict(dmat)[0])
+                    ou_feats, ou_names = feats, names
 
             # Build pick card
             pred_margin = ats_margin  # direct margin prediction (home_score - away_score)
@@ -566,6 +588,15 @@ async def batch_predict_upcoming_games(
             # Calibrated confidences computed in _save_api_prediction via calibrate()
             # Features for pick-card
             result["features"] = json.loads(_extract_pick_card_features(row, pc_feats))
+
+            # SHAP attribution: which features drove this prediction
+            shap_info = {}
+            if ats_model is not None and ats_feats is not None:
+                shap_info["ats"] = compute_attribution(ats_model, ats_feats, ats_names, pc_feats)
+            if ou_model is not None and ou_feats is not None:
+                shap_info["ou"] = compute_attribution(ou_model, ou_feats, ou_names, pc_feats)
+            if shap_info:
+                result["shap_info"] = shap_info
 
             # Save to DB if a session was provided (API pattern)
             if db is not None:
@@ -765,6 +796,9 @@ async def _save_api_prediction(result: Dict[str, Any]) -> None:
             situational_json=json.dumps(situational) if situational else None,
             splits_json=json.dumps(splits) if splits else None,
             features_json=json.dumps(features, default=str) if features else None,
+            shap_json=json.dumps(result.get("shap_info"), default=str)
+            if result.get("shap_info")
+            else None,
             source=source,
             created_at=now,
         )
@@ -805,6 +839,7 @@ async def _save_backtest_prediction(
 
         # ── ATS prediction (regression: predicted home margin) ──────────────────
         ats_margin = 0.0
+        ats_feats = ats_names = None
         if ats_model is not None:
             feats, names = _extract_feature_vector(row, "ats")
             if feats is not None:
@@ -816,9 +851,11 @@ async def _save_backtest_prediction(
                     names = model_feats
                 dmat = xgb.DMatrix(feats, feature_names=names)
                 ats_margin = float(ats_model.predict(dmat)[0])
+                ats_feats, ats_names = feats, names
 
         # ── OU prediction (regression: predicts total_points directly) ────────
         predicted_total = None
+        ou_feats = ou_names = None
         if ou_model is not None:
             feats, names = _extract_feature_vector(row, "ou")
             if feats is not None:
@@ -830,6 +867,7 @@ async def _save_backtest_prediction(
                     names = model_feats
                 dmat = xgb.DMatrix(feats, feature_names=names)
                 predicted_total = float(ou_model.predict(dmat)[0])
+                ou_feats, ou_names = feats, names
 
         # ── Actuals ─────────────────────────────────────────────────────────────
         home_score = _int_safe(row.get("home_score"))
@@ -974,6 +1012,14 @@ async def _save_backtest_prediction(
         # Features JSON — pick_card feature values enriched with display_name/description
         features_json_str = _extract_pick_card_features(row, pc_feats)
 
+        # ── SHAP attribution: which features drove this prediction ──────────────
+        shap_info = {}
+        if ats_model is not None and ats_feats is not None:
+            shap_info["ats"] = compute_attribution(ats_model, ats_feats, ats_names, pc_feats)
+        if ou_model is not None and ou_feats is not None:
+            shap_info["ou"] = compute_attribution(ou_model, ou_feats, ou_names, pc_feats)
+        shap_json_str = json.dumps(shap_info, default=str) if shap_info else None
+
         # ── Save via ORM ────────────────────────────────────────────────────────
         if sync_sesh is not None:
             # Backtest called without db — use sync session from same DSN
@@ -1030,6 +1076,7 @@ async def _save_backtest_prediction(
                 situational_json=json.dumps(situational) if situational else None,
                 splits_json=json.dumps(splits) if splits else None,
                 features_json=features_json_str,
+                shap_json=shap_json_str,
                 source="backtest",
                 created_at=datetime.now(timezone.utc),
             )
@@ -1090,6 +1137,7 @@ async def _save_backtest_prediction(
                 situational_json=json.dumps(situational) if situational else None,
                 splits_json=json.dumps(splits) if splits else None,
                 features_json=features_json_str,
+                shap_json=shap_json_str,
                 source="backtest",
                 created_at=datetime.now(timezone.utc),
             )

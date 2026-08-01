@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.handicapping.calibrate_confidence import calibrate, build_calibration
+from app.handicapping.shap_attribution import compute_attribution
 
 import numpy as np
 import pandas as pd
@@ -520,6 +521,16 @@ async def _build_pick_card(
         "year": year,
     }
 
+    # ── SHAP attribution: which features drove this prediction ──────────────
+    shap_info: Dict[str, Any] = {}
+    _pc_meta = _load_pick_card_feature_metadata()
+    if ats_model is not None and ats_vals is not None:
+        shap_info["ats"] = compute_attribution(ats_model, ats_vals, ats_names, _pc_meta)
+    if ou_model is not None and ou_vals is not None:
+        shap_info["ou"] = compute_attribution(ou_model, ou_vals, ou_names, _pc_meta)
+    if shap_info:
+        pick_card["shap_info"] = shap_info
+
     return pick_card
 
 
@@ -958,6 +969,9 @@ async def _save_api_prediction(
         situational_json=situational_json,
         splits_json=splits_json,
         features_json=features_json_str,
+        shap_json=json.dumps(pick_card.get("shap_info"), default=str)
+        if pick_card.get("shap_info")
+        else None,
         source=source,
         created_at=now,
     )
@@ -1151,6 +1165,16 @@ async def _save_backtest_prediction(
         # ── Features JSON (enriched from nba.features WHERE pick_card = true) ──
         features_json_str = _extract_pick_card_features(row, pc_feats) or None
 
+        # ── SHAP attribution: which features drove this prediction ──────────────
+        shap_info: Dict[str, Any] = {}
+        if ats_model is not None and ats_features is not None:
+            ats_vals, ats_names = ats_features
+            shap_info["ats"] = compute_attribution(ats_model, ats_vals, ats_names, pc_feats)
+        if ou_model is not None and ou_features is not None:
+            ou_vals, ou_names = ou_features
+            shap_info["ou"] = compute_attribution(ou_model, ou_vals, ou_names, pc_feats)
+        shap_json_str = json.dumps(shap_info, default=str) if shap_info else None
+
         # ── Predicted scores & confidence ────────────────────────────────────
         predicted_margin = ats_proba  # ATS regression model outputs margin (home_score - away_score) directly
         predicted_total = ou_total
@@ -1219,6 +1243,7 @@ async def _save_backtest_prediction(
             situational_json=situational if isinstance(situational, str) else json.dumps(situational, default=str) if situational else None,
             splits_json=splits if isinstance(splits, str) else json.dumps(splits, default=str) if splits else None,
             features_json=features_json_str,
+            shap_json=shap_json_str,
             source="backtest",
             created_at=datetime.now(timezone.utc),
         )
