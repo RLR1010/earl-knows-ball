@@ -3363,6 +3363,11 @@ async def data_loader_load_game(
     from app.core.config import settings
     db_url = str(settings.database_url).replace("+asyncpg", "")
 
+    # Defaults for non-NFL sports. The NFL branch below overrides these via
+    # its import; MLB/NBA have no FEATURE_ALIASES/team-stat column sets.
+    FEATURE_ALIASES = {}
+    nfl_team_stat_cols = set()
+
     try:
         # Import and instantiate the right data loader
         if sport == "nfl":
