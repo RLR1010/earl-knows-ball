@@ -6,12 +6,10 @@ import sys
 import httpx
 from sqlalchemy import text
 from app.database import engine
+from app.ollama_embed import embed_async
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("earl.embed")
-
-OLLAMA_URL = "http://localhost:11434"
-MODEL = "snowflake-arctic-embed2"
 
 
 async def embed_articles(schema: str):
@@ -41,12 +39,7 @@ async def embed_articles(schema: str):
 
             for attempt in range(3):
                 try:
-                    resp = await client.post(
-                        f"{OLLAMA_URL}/api/embeddings",
-                        json={"model": MODEL, "prompt": text_to_embed},
-                    )
-                    resp.raise_for_status()
-                    embedding = resp.json()["embedding"]
+                    embedding = await embed_async(text_to_embed, client=client)
 
                     async with engine.begin() as conn:
                         await conn.execute(text(f"""

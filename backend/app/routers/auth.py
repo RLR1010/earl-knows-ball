@@ -214,6 +214,14 @@ async def get_current_user(request: Request, db: AsyncSession = Depends(get_db))
     raise HTTPException(status_code=401, detail="Not authenticated")
 
 
+async def get_optional_user(request: Request, db: AsyncSession = Depends(get_db)) -> User | None:
+    """Dependency: return the authenticated user, or None if not logged in (never raises)."""
+    try:
+        return await get_current_user(request, db)
+    except HTTPException:
+        return None
+
+
 # ── Endpoints ────────────────────────────────────────────────────────
 
 @router.post("/send-code", response_model=SendCodeResponse)

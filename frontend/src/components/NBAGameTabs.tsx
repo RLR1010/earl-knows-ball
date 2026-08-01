@@ -5,6 +5,8 @@ import Link from "next/link";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import PremiumGate from "./PremiumGate";
+import ShapBreakdown from "./ShapBreakdown";
+import { useAuth } from "../lib/auth-context";
 
 interface NBABoxScoreData {
   game_id: number;
@@ -373,6 +375,7 @@ export default function NBAGameTabs({ gameId, prediction }: NBAGameTabsProps) {
 
   // ── Detailed Stats Tab ──────────────────────────────────────────────────
   function DetailedStatsTab({ gameId }: { gameId: number }) {
+    const { user } = useAuth();
     const [statsData, setStatsData] = useState<any>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(false);
@@ -581,6 +584,11 @@ export default function NBAGameTabs({ gameId, prediction }: NBAGameTabsProps) {
 
     return (
       <div className="space-y-6 text-xs">
+        {/* SHAP Feature Attribution (admin only) */}
+        {user?.is_admin && statsData?.shap && (
+          <ShapBreakdown data={statsData.shap} />
+        )}
+
         {/* Predictions Summary */}
         <div>
           <SectionHeader title="Predictions Summary" />

@@ -4,6 +4,8 @@ import Link from "next/link";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import PremiumGate from "./PremiumGate";
+import ShapBreakdown from "./ShapBreakdown";
+import { useAuth } from "../lib/auth-context";
 
 // ── Types ─────────────────────────────────────────────────────
 
@@ -675,6 +677,7 @@ export default function NFLGameTabs({ gameId, boxscore, prediction, isFinal }: N
 // ── Detailed Stats Tab ─────────────────────────────────────────
 
 function DetailedStatsTab({ gameId, boxscore }: { gameId: string; boxscore: NFLBoxScoreData }) {
+  const { user } = useAuth();
   const [statsData, setStatsData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
@@ -901,6 +904,11 @@ function DetailedStatsTab({ gameId, boxscore }: { gameId: string; boxscore: NFLB
   // ── Render ──────────────────────────────────────────────────────────────
   return (
     <div className="space-y-6 text-xs">
+      {/* SHAP Feature Attribution (admin only) */}
+      {user?.is_admin && statsData?.shap && (
+        <ShapBreakdown data={statsData.shap} />
+      )}
+
       {/* Predictions Summary */}
       <div>
         <SectionHeader title="Predictions Summary" />

@@ -12,12 +12,12 @@ import logging
 import traceback
 from datetime import datetime, timezone
 
-import httpx
 from sqlalchemy import create_engine, text
 import os
 
 # DB URL from single source of truth; DB_HOST override for container deployments
 from app.db_urls import PSYCOPG2_DATABASE_URL
+from app.ollama_embed import embed_batch_sync, embed_sync
 
 DB_HOST = os.environ.get("DB_HOST", "localhost")
 SYNC_DB_URL = PSYCOPG2_DATABASE_URL.replace("@localhost:", f"@{DB_HOST}:")
@@ -29,7 +29,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger("earl.embed_pgvector")
 
-OLLAMA_URL = "http://localhost:11434/api/embed"
 BATCH_SIZE = 20
 SLEEP_BETWEEN = 60  # seconds between full cycles
 
@@ -41,34 +40,27 @@ SPORTS = [
 
 
 def embed_text(text_to_embed: str) -> list[float] | None:
-    """Embed a single text string via Ollama."""
+    """Embed a single text string via the load-balanced dual-GPU client."""
     text_to_embed = text_to_embed.strip()[:2500]
     if len(text_to_embed) < 10:
         return None
 
     for attempt in range(3):
         try:
-            resp = httpx.post(
-                OLLAMA_URL,
-                json={"model": "snowflake-arctic-embed2", "input": text_to_embed},
-                timeout=120.0,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            # /api/embed returns {"embeddings": [[...]]} for arctic-embed2
-            embs = data.get("embeddings", data.get("embedding", []))
-            if isinstance(embs, list) and len(embs) > 0 and isinstance(embs[0], list):
-                return embs[0]  # [[floats]] → [floats]
-            return embs  # [floats] as-is
+            return embed_sync(text_to_embed, timeout=120.0)
         except Exception as e:
-            logger.warning(f"Ollama attempt {attempt + 1} failed: {e}")
+            logger.warning(f"Embedding attempt {attempt + 1} failed: {e}")
             time.sleep(1)
 
     return None
 
 
 def embed_sport(schema: str) -> int:
-    """Embed one batch of articles for a given schema. Returns count embedded."""
+    """Embed one batch of articles for a given schema. Returns count embedded.
+
+    Embeds the whole batch in one call split across both GPU instances
+    concurrently (~2x throughput), then upserts vectors in a single transaction.
+    """
     with engine.begin() as conn:
         rows = conn.execute(
             text(
@@ -80,30 +72,46 @@ def embed_sport(schema: str) -> int:
     if not rows:
         return 0
 
-    count = 0
+    # Build the content list; mark empty/too-short articles as skipped (epoch)
+    pending: list[tuple[int, str]] = []  # (article_id, content)
+    skip_ids: list[int] = []
     for row in rows:
         article_id = row[0]
         title = row[1] or ""
         body = row[2] or ""
-        content = f"{title}\n\n{body}"[:2500]
+        content = f"{title}\n\n{body}"[:2500].strip()
+        if len(content) < 10:
+            skip_ids.append(article_id)
+            continue
+        pending.append((article_id, content))
 
-        if len(content.strip()) < 10:
-            # Mark as embedded with epoch (effectively skipped)
-            with engine.begin() as conn:
+    if skip_ids:
+        with engine.begin() as conn:
+            for aid in skip_ids:
                 conn.execute(
                     text(f"UPDATE {schema}.articles SET embedded_at = 'epoch' WHERE id = :id"),
-                    {"id": article_id},
+                    {"id": aid},
                 )
-            continue
 
-        embedding = embed_text(content)
-        if embedding is None:
-            logger.error(f"[{schema}] Failed to embed article {article_id}, skipping")
-            continue
+    if not pending:
+        return 0
 
-        # Insert / upsert into article_embeddings
-        with engine.begin() as conn:
-            # Check if embedding exists
+    # Batch embed with retries; module handles GPU split + failover
+    embeddings = None
+    for attempt in range(3):
+        try:
+            embeddings = embed_batch_sync([c for _, c in pending], timeout=180.0)
+            break
+        except Exception as e:
+            logger.warning(f"Batch embed attempt {attempt + 1} failed: {e}")
+            time.sleep(1)
+    if embeddings is None:
+        logger.error(f"[{schema}] Failed to embed batch of {len(pending)} articles")
+        return 0
+
+    count = 0
+    with engine.begin() as conn:
+        for (article_id, _), embedding in zip(pending, embeddings):
             existing = conn.execute(
                 text(f"SELECT id FROM {schema}.article_embeddings WHERE article_id = :id LIMIT 1"),
                 {"id": article_id},
@@ -124,13 +132,9 @@ def embed_sport(schema: str) -> int:
                 text(f"UPDATE {schema}.articles SET embedded_at = NOW() WHERE id = :id"),
                 {"id": article_id},
             )
+            count += 1
 
-        count += 1
-        if count % 5 == 0:
-            logger.info(f"[{schema}] Embedded {count}/{len(rows)} this batch")
-
-        time.sleep(0.2)  # Rate limiting
-
+    logger.info(f"[{schema}] Embedded {count}/{len(rows)} this batch")
     return count
 
 

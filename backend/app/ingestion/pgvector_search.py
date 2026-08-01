@@ -77,33 +77,29 @@ async def search_articles(
             dttm_to = date_to.strftime("%Y-%m-%d") if isinstance(date_to, datetime) else str(date_to)
         where_sql += f" AND a.published_at <= '{dttm_to}'"
 
-    # Try vector search via Ollama embedding
+    # Try vector search via the load-balanced dual-GPU embedding client
     try:
-        import requests as req
+        from app.ollama_embed import embed_sync
 
-        embed_resp = req.post(
-            "http://localhost:11434/api/embeddings",
-            json={"model": "snowflake-arctic-embed2:latest", "prompt": query},
-            timeout=30,
-        )
-        embed_resp.raise_for_status()
-        embedding = embed_resp.json()["embedding"]
+        embedding = embed_sync(query, timeout=30)
 
         emb_str = "[" + ",".join(str(v) for v in embedding) + "]"
 
         sql = text(
             f"""
             SELECT a.id, a.title, a.body, a.source_name, a.published_at,
-                   ae.embedding <-> '{emb_str}'::vector AS distance
+                   ae.embedding <=> '{emb_str}'::vector AS distance
             FROM {embed_table} ae
             JOIN {article_table} a ON a.id = ae.article_id
             {where_sql}
-            ORDER BY ae.embedding <-> '{emb_str}'::vector
+            ORDER BY ae.embedding <=> '{emb_str}'::vector
             LIMIT :top_k
             """
         )
 
         if hasattr(db, "execute"):
+            # Tune HNSW search quality: higher ef_search = better recall (200 vs default 40)
+            await db.execute(text("SELECT set_config('hnsw.ef_search', '100', false)"))
             result = await db.execute(sql, {"top_k": top_k})
             rows = result.mappings().fetchall()
         else:

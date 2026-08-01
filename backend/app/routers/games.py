@@ -4,7 +4,8 @@ from sqlalchemy import select, func, text
 from sqlalchemy.orm import joinedload
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
-from app.models import Game, Season, Team, PlayerWeeklyStats, Player, BettingLine, NFLGamePrediction
+from app.models import Game, Season, Team, PlayerWeeklyStats, Player, BettingLine, NFLGamePrediction, User
+from app.routers.auth import get_optional_user
 from app.models.nba.game import NBAGame
 from app.models.nba.team import NBATeam
 from app.models.nba.season import NBASeason
@@ -712,7 +713,11 @@ async def get_nba_prediction(
 
 
 @router.get("/handicapping/nfl/prediction-stats/{game_id}")
-async def get_nfl_prediction_stats(game_id: int, db: AsyncSession = Depends(get_db)):
+async def get_nfl_prediction_stats(
+    game_id: int,
+    db: AsyncSession = Depends(get_db),
+    user: User | None = Depends(get_optional_user),
+):
     """Return detailed prediction stats for an NFL game: features, splits, situational data."""
     result = await db.execute(
         select(NFLGamePrediction).where(NFLGamePrediction.game_id == game_id).limit(1)
@@ -736,6 +741,7 @@ async def get_nfl_prediction_stats(game_id: int, db: AsyncSession = Depends(get_
     home_stats = _safe_json(pred.home_stats_json)
     away_stats = _safe_json(pred.away_stats_json)
     situational = _safe_json(pred.situational_json)
+    shap = _safe_json(pred.shap_json)
 
     # Get season/year info
     game_result = await db.execute(
@@ -769,11 +775,16 @@ async def get_nfl_prediction_stats(game_id: int, db: AsyncSession = Depends(get_
         "home_stats": home_stats or {},
         "away_stats": away_stats or {},
         "situational": situational or {},
+        "shap": shap if (user and user.is_admin) else None,
     }
 
 
 @router.get("/handicapping/nba/prediction-stats/{game_id}")
-async def get_nba_prediction_stats(game_id: int, db: AsyncSession = Depends(get_db)):
+async def get_nba_prediction_stats(
+    game_id: int,
+    db: AsyncSession = Depends(get_db),
+    user: User | None = Depends(get_optional_user),
+):
     """Return detailed prediction stats for an NBA game: features, splits, situational data."""
     result = await db.execute(
         select(NBAGamePrediction).where(NBAGamePrediction.game_id == game_id).limit(1)
@@ -797,6 +808,7 @@ async def get_nba_prediction_stats(game_id: int, db: AsyncSession = Depends(get_
     home_stats = _safe_json(pred.home_stats_json)
     away_stats = _safe_json(pred.away_stats_json)
     situational = _safe_json(pred.situational_json)
+    shap = _safe_json(pred.shap_json)
 
     abs_margin = abs(pred.predicted_margin or 0)
     pred_total_raw = pred.predicted_total or 0
@@ -826,4 +838,5 @@ async def get_nba_prediction_stats(game_id: int, db: AsyncSession = Depends(get_
         "home_stats": home_stats or {},
         "away_stats": away_stats or {},
         "situational": situational or {},
+        "shap": shap if (user and user.is_admin) else None,
     }

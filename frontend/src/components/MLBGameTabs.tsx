@@ -4,6 +4,8 @@ import { useState, useEffect, useRef } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import PremiumGate from "./PremiumGate";
+import ShapBreakdown from "./ShapBreakdown";
+import { useAuth } from "../lib/auth-context";
 
 interface MLBGameTabsProps {
   gameId: number;
@@ -15,6 +17,7 @@ interface MLBGameTabsProps {
 }
 
 export default function MLBGameTabs({ gameId, pickCard, game, formatOdds, boxscore, linescore }: MLBGameTabsProps) {
+  const { user } = useAuth();
   const [activeTab, setActiveTab] = useState<string>("boxscore");
   const [writeup, setWriteup] = useState<any>(null);
   const [predictionStats, setPredictionStats] = useState<any>(null);
@@ -674,6 +677,11 @@ export default function MLBGameTabs({ gameId, pickCard, game, formatOdds, boxsco
 
     return (
       <div className="space-y-6 text-xs">
+        {/* ── SHAP Feature Attribution (admin only) ── */}
+        {user?.is_admin && ps.shap_json && (
+          <ShapBreakdown data={ps.shap_json} />
+        )}
+
         {/* ── Predictions Summary ── */}
         <div>
           <SectionHeader title="Predictions Summary" />

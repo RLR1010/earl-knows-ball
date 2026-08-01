@@ -10,6 +10,8 @@ import httpx
 from sqlalchemy import select, text
 from app.database import get_db, async_session
 from app.models.mlb import MLBPlayer, MLBBettingLine
+from app.models import User
+from app.routers.auth import get_optional_user
 from app.handicapping.mlb.mlb_splits import MLBSplitAnalyzer
 from app.handicapping.mlb.mlb_situational import MLBSituationalAnalyzer
 import math
@@ -1700,6 +1702,7 @@ async def mlb_feature_definitions():
 async def mlb_game_prediction_stats(
     game_id: int,
     db: AsyncSession = Depends(get_db),
+    user: User | None = Depends(get_optional_user),
 ):
     """Return detailed prediction stats for the stats tab.
 
@@ -1735,6 +1738,7 @@ async def mlb_game_prediction_stats(
         "away_stats_json": _sanitize_json(json.loads(pred.away_stats_json)) if pred.away_stats_json else None,
         "situational_json": _sanitize_json(json.loads(pred.situational_json)) if pred.situational_json else None,
         "splits_json": _sanitize_json(json.loads(pred.splits_json)) if pred.splits_json else None,
+        "shap_json": _sanitize_json(json.loads(pred.shap_json)) if (pred.shap_json and user and user.is_admin) else None,
 
         "actual_home_runs": pred.actual_home_runs,
         "actual_away_runs": pred.actual_away_runs,
