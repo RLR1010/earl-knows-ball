@@ -192,6 +192,16 @@ CREATE INDEX IF NOT EXISTS idx_p_rolling_starter_game
     WHERE is_starter = true;
 """
 
+# Indexes for the data loader's name-based pitcher lookups (added 2026-08-01
+# when GAME_QUERY switched from team-based to current-game-pitcher joins).
+CREATE_PITCHER_NAME_INDEXES_SQL = """
+CREATE INDEX IF NOT EXISTS idx_mlb_pgs_pitcher_name
+    ON mlb.pitcher_game_stats (pitcher_name);
+CREATE INDEX IF NOT EXISTS idx_mlb_pgs_pitcher_name_starter
+    ON mlb.pitcher_game_stats (pitcher_name)
+    WHERE is_starter = TRUE;
+"""
+
 # ── Populate team_rolling_stats ─────────────────────────────────────────────
 
 POPULATE_TEAM_ROLLING_SQL = """
@@ -527,6 +537,7 @@ def ensure_tables(engine: Engine) -> None:
         conn.execute(text(CREATE_TEAM_ROLLING_INDEXES_SQL))
         conn.execute(text(CREATE_PITCHER_ROLLING_STATS_SQL))
         conn.execute(text(CREATE_PITCHER_ROLLING_INDEXES_SQL))
+        conn.execute(text(CREATE_PITCHER_NAME_INDEXES_SQL))
         # Migration: add new columns if the table already exists
         for col, dtype in [
             ("era_20", "DOUBLE PRECISION"),
