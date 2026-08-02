@@ -108,21 +108,6 @@ CREATE TABLE IF NOT EXISTS {CUM_TABLE} (
     cum_stl_rate           DOUBLE PRECISION,
     cum_blk_rate           DOUBLE PRECISION,
 
-    -- ── Tier 4: Momentum & recency ───────────────────────────────
-    rw3_ppg                DOUBLE PRECISION,
-    rw5_ppg                DOUBLE PRECISION,
-    rw3_net_rtg            DOUBLE PRECISION,
-    rw5_net_rtg            DOUBLE PRECISION,
-    rw3_efg_pct            DOUBLE PRECISION,
-    rw5_efg_pct            DOUBLE PRECISION,
-    rw3_drtg               DOUBLE PRECISION,
-    rw5_drtg               DOUBLE PRECISION,
-    cv10_ppg               DOUBLE PRECISION,
-    cv20_ppg               DOUBLE PRECISION,
-    cv10_net_rtg           DOUBLE PRECISION,
-    recency_ppg            DOUBLE PRECISION,
-    recency_net_rtg        DOUBLE PRECISION,
-
     -- ── Tier 5: Team quality ───────────────────────────────────────
     cum_win_pct            DOUBLE PRECISION,
 
@@ -372,15 +357,6 @@ ALL_COLS = [
     "cum_ft_rate", "cum_3pa_rate",
     "cum_ast_ratio", "cum_stl_rate", "cum_blk_rate",
 
-    # Tier 4: Momentum & recency
-    "rw3_ppg", "rw5_ppg",
-    "rw3_net_rtg", "rw5_net_rtg",
-    "rw3_efg_pct", "rw5_efg_pct",
-    "rw3_drtg", "rw5_drtg",
-    "cv10_ppg", "cv20_ppg",
-    "cv10_net_rtg",
-    "recency_ppg", "recency_net_rtg",
-
     # Tier 5: Team quality
     "cum_win_pct",
 ]
@@ -547,55 +523,9 @@ def _populate(
 
     df_raw["pg_efg_pct"] = df_raw.apply(_per_game_efg, axis=1)
 
-    # ── Compute backward-looking momentum/recency per team/season ──
+    # ── Compute backward-looking cumulative team quality per team/season ──
+    #    (Rolling momentum/recency stats now live in nba.team_rolling_stats.)
     grouped_raw = df_raw.groupby(["team_id", "season_id"], sort=False)
-
-    # ── Recency-weighted averages (fully vectorized via shift + weighted sum) ──
-    rw3_w = [0.5, 0.3, 0.2]
-    rw5_w = [0.3, 0.25, 0.2, 0.15, 0.1]
-
-    def _rw3(s: pd.Series) -> pd.Series:
-        s1 = s.shift(1)
-        s2 = s.shift(2)
-        s3 = s.shift(3)
-        wsum = 0.5 * s1 + 0.3 * s2 + 0.2 * s3
-        # First 2 games: all-NaN or partial.  Fill with rolling mean fallback.
-        return wsum.fillna(s1.rolling(2, min_periods=1).mean())
-
-    def _rw5(s: pd.Series) -> pd.Series:
-        s1 = s.shift(1); s2 = s.shift(2); s3 = s.shift(3); s4 = s.shift(4); s5 = s.shift(5)
-        wsum = 0.3 * s1 + 0.25 * s2 + 0.2 * s3 + 0.15 * s4 + 0.1 * s5
-        return wsum.fillna(s1.rolling(4, min_periods=1).mean())
-
-    df_raw["rw3_ppg"] = grouped_raw["points"].transform(_rw3)
-    df_raw["rw5_ppg"] = grouped_raw["points"].transform(_rw5)
-    df_raw["rw3_net_rtg"] = grouped_raw["pg_net_rtg"].transform(_rw3)
-    df_raw["rw5_net_rtg"] = grouped_raw["pg_net_rtg"].transform(_rw5)
-    df_raw["rw3_efg_pct"] = grouped_raw["pg_efg_pct"].transform(_rw3)
-    df_raw["rw5_efg_pct"] = grouped_raw["pg_efg_pct"].transform(_rw5)
-    df_raw["rw3_drtg"] = grouped_raw["pg_drtg"].transform(_rw3)
-    df_raw["rw5_drtg"] = grouped_raw["pg_drtg"].transform(_rw5)
-
-    # ── Coefficient of variation (vectorized) ──
-    def _cv(s: pd.Series, window: int, min_p: int = 3) -> pd.Series:
-        shifted = s.shift(1)
-        roll_std = shifted.rolling(window, min_periods=min_p).std()
-        roll_mean = shifted.rolling(window, min_periods=min_p).mean()
-        return np.where(roll_mean.abs() > 0, roll_std / roll_mean.abs(), 0.0)
-
-    df_raw["cv10_ppg"] = grouped_raw["points"].transform(lambda s: _cv(s, 10))
-    df_raw["cv20_ppg"] = grouped_raw["points"].transform(lambda s: _cv(s, 20))
-    df_raw["cv10_net_rtg"] = grouped_raw["pg_net_rtg"].transform(lambda s: _cv(s, 10))
-
-    # ── Recency (% of total accounted for by last 3 games) ──
-    def _recency(s: pd.Series) -> pd.Series:
-        shifted = s.shift(1)
-        last3 = shifted.rolling(3, min_periods=2).sum()
-        total = shifted.expanding(min_periods=1).sum()
-        return np.where(total.abs() > 0, last3 / total.abs(), 0.0)
-
-    df_raw["recency_ppg"] = grouped_raw["points"].transform(_recency)
-    df_raw["recency_net_rtg"] = grouped_raw["pg_net_rtg"].transform(_recency)
 
     # ── Tier 5: Team quality ──
     df_raw["cum_win_pct"] = grouped_raw["won"].transform(
@@ -618,15 +548,9 @@ def _populate(
     df[cum_sum_cols] = grouped[cum_sum_cols].cumsum()
     df["games_played"] = grouped.cumcount() + 1
 
-    # ── Define Tier 4/5 column names for merge ──
+    # ── Define Tier 4/5 column names for merge (cumulative only; rolling
+    #    stats live in nba.team_rolling_stats) ──
     tier45_cols = [
-        "rw3_ppg", "rw5_ppg",
-        "rw3_net_rtg", "rw5_net_rtg",
-        "rw3_efg_pct", "rw5_efg_pct",
-        "rw3_drtg", "rw5_drtg",
-        "cv10_ppg", "cv20_ppg",
-        "cv10_net_rtg",
-        "recency_ppg", "recency_net_rtg",
         "cum_win_pct",
     ]
 
