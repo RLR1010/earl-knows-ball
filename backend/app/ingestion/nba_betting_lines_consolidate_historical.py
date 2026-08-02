@@ -158,6 +158,26 @@ def consolidate_historical(engine, dry_run: bool = False) -> pd.DataFrame:
     result = pd.DataFrame(results)
     logger.info(f"Built {len(result)} historical consolidated games")
 
+    # Fill default -110 odds for spread/OU bets that have a line but no odds.
+    # The Kaggle backfill (betting_lines_old) carries spreads and totals without
+    # sportsbook odds, so default to the standard -110 vig.
+    odds_default_pairs = [
+        ("opening_spread", ["opening_spread_home_odds", "opening_spread_away_odds"]),
+        ("opening_ou", ["opening_over_odds", "opening_under_odds"]),
+        ("closing_spread", ["closing_spread_home_odds", "closing_spread_away_odds"]),
+        ("closing_ou", ["closing_over_odds", "closing_under_odds"]),
+    ]
+    odds_cols_all = [oc for _, ocs in odds_default_pairs for oc in ocs]
+    for line_col, odds_cols in odds_default_pairs:
+        if line_col not in result.columns:
+            continue
+        has_line = result[line_col].notna()
+        for odds_col in odds_cols:
+            if odds_col in result.columns:
+                result.loc[has_line & result[odds_col].isna(), odds_col] = -110
+    filled = int((result[odds_cols_all] == -110).sum().sum())
+    logger.info(f"Filled default -110 odds on {filled} odds cells")
+
     if result.empty or dry_run:
         return result
 
