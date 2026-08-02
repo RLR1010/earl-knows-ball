@@ -205,24 +205,51 @@ team_games AS (
         hcs.cum_ast_ratio          AS h_cum_ast_ratio,
         hcs.cum_stl_rate           AS h_cum_stl_rate,
         hcs.cum_blk_rate           AS h_cum_blk_rate,
+        hcs.cum_win_pct            AS h_cum_win_pct,
 
         -- Tier 4: Momentum & recency
-        hcs.rw3_ppg                AS h_rw3_ppg,
-        hcs.rw5_ppg                AS h_rw5_ppg,
-        hcs.rw3_net_rtg            AS h_rw3_net_rtg,
-        hcs.rw5_net_rtg            AS h_rw5_net_rtg,
-        hcs.rw3_efg_pct            AS h_rw3_efg_pct,
-        hcs.rw5_efg_pct            AS h_rw5_efg_pct,
-        hcs.rw3_drtg               AS h_rw3_drtg,
-        hcs.rw5_drtg               AS h_rw5_drtg,
-        hcs.cv10_ppg               AS h_cv10_ppg,
-        hcs.cv20_ppg               AS h_cv20_ppg,
-        hcs.cv10_net_rtg           AS h_cv10_net_rtg,
-        hcs.recency_ppg            AS h_recency_ppg,
-        hcs.recency_net_rtg        AS h_recency_net_rtg,
-
-        -- Tier 5: Team quality
-        hcs.cum_win_pct            AS h_cum_win_pct,
+        hrs.rw3_ppg                AS h_rw3_ppg,
+        hrs.rw5_ppg                AS h_rw5_ppg,
+        hrs.rw3_net_rtg            AS h_rw3_net_rtg,
+        hrs.rw5_net_rtg            AS h_rw5_net_rtg,
+        hrs.rw3_efg_pct            AS h_rw3_efg_pct,
+        hrs.rw5_efg_pct            AS h_rw5_efg_pct,
+        hrs.rw3_drtg               AS h_rw3_drtg,
+        hrs.rw5_drtg               AS h_rw5_drtg,
+        hrs.cv10_ppg               AS h_cv10_ppg,
+        hrs.cv20_ppg               AS h_cv20_ppg,
+        hrs.cv10_net_rtg           AS h_cv10_net_rtg,
+        hrs.recency_ppg            AS h_recency_ppg,
+        hrs.recency_net_rtg        AS h_recency_net_rtg,
+        hrs.net_rtg_r5             AS h_net_rtg_r5,
+        hrs.net_rtg_r10            AS h_net_rtg_r10,
+        hrs.ortg_r5                AS h_ortg_r5,
+        hrs.ortg_r10               AS h_ortg_r10,
+        hrs.drtg_r5                AS h_drtg_r5,
+        hrs.drtg_r10               AS h_drtg_r10,
+        hrs.efg_r5                 AS h_efg_r5,
+        hrs.efg_r10                AS h_efg_r10,
+        hrs.pace_r5                AS h_pace_r5,
+        hrs.pace_r10               AS h_pace_r10,
+        hrs.ast_ratio_r5           AS h_ast_ratio_r5,
+        hrs.ast_ratio_r10          AS h_ast_ratio_r10,
+        hrs.ft_rate_r5             AS h_ft_rate_r5,
+        hrs.ft_rate_r10            AS h_ft_rate_r10,
+        hrs.threep_rate_r5         AS h_threep_rate_r5,
+        hrs.threep_rate_r10        AS h_threep_rate_r10,
+        hrs.ats_margin_5           AS h_ats_margin_5,
+        hrs.ats_margin_10          AS h_ats_margin_10,
+        hrs.ats_wins_5             AS h_ats_wins_5,
+        hrs.ats_wins_10            AS h_ats_wins_10,
+        hrs.ou_wins_5              AS h_ou_wins_5,
+        hrs.ou_wins_10             AS h_ou_wins_10,
+        hrs.ou_margin_5            AS h_ou_margin_5,
+        hrs.wins_5                 AS h_wins_5,
+        hrs.wins_10                AS h_wins_10,
+        hrs.adj_off_10             AS h_adj_off_10,
+        hrs.adj_def_10             AS h_adj_def_10,
+        hrs.star_ppg_5             AS h_star_ppg_5,
+        hrs.star1_ppg_5            AS h_star1_ppg_5,
 
         -- Away team cumulative stats (backward-looking, season-to-date)
         acs.games_played           AS a_games_played,
@@ -251,24 +278,51 @@ team_games AS (
         acs.cum_ast_ratio          AS a_cum_ast_ratio,
         acs.cum_stl_rate           AS a_cum_stl_rate,
         acs.cum_blk_rate           AS a_cum_blk_rate,
+        acs.cum_win_pct            AS a_cum_win_pct,
 
         -- Tier 4: Momentum & recency
-        acs.rw3_ppg                AS a_rw3_ppg,
-        acs.rw5_ppg                AS a_rw5_ppg,
-        acs.rw3_net_rtg            AS a_rw3_net_rtg,
-        acs.rw5_net_rtg            AS a_rw5_net_rtg,
-        acs.rw3_efg_pct            AS a_rw3_efg_pct,
-        acs.rw5_efg_pct            AS a_rw5_efg_pct,
-        acs.rw3_drtg               AS a_rw3_drtg,
-        acs.rw5_drtg               AS a_rw5_drtg,
-        acs.cv10_ppg               AS a_cv10_ppg,
-        acs.cv20_ppg               AS a_cv20_ppg,
-        acs.cv10_net_rtg           AS a_cv10_net_rtg,
-        acs.recency_ppg            AS a_recency_ppg,
-        acs.recency_net_rtg        AS a_recency_net_rtg,
-
-        -- Tier 5: Team quality
-        acs.cum_win_pct            AS a_cum_win_pct
+        ars.rw3_ppg                AS a_rw3_ppg,
+        ars.rw5_ppg                AS a_rw5_ppg,
+        ars.rw3_net_rtg            AS a_rw3_net_rtg,
+        ars.rw5_net_rtg            AS a_rw5_net_rtg,
+        ars.rw3_efg_pct            AS a_rw3_efg_pct,
+        ars.rw5_efg_pct            AS a_rw5_efg_pct,
+        ars.rw3_drtg               AS a_rw3_drtg,
+        ars.rw5_drtg               AS a_rw5_drtg,
+        ars.cv10_ppg               AS a_cv10_ppg,
+        ars.cv20_ppg               AS a_cv20_ppg,
+        ars.cv10_net_rtg           AS a_cv10_net_rtg,
+        ars.recency_ppg            AS a_recency_ppg,
+        ars.recency_net_rtg        AS a_recency_net_rtg,
+        ars.net_rtg_r5             AS a_net_rtg_r5,
+        ars.net_rtg_r10            AS a_net_rtg_r10,
+        ars.ortg_r5                AS a_ortg_r5,
+        ars.ortg_r10               AS a_ortg_r10,
+        ars.drtg_r5                AS a_drtg_r5,
+        ars.drtg_r10               AS a_drtg_r10,
+        ars.efg_r5                 AS a_efg_r5,
+        ars.efg_r10                AS a_efg_r10,
+        ars.pace_r5                AS a_pace_r5,
+        ars.pace_r10               AS a_pace_r10,
+        ars.ast_ratio_r5           AS a_ast_ratio_r5,
+        ars.ast_ratio_r10          AS a_ast_ratio_r10,
+        ars.ft_rate_r5             AS a_ft_rate_r5,
+        ars.ft_rate_r10            AS a_ft_rate_r10,
+        ars.threep_rate_r5         AS a_threep_rate_r5,
+        ars.threep_rate_r10        AS a_threep_rate_r10,
+        ars.ats_margin_5           AS a_ats_margin_5,
+        ars.ats_margin_10          AS a_ats_margin_10,
+        ars.ats_wins_5             AS a_ats_wins_5,
+        ars.ats_wins_10            AS a_ats_wins_10,
+        ars.ou_wins_5              AS a_ou_wins_5,
+        ars.ou_wins_10             AS a_ou_wins_10,
+        ars.ou_margin_5            AS a_ou_margin_5,
+        ars.wins_5                 AS a_wins_5,
+        ars.wins_10                AS a_wins_10,
+        ars.adj_off_10             AS a_adj_off_10,
+        ars.adj_def_10             AS a_adj_def_10,
+        ars.star_ppg_5             AS a_star_ppg_5,
+        ars.star1_ppg_5            AS a_star1_ppg_5
     FROM nba.games g
     JOIN nba.teams ht ON ht.id = g.home_team_id
     JOIN nba.teams at ON at.id = g.away_team_id
@@ -282,12 +336,26 @@ team_games AS (
         LIMIT 1
     ) hcs ON true
     LEFT JOIN LATERAL (
+        SELECT rs.* FROM nba.team_rolling_stats rs
+        WHERE rs.team_id = g.home_team_id
+          AND rs.game_id != g.id
+        ORDER BY rs.game_date DESC, rs.game_id DESC
+        LIMIT 1
+    ) hrs ON true
+    LEFT JOIN LATERAL (
         SELECT cgs.* FROM nba.cumulative_game_stats cgs
         WHERE cgs.team_id = g.away_team_id
           AND cgs.game_id != g.id
         ORDER BY cgs.game_date DESC, cgs.game_id DESC
         LIMIT 1
     ) acs ON true
+    LEFT JOIN LATERAL (
+        SELECT rs.* FROM nba.team_rolling_stats rs
+        WHERE rs.team_id = g.away_team_id
+          AND rs.game_id != g.id
+        ORDER BY rs.game_date DESC, rs.game_id DESC
+        LIMIT 1
+    ) ars ON true
     WHERE g.status = 'FINAL'
       AND g.home_score IS NOT NULL
       AND g.away_score IS NOT NULL
@@ -823,7 +891,9 @@ class NBADataLoader:
         Parameters
         ----------
         seasons :
-            List of season IDs to load.  If ``None`` loads all.
+            List of season years (calendar years, e.g. ``[2024, 2025]``) to
+            load.  Consistent with the NFL/MLB loaders, which filter on
+            ``s.year`` — NOT internal season IDs.  If ``None`` loads all.
         status :
             Game status filter (e.g. ``'FINAL'``).
         limit :
@@ -844,7 +914,9 @@ class NBADataLoader:
             where_parts.append(f"status = '{status}'")
         if seasons:
             season_list = ", ".join(str(s) for s in seasons)
-            where_parts.append(f"season_id IN ({season_list})")
+            # Filter on calendar year (s.year AS season_year), NOT internal
+            # season_id — matches NFL/MLB loaders and callers that pass years.
+            where_parts.append(f"season_year IN ({season_list})")
         if game_ids:
             id_list = ", ".join(str(g) for g in game_ids)
             where_parts.append(f"game_id IN ({id_list})")
@@ -1096,6 +1168,35 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
         "h_cv10_net_rtg": "cv10_net_rtg",
         "h_recency_ppg": "recency_ppg",
         "h_recency_net_rtg": "recency_net_rtg",
+        "h_net_rtg_r5": "net_rtg_r5",
+        "h_net_rtg_r10": "net_rtg_r10",
+        "h_ortg_r5": "ortg_r5",
+        "h_ortg_r10": "ortg_r10",
+        "h_drtg_r5": "drtg_r5",
+        "h_drtg_r10": "drtg_r10",
+        "h_efg_r5": "efg_r5",
+        "h_efg_r10": "efg_r10",
+        "h_pace_r5": "pace_r5",
+        "h_pace_r10": "pace_r10",
+        "h_ast_ratio_r5": "ast_ratio_r5",
+        "h_ast_ratio_r10": "ast_ratio_r10",
+        "h_ft_rate_r5": "ft_rate_r5",
+        "h_ft_rate_r10": "ft_rate_r10",
+        "h_threep_rate_r5": "threep_rate_r5",
+        "h_threep_rate_r10": "threep_rate_r10",
+        "h_ats_margin_5": "ats_margin_5",
+        "h_ats_margin_10": "ats_margin_10",
+        "h_ats_wins_5": "ats_wins_5",
+        "h_ats_wins_10": "ats_wins_10",
+        "h_ou_wins_5": "ou_wins_5",
+        "h_ou_wins_10": "ou_wins_10",
+        "h_ou_margin_5": "ou_margin_5",
+        "h_wins_5": "wins_5",
+        "h_wins_10": "wins_10",
+        "h_adj_off_10": "adj_off_10",
+        "h_adj_def_10": "adj_def_10",
+        "h_star_ppg_5": "star_ppg_5",
+        "h_star1_ppg_5": "star1_ppg_5",
         "h_cum_win_pct": "cum_win_pct",
     }
     away_cols = {
@@ -1172,6 +1273,35 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
         "a_cv10_net_rtg": "cv10_net_rtg",
         "a_recency_ppg": "recency_ppg",
         "a_recency_net_rtg": "recency_net_rtg",
+        "a_net_rtg_r5": "net_rtg_r5",
+        "a_net_rtg_r10": "net_rtg_r10",
+        "a_ortg_r5": "ortg_r5",
+        "a_ortg_r10": "ortg_r10",
+        "a_drtg_r5": "drtg_r5",
+        "a_drtg_r10": "drtg_r10",
+        "a_efg_r5": "efg_r5",
+        "a_efg_r10": "efg_r10",
+        "a_pace_r5": "pace_r5",
+        "a_pace_r10": "pace_r10",
+        "a_ast_ratio_r5": "ast_ratio_r5",
+        "a_ast_ratio_r10": "ast_ratio_r10",
+        "a_ft_rate_r5": "ft_rate_r5",
+        "a_ft_rate_r10": "ft_rate_r10",
+        "a_threep_rate_r5": "threep_rate_r5",
+        "a_threep_rate_r10": "threep_rate_r10",
+        "a_ats_margin_5": "ats_margin_5",
+        "a_ats_margin_10": "ats_margin_10",
+        "a_ats_wins_5": "ats_wins_5",
+        "a_ats_wins_10": "ats_wins_10",
+        "a_ou_wins_5": "ou_wins_5",
+        "a_ou_wins_10": "ou_wins_10",
+        "a_ou_margin_5": "ou_margin_5",
+        "a_wins_5": "wins_5",
+        "a_wins_10": "wins_10",
+        "a_adj_off_10": "adj_off_10",
+        "a_adj_def_10": "adj_def_10",
+        "a_star_ppg_5": "star_ppg_5",
+        "a_star1_ppg_5": "star1_ppg_5",
         "a_cum_win_pct": "cum_win_pct",
     }
 
@@ -1199,166 +1329,35 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
     team_games.sort_values(["team_id", "date"], inplace=True)
 
     # ═══════════════════════════════════════════════════════════════════════════
-    #  0. Per-game ORTG, DRTG, Pace (from box score)
-    # ═══════════════════════════════════════════════════════════════════════════
-
-    # Estimate offensive rebounds from total rebounds (league avg OReb% ≈ 24.5%)
-    _OREB_EST = 0.245
-    team_games["oreb_est"] = team_games["reb"] * _OREB_EST
-    team_games["opp_oreb_est"] = team_games["opp_reb"] * _OREB_EST
-
-    # Possessions = FGA - OREB + TOV + 0.44 × FTA
-    # NOTE: TOV is NULL in DB, so we omit it. This inflates possession count
-    #       (by ~13-14/game) but relative ORTG comparisons remain valid.
-    team_games["poss"] = (
-        team_games["fga"] - team_games["oreb_est"] + 0.44 * team_games["fta"]
-    )
-    team_games["opp_poss"] = (
-        team_games["opp_fga"] - team_games["opp_oreb_est"] + 0.44 * team_games["opp_fta"]
-    )
-
-    # ORTG = points per 100 own possessions
-    team_games["ortg"] = team_games["score_for"] / team_games["poss"].clip(lower=1) * 100
-    # DRTG = points allowed per 100 opponent possessions
-    team_games["drtg"] = team_games["score_against"] / team_games["opp_poss"].clip(lower=1) * 100
-    # Net Rating = ORTG - DRTG
-    team_games["net_rtg"] = team_games["ortg"] - team_games["drtg"]
-    # Pace = average of both teams' possessions (approximates possessions per game)
-    team_games["pace"] = (team_games["poss"] + team_games["opp_poss"]) / 2
-
-    # ── Per-possession stats (only those computable from available box score data) ──
-    # NOTE: TOV, steals, blocks, fouls are all NULL in the DB, so tov_rate is excluded
-    team_games["ft_rate"] = team_games["fta"] / team_games["fga"].clip(lower=1)
-    team_games["efg"] = (team_games["fgm"] + 0.5 * team_games["fgm3"]) / team_games["fga"].clip(lower=1)
-    team_games["threep_rate"] = team_games["fga3"] / team_games["fga"].clip(lower=1)
-    team_games["ast_ratio"] = team_games["ast"] / team_games["fgm"].clip(lower=1)
+    # 0. Per-game ORTG/DRTG/Pace/eFG/ft_rate/threep_rate/ast_ratio are precomputed
+    #    in nba.team_rolling_stats (r5/r10, inclusive windows) and read via the
+    #    GAME_QUERY LATERAL joins (prior row = entering-this-game). DB = source of truth.
+    #
+    # 1. Opponent-adjusted scoring (adj_off_10/adj_def_10) also precomputed in DB.
+    #    No pandas recompute for these team rolling stats.
 
     # ═══════════════════════════════════════════════════════════════════════════
-    #  1. Opponent-adjusted scoring
+    #  1b. Rolling ORTG, DRTG, Net Rating, Pace, eFG, ft_rate, threep_rate,
+    #      ast_ratio, wins (5/10) are ALL precomputed in nba.team_rolling_stats
+    #      and provided by GAME_QUERY (h_*/a_* columns). No re-derivation needed.
     # ═══════════════════════════════════════════════════════════════════════════
 
-    season_avg = team_games.groupby("season_id")["score_for"].transform("mean")
-
-    for window in (10,):
-        # opp_def_avg = how many points teams typically score against this opponent (measures opponent's defense)
-        def_col = f"opp_def_avg_{window}"
-        team_games[def_col] = (
-            team_games.groupby("opp_abbr")["score_for"]
-            .transform(lambda s: s.shift(1).rolling(window, min_periods=1).mean())
-        )
-        # opp_off_avg = how many points this opponent typically scores (measures opponent's offense)
-        off_col = f"opp_off_avg_{window}"
-        team_games[off_col] = (
-            team_games.groupby("opp_abbr")["score_against"]
-            .transform(lambda s: s.shift(1).rolling(window, min_periods=1).mean())
-        )
-
-        adj_off_h = f"h_adj_off_{window}"
-        adj_def_h = f"h_adj_def_{window}"
-        adj_off_a = f"a_adj_off_{window}"
-        adj_def_a = f"a_adj_def_{window}"
-
-        # Both anchored to season_avg (~110): higher is better for both
-        # adj_off: league avg + how much better/worse team scored vs opponent's defense
-        team_games[adj_off_h] = np.where(
-            team_games["is_home"] == 1,
-            season_avg + (team_games["score_for"] - team_games[def_col]),
-            np.nan,
-        )
-        # adj_def: league avg - how much more/less team allowed vs opponent's offense
-        team_games[adj_def_h] = np.where(
-            team_games["is_home"] == 1,
-            season_avg - (team_games["score_against"] - team_games[off_col]),
-            np.nan,
-        )
-        team_games[adj_off_a] = np.where(
-            team_games["is_home"] == 0,
-            season_avg + (team_games["score_for"] - team_games[def_col]),
-            np.nan,
-        )
-        team_games[adj_def_a] = np.where(
-            team_games["is_home"] == 0,
-            season_avg - (team_games["score_against"] - team_games[off_col]),
-            np.nan,
-        )
-
-        for col in [adj_off_h, adj_def_h, adj_off_a, adj_def_a]:
-            team_games[col] = (
-                team_games.groupby("team_abbr")[col]
-                .transform(lambda s: s.shift(1).rolling(window, min_periods=1).mean())
-            )
-
+    # ── Net Rating differential (matchup feature, home - away) ──────────────
     # ═══════════════════════════════════════════════════════════════════════════
-    #  1b. Rolling ORTG, DRTG, Net Rating, Pace (from Section 0 per-game)
-    # ═══════════════════════════════════════════════════════════════════════════
-
-    nba_adv_metrics = ["ortg", "drtg", "net_rtg", "pace"]
-    nba_per_poss = ["ft_rate", "efg", "threep_rate", "ast_ratio"]
-
-    team_games["won"] = (team_games["score_for"] > team_games["score_against"]).astype(int)
-
-    for window in (5, 10):
-        # Team-wide win count (ALL games, not split by venue)
-        win_col = f"wins_{window}"
-        team_games[win_col] = (
-            team_games.groupby("team_abbr")["won"]
-            .transform(lambda s: s.shift(1).rolling(window, min_periods=1).sum())
-        )
-
-        for metric in nba_adv_metrics + nba_per_poss:
-            rolling_col = f"{metric}_r{window}"
-            team_games[rolling_col] = (
-                team_games.groupby("team_abbr")[metric]
-                .transform(lambda s: s.shift(1).rolling(window, min_periods=1).mean())
-            )
-
-        # Compute rolling differences: ortg_diff = h_ortg - a_ortg
-        h_ortg_r = f"h_ortg_r{window}"
-        a_ortg_r = f"a_ortg_r{window}"
-        h_drtg_r = f"h_drtg_r{window}"
-        a_drtg_r = f"a_drtg_r{window}"
-        team_games[h_ortg_r] = np.where(team_games["is_home"] == 1, team_games[f"ortg_r{window}"], np.nan)
-        team_games[a_ortg_r] = np.where(team_games["is_home"] == 0, team_games[f"ortg_r{window}"], np.nan)
-        team_games[h_drtg_r] = np.where(team_games["is_home"] == 1, team_games[f"drtg_r{window}"], np.nan)
-        team_games[a_drtg_r] = np.where(team_games["is_home"] == 0, team_games[f"drtg_r{window}"], np.nan)
-
-        for col in [h_ortg_r, a_ortg_r, h_drtg_r, a_drtg_r]:
-            team_games[col] = (
-                team_games.groupby("team_abbr")[col]
-                .transform(lambda s: s.ffill())
-            )
-
-    # ── Carry to main df (merge by game_id — team_games is sorted by team, not chrono) ──
-    _hl = team_games[team_games["is_home"] == 1].set_index("game_id")
-    _al = team_games[team_games["is_home"] == 0].set_index("game_id")
-
-    for metric in nba_adv_metrics + nba_per_poss:
-        for window in (5, 10):
-            rolling_col = f"{metric}_r{window}"
-            df[f"h_{rolling_col}"] = df["game_id"].map(_hl[rolling_col])
-            df[f"a_{rolling_col}"] = df["game_id"].map(_al[rolling_col])
-
-        # Also carry current-game non-rolling values for reference
-        df[f"h_{metric}"] = df["game_id"].map(_hl[metric])
-        df[f"a_{metric}"] = df["game_id"].map(_al[metric])
-
-    # ── Team-wide win count (from long-form team_games, NOT venue-split) ──
-    for window in (5, 10):
-        win_col = f"wins_{window}"
-        df[f"h_{win_col}"] = df["game_id"].map(_hl[win_col])
-        df[f"a_{win_col}"] = df["game_id"].map(_al[win_col])
-
-    # ── Net Rating differential ─────────────────────────────────────
     df["net_rtg_diff_5"] = df["h_net_rtg_r5"] - df["a_net_rtg_r5"]
     df["net_rtg_diff_10"] = df["h_net_rtg_r10"] - df["a_net_rtg_r10"]
     df["pace_diff_5"] = df["h_pace_r5"] - df["a_pace_r5"]
 
     # ═══════════════════════════════════════════════════════════════════════════
-    #  1c. Star player tracking (season 35 only — player_game_stats sparse)
+    #  1c. Star player availability (CURRENT-GAME only)
+    #  star_ppg_5 / star1_ppg_5 (rolling) are precomputed in nba.team_rolling_stats
+    #  and read via GAME_QUERY. Only the per-game availability flags
+    #  (stars_active / star1_active) are computed here, as a lightweight per-game
+    #  join on nba.player_game_stats (who has minutes>0 in THIS game).
     # ═══════════════════════════════════════════════════════════════════════════
     _star_engine = create_engine(DEFAULT_DB_URL)
     try:
-        # Identify top-3 scorers per team, per season (NOT hardcoded to one season)
+        # Identify top-3 scorers per team, per season
         with _star_engine.connect() as _conn:
             _players_df = pd.read_sql("""
                 SELECT pss.player_id, pss.team_id, pss.season_id, pss.points_per_game,
@@ -1375,20 +1374,17 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
         if len(_star_players) > 0:
             _star_ids = list(_star_players["player_id"].unique())
             with _star_engine.connect() as _conn:
-                # Build placeholders safely
                 _placeholders = ",".join([str(pid) for pid in _star_ids])
                 _game_logs = pd.read_sql(f"""
                     SELECT pgs.player_id, pgs.game_id, pgs.team_id,
-                           pgs.points, pgs.minutes, g.date, g.season_id
+                           pgs.minutes, g.date, g.season_id
                     FROM nba.player_game_stats pgs
                     JOIN nba.games g ON pgs.game_id = g.id
                     WHERE pgs.player_id IN ({_placeholders})
-                    ORDER BY pgs.player_id, g.date
                 """, _conn)
 
             _gl = _game_logs.copy()
-            _gl["points"] = _gl["points"].fillna(0).astype(float)
-            # minutes is VARCHAR — can be "32" (numeric string), "32:08" (MM:SS), "-", or NULL
+            # minutes is VARCHAR — can be "32", "32:08" (MM:SS), "-", or NULL
             _gl["minutes"] = (
                 _gl["minutes"]
                 .replace("-", None)
@@ -1397,67 +1393,52 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
                 .str.replace(r"^(\d+):(\d{2})$", lambda m: str(int(m.group(1)) + int(m.group(2)) / 60), regex=True)
                 .astype(float)
             )
-            
-
-            # Rolling 5-game PPG per player (shifted — no look-ahead bias)
-            _gl["ppg_r5"] = (
-                _gl.groupby("player_id")["points"]
-                .transform(lambda s: s.shift(1).rolling(5, min_periods=1).mean())
-            )
             _gl["active"] = (_gl["minutes"] > 0).astype(int)
 
-            # Merge rank info — match by season_id so each game uses that season's top scorers
+            # Merge rank info — match by season so each game uses that season's top scorers
             _gl = _gl.merge(
                 _star_players[["player_id", "team_id", "season_id", "star_rank"]],
                 on=["player_id", "team_id", "season_id"],
                 how="left",
             )
 
-            # Filter to TOP 3 scorers per team-game
+            # Top-3 scorers per team-game
             _star_only = _gl[_gl["star_rank"].notna() & (_gl["star_rank"] <= 3)].copy()
 
             if len(_star_only) > 0:
-                # Per-game team aggregates for star players only
+                # Availability: count of top-3 active in this game
                 _game_summary = _star_only.groupby(["game_id", "team_id"]).agg(
-                    star_ppg_5=("ppg_r5", "sum"),
                     stars_active=("active", "sum"),
                 ).reset_index()
 
-                # Top scorer per game per team
+                # Leading scorer availability
                 _top_star = _gl[_gl["star_rank"] == 1].copy()
                 _top_summary = _top_star.groupby(["game_id", "team_id"]).agg(
-                    star1_ppg_5=("ppg_r5", "first"),
                     star1_active=("active", "first"),
                 ).reset_index()
 
                 _game_star = _game_summary.merge(_top_summary, on=["game_id", "team_id"], how="left")
 
-                # Merge home side
+                # Home side
                 _home = _game_star.rename(columns={
                     "team_id": "home_team_id",
-                    "star_ppg_5": "h_star_ppg_5",
                     "stars_active": "h_stars_active",
-                    "star1_ppg_5": "h_star1_ppg_5",
                     "star1_active": "h_star1_active",
                 })
                 df = df.merge(
-                    _home[["game_id", "home_team_id", "h_star_ppg_5", "h_stars_active",
-                           "h_star1_ppg_5", "h_star1_active"]],
+                    _home[["game_id", "home_team_id", "h_stars_active", "h_star1_active"]],
                     on=["game_id", "home_team_id"],
                     how="left",
                 )
 
-                # Merge away side
+                # Away side
                 _away = _game_star.rename(columns={
                     "team_id": "away_team_id",
-                    "star_ppg_5": "a_star_ppg_5",
                     "stars_active": "a_stars_active",
-                    "star1_ppg_5": "a_star1_ppg_5",
                     "star1_active": "a_star1_active",
                 })
                 df = df.merge(
-                    _away[["game_id", "away_team_id", "a_star_ppg_5", "a_stars_active",
-                           "a_star1_ppg_5", "a_star1_active"]],
+                    _away[["game_id", "away_team_id", "a_stars_active", "a_star1_active"]],
                     on=["game_id", "away_team_id"],
                     how="left",
                 )
@@ -1554,19 +1535,6 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
     df["travel_miles"] = df["away_travel"].fillna(0.0)
     df.drop(columns=["away_travel"], inplace=True, errors="ignore")
 
-    # ── Surface opponent-adjusted efficiency to df ────────────────────────
-    for window in (10,):
-        home_adj = team_games.loc[
-            team_games["is_home"] == 1,
-            ["game_id"] + [f"h_{s}_{window}" for s in ("adj_off", "adj_def")],
-        ].copy()
-        away_adj = team_games.loc[
-            team_games["is_home"] == 0,
-            ["game_id"] + [f"a_{s}_{window}" for s in ("adj_off", "adj_def")],
-        ].copy()
-        df = df.merge(home_adj, on="game_id", how="left")
-        df = df.merge(away_adj, on="game_id", how="left")
-
     # ═══════════════════════════════════════════════════════════════════════════
     #  4. Betting market features
     # ═══════════════════════════════════════════════════════════════════════════
@@ -1601,7 +1569,10 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
     df["over_implied_prob"] = _over_ip / (_over_ip + _under_ip)
 
     # ═══════════════════════════════════════════════════════════════════════════
-    #  5. Form & streaks (ATS, win counts, cover margins)
+    #  5. Form & streaks (per-game ATS / OU actuals only)
+    #     Rolling ATS/OU/win counts (ats_wins_5/10, ats_margin_5/10, ou_wins_5/10,
+    #     ou_margin_5, wins_5/10) are precomputed in nba.team_rolling_stats and already
+    #     loaded via the GAME_QUERY LATERAL joins — read directly from DB, no pandas.
     # ═══════════════════════════════════════════════════════════════════════════
 
     df["home_actual_margin"] = df["home_score"] - df["away_score"]
@@ -1617,55 +1588,16 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
 
     df.sort_values(["game_id"], inplace=True)
 
-    for team_prefix, abbr_col, cover_col, margin_col in [
-        ("h_", "home_abbr", "home_ats_cover", "home_ats_margin"),
-        ("a_", "away_abbr", "away_ats_cover", "away_ats_margin"),
-    ]:
-        df[f"{team_prefix}ats_wins_5"] = (
-            df.groupby(abbr_col)[cover_col]
-            .transform(lambda s: s.shift(1).rolling(5, min_periods=0).sum())
-        )
-        df[f"{team_prefix}ats_margin_5"] = (
-            df.groupby(abbr_col)[margin_col]
-            .transform(lambda s: s.shift(1).rolling(5, min_periods=0).mean())
-        )
 
     # ── Over/under result ────────────────────────────────────────────────
     df["over_result"] = (
         (df["home_score"] + df["away_score"]) > df["closing_ou"]
     ).astype(float)
 
-    # ── OU rolling records (over wins + margin, mirrors ATS pattern) ───
+    # ── OU per-game actuals (rolling records are DB-sourced) ─────────────
     df["ou_total"] = df["home_score"] + df["away_score"]
     df["ou_margin"] = df["ou_total"] - df["closing_ou"]
 
-    for team_prefix, abbr_col in [("h_", "home_abbr"), ("a_", "away_abbr")]:
-        df[f"{team_prefix}ou_wins_5"] = (
-            df.groupby(abbr_col)["over_result"]
-            .transform(lambda s: s.shift(1).rolling(5, min_periods=0).sum())
-        )
-        df[f"{team_prefix}ou_wins_10"] = (
-            df.groupby(abbr_col)["over_result"]
-            .transform(lambda s: s.shift(1).rolling(10, min_periods=0).sum())
-        )
-        df[f"{team_prefix}ou_margin_5"] = (
-            df.groupby(abbr_col)["ou_margin"]
-            .transform(lambda s: s.shift(1).rolling(5, min_periods=0).mean())
-        )
-
-    # ── Extended ATS windows (10-game) ─────────────────────────────────
-    for team_prefix, abbr_col, cover_col, margin_col in [
-        ("h_", "home_abbr", "home_ats_cover", "home_ats_margin"),
-        ("a_", "away_abbr", "away_ats_cover", "away_ats_margin"),
-    ]:
-        df[f"{team_prefix}ats_wins_10"] = (
-            df.groupby(abbr_col)[cover_col]
-            .transform(lambda s: s.shift(1).rolling(10, min_periods=0).sum())
-        )
-        df[f"{team_prefix}ats_margin_10"] = (
-            df.groupby(abbr_col)[margin_col]
-            .transform(lambda s: s.shift(1).rolling(10, min_periods=0).mean())
-        )
 
     # ═══════════════════════════════════════════════════════════════════════════
     #  6. Fill NaN / clean up
