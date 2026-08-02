@@ -293,11 +293,11 @@ pg AS (
         CASE WHEN NULLIF(q.fga, 0) IS NULL OR q.fga = 0 THEN NULL
              ELSE (q.fgm + 0.5 * q.fgm3) / NULLIF(q.fga, 0) END              AS per_game_efg,
         CASE WHEN q.fgm = 0 THEN NULL
-             ELSE q.ast / NULLIF(q.fgm, 0) END                                AS per_game_ast_ratio,
+             ELSE q.ast::float / NULLIF(q.fgm, 0) END                        AS per_game_ast_ratio,
         CASE WHEN NULLIF(q.fga, 0) IS NULL OR q.fga = 0 THEN NULL
-             ELSE q.fta / NULLIF(q.fga, 0) END                                AS per_game_ft_rate,
+             ELSE q.fta::float / NULLIF(q.fga, 0) END                        AS per_game_ft_rate,
         CASE WHEN q.fga3 = 0 THEN NULL
-             ELSE q.fga3 / NULLIF(q.fga, 0) END                               AS per_game_threep_rate,
+             ELSE q.fga3::float / NULLIF(q.fga, 0) END                       AS per_game_threep_rate,
         -- ORTG / DRTG (points per 100 own / opponent possessions)
         CASE WHEN q.poss IS NULL OR q.poss <= 0 THEN NULL
              ELSE 100.0 * q.points / q.poss END                          AS per_game_ortg,
