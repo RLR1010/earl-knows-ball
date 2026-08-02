@@ -534,6 +534,102 @@ async def get_predictions(
     }
 
 
+def _round_value(value):
+    """Round a raw feature value for clean display (float32 noise -> 4dp)."""
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return value
+    if abs(f) >= 100:
+        return round(f, 2)
+    return round(f, 4)
+
+
+async def get_shap_digest(
+    db: AsyncSession,
+    game_id: int,
+    max_per_side: int = 5,
+) -> dict[str, Any]:
+    """Curated SHAP feature-attribution digest for the latest prediction.
+
+    The raw shap_json holds 60+ per-model feature contributions that an LLM
+    will drown in (and hallucinate around). This returns only the strongest
+    push-up and push-down drivers per model, with human-readable labels,
+    the baseline (expected) value, and a plain-language interpretation note.
+
+    Units note for the LLM: contributions are in RUNS — ATS = home margin
+    (positive favors the home team), OU = total runs (positive favors the
+    Over). Negative contributions push the prediction DOWN; they do NOT mean
+    the feature is "bad" or that the team is weak.
+    """
+    row = await db.execute(
+        text("""
+            SELECT shap_json
+            FROM mlb.game_predictions
+            WHERE game_id = :game_id AND shap_json IS NOT NULL
+            ORDER BY created_at DESC
+            LIMIT 1
+        """),
+        {"game_id": game_id},
+    )
+    r = row.scalar_one_or_none()
+    if not r:
+        return {"error": "No SHAP attribution for this game"}
+
+    try:
+        import json as _json
+        raw = _json.loads(r) if isinstance(r, str) else r
+    except Exception:
+        return {"error": "Could not parse SHAP attribution"}
+
+    digest: dict[str, Any] = {
+        "note": (
+            "SHAP contributions are in runs. ATS: home margin (positive = favors home team). "
+            "OU: total runs (positive = favors Over). Positive pushes the prediction up, "
+            "negative pushes it down — a negative value does NOT mean the feature is bad "
+            "or the team is weak."
+        ),
+        "models": {},
+    }
+
+    for model_key in ("ats", "ou"):
+        block = raw.get(model_key) if isinstance(raw, dict) else None
+        if not isinstance(block, dict) or not isinstance(block.get("contributions"), list):
+            continue
+        contribs = block["contributions"]
+        # Normalize: entries may carry name/display_name/value/contribution/direction
+        parsed = []
+        for c in contribs:
+            if not isinstance(c, dict):
+                continue
+            try:
+                contribution = float(c.get("contribution", 0.0))
+            except (TypeError, ValueError):
+                continue
+            parsed.append(
+                {
+                    "name": c.get("name", ""),
+                    "display_name": c.get("display_name") or c.get("name", ""),
+                    "value": _round_value(c.get("value")),
+                    "contribution": round(contribution, 4),
+                    "direction": c.get("direction", "up" if contribution >= 0 else "down"),
+                }
+            )
+        parsed.sort(key=lambda x: abs(x["contribution"]), reverse=True)
+        up = [p for p in parsed if p["contribution"] >= 0][:max_per_side]
+        down = [p for p in parsed if p["contribution"] < 0][:max_per_side]
+        digest["models"][model_key] = {
+            "expected_value": round(float(block.get("expected_value", 0.0)), 4),
+            "predicted_value": round(float(block.get("predicted_value", 0.0)), 4),
+            "push_up": up,
+            "push_down": down,
+        }
+
+    if not digest["models"]:
+        return {"error": "SHAP attribution exists but could not be parsed"}
+    return digest
+
+
 # ──────────────────────────────────────────────
 #  6. Head-to-Head
 # ──────────────────────────────────────────────
@@ -981,6 +1077,7 @@ async def get_research_brief(
         "pitching_matchup": get_pitching_matchup(db, game_id, as_of_date),
         "betting_lines": get_betting_lines(db, game_id),
         "predictions": get_predictions(db, game_id),
+        "shap_digest": get_shap_digest(db, game_id),
         "head_to_head": get_head_to_head(db, home_id, away_id, season_id, as_of_date),
         "injuries": get_injuries(db, game_id),
         "home_form": get_recent_form(db, home_id, season_id, 10, as_of_date),
@@ -1095,7 +1192,7 @@ async def get_public_research_brief(
         return brief
 
     # Strip proprietary / handicapping data
-    stripped_keys = {"betting_lines", "predictions", "home_splits", "away_splits"}
+    stripped_keys = {"betting_lines", "predictions", "shap_digest", "home_splits", "away_splits"}
     for key in stripped_keys:
         brief.pop(key, None)
 
