@@ -3,8 +3,12 @@ NBA Cumulative Game Stats
 
 Pre-computes backward-looking cumulative team statistics for the NBA,
 stored in nba.cumulative_game_stats.  Each row represents one team in one
-game, with all season-to-date (excluding the current game) cumulative
-statistics.
+game, with all season-to-date cumulative statistics for games 1..N
+(**including the current game** — these are post-game running totals).
+
+Consumers that need pre-game stats for a game (e.g. prediction features)
+must exclude the current game themselves, e.g. via a LATERAL JOIN with
+``game_id != g.id`` (see GAME_QUERY in data_loader.py).
 
 Tiers
 -----
@@ -477,15 +481,32 @@ def _populate(
             for _, row in existing_df.iterrows()
         )
         logger.info("Already have %d cumulative rows — will skip them.", len(existing))
-        mask = df.apply(
+        is_new = df.apply(
             lambda r: (int(r["game_id"]), str(r["team_side"])) not in existing,
             axis=1,
         )
-        df = df[mask].copy()
-        logger.info("Remaining new rows to process: %d", len(df))
-        if df.empty:
+        if not is_new.any():
             logger.info("Nothing new to process.")
             return summary
+        # Affected team-seasons = team-seasons that have at least one new game.
+        # We must recompute cumulative stats over the FULL team-season history
+        # (existing rows + new rows), otherwise the new rows would get running
+        # totals that restart at 1 (e.g. a team's 31st game would show
+        # games_played=1). Keep every row for affected team-seasons and let the
+        # upsert refresh them all (this also heals any corrected box scores).
+        affected = set(
+            (int(r["team_id"]), int(r["season_id"]))
+            for _, r in df[is_new].iterrows()
+        )
+        keep = df.apply(
+            lambda r: (int(r["team_id"]), int(r["season_id"])) in affected,
+            axis=1,
+        )
+        df = df[keep].copy()
+        logger.info(
+            "Recomputing %d rows across %d affected team-seasons (%d new games).",
+            len(df), len(affected), int(is_new.sum()),
+        )
 
     # ── Sort by (team, season, date, game_id) for cumulative computation ──
     df.sort_values(["team_id", "season_id", "game_date", "game_id"], inplace=True)
@@ -590,7 +611,11 @@ def _populate(
     grouped = df.groupby(["team_id", "season_id"], sort=False)
     cum_sum_cols = CUM_SUM_COLS
 
-    df[cum_sum_cols] = grouped[cum_sum_cols].cumsum().fillna(0)
+    # Treat missing box scores as 0 contribution (like SQL SUM OVER) so the
+    # running total carries forward instead of collapsing to 0 at games whose
+    # source box score is NULL in nba.games.
+    df[cum_sum_cols] = df[cum_sum_cols].fillna(0)
+    df[cum_sum_cols] = grouped[cum_sum_cols].cumsum()
     df["games_played"] = grouped.cumcount() + 1
 
     # ── Define Tier 4/5 column names for merge ──
