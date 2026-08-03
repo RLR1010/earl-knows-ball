@@ -30,6 +30,7 @@ from app.models.chat_history import ChatHistory
 from app.chat_tools.base import ToolChatEngine
 from app.services.token_tracker import check_token_limit, save_token_usage
 from app.chat_tools.mlb import TOOL_DEFINITIONS, execute_mlb_tool
+from app.chat_status import get_chat_status, clear_chat_status, set_chat_status
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +87,7 @@ class ChatMLBRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=2000)
     conversation_id: str | None = None
     include_enrichment: bool = True
+    request_id: str | None = Field(None, description="Client-generated ID used to poll live status via GET /chat/status/{request_id}")
 
 
 class ChatMLBResponse(BaseModel):
@@ -173,6 +175,8 @@ async def chat_mlb(
                 db, messages, max_turns=6
             ):
                 if event_type == "status":
+                    if request.request_id:
+                        await set_chat_status(request.request_id, data)
                     yield {"data": json.dumps({"type": "status", "message": data}, ensure_ascii=False)}
                 elif event_type == "usage":
                     total_tokens += data.get("total_tokens", 0)
@@ -182,6 +186,8 @@ async def chat_mlb(
 
             # --- Step 3: Enrichment (if enabled) ---
             if request.include_enrichment:
+                if request.request_id:
+                    await set_chat_status(request.request_id, "Searching for relevant articles...")
                 yield {"data": json.dumps({"type": "status", "message": "Searching for relevant articles..."}, ensure_ascii=False)}
                 enrichment_text, enrichment_tokens = await ToolChatEngine.run_enrichment(
                     db=db,
@@ -190,6 +196,8 @@ async def chat_mlb(
                     top_k=8,
                 )
                 if enrichment_text and "No relevant information" not in enrichment_text:
+                    if request.request_id:
+                        await set_chat_status(request.request_id, "Polishing with article insights...")
                     yield {"data": json.dumps({"type": "status", "message": "Polishing with article insights..."}, ensure_ascii=False)}
                     try:
                         client = AsyncOpenAI(
@@ -261,6 +269,8 @@ async def chat_mlb(
             else:
                 yield {"data": json.dumps({"type": "answer", "content": answer}, ensure_ascii=False)}
             yield {"data": json.dumps({"type": "done"}, ensure_ascii=False)}
+            if request.request_id:
+                await clear_chat_status(request.request_id)
 
     return EventSourceResponse(
         event_stream(),
@@ -270,6 +280,19 @@ async def chat_mlb(
         },
         ping=5,
     )
+
+
+@router.get("/chat/status/{request_id}")
+async def chat_status(
+    request_id: str,
+    current_user: User = Depends(get_current_user),
+):
+    """Poll the latest live research status for a chat request (see chat.py)."""
+    status = await get_chat_status(request_id)
+    if status is None:
+        from fastapi.responses import JSONResponse
+        return JSONResponse(content={"status": None}, status_code=204)
+    return {"status": status}
 
 
 __all__ = ["router"]
