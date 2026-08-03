@@ -31,7 +31,7 @@ export default function ChatSidebar({
   const [loading, setLoading] = useState(false);
   const [deleting, setDeleting] = useState<string | null>(null);
 
-  const API_HOST = "http://localhost:8001";
+  const API_HOST = "/api";
 
   const getToken = () => localStorage.getItem("earl_token");
 

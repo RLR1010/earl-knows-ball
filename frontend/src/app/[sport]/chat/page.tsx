@@ -27,7 +27,7 @@ const SPORT_EMOJIS: Record<Sport, string> = {
   mlb: "⚾",
 };
 
-const API_HOST = process.env.NEXT_PUBLIC_API_HOST || "http://localhost:8001";
+const API_HOST = process.env.NEXT_PUBLIC_API_HOST || "/api";
 const SPORT_CHAT_ENDPOINTS: Record<Sport, string> = {
   nfl: `${API_HOST}/chat`,
   nba: `${API_HOST}/chat/nba`,
@@ -291,6 +291,13 @@ export default function ChatPage() {
             if (data.type === "conv_id") {
               newConvId = data.conversation_id || data.id;
             } else if (data.type === "status") {
+              // Update React state (not just the DOM ref) so the status text
+              // survives re-renders. Directly mutating statusRef.textContent
+              // was being overwritten by React's reconciliation whenever
+              // any other state (messages, loading) changed, which is why
+              // live status updates appeared to "stop working" even though
+              // the backend was still sending them.
+              setStatusText(data.message);
               if (statusRef.current) {
                 statusRef.current.textContent = data.message;
               }

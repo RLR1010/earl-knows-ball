@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -95,8 +96,8 @@ OUTPUT FORMAT:
 Return ONLY valid JSON with the following fields:
 {{
     "title": "Engaging article title (include team names, max ~80 chars)",
-    "public_content": "Full public article text (1600-3200 words, many paragraphs - be detailed and comprehensive)",
-    "premium_content": "Full premium analysis text (1600-3200 words, many paragraphs - be detailed and comprehensive)"
+    "public_content": "Full public article text (800-1000 words, several paragraphs - be detailed and comprehensive)",
+    "premium_content": "Full premium analysis text (1100-1500 words, several paragraphs - be detailed and comprehensive)"
 }}
 
 {tense_note}
@@ -188,7 +189,7 @@ Bullet lists work for key points. Keep it article-like — no blockquotes, no em
 
 Write an exclusive insider analysis article for PAYING SUBSCRIBERS. This is a full article, not a short snippet.
 
-Length: 1200-1600 words — be detailed and comprehensive.
+Length: 1100-1500 words — be detailed and comprehensive.
 
 What to include:
 - Advanced stats breakdown and key matchup analysis
@@ -241,6 +242,8 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
         game_id: int,
         is_historical: bool | None = None,  # deprecated — now read from research
         as_of_date: datetime | None = None,
+        reasoning: str = "minimal",  # thinking enabled + minimal reasoning (works; ~1k reas tokens)
+        usage_log: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Generate a write-up for the given *game_id*.
 
@@ -254,6 +257,14 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
         Returns the dict with keys: *title*, *public_content*, *premium_content*,
         *title_brief*, *research_brief*, *is_historical*, *qc_results*.
         """
+        # Normalize reasoning:
+        #   None/""/"off"/"none"/"disabled" → no enabled-thinking send.
+        #   "minimal"/"low"/"medium"/"high"/"xhigh"/"max" → thinking.enabled + reasoning_effort.
+        # NOTE: API rejects "off" (invalid variant). "none" burns ~15k reasoning
+        # tokens and broke writeups with empty responses. "minimal" is the
+        # working "off-but-minimal" value (~1.1k reas tokens).
+        if reasoning in (None, "", "off", "none", "disabled"):
+            reasoning = None
         logger.info("generating write-up for game_id=%s", game_id)
 
         # ---- 1. Full research is fetched once ----
@@ -272,7 +283,7 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
         public_system = self.public_system_prompt(is_historical)
         public_prompt = self._build_messages(stripped)
 
-        raw_public = await self._call_deepseek(public_system, public_prompt, max_tokens=16384, reasoning="high")
+        raw_public = await self._call_deepseek(public_system, public_prompt, max_tokens=16384, reasoning=reasoning, usage_log=usage_log)
         if raw_public is None:
             return {"error": "DeepSeek API call failed for public section"}
 
@@ -290,7 +301,7 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
         # flag (observed ~7k tokens of reasoning on a 26k-char research brief).
         # Budgets below 16k caused empty premium content (finish=length with
         # all tokens consumed by reasoning). 32768 gives ample headroom.
-        raw_premium = await self._call_deepseek(premium_system, premium_prompt, max_tokens=32768, reasoning="high")
+        raw_premium = await self._call_deepseek(premium_system, premium_prompt, max_tokens=32768, reasoning=reasoning, usage_log=usage_log)
         if raw_premium is None:
             logger.warning("premium LLM call failed for game %s — using fallback", game_id)
             premium_content = "Premium content unavailable — API call failed."
@@ -314,6 +325,16 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
         # ---- 4. Quality checks ----
         qc_results = self.run_quality_checks(parsed, research)
         parsed["qc_results"] = qc_results
+
+        # ---- Test instrumentation ----
+        # Used for A/B reasoning comparisons.
+        if usage_log is not None:
+            parsed["reasoning_effort"] = reasoning
+            parsed["usage_log"] = usage_log
+            total = sum(
+                (item.get("total_tokens") or 0) for item in usage_log
+            )
+            parsed["total_tokens"] = total or None
 
         # ---- 5. Store ----
         await self.store(game_id, parsed, qc_results)
@@ -366,7 +387,7 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
         content = lines[1].strip() if len(lines) > 1 else cleaned
         return {"title": title, "content": content}
 
-    async def _call_deepseek(self, system: str, user_prompt: str, *, max_tokens: int | None = None, reasoning: str | None = None) -> str | None:
+    async def _call_deepseek(self, system: str, user_prompt: str, *, max_tokens: int | None = None, reasoning: str | None = None, usage_log: list[dict[str, Any]] | None = None) -> str | None:
         """Call DeepSeek via OpenAI SDK and return the raw response content.
 
         Retries with backoff on API errors and empty responses. A known
@@ -376,12 +397,18 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
         final attempt is made with thinking disabled to guarantee content.
 
         Returns *None* on failure — caller checks for None.
+
+        If *usage_log* is provided (a list), each successful attempt appends a
+        dict with timing + token usage stats: ``{"attempt", "reasoning",
+        "elapsed_s", "prompt_tokens", "completion_tokens", "reasoning_tokens",
+        "total_tokens"}``.
         """
         max_attempts = getattr(self, "MAX_DEEPSEEK_ATTEMPTS", 3)
         backoff = getattr(self, "DEEPSEEK_BACKOFF_BASE", 2.0)
 
         async def _attempt(use_reasoning: str | None) -> str | None:
             """Single API call; returns content string or None."""
+            start = time.monotonic()
             client = AsyncOpenAI(
                 api_key=settings.deepseek_api_key,
                 base_url=f"{settings.deepseek_base_url}/v1",
@@ -396,13 +423,34 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
                 "max_tokens": max_tokens or self.MAX_TOKENS,
                 "timeout": self.TIMEOUT,
             }
-            if use_reasoning:
+            if use_reasoning == "disabled":
+                # True thinking off: explicitly disable. This differs from
+                # omitting the block (None), which lets DeepSeek use its default
+                # and still run hidden/reasoned CoT (observed off had 10.7k
+                # reasoning tokens).
+                kwargs["extra_body"] = {
+                    "thinking": {"type": "disabled"},
+                }
+            elif use_reasoning:
                 kwargs["extra_body"] = {
                     "thinking": {"type": "enabled"},
                     "reasoning_effort": use_reasoning,
                 }
             response = await client.chat.completions.create(**kwargs)
+            elapsed_s = round(time.monotonic() - start, 2)
             content = response.choices[0].message.content
+            if usage_log is not None:
+                usage = response.usage
+                usage_log.append({
+                    "attempt": len(usage_log) + 1,
+                    "reasoning": use_reasoning,
+                    "elapsed_s": elapsed_s,
+                    "prompt_tokens": getattr(usage, "prompt_tokens", None),
+                    "completion_tokens": getattr(usage, "completion_tokens", None),
+                    "reasoning_tokens": getattr(usage, "completion_tokens_details", None)
+                        and getattr(usage.completion_tokens_details, "reasoning_tokens", None),
+                    "total_tokens": getattr(usage, "total_tokens", None),
+                })
             if not content or not content.strip():
                 return None
             return content
@@ -579,20 +627,17 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
                 lines.append(f"  {predictions}")
 
         if shap := research.get("shap_digest"):
-            lines.append("\n--- MODEL SHAP DRIVERS (why the model predicts what it predicts) ---")
-            if isinstance(shap, dict) and shap.get("models"):
-                lines.append(f"  NOTE: {shap['note']}")
-                for model_key, m in shap["models"].items():
-                    lines.append(f"  [{model_key.upper()}] expected={m['expected_value']} predicted={m['predicted_value']}")
-                    if m.get("push_up"):
-                        lines.append("    Pushing UP:")
-                        for c in m["push_up"]:
-                            lines.append(f"      {c['display_name']} ({c['name']}) value={c['value']} contrib={c['contribution']:+.4f}")
-                    if m.get("push_down"):
-                        lines.append("    Pushing DOWN:")
-                        for c in m["push_down"]:
-                            lines.append(f"      {c['display_name']} ({c['name']}) value={c['value']} contrib={c['contribution']:+.4f}")
-            else:
+            lines.append("\n--- MODEL REASONING (why an edge may exist here) ---")
+            if isinstance(shap, dict):
+                # Sanitized rationale first: plain-language, no feature names or
+                # numbers. This is what the writer should use. (Option A.)
+                rationale = (shap.get("narrative_rationale") or "").strip()
+                if rationale:
+                    lines.append(f"  {rationale}")
+                # Do NOT dump raw feature values/names into the prompt — that
+                # risks leaking stat names and numbers into the final text.
+                # The raw digest stays available in research_brief for Admin UI.
+            elif shap:
                 lines.append(f"  {shap}")
 
         if narrative_data := research.get("narrative_data"):

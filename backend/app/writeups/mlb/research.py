@@ -24,6 +24,8 @@ from app.models.mlb import (
     MLBBullpenStat,
     MLBVenue,
 )
+from app.core.config import settings
+from openai import AsyncOpenAI
 
 logger = logging.getLogger("writeups")
 
@@ -631,6 +633,121 @@ async def get_shap_digest(
 
 
 # ──────────────────────────────────────────────
+#  5b. Sanitized SHAP rationale (Option A)
+# ──────────────────────────────────────────────
+
+DEEPSEEK_MODEL = "deepseek-v4-flash"
+
+
+def _flatten_shap_digest(digest: dict[str, Any]) -> list[dict[str, Any]]:
+    """Flatten the digest into one row per (model, direction, feature)."""
+    rows: list[dict[str, Any]] = []
+    models = digest.get("models") or {}
+    for model_key, side_label in (("ats", "spread"), ("ou", "total")):
+        blk = models.get(model_key) or {}
+        for direction, raw in (("push_up", "up"), ("push_down", "down")):
+            for feat in blk.get(direction, []) or []:
+                rows.append(
+                    {
+                        "side": side_label,
+                        "direction": raw,
+                        "title": feat.get("display_name") or feat.get("name") or "?",
+                        "description": feat.get("description") or "",
+                        "magnitude": feat.get("contribution"),
+                    }
+                )
+    return rows
+
+
+async def sanitize_shap_rationale(
+    digest: dict[str, Any],
+    home_team: str,
+    away_team: str,
+) -> str:
+    """Turn a raw SHAP digest into a sanitized plain-language rationale.
+
+    The output:
+      - Never mentions feature names, raw column names, or the word "SHAP".
+      - Never includes any numeric values (no stats, no contributions, no".4.5"-style numbers).
+      - Does NOT hand the writer a verdict/direction (no "the model favors X").
+        It describes what the data points at in human, two-team terms so the
+        final writer can build their own argument.
+
+    Falls back gracefully to an empty string if the model call fails, so
+    write-up generation never breaks because of this step.
+    """
+    rows = _flatten_shap_digest(digest)
+    if not rows:
+        return ""
+
+    # Sort by |magnitude| so the strongest drivers are summarized first.
+    rows.sort(key=lambda r: abs(r["magnitude"] or 0), reverse=True)
+
+    # Build a compact, non-identifying digest for the summarizer.
+    lines = []
+    for r in rows[:12]:
+        dir_word = "pushing toward the " + r["side"]
+        lines.append(
+            f"- {r['title']} ({r['description']}): push={dir_word}, "
+            f"direction={r['direction']}, weight={r['magnitude']}"
+        )
+    raw = "\n".join(lines)
+
+    system_prompt = (
+        "You convert model attribution data into a short, elegant, plain-language "
+        "explanation for a sports columnist to weave into their own analysis.\n"
+        "\n"
+        "HARD RULES:\n"
+        "- NEVER use feature names, column names, stat abbreviations, or the word 'SHAP'.\n"
+        "- NEVER include any numbers (no stats, no percentages, no scores, no weights).\n"
+        "- Do NOT write 'the model', 'the algorithm', 'the prediction engine', or give a "
+        "verdict like 'the model favors the home team'.\n"
+        "- Speak only in plain, specific observations about the two teams. Scale and "
+        "direction are implied by words (e.g. 'more effective', 'has been better'), "
+        "never by numbers.\n"
+        "- Output 2-4 sentences total. No preamble, no bullets, no section headers."
+    )
+    user_prompt = (
+        f"Home team: {home_team}\n"
+        f"Away team: {away_team}\n\n"
+        f"Model signals (weight=direction & strength, higher = stronger):\n{raw}\n\n"
+        "Write the sanitized 2-4 sentence rationale."
+    )
+
+    try:
+        client = AsyncOpenAI(
+            api_key=settings.deepseek_api_key,
+            base_url=f"{settings.deepseek_base_url}/v1",
+        )
+        response = await client.chat.completions.create(
+            model=DEEPSEEK_MODEL,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.3,
+            max_tokens=1500,
+            timeout=60.0,
+            extra_body={
+                # thinking enabled + minimal reasoning — proven combo that
+                # returns content ("none"/small budgets get eaten by CoT).
+                "thinking": {"type": "enabled"},
+                "reasoning_effort": "minimal",
+            },
+        )
+        content = (response.choices[0].message.content or "").strip()
+        if content:
+            logger.info(
+                "writeups [MLB] SHAP rationale: %d chars sanitized for %s @ %s",
+                len(content), away_team, home_team,
+            )
+            return content[:600]
+    except Exception as e:
+        logger.warning("writeups [MLB] SHAP sanitize failed: %s", e)
+    return ""
+
+
+# ──────────────────────────────────────────────
 #  6. Head-to-Head
 # ──────────────────────────────────────────────
 
@@ -1161,6 +1278,29 @@ async def get_research_brief(
     except Exception as e:
         logger.warning("Article enrichment failed for game %s: %s", game_id, e)
         results["article_enrichment"] = {"enriched_summary": "", "article_count": 0}
+
+    # ── Sanitized SHAP rationale (Option A — premium only, leak-free) ──
+    # Summarize the raw SHAP digest into plain-language, two-team observations
+    # with NO feature names / values / "SHAP" wording. Stored inside the digest
+    # so it round-trips through research_brief to the Admin UI, and public_stripped
+    # still hides the whole blob for the public writeup.
+    digest = results.get("shap_digest")
+    if isinstance(digest, dict) and "error" not in digest and digest.get("models"):
+        try:
+            sanitized = await sanitize_shap_rationale(
+                digest,
+                home_team=summary.get("home_team", {}).get("name", "Home"),
+                away_team=summary.get("away_team", {}).get("name", "Away"),
+            )
+            # Always attach the key so downstream/prompt code can rely on it.
+            digest["narrative_rationale"] = sanitized
+            results["shap_digest"] = digest
+            if not sanitized:
+                logger.info("SHAP sanitize returned empty for game %s; brief will fall back to raw digest", game_id)
+        except Exception as e:
+            logger.warning("SHAP sanitize step failed for game %s: %s", game_id, e)
+            if isinstance(digest, dict):
+                digest.setdefault("narrative_rationale", "")
 
     return {
         "game_summary": summary,

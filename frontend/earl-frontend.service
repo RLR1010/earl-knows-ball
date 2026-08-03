@@ -1,0 +1,16 @@
+[Unit]
+Description=Earl Knows Ball Frontend (Next.js)
+After=network-online.target caddy.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=rich
+WorkingDirectory=/home/rich/.openclaw/workspace/earl-knows-football/frontend
+ExecStart=/usr/bin/npm run start
+Restart=on-failure
+RestartSec=5
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=multi-user.target

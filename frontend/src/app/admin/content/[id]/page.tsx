@@ -184,7 +184,7 @@ export default function ContentEditor() {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 180_000);
       const res = await fetch(
-        `http://localhost:8001/writeups/${sport}/generate/${writeup.game_id}`,
+        `/writeups/${sport}/generate/${writeup.game_id}`,
         {
           method: "POST",
           headers: { Authorization: `Bearer ${token()}`, "Content-Type": "application/json" },

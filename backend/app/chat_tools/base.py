@@ -56,12 +56,21 @@ class ToolChatEngine:
         executor: Callable[[Any, Any], str],
         system_prompt_extra: str = "",
         model: str | None = None,
+        reasoning_effort: str | None = None,
     ):
         self.sport = sport
         self.sport_display = sport_display
         self.tools = tools
         self.executor = executor
         self.model = model or settings.deepseek_model
+        self.reasoning_effort = reasoning_effort
+
+        # Chat is a reasoning feature — keep thinking ENABLED so live reasoning
+        # updates stream and answer quality stays high. Default to 'low' effort:
+        # benchmark showed low finishes reliably within budget (5/5 stop), while
+        # medium/high can run away and get cut off. A reasoning_effort passed in
+        # overrides (used by the benchmark).
+        self._chat_extra_body = {"thinking": {"type": "enabled"},"reasoning_effort": reasoning_effort or "low"}
 
         self.system_prompt = SYSTEM_PROMPT_TEMPLATE.format(
             sport=sport_display,
@@ -69,6 +78,44 @@ class ToolChatEngine:
         )
         if system_prompt_extra:
             self.system_prompt += f"\n\n{system_prompt_extra}"
+
+    async def _chat_create(self, client, messages, extra_body=None, **kwargs):
+        """Run a chat completion with thinking enabled at 'low' reasoning.
+
+        If the reasoning pass runs away and comes back cut-off/empty
+        (finish_reason=length with no usable content), retry ONCE with thinking
+        DISABLED using the SAME messages — so the research already in the prompt
+        is preserved and we never pay for a wasted pass. Non-thinking always
+        completes, so we always get a usable answer.
+        """
+        # Strip any model kwarg (call sites pass model=self.model) so it can't
+        # collide with the explicit model below — the engine always uses self.model.
+        kwargs.pop("model", None)
+        body = extra_body or self._chat_extra_body
+        kwargs.setdefault("max_tokens", 8192)  # headroom so low reasoning fits
+        kwargs.setdefault("temperature", 0.7)
+        response = await client.chat.completions.create(
+            model=self.model,
+            extra_body=body,
+            messages=messages,
+            **kwargs,
+        )
+
+        # Detect a cut-off / empty answer from the reasoning pass.
+        choices = getattr(response, "choices", None) or []
+        if choices:
+            msg = choices[0].message
+            content = (msg.content or "").strip()
+            finish = getattr(choices[0], "finish_reason", None)
+            if not content and finish == "length":
+                # Retry with thinking disabled, same messages (research intact).
+                response = await client.chat.completions.create(
+                    model=self.model,
+                    extra_body={"thinking": {"type": "disabled"}},
+                    messages=messages,
+                    **kwargs,
+                )
+        return response
 
     async def research_and_answer(
         self,
@@ -97,8 +144,9 @@ class ToolChatEngine:
             )
 
             # First call with tools available
-            response = await client.chat.completions.create(
+            response = await self._chat_create(client,
                 model=self.model,
+                extra_body=self._chat_extra_body,
                 messages=messages,
                 tools=self.tools,
                 tool_choice="auto",
@@ -134,8 +182,9 @@ class ToolChatEngine:
                     })
 
                 # Next turn
-                response = await client.chat.completions.create(
+                response = await self._chat_create(client,
                     model=self.model,
+                    extra_body=self._chat_extra_body,
                     messages=messages,
                     tools=self.tools,
                     tool_choice="auto",
@@ -162,8 +211,9 @@ class ToolChatEngine:
                         "content": content,
                     })
                 messages.append({"role": "user", "content": "You have all the data you need. Provide your final answer now based on the tool results. Be concise."})
-                response = await client.chat.completions.create(
+                response = await self._chat_create(client,
                     model=self.model,
+                    extra_body=self._chat_extra_body,
                     messages=messages,
                 )
                 if response.usage:
@@ -253,8 +303,9 @@ class ToolChatEngine:
             yield ("status", "Researching your question...")
 
             # First call with tools available
-            response = await client.chat.completions.create(
+            response = await self._chat_create(client,
                 model=self.model,
+                extra_body=self._chat_extra_body,
                 messages=messages,
                 tools=self.tools,
                 tool_choice="auto",
@@ -292,8 +343,9 @@ class ToolChatEngine:
 
                 # Next turn
                 yield ("status", "Thinking about what I found...")
-                response = await client.chat.completions.create(
+                response = await self._chat_create(client,
                     model=self.model,
+                    extra_body=self._chat_extra_body,
                     messages=messages,
                     tools=self.tools,
                     tool_choice="auto",
@@ -320,8 +372,9 @@ class ToolChatEngine:
                         "content": content,
                     })
                 messages.append({"role": "user", "content": "You have all the data you need. Provide your final answer now based on ALL the information you have gathered. Be thorough and cite specific stats, matchups, and trends. Do not call any more tools."})
-                response = await client.chat.completions.create(
+                response = await self._chat_create(client,
                     model=self.model,
+                    extra_body=self._chat_extra_body,
                     messages=messages,
                     temperature=0.3,
                     max_tokens=2048,
@@ -433,6 +486,12 @@ class ToolChatEngine:
             ],
             temperature=0.3,
             max_tokens=2048,
+            extra_body={
+                # Enrichment: thinking enabled at minimal reasoning — enough to
+                # reason about relevance without heavy CoT cost.
+                "thinking": {"type": "enabled"},
+                "reasoning_effort": "minimal",
+            },
         )
 
         enrichment_tokens = summary_response.usage.total_tokens if summary_response.usage else 0

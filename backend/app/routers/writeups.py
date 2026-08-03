@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import text
@@ -190,6 +190,7 @@ async def generate_mlb_writeup(
     game_id: int,
     is_historical: Optional[bool] = Query(None),  # deprecated — auto-detected from game status
     as_of_date: Optional[str] = Query(None),
+    reasoning: str = Query("minimal", pattern="^(minimal|low|medium|high|xhigh|max|none|off|disabled)$"),  # thinking enabled + reasoning effort (default: minimal)
     db: AsyncSession = Depends(get_db),
 ):
     """Generate a write-up for an MLB game.
@@ -200,6 +201,8 @@ async def generate_mlb_writeup(
 
     - *as_of_date*: ISO-8601 date to filter research data (used for historical
       write-ups to only show data available before that date).
+    - *reasoning*: reasoning effort for the DeepSeek call — "high" or "low".
+      Used for A/B testing write-up quality, timing, and token usage.
     """
     # Validate game exists
     game = await db.execute(
@@ -227,8 +230,10 @@ async def generate_mlb_writeup(
         as_of_date_parsed -= timedelta(seconds=1)
 
     gen = MLBWriteupGenerator()
+    usage_log: list[dict[str, Any]] = []
     writeup, qc_results = await gen.generate(
         db, game_id, is_historical=is_historical, as_of_date=as_of_date_parsed,
+        reasoning=reasoning, usage_log=usage_log,
     )
 
     if "error" in writeup:
@@ -242,6 +247,8 @@ async def generate_mlb_writeup(
         "status": gen._derive_status(qc_results),
         "quality_checks": qc_results,
         "is_historical": is_historical,
+        "reasoning_effort": reasoning,
+        "usage_log": usage_log,
     }
 
 

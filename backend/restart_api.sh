@@ -1,6 +1,18 @@
 #!/usr/bin/env bash
 set -e
 
+# If the backend runs under the systemd user service (earl-backend.service),
+# delegate to systemd so we don't orphan a granian outside the service and
+# race it for port 8001. Falls back to legacy behavior if the service is
+# not active (e.g. root cron or a machine without the user manager).
+if command -v systemctl >/dev/null 2>&1; then
+    export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+    if systemctl --user is-active earl-backend.service >/dev/null 2>&1; then
+        echo "earl-backend.service is active — restarting via systemd"
+        exec systemctl --user restart earl-backend.service
+    fi
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 LOG_FILE="${LOG_FILE:-/tmp/earl-api.log}"
 

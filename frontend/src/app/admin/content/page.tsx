@@ -354,7 +354,7 @@ export default function AdminContent() {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 600_000);
       // is_historical is now auto-detected from game status on the backend
-      const res = await fetch(`http://localhost:8001/writeups/${sport}/generate/${gameId}`, {
+      const res = await fetch(`/writeups/${sport}/generate/${gameId}`, {
         method: "POST",
         headers: { Authorization: `Bearer ${token()}`, "Content-Type": "application/json" },
         signal: controller.signal,
