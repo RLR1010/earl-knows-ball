@@ -1,48 +1,66 @@
-"""In-memory store for live chat status updates.
+"""Live chat-status store (DB-backed, shared across Granian workers).
 
-The chat response is delivered via SSE, but Caddy gzip-buffers text/event-stream
-responses, so progress statuses don't reach the browser incrementally. To keep
-the UI live without depending on proxy SSE behavior, the backend writes each
-status to this store as it streams, and the frontend polls it via a lightweight
-endpoint (GET /chat/status/{request_id}).
+SSE through Caddy is gzip-buffered, so research statuses don't stream live to
+the browser. Each backend status update is written here (shared across all
+Granian workers via PostgreSQL) and the frontend polls GET /chat/status/{id}.
 
-Not a durable store — entries expire after STATUS_TTL_SECONDS to avoid a leak.
-Every status key is scoped to the authenticated user.
+Why DB (not in-memory)? Granian runs 4 workers = 4 separate processes. An
+in-memory dict in one worker is invisible to poll requests served by another.
+PostgreSQL gives a consistent view across all workers.
 """
-from datetime import datetime, timedelta, timezone
-from threading import Lock
+from datetime import datetime, timezone
 
-STATUS_TTL_SECONDS = 300  # 5 min — chat research far exceeds this, so no leak
+from sqlalchemy import delete, select, update as sa_update
 
-
-class ChatStatusStore:
-    def __init__(self, ttl_seconds: int = STATUS_TTL_SECONDS):
-        self._ttl = ttl_seconds
-        self._lock = Lock()
-        # request_id -> (expires_at, status_text)
-        self._data: dict[str, tuple[datetime, str]] = {}
-
-    def set(self, request_id: str, status: str) -> None:
-        now = datetime.now(timezone.utc)
-        with self._lock:
-            self._data[request_id] = (now + timedelta(seconds=self._ttl), status)
-
-    def get(self, request_id: str) -> str | None:
-        now = datetime.now(timezone.utc)
-        with self._lock:
-            row = self._data.get(request_id)
-            if row is None:
-                return None
-            expires_at, status = row
-            if expires_at < now:
-                self._data.pop(request_id, None)
-                return None
-            return status
-
-    def clear(self, request_id: str) -> None:
-        with self._lock:
-            self._data.pop(request_id, None)
+from app.database import async_session
+from app.models.chat_status import ChatStatus, _expires
 
 
-# Module-level singleton shared across routers.
-chat_status_store = ChatStatusStore()
+async def set_chat_status(request_id: str, status: str) -> None:
+    """Upsert the latest status for a chat request (creates or updates row)."""
+    now = datetime.now(timezone.utc)
+    expires = _expires()
+    async with async_session() as session:
+        row = await session.execute(
+            select(ChatStatus.id, ChatStatus.status).where(ChatStatus.request_id == request_id)
+        )
+        existing = row.first()
+        if existing is None:
+            session.add(ChatStatus(request_id=request_id, status=status,
+                                   expires_at=expires, updated_at=now))
+            await session.commit()
+        else:
+            await session.execute(
+                sa_update(ChatStatus)
+                .where(ChatStatus.request_id == request_id)
+                .values(status=status, expires_at=expires, updated_at=now)
+            )
+            await session.commit()
+
+
+async def get_chat_status(request_id: str) -> str | None:
+    """Return the latest status, or None if absent/expired."""
+    now = datetime.now(timezone.utc)
+    async with async_session() as session:
+        row = await session.execute(
+            select(ChatStatus.status, ChatStatus.expires_at)
+            .where(ChatStatus.request_id == request_id)
+        )
+        found = row.first()
+        if found is None:
+            return None
+        status, exp = found
+        if exp < now:
+            await session.execute(
+                delete(ChatStatus).where(ChatStatus.request_id == request_id)
+            )
+            await session.commit()
+            return None
+        return status
+
+
+async def clear_chat_status(request_id: str) -> None:
+    """Remove the status row once a chat request completes."""
+    async with async_session() as session:
+        await session.execute(delete(ChatStatus).where(ChatStatus.request_id == request_id))
+        await session.commit()
