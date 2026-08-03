@@ -218,6 +218,30 @@ export default function ChatPage() {
     await new Promise((r) => setTimeout(r, 0));
 
     const gotAnswer = { value: false };
+    // Unique id for this request so we can poll live status (Caddy gzip-buffers SSE,
+    // so statuses don't stream live to the browser — we poll instead).
+    const requestId =
+      (typeof crypto !== "undefined" && crypto.randomUUID)
+        ? crypto.randomUUID()
+        : `req_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+
+    // Poll live status from the backend every ~650ms while we wait for the answer.
+    const pollTimer = setInterval(async () => {
+      try {
+        const sr = await fetch(`${API_HOST}/chat/status/${requestId}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (sr.status === 204) {
+          // Status cleared -> finished. Let the SSE answer take over.
+          return;
+        }
+        const sj = await sr.json();
+        if (sj.status) setStatusText(sj.status);
+      } catch {
+        // ignore transient poll errors
+      }
+    }, 650);
+
     try {
       const endpoint = SPORT_CHAT_ENDPOINTS[sport];
       const res = await fetch(endpoint, {
@@ -229,6 +253,7 @@ export default function ChatPage() {
         body: JSON.stringify({
           message: userMsg,
           conversation_id: conversationId,
+          request_id: requestId,
         }),
       });
 
@@ -403,6 +428,7 @@ export default function ChatPage() {
         { role: "assistant", content: "Sorry, something went wrong. Try again." },
       ]);
     } finally {
+      clearInterval(pollTimer);
       setLoading(false);
       setStatusText(null);
       if (conversationId || true) {
