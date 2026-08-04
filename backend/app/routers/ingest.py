@@ -667,6 +667,119 @@ async def _run_nfl_stats_refresh(started_at=None):
         await _report_task_outcome("nfl-stats-refresh", success=True, started_at=started_at)
 
 
+@router.post("/ingest/nba/stats/refresh")
+async def ingest_nba_stats_refresh():
+    """
+    Refresh NBA stats (fire-and-forget background task).
+
+    Updates the four NBA statistical tables for the current season:
+      - nba.games                 (ESPN schedule; current season only, idempotent)
+      - nba.player_game_stats     (NBA Stats API per-game boxscores)
+      - nba.cumulative_game_stats (incremental; sync script on worker thread)
+      - nba.team_rolling_stats    (sync script on worker thread)
+
+    Same pattern as MLB/NFL: fire-and-forget dispatch, real success/failure
+    reported to task_runs so the Tasks UI reflects the actual background outcome.
+    """
+    import asyncio
+    from datetime import datetime, timezone
+
+    started_at = datetime.now(timezone.utc)
+
+    async def _run_reported():
+        try:
+            await _run_nba_stats_refresh(started_at)
+        except Exception as e:
+            import traceback
+            logger.error(f"NBA stats refresh CRASHED: {e}\n{traceback.format_exc()}")
+            await _report_task_outcome("nba-stats-refresh", success=False, error=f"{type(e).__name__}: {e}", started_at=started_at)
+
+    asyncio.create_task(_run_reported())
+    return {"status": "started", "message": "NBA stats refresh running in background. Check API logs for progress."}
+
+
+async def _run_nba_stats_refresh(started_at=None):
+    """Refresh the four NBA statistical tables for the current season.
+
+    NBA games + player game stats come from ESPN/NBA Stats (async). Cumulative
+    and team rolling stats are sync scripts, run on worker threads so they
+    don't block a granian worker.
+    """
+    import logging
+
+    logger = logging.getLogger("earl.nba_stats_refresh")
+
+    import urllib3
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    logging.getLogger("urllib3").setLevel(logging.WARNING)
+    logging.getLogger("requests").setLevel(logging.WARNING)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+
+    logger.info("=" * 60)
+    logger.info("NBA Stats Refresh")
+
+    from datetime import date
+    from app.database import async_session
+
+    if started_at is None:
+        from datetime import datetime as _dt, timezone as _tz
+        started_at = _dt.now(_tz.utc)
+    step_failures: list[str] = []
+
+    season = date.today().year
+
+    # Step 1: nba.games — current season schedule (ESPN), idempotent
+    logger.info("[Step 1] Syncing current-season nba.games from ESPN...")
+    try:
+        from app.ingestion.nba_games_espn import ingest_nba_games
+        games_result = await ingest_nba_games([season])
+        logger.info(f"  nba.games: {games_result}")
+    except Exception as e:
+        logger.error(f"  nba.games sync failed: {e}")
+        step_failures.append(f"nba.games: {e}")
+
+    # Step 2: nba.player_game_stats — per-game boxscores (async, idempotent)
+    logger.info("[Step 2] Ingesting nba.player_game_stats...")
+    try:
+        from app.ingestion.nba_player_game_stats import ingest_season
+        pgs_result = await ingest_season(season)
+        logger.info(f"  player_game_stats rows: {pgs_result}")
+    except Exception as e:
+        logger.error(f"  player_game_stats failed: {e}")
+        step_failures.append(f"player_game_stats: {e}")
+
+    # Step 3: nba.cumulative_game_stats — sync script on worker thread
+    logger.info("[Step 3] Refreshing nba.cumulative_game_stats...")
+    try:
+        from app.db_urls import PSYCOPG2_DATABASE_URL
+        from app.handicapping.nba.cumulative_stats import populate_cumulative_stats
+        cum_result = await _run_in_thread(populate_cumulative_stats, PSYCOPG2_DATABASE_URL, [season])
+        logger.info(f"  cumulative_game_stats: {cum_result}")
+    except Exception as e:
+        logger.error(f"  cumulative_game_stats failed: {e}")
+        step_failures.append(f"cumulative_game_stats: {e}")
+
+    # Step 4: nba.team_rolling_stats — sync script on worker thread
+    logger.info("[Step 4] Refreshing nba.team_rolling_stats...")
+    try:
+        from app.database import engine as sync_engine
+        from app.handicapping.nba.populate_team_rolling_stats import populate_team_rolling
+        roll_result = await _run_in_thread(populate_team_rolling, sync_engine, True)
+        logger.info(f"  team_rolling_stats: {roll_result}")
+    except Exception as e:
+        logger.error(f"  team_rolling_stats failed: {e}")
+        step_failures.append(f"team_rolling_stats: {e}")
+
+    # Report the REAL outcome to task_runs
+    if step_failures:
+        joined = "; ".join(step_failures)
+        logger.error(f"\n❌ NBA stats refresh finished WITH ERRORS:\n  {joined}")
+        await _report_task_outcome("nba-stats-refresh", success=False, error=joined, started_at=started_at)
+    else:
+        logger.info(f"\n✅ NBA stats refresh complete!")
+        await _report_task_outcome("nba-stats-refresh", success=True, started_at=started_at)
+
+
 async def _run_in_thread(func, *args, **kwargs):
     """Run a sync function on the default executor (thread pool) without blocking
     the event loop — the no-subprocess way to run the sync rolling-stats scripts

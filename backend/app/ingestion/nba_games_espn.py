@@ -77,14 +77,21 @@ async def ensure_season(year: int, session) -> int:
     return new_season.id
 
 
-async def ingest_nba_games():
-    """Main entry point: load NBA games for all needed seasons."""
+async def ingest_nba_games(seasons: list[int] | None = None):
+    """Main entry point: load NBA games for the given seasons.
+
+    Args:
+        seasons: list of season start years (e.g. [2025] for 2025-26).
+                 Defaults to the full historical backfill (2016-17 .. 2024-25).
+    """
     async with httpx.AsyncClient() as client:
         async with AsyncSessionLocal() as session:
             loaded = 0
             skipped = 0
 
-            for season_year in range(2024, 2015, -1):  # 2024-25 down to 2016-17
+            year_list = seasons if seasons else list(range(2024, 2015, -1))
+
+            for season_year in year_list:
                 season_id = await ensure_season(season_year, session)
 
                 # Determine date range for this season
