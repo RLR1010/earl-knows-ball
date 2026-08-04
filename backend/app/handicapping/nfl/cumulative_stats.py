@@ -166,7 +166,7 @@ WITH team_games AS (
         g.id              AS game_id,
         s.year            AS season,
         g.week,
-        gs.season_type,
+        g.game_type       AS season_type,
         g.date,
         ht.abbreviation   AS team_abbr,
         at.abbreviation   AS opponent_abbr,
@@ -246,7 +246,7 @@ WITH team_games AS (
         g.id              AS game_id,
         s.year            AS season,
         g.week,
-        gs.season_type,
+        g.game_type       AS season_type,
         g.date,
         at.abbreviation   AS team_abbr,
         ht.abbreviation   AS opponent_abbr,
@@ -825,6 +825,23 @@ async def recompute(db: AsyncSession, seasons: Optional[list[int]] = None) -> di
 
     results = {}
     for season in seasons:
+        # Clean stale rows before recompute: drop any cumulative row whose game_id
+        # no longer corresponds to a REG game (e.g. preseason games that were
+        # mislabeled, or orphaned rows). A REG-only recompute won't regenerate them.
+        await conn.execute(
+            text("""
+                DELETE FROM nfl.cumulative_game_stats c
+                WHERE c.season = :season
+                  AND NOT EXISTS (
+                    SELECT 1 FROM nfl.games g
+                    JOIN nfl.seasons s ON s.id = g.season_id
+                    WHERE g.id = c.game_id
+                      AND s.year = :season
+                      AND g.game_type = 'REG'
+                  )
+            """),
+            {"season": season},
+        )
         res = await compute_for_season(db, season)
         results[season] = res
         await compute_rankings(db, season)
@@ -865,6 +882,22 @@ async def refresh_cumulative_stats(db: AsyncSession) -> dict:
 
         if season_max_week > max_week:
             logger.info(f"Season {season}: new weeks found ({max_week} → {season_max_week}), recomputing")
+            # Clean stale rows (see recompute) so mislabeled/orphaned rows don't linger.
+            await conn.execute(
+                text("""
+                    DELETE FROM nfl.cumulative_game_stats c
+                    WHERE c.season = :season
+                      AND NOT EXISTS (
+                        SELECT 1 FROM nfl.games g
+                        JOIN nfl.seasons s ON s.id = g.season_id
+                        WHERE g.id = c.game_id
+                          AND s.year = :season
+                          AND g.game_type = 'REG'
+                      )
+                """),
+                {"season": season},
+            )
+            await conn.execute(text("COMMIT"))
             results[season] = await compute_for_season(db, season)
         else:
             logger.info(f"Season {season}: up to date (max_week={max_week})")
