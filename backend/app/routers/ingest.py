@@ -888,6 +888,176 @@ async def ingest_mlb_lines_and_picks(
     return {"status": "ok", "results": results}
 
 
+@router.post("/ingest/nfl/lines-and-picks")
+async def ingest_nfl_lines_and_picks(
+    api_key: str = Query("", description="The Odds API key. Falls back to ODDS_API_KEY env var."),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Combined NFL lines + picks refresh. Mirrors ingest_mlb_lines_and_picks.
+
+    1. Fetches current odds from The Odds API
+    2. Runs incremental consolidation
+    3. Batch-loads model & features, predicts future games with both spread+OU,
+       and saves predictions to nfl.game_predictions
+    """
+    import logging
+    logger = logging.getLogger("earl.nfl_lines_and_picks")
+
+    from app.ingestion.nfl_betting_lines import snapshot_nfl_opening_lines
+    from app.handicapping.nfl.engine import batch_predict_upcoming_games
+
+    if not api_key:
+        from app.core.config import settings as _nfl_settings
+        api_key = os.environ.get("ODDS_API_KEY", "") or _nfl_settings.odds_api_key
+
+    results = {"lines": None, "consolidated": None, "predictions": None, "errors": []}
+
+    if not api_key:
+        return {"status": "error", "message": "No API key"}
+
+    try:
+        # ── Step 1: Fetch lines ──────────────────────────────────────
+        lines_result = await snapshot_nfl_opening_lines(
+            db=db,
+            api_key=api_key,
+            days=3,
+        )
+        results["lines"] = lines_result
+        updated_game_ids = lines_result.get("updated_game_ids", [])
+
+        # ── Step 2: Consolidate ──────────────────────────────────────
+        if updated_game_ids:
+            try:
+                from app.ingestion.nfl_betting_lines_consolidate import run as consolidate_nfl
+                consolidate_nfl(game_ids_filter=set(updated_game_ids))
+                results["consolidated"] = {"status": "ok", "games": len(updated_game_ids)}
+            except Exception as exc:
+                logger.error(f"Consolidation failed: {exc}")
+
+        # ── Step 3: Predict future games with both spread + OU set ──
+        from datetime import datetime, timezone
+        from sqlalchemy import text
+        predict_rows = (
+            await db.execute(
+                text("""
+                    SELECT DISTINCT blc.game_id
+                    FROM nfl.betting_lines_consolidated blc
+                    JOIN nfl.games g ON g.id = blc.game_id
+                    WHERE g.date > NOW()
+                      AND g.status = 'SCHEDULED'
+                      AND blc.closing_spread IS NOT NULL
+                      AND blc.closing_ou IS NOT NULL
+                """)
+            )
+        ).fetchall()
+        game_ids = [r[0] for r in predict_rows]
+        logger.info(f"NFL: {len(game_ids)} games have consolidated lines")
+
+        if game_ids:
+            year = datetime.now(timezone.utc).year
+            pick_results = await batch_predict_upcoming_games(
+                game_ids=game_ids,
+                year=year,
+                db=db,
+            )
+            results["predictions"] = {"games": len(pick_results)}
+        else:
+            results["predictions"] = {"games": 0, "skipped": "no games with lines"}
+
+    except Exception:
+        import traceback
+        logger.error(f"NFL lines+picks refresh failed: {traceback.format_exc()}")
+
+    return {"status": "ok", "results": results}
+
+
+@router.post("/ingest/nba/lines-and-picks")
+async def ingest_nba_lines_and_picks(
+    api_key: str = Query("", description="The Odds API key. Falls back to ODDS_API_KEY env var."),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Combined NBA lines + picks refresh. Mirrors ingest_mlb_lines_and_picks.
+
+    1. Fetches current odds from The Odds API
+    2. Runs incremental consolidation
+    3. Batch-loads model & features, predicts future games with both spread+OU,
+       and saves predictions to nba.game_predictions
+    """
+    import logging
+    logger = logging.getLogger("earl.nba_lines_and_picks")
+
+    from app.ingestion.nba_betting_lines import snapshot_nba_opening_lines
+    from app.handicapping.nba.nba_engine import (
+        batch_predict_upcoming_games,
+    )
+
+    if not api_key:
+        from app.core.config import settings as _nba_settings
+        api_key = os.environ.get("ODDS_API_KEY", "") or _nba_settings.odds_api_key
+
+    results = {"lines": None, "consolidated": None, "predictions": None, "errors": []}
+
+    if not api_key:
+        return {"status": "error", "message": "No API key"}
+
+    try:
+        # ── Step 1: Fetch lines ──────────────────────────────────────
+        lines_result = await snapshot_nba_opening_lines(
+            db=db,
+            api_key=api_key,
+            days=3,
+        )
+        results["lines"] = lines_result
+        updated_game_ids = lines_result.get("updated_game_ids", [])
+
+        # ── Step 2: Consolidate ──────────────────────────────────────
+        if updated_game_ids:
+            try:
+                from app.ingestion.nba_odds_consolidated import run as consolidate_nba
+                await _run_in_thread(consolidate_nba, set(updated_game_ids))
+                results["consolidated"] = {"status": "ok", "games": len(updated_game_ids)}
+            except Exception as exc:
+                logger.error(f"Consolidation failed: {exc}")
+
+        # ── Step 3: Predict future games with both spread + OU set ──
+        from datetime import datetime, timezone
+        from sqlalchemy import text
+        predict_rows = (
+            await db.execute(
+                text("""
+                    SELECT DISTINCT blc.game_id
+                    FROM nba.betting_lines_consolidated blc
+                    JOIN nba.games g ON g.id = blc.game_id
+                    WHERE g.date > NOW()
+                      AND g.status = 'SCHEDULED'
+                      AND blc.closing_spread IS NOT NULL
+                      AND blc.closing_ou IS NOT NULL
+                """)
+            )
+        ).fetchall()
+        game_ids = [r[0] for r in predict_rows]
+        logger.info(f"NBA: {len(game_ids)} games have consolidated lines")
+
+        if game_ids:
+            year = datetime.now(timezone.utc).year
+            pick_results = await batch_predict_upcoming_games(
+                game_ids=game_ids,
+                year=year,
+                db=db,
+            )
+            results["predictions"] = {"games": len(pick_results)}
+        else:
+            results["predictions"] = {"games": 0, "skipped": "no games with lines"}
+
+    except Exception:
+        import traceback
+        logger.error(f"NBA lines+picks refresh failed: {traceback.format_exc()}")
+
+    return {"status": "ok", "results": results}
+
+
 @router.post("/ingest/weather-update")
 async def ingest_weather_update(
     db: AsyncSession = Depends(get_db),

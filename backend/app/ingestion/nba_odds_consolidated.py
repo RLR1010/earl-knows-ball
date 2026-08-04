@@ -30,7 +30,7 @@ def is_opening(val):
     return False
 
 
-def run():
+def run(game_ids_filter=None):
     engine = create_engine(SYNC_DATABASE_URL)
 
     # ── 1. Load raw data from nba.betting_lines ──
@@ -51,10 +51,11 @@ def run():
         JOIN nba.teams ht ON ht.id = g.home_team_id
         JOIN nba.teams at ON at.id = g.away_team_id
         JOIN nba.seasons s ON s.id = g.season_id
+        WHERE (:apply_filter = FALSE OR bl.game_id = ANY(:gids))
         ORDER BY bl.game_id, bl.sportsbook, bl.is_opening
     """)
-
-    df = pd.read_sql(query, engine)
+    params = {"apply_filter": bool(game_ids_filter), "gids": list(game_ids_filter or [])}
+    df = pd.read_sql(query, engine, params=params)
     logger.info(f"Loaded {len(df)} rows from nba.betting_lines")
 
     if df.empty:

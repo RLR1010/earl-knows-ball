@@ -695,45 +695,50 @@ async def _backtest_season_inner(
 
 
 async def batch_predict_upcoming_games(
-    days_ahead: int = 7,
-    save_to_db: bool = True,
+    game_ids: Optional[List[int]] = None,
+    year: Optional[int] = None,
     db: Optional[async_sessionmaker] = None,
 ) -> List[Dict[str, Any]]:
-    """Predict upcoming NBA games and optionally save to the database.
+    """Predict game cards for the given NBA games and optionally save them.
 
-    Mirrors ``nfl/engine.py:batch_predict_upcoming_games``.
+    Mirrors ``nfl/engine.py:batch_predict_upcoming_games`` and
+    ``mlb/mlb_engine.py:batch_predict_upcoming_games`` — the caller selects the
+    specific ``game_ids`` (e.g. games that have consolidated lines) and passes
+    them in; this function predicts exactly those games.
 
     Parameters
     ----------
-    days_ahead : int
-        How many days into the future to look (default 7).
-    save_to_db : bool
-        Persist predictions to ``nba.game_predictions``.
+    game_ids : list of int, optional
+        DB ids of the NBA games to predict. If None, nothing is predicted.
+    year : int, optional
+        Season year (derived from the first game's date if not provided).
     db : async_sessionmaker, optional
         DB session factory (auto-created if not provided).
 
     Returns
     -------
     list of dict
-        Pick-card dicts for each upcoming game.
+        Pick-card dicts for each predicted game.
     """
     from app.handicapping.nba.data_loader import NBADataLoader
 
     db = db or _get_async_session()
-    now = datetime.now(timezone.utc)
-    cutoff = now.isoformat()
+    game_ids = game_ids or []
 
-    logger.info("Fetching upcoming NBA games (next %d days)...", days_ahead)
+    logger.info("Predicting %d NBA game(s)...", len(game_ids))
+    if not game_ids:
+        logger.info("  No game_ids provided — nothing to predict")
+        return []
 
-    # Load upcoming games from the DB
-    upcoming = await _fetch_upcoming_games(db, now, days_ahead)
-    if not upcoming:
-        logger.info("  No upcoming NBA games found in the next %d days", days_ahead)
+    # Load the specific games from the DB
+    games = await _fetch_games_by_ids(db, game_ids)
+    if not games:
+        logger.info("  No matching NBA games found for the given ids")
         return []
 
     # Determine season year from the first game's date
-    first_date = upcoming[0].get("game_date") or upcoming[0].get("date", "")
-    year = _season_from_date(first_date) if first_date else CURRENT_SEASON
+    first_date = games[0].get("game_date") or games[0].get("date", "")
+    year = year or (_season_from_date(first_date) if first_date else CURRENT_SEASON)
 
     # Load models for this season
     ats_model = _load_model_for_year(year, "ats")
@@ -742,10 +747,10 @@ async def batch_predict_upcoming_games(
         logger.warning("  Missing models for season %s – cannot predict", year)
         return []
 
-    # Convert upcoming games to DataFrame for feature extraction
-    df = pd.DataFrame(upcoming)
+    # Convert games to DataFrame for feature extraction
+    df = pd.DataFrame(games)
     if "game_id" not in df.columns:
-        logger.warning("  Upcoming games have no game_id column")
+        logger.warning("  Games have no game_id column")
         return []
 
     pick_cards: List[Dict[str, Any]] = []
@@ -754,14 +759,12 @@ async def batch_predict_upcoming_games(
             pick_card = await _build_pick_card(row, ats_model, ou_model, year,
                                                 game_id=int(row["game_id"]))
             pick_cards.append(pick_card)
-
-            if save_to_db:
-                await _save_api_prediction(row, pick_card, db=db)
+            await _save_api_prediction(row, pick_card, db=db)
         except Exception as exc:
             logger.error("  Failed to predict game %s: %s", row.get("game_id"), exc)
             continue
 
-    logger.info("  Predicted %d / %d upcoming NBA games", len(pick_cards), len(df))
+    logger.info("  Predicted %d / %d NBA games", len(pick_cards), len(df))
     return pick_cards
 
 
@@ -810,7 +813,31 @@ async def _fetch_upcoming_games(
         return [dict(r) for r in rows]
 
 
-# ── Save API prediction ──────────────────────────────────────────────────────────
+async def _fetch_games_by_ids(
+    db: async_sessionmaker,
+    game_ids: List[int],
+) -> List[Dict[str, Any]]:
+    """Fetch the NBA games whose DB ids are in ``game_ids``.
+
+    Same row shape as ``_fetch_upcoming_games`` (dicts with game_id, home_team,
+    away_team, game_date, season) so the prediction loop is identical.
+    """
+    if not game_ids:
+        return []
+    async with db() as session:
+        stmt = text("""
+            SELECT
+                g.id AS game_id,
+                g.home_team,
+                g.away_team,
+                g.game_date,
+                g.season
+            FROM nba.games g
+            WHERE g.id = ANY(:ids)
+        """)
+        result = await session.execute(stmt, {"ids": list(game_ids)})
+        rows = result.mappings().all()
+        return [dict(r) for r in rows]
 
 
 async def _save_api_prediction(
@@ -1460,7 +1487,11 @@ if __name__ == "__main__":
         elif len(sys.argv) > 1 and sys.argv[1] == "predict":
             days = int(sys.argv[2]) if len(sys.argv) > 2 else 7
             logger.info("Predicting NBA games for next %d days...", days)
-            cards = asyncio.run(batch_predict_upcoming_games(days_ahead=days, save_to_db=True))
+            db = _get_async_session()
+            now = datetime.now(timezone.utc)
+            upcoming = asyncio.run(_fetch_upcoming_games(db, now, days))
+            game_ids = [int(u["game_id"]) for u in upcoming]
+            cards = asyncio.run(batch_predict_upcoming_games(game_ids=game_ids, db=db))
             print(f"  Predicted {len(cards)} games")
 
         else:
