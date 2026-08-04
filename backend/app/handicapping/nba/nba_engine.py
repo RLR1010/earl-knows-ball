@@ -1090,12 +1090,14 @@ async def _save_backtest_prediction(
             else:
                 ats_result = "loss"
         if over_under is not None and ou_total is not None and home_score is not None:
-            if actual_total > over_under:
-                ou_result = "over" if ou_pick == "Over" else "under"
-            elif actual_total < over_under:
-                ou_result = "under" if ou_pick == "Over" else "over"
+            # Settle OU as a WIN/LOSS/PUSH based on whether our pick matched the
+            # actual winning side of the total (same convention as NFL/MLB).
+            if abs(actual_total - over_under) < 0.05:
+                ou_result = "Push"
+            elif actual_total > over_under:
+                ou_result = "Win" if ou_pick == "Over" else "Loss"
             else:
-                ou_result = "push"
+                ou_result = "Win" if ou_pick == "Under" else "Loss"
 
         # ── Odds ──────────────────────────────────────────────────────
         # Extract odds from betting_lines_consolidated (via data_loader betting_agg CTE)
@@ -1121,10 +1123,12 @@ async def _save_backtest_prediction(
             ats_profit = -100.0
 
         ou_profit = 0.0
-        if ou_result == "over" and ou_odds_value:
+        if ou_result == "Win" and ou_odds_value:
             ou_profit = round(100.0 * _profit_per_100(ou_odds_value), 2)
-        elif ou_result == "under":
+        elif ou_result == "Loss":
             ou_profit = -100.0
+        elif ou_result == "Push":
+            ou_profit = 0.0
 
         ml_profit = 0.0
         if ml_odds_value and ml_result == "Win":
@@ -1192,7 +1196,7 @@ async def _save_backtest_prediction(
         ou_ev = _ev(ou_conf_cal, ou_odds_value) if ou_conf_cal is not None and ou_odds_value else None
         ml_ev = _ev(ml_conf_cal, ml_odds_value) if ml_conf_cal is not None and ml_odds_value else None
 
-        logger.info(
+        logger.debug(
             "NBA backtest game %s: spread=%s, ats_proba=%s, pred_margin=%s, margin_conf=%s, "
             "ou_total=%s, over_under=%s, ml_result=%s",
             game_id, spread, ats_proba, predicted_margin, margin_conf,
@@ -1249,7 +1253,7 @@ async def _save_backtest_prediction(
         )
 
         # ── Save via ORM ───────────────────────────────────────────────────────────
-        logger.info(
+        logger.debug(
             "Saving backtest prediction game_id=%s: "
             "ml_conf=%s ou_conf=%s ml_result=%s margin_conf=%s "
             "ats_result=%s ou_result=%s ml_pick=%s",

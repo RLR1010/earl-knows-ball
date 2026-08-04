@@ -206,15 +206,11 @@ async def build_calibration(db, sport: str = "nfl", max_exclusive_season: int = 
             "ou": "ou_conf",
             "ml": "ml_conf",
         }
-        # Map market to result filter condition (sport-aware for ou_result conventions)
-        ou_filter = (
-            "gp.ou_result IN ('Win','Loss')"
-            if cfg.get("ou_result_is_outcome")
-            else "gp.ou_result IN ('over','under')"
-        )
+        # Map market to result filter condition. All sports now store the OU
+        # OUTCOME (Win/Loss/Push) in ou_result, so use the same filter everywhere.
         result_filters = {
             "rl": f"LOWER(gp.{rl_col}) IN ('win','loss')",
-            "ou": ou_filter,
+            "ou": "LOWER(gp.ou_result) IN ('win','loss')",
             "ml": "LOWER(gp.ml_result) IN ('win','loss')",
         }
 
@@ -231,13 +227,8 @@ async def build_calibration(db, sport: str = "nfl", max_exclusive_season: int = 
             elif market == "ml":
                 win_sql = "gp.ml_result = 'Win'"
             else:
-                # ou: compare bet pick with actual outcome
-                if cfg.get("ou_result_is_outcome"):
-                    # ou_result stores bet outcome: Win/Loss/Push
-                    win_sql = "gp.ou_result = 'Win'"
-                else:
-                    # ou_result stores bet side: over/under (NBA-style)
-                    win_sql = "LOWER(gp.ou_pick) = LOWER(gp.ou_result)"
+                # ou: all sports store the bet OUTCOME (Win/Loss/Push) in ou_result
+                win_sql = "LOWER(gp.ou_result) = 'win'"
 
             raw_rows = await db.execute(_t(f"""
                 SELECT FLOOR(gp.{col} * {BIN_COUNT}) / {BIN_COUNT} as bucket,

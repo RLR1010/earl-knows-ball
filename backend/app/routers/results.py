@@ -25,6 +25,49 @@ def _rl_col(sport: str) -> str:
     return "run_line_result" if sport == "mlb" else "ats_result"
 
 
+def _ou_is_outcome(sport: str) -> bool:
+    """True when the sport stores the OU bet OUTCOME (win/loss) in ou_result.
+    All sports (NFL/NBA/MLB) now store the outcome as Win/Loss/Push — the
+    older NBA side-convention (over/under) was migrated away in 2026-08-03.
+    Kept as a function for forwards-compatibility; always True today."""
+    return True
+
+
+def _ou_win_sql(sport: str) -> str:
+    """SQL boolean expression: is an OU prediction a push/win/loss for this sport."""
+    if _ou_is_outcome(sport):
+        return (
+            "LOWER(gp.ou_result) IN ('win','loss')",
+            "LOWER(gp.ou_result)='win'",
+            "LOWER(gp.ou_result)='loss'",
+            "LOWER(gp.ou_result) IN ('push')",
+        )
+    return (
+        "gp.ou_result IS NOT NULL",
+        "LOWER(gp.ou_pick) = LOWER(gp.ou_result)",
+        "LOWER(gp.ou_pick) <> LOWER(gp.ou_result)",
+        "LOWER(gp.ou_result) IN ('push')",
+    )
+
+
+def _ou_is_win(sport: str, pick, result) -> bool:
+    """Python helper: is an OU prediction a win for this sport's result convention."""
+    if not result:
+        return False
+    if _ou_is_outcome(sport):
+        return str(result).lower() == "win"
+    return result and pick and str(pick).lower() == str(result).lower()
+
+
+def _ou_is_loss(sport: str, pick, result) -> bool:
+    """Python helper: is an OU prediction a loss for this sport's result convention."""
+    if not result:
+        return False
+    if _ou_is_outcome(sport):
+        return str(result).lower() == "loss"
+    return result and pick and str(pick).lower() != str(result).lower()
+
+
 def _conf_main(sport: str) -> str:
     """Raw confidence column for the spread/run-line pick type."""
     return "rl_conf" if sport == "mlb" else "margin_conf"
@@ -63,6 +106,153 @@ def _model_conf_key(sport: str, pick_type: str) -> str:
     return "rl_conf_cal"
 
 
+def _calib_bin_spec(values, bin_count: int = 12):
+    """Auto-derive a calibrated-confidence binning that spans the ACTUAL
+    observed range of values, per sport per market.
+
+    The old code bucketed into a fixed 0.50 -> 1.00 grid. When a market's
+    calibrated confidence lives in a narrow band (e.g. NBA ATS ~0.45-0.57),
+    that grid collapsed almost everything into one 0.50 bucket and the chart
+    showed no distribution. Instead, snap a padded [min, max] to a clean 0.005
+    boundary and build `bin_count` equal-width bins across that actual range.
+
+    Returns (edges, bin_index_fn) where edges is a list of (lo, hi, mid) tuples.
+    Handles the degenerate all-equal case by falling back to a 0.05-wide grid
+    centred on the value.
+    """
+    vals = [v for v in values if v is not None and v == v]  # drop None/NaN
+    if not vals:
+        return [], (lambda cf: -1)
+
+    lo, hi = min(vals), max(vals)
+    pad = max((hi - lo) * 0.06, 0.005)
+    lo = max(0.0, lo - pad)
+    hi = min(1.0, hi + pad)
+
+    width = hi - lo
+    if width < 0.02:  # all values essentially equal -> 5% grid around the value
+        c = (lo + hi) / 2
+        lo, hi = max(0.0, c - 0.02), min(1.0, c + 0.02)
+        width = hi - lo
+
+    edges = []
+    for i in range(bin_count):
+        lo_i = lo + (width / bin_count) * i
+        hi_i = lo + (width / bin_count) * (i + 1)
+        edges.append((round(lo_i, 4), round(hi_i, 4), round((lo_i + hi_i) / 2, 4)))
+
+    def _bucket_index(cf):
+        if cf is None or cf != cf:
+            return -1
+        if cf < lo:
+            return 0
+        if cf > hi:
+            return bin_count - 1
+        idx = int((cf - lo) / width * bin_count)
+        return min(max(idx, 0), bin_count - 1)
+
+    return edges, _bucket_index
+
+
+def _ev_bin_spec(values, bins_per_side: int = 4):
+    """Auto-derive EV buckets that NEVER straddle zero.
+
+    The old grid ran from -100 to +200, so a bucket like [-10, +5] crossed 0 —
+    hiding whether plays were genuinely negative- or positive-EV. We instead
+    split the observed values at zero: `bins_per_side` equal-width buckets below
+    0 (last one ends exactly at 0) and `bins_per_side` above 0 (first one starts
+    exactly at 0).
+
+    Returns (edges, bucket_index_fn). edges = list of (lo, hi, label).
+    Unknown/zero-EV routes are handled by the caller (exact 0 -> first positive
+    bucket by convention; None/NaN -> caller's unknown bucket).
+    """
+    vals = [v for v in values if v is not None and v == v]
+    negs = [v for v in vals if v < 0]
+    poss = [v for v in vals if v > 0]
+
+    # ── negative side ──
+    neg_edges = []
+    neg_start = 0  # where the negative block begins among edges
+    if negs:
+        lo = min(negs)
+        pad = max((max(negs) - lo) * 0.05, 1.0)
+        lo = lo - pad
+        width = (0 - lo) / bins_per_side
+        for i in range(bins_per_side):
+            a = lo + width * i
+            b = lo + width * (i + 1)
+            neg_edges.append((round(a), round(b), f"{round(a)} to {round(b)}"))
+
+    # ── positive side ──
+    pos_edges = []
+    if poss:
+        pos_sorted = sorted(poss)
+        n = len(pos_sorted)
+        # Place bin boundaries at quantiles of the DATA so the dense 0..+40
+        # region (thousands of games) gets broken into several fine buckets. The
+        # tail bucket is open-ended over a threshold near the top of the density.
+        import math
+        # boundaries at these percentiles: [0%, 25%, 50%, 75%, 88%] -> 5 finite
+        pcts = [0.0, 0.25, 0.5, 0.75, 0.88]
+        bnds = []
+        for p in pcts:
+            idx = int(round((n - 1) * p))
+            bnds.append(pos_sorted[max(0, min(idx, n - 1))])
+        # Always force an explicit 0 boundary so the first positive bucket starts
+        # at exactly 0 (no gap between the -X to 0 bucket and the first positive).
+        bnds = [0.0] + bnds
+        # coalesce duplicate/roughly-equal boundaries (keeps 0 first)
+        uniq = []
+        for v in bnds:
+            r = math.floor(v)
+            if not uniq:
+                uniq.append(r)
+            elif r > uniq[-1]:
+                uniq.append(r)
+        # ensure first bucket boundary is exactly 0
+        if not uniq or uniq[0] != 0:
+            uniq.insert(0, 0)
+        for i, lo_v in enumerate(uniq):
+            start = lo_v
+            if i == len(uniq) - 1:
+                # open-ended tail
+                pos_edges.append((start, float("inf"), f"+{start} to ∞"))
+            else:
+                end = uniq[i + 1]
+                if end <= start:
+                    continue
+                pos_edges.append((start, end, f"+{start} to +{end}"))
+        # if nothing was added (all boundaries <=0 or degenerate), fall back to a
+        # single open bucket from the max-padding value
+        if not pos_edges:
+            pos_edges.append((0, float("inf"), "+0 to ∞"))
+
+    edges = neg_edges + pos_edges
+
+    def _bucket_index(ev):
+        if ev is None or ev != ev:
+            return -1
+        # exact zero: land in the first positive bucket
+        if ev == 0 and pos_edges:
+            return len(neg_edges)
+        if ev < 0 and neg_edges:
+            idx = int((ev - neg_edges[0][0]) / max((0 - neg_edges[0][0]), 1e-9) * bins_per_side)
+            return min(max(idx, 0), len(neg_edges) - 1)
+        if ev > 0 and pos_edges:
+            # walk the finite positive buckets; anything beyond the last finite
+            # upper bound falls into the open-ended ∞ tail bucket.
+            for i, (lo_p, hi_p, _lbl) in enumerate(pos_edges):
+                if hi_p == float("inf"):
+                    return len(neg_edges) + i
+                if ev < hi_p:
+                    return len(neg_edges) + i
+            return len(neg_edges) + len(pos_edges) - 1
+        return -1
+
+    return edges, _bucket_index
+
+
 # ── Endpoints ────────────────────────────────────────────────────────────────
 
 
@@ -89,9 +279,9 @@ async def get_results_yearly(
             ROUND(COALESCE(SUM(gp.ats_profit) FILTER (WHERE gp.{rl_col} IS NOT NULL), 0))::int as ats_profit,
             COALESCE(SUM(gp.ats_ev) FILTER (WHERE gp.{rl_col} IS NOT NULL), 0) as ats_ev_sum,
             COUNT(*) FILTER (WHERE gp.ou_result IS NOT NULL) as ou_games,
-            COUNT(*) FILTER (WHERE LOWER(gp.ou_result)='win') as ou_wins,
-            COUNT(*) FILTER (WHERE LOWER(gp.ou_result)='loss') as ou_losses,
-            COUNT(*) FILTER (WHERE LOWER(gp.ou_result) IN ('push')) as ou_pushes,
+            COUNT(*) FILTER (WHERE {_ou_win_sql(sport)[1]}) as ou_wins,
+            COUNT(*) FILTER (WHERE {_ou_win_sql(sport)[2]}) as ou_losses,
+            COUNT(*) FILTER (WHERE {_ou_win_sql(sport)[3]}) as ou_pushes,
             ROUND(COALESCE(SUM(gp.ou_profit) FILTER (WHERE gp.ou_result IS NOT NULL), 0))::int as ou_profit,
             COALESCE(SUM(gp.ou_ev) FILTER (WHERE gp.ou_result IS NOT NULL), 0) as ou_ev_sum,
             COUNT(*) FILTER (WHERE gp.ml_result IS NOT NULL) as ml_games,
@@ -160,6 +350,7 @@ async def get_calibration(
             gp.{cal_main},
             {cal_cols},
             gp.{rl_col} as ats_result,
+            gp.ou_pick,
             gp.ou_result,
             gp.ml_result,
             gp.ats_profit,
@@ -190,38 +381,34 @@ async def get_calibration(
         "ml":  {"conf": "ml_conf_cal", "result": "ml_result", "profit": "ml_profit", "ev": "ml_ev", "odds": "ml_odds"},
     }
 
-    BIN_COUNT = 20
-    BIN_STEP = 0.025
+    # Auto-derive per-market binning from the ACTUAL observed calibrated range
+    # (e.g. NBA ATS ~0.45-0.57 becomes 12 equal-width buckets spanning that band), so
+    # each chart shows a real distribution instead of everything collapsing to 0.50.
+    specs = {}
+    for key, m in models.items():
+        cf_vals = [getattr(r, m["conf"]) for r in rows]
+        specs[key] = _calib_bin_spec(cf_vals)
 
-    def _make_bins():
+    def _make_bins(spec):
         return [
             {
-                "lo": round(0.50 + i * BIN_STEP, 3),
-                "hi": round(0.50 + (i + 1) * BIN_STEP, 3),
-                "mid": round(0.50 + (i + 0.5) * BIN_STEP, 3),
+                "lo": lo, "hi": hi, "mid": mid,
                 "total": 0, "wins": 0, "losses": 0,
                 "pct": 0.0,
                 "profit": 0.0,
                 "fwd_ev_sum": 0.0,
             }
-            for i in range(BIN_COUNT)
+            for lo, hi, mid in spec[0]
         ]
 
-    def _bucket_index(cf: float) -> int:
-        if cf is None or cf != cf or cf < 0.50:
-            return -1
-        if cf >= 1.0:
-            return BIN_COUNT - 1
-        idx = int((cf - 0.50) / BIN_STEP)
-        return min(idx, BIN_COUNT - 1)
-
-    results: dict[str, list[dict]] = {k: _make_bins() for k in models}
+    results: dict[str, list[dict]] = {k: _make_bins(specs[k]) for k in models}
     unknown: dict[str, int] = {k: 0 for k in models}
 
     for row in rows:
         for key, m in models.items():
             cf = getattr(row, m["conf"])
-            idx = _bucket_index(cf)
+            _, bucket_index = specs[key]
+            idx = bucket_index(cf)
             if idx < 0:
                 unknown[key] += 1
                 continue
@@ -232,7 +419,13 @@ async def get_calibration(
             b = results[key][idx]
 
             b["total"] += 1
-            if result_val and result_val.lower() == "win":
+            if key == "ou":
+                ou_pick = getattr(row, "ou_pick", None)
+                if _ou_is_win(sport, ou_pick, result_val):
+                    b["wins"] += 1
+                elif _ou_is_loss(sport, ou_pick, result_val):
+                    b["losses"] += 1
+            elif result_val and result_val.lower() == "win":
                 b["wins"] += 1
             elif result_val and result_val.lower() == "loss":
                 b["losses"] += 1
@@ -268,6 +461,7 @@ async def get_results_ev_distribution(
     rows_result = await db.execute(_sa_text(f"""
         SELECT
             gp.{rl_col} as ats_result,
+            gp.ou_pick,
             gp.ou_result,
             gp.ml_result,
             gp.ats_profit,
@@ -298,50 +492,44 @@ async def get_results_ev_distribution(
         "ml":  {"result": "ml_result", "profit": "ml_profit", "ev": "ml_ev", "odds": "ml_odds"},
     }
 
-    # ── EV buckets: -100 to +200, 15-unit steps ──
-    EV_BUCKET_WIDTH = 15
-    EV_NUM_BUCKETS = 20
-    UNKNOWN_ODDS_BUCKET = 20
+    # ── Auto-derive EV buckets per market, splitting at zero so no bucket
+    #    straddles 0 (e.g. -20 to 0 and 0 to +20), spanning the actual range.
+    my_ev_specs = {}
+    for key, m in models.items():
+        ev_vals = []
+        for row in all_rows:
+            ev_val = getattr(row, m["ev"])
+            odds = getattr(row, m["odds"])
+            if ev_val is not None and ev_val == ev_val and odds is not None and odds != 0:
+                ev_vals.append(ev_val)
+        my_ev_specs[key] = _ev_bin_spec(ev_vals)
 
-    def _make_ev_buckets():
+    def _make_ev_buckets(spec):
         buckets = []
-        for i in range(EV_NUM_BUCKETS):
-            lo = -100 + i * EV_BUCKET_WIDTH
-            hi = lo + EV_BUCKET_WIDTH
+        for lo, hi, label in spec[0]:
             buckets.append({
-                "ev_lo": lo, "ev_hi": hi,
-                "label": f"{lo}-{hi}",
+                "ev_lo": lo, "ev_hi": None if hi == float("inf") else hi,
+                "label": label,
                 "total": 0, "wins": 0, "losses": 0,
                 "profit": 0.0,
             })
-        # Extra bucket for rows where EV couldn't be computed (odds=0 at prediction time)
-        buckets.append({
-            "ev_lo": 201, "ev_hi": 999,
-            "label": "Unknown odds",
-            "total": 0, "wins": 0, "losses": 0,
-            "profit": 0.0,
-        })
         return buckets
 
-    def _ev_bucket_idx(ev: float) -> int:
-        if ev < -100:
-            return 0
-        idx = int((ev + 100) / EV_BUCKET_WIDTH)
-        if idx >= EV_NUM_BUCKETS:
-            return EV_NUM_BUCKETS - 1
-        return idx
-
-    overall_data: dict[str, list[dict]] = {k: _make_ev_buckets() for k in models}
+    overall_data: dict[str, list[dict]] = {k: _make_ev_buckets(my_ev_specs[k]) for k in models}
 
     for row in all_rows:
         for key, m in models.items():
             ev_val = getattr(row, m["ev"])
             odds = getattr(row, m["odds"])
 
-            if ev_val is None or odds is None or odds == 0:
-                b = overall_data[key][UNKNOWN_ODDS_BUCKET]
-            else:
-                b = overall_data[key][_ev_bucket_idx(ev_val)]
+            # Drop rows with unknown EV / odds entirely — no Unknown bucket.
+            if ev_val is None or odds is None or odds == 0 or ev_val != ev_val:
+                continue
+            _, ev_idx_fn = my_ev_specs[key]
+            idx = ev_idx_fn(ev_val)
+            if idx < 0:
+                continue
+            b = overall_data[key][idx]
 
             b["total"] += 1
 
@@ -353,7 +541,13 @@ async def get_results_ev_distribution(
             else:
                 result_val = getattr(row, "ml_result")
 
-            if result_val and result_val.lower() == "win":
+            if key == "ou":
+                ou_pick = getattr(row, "ou_pick", None)
+                if _ou_is_win(sport, ou_pick, result_val):
+                    b["wins"] += 1
+                elif _ou_is_loss(sport, ou_pick, result_val):
+                    b["losses"] += 1
+            elif result_val and result_val.lower() == "win":
                 b["wins"] += 1
             elif result_val and result_val.lower() == "loss":
                 b["losses"] += 1
@@ -385,6 +579,7 @@ async def get_results_ev_distribution_by_year(
         SELECT
             s.year,
             gp.{rl_col} as ats_result,
+            gp.ou_pick,
             gp.ou_result,
             gp.ml_result,
             gp.ats_profit,
@@ -416,69 +611,65 @@ async def get_results_ev_distribution_by_year(
         "ml":  {"result": "ml_result", "profit": "ml_profit", "ev": "ml_ev", "odds": "ml_odds"},
     }
 
-    # ── EV buckets ──
-    EV_BUCKET_WIDTH = 15
-    EV_NUM_BUCKETS = 20
-    UNKNOWN_ODDS_BUCKET = 20
+    # ── Auto-derive EV buckets per market, splitting at zero so no bucket
+    #    straddles 0. All years + overall share the same edges per market so the
+    #    x-axis lines up across years.
+    ev_specs = {}
+    for key, m in models.items():
+        _ev_vals = []
+        for _row in all_rows:
+            _ev_v = getattr(_row, m["ev"])
+            _odds = getattr(_row, m["odds"])
+            if _ev_v is not None and _ev_v == _ev_v and _odds is not None and _odds != 0:
+                _ev_vals.append(_ev_v)
+        ev_specs[key] = _ev_bin_spec(_ev_vals)
 
-    def _make_ev_buckets():
+    def _make_ev_buckets(spec):
         buckets = []
-        for i in range(EV_NUM_BUCKETS):
-            lo = -100 + i * EV_BUCKET_WIDTH
-            hi = lo + EV_BUCKET_WIDTH
+        for lo, hi, label in spec[0]:
             buckets.append({
-                "ev_lo": lo, "ev_hi": hi,
-                "label": f"{lo}-{hi}",
+                "ev_lo": lo, "ev_hi": None if hi == float("inf") else hi,
+                "label": label,
                 "total": 0, "wins": 0, "losses": 0,
                 "profit": 0.0,
             })
-        buckets.append({
-            "ev_lo": 201, "ev_hi": 999,
-            "label": "Unknown odds",
-            "total": 0, "wins": 0, "losses": 0,
-            "profit": 0.0,
-        })
         return buckets
 
-    def _ev_bucket_idx(ev: float) -> int:
-        if ev < -100:
-            return 0
-        idx = int((ev + 100) / EV_BUCKET_WIDTH)
-        if idx >= EV_NUM_BUCKETS:
-            return EV_NUM_BUCKETS - 1
-        return idx
+    def _ev_bucket_idx(spec, ev):
+        _, idx_fn = spec
+        return idx_fn(ev)
 
     year_data: dict[int, dict[str, list[dict]]] = {}
-    overall_data: dict[str, list[dict]] = {k: _make_ev_buckets() for k in models}
+    overall_data: dict[str, list[dict]] = {k: _make_ev_buckets(ev_specs[k]) for k in models}
 
     for row in all_rows:
         yr = row.year
         if yr not in year_data:
-            year_data[yr] = {k: _make_ev_buckets() for k in models}
+            year_data[yr] = {k: _make_ev_buckets(ev_specs[k]) for k in models}
 
         for key, m in models.items():
             ev_val = getattr(row, m["ev"])
             odds = getattr(row, m["odds"])
 
-            if ev_val is None or odds is None or odds == 0:
-                for buckets in (year_data[yr][key], overall_data[key]):
-                    b = buckets[UNKNOWN_ODDS_BUCKET]
-                    b["total"] += 1
-                    result_val = getattr(row, m["result"])
-                    if result_val and result_val.lower() == "win":
-                        b["wins"] += 1
-                    elif result_val and result_val.lower() == "loss":
-                        b["losses"] += 1
-                    b["profit"] += getattr(row, m["profit"]) or 0
+            # Drop rows with unknown EV / odds entirely — no Unknown bucket.
+            if ev_val is None or odds is None or odds == 0 or ev_val != ev_val:
                 continue
 
-            eb_idx = _ev_bucket_idx(ev_val)
+            eb_idx = _ev_bucket_idx(ev_specs[key], ev_val)
+            if eb_idx < 0:
+                continue
 
             for buckets in (year_data[yr][key], overall_data[key]):
                 b = buckets[eb_idx]
                 b["total"] += 1
                 result_val = getattr(row, m["result"])
-                if result_val and result_val.lower() == "win":
+                if key == "ou":
+                    ou_pick = getattr(row, "ou_pick", None)
+                    if _ou_is_win(sport, ou_pick, result_val):
+                        b["wins"] += 1
+                    elif _ou_is_loss(sport, ou_pick, result_val):
+                        b["losses"] += 1
+                elif result_val and result_val.lower() == "win":
                     b["wins"] += 1
                 elif result_val and result_val.lower() == "loss":
                     b["losses"] += 1
@@ -513,9 +704,9 @@ async def get_results_summary(
             COUNT(*) FILTER (WHERE LOWER(gp.{rl_col}) IN ('push')) as ats_pushes,
             ROUND(COALESCE(SUM(gp.ats_profit) FILTER (WHERE gp.{rl_col} IS NOT NULL), 0))::int as ats_profit,
             COUNT(*) FILTER (WHERE gp.ou_result IS NOT NULL) as ou_games,
-            COUNT(*) FILTER (WHERE LOWER(gp.ou_result)='win') as ou_wins,
-            COUNT(*) FILTER (WHERE LOWER(gp.ou_result)='loss') as ou_losses,
-            COUNT(*) FILTER (WHERE LOWER(gp.ou_result) IN ('push')) as ou_pushes,
+            COUNT(*) FILTER (WHERE {_ou_win_sql(sport)[1]}) as ou_wins,
+            COUNT(*) FILTER (WHERE {_ou_win_sql(sport)[2]}) as ou_losses,
+            COUNT(*) FILTER (WHERE {_ou_win_sql(sport)[3]}) as ou_pushes,
             ROUND(COALESCE(SUM(gp.ou_profit) FILTER (WHERE gp.ou_result IS NOT NULL), 0))::int as ou_profit,
             COUNT(*) FILTER (WHERE gp.ml_result IS NOT NULL) as ml_games,
             COUNT(*) FILTER (WHERE LOWER(gp.ml_result)='win') as ml_wins,
@@ -579,7 +770,7 @@ async def get_results_calibration_by_year(
             s.year,
             gp.{cal_main},
             {cal_cols},
-            gp.{rl_col} as ats_result, gp.ou_result, gp.ml_result,
+            gp.{rl_col} as ats_result, gp.ou_pick, gp.ou_result, gp.ml_result,
             gp.ats_profit, gp.ou_profit, gp.ml_profit,
             gp.ats_odds, gp.ou_odds, gp.ml_odds,
             g.id as game_id
@@ -595,58 +786,70 @@ async def get_results_calibration_by_year(
           AND s.year != 2021
     """))
 
-    BIN_COUNT = 20
-    BIN_STEP = 0.025
-
-    def _bucket_index(cf: float) -> int:
-        if cf is None or cf != cf or cf < 0.50:
-            return 0
-        if cf >= 1.0:
-            return BIN_COUNT - 1
-        idx = int((cf - 0.50) / BIN_STEP)
-        return min(idx, BIN_COUNT - 1)
-
-    def _empty_bins():
-        bins = []
-        for i in range(BIN_COUNT):
-            lo = round(0.50 + i * BIN_STEP, 3)
-            hi = round(lo + BIN_STEP, 3)
-            bins.append({
-                "bin_lo": lo, "bin_hi": hi,
-                "label": f"{lo*100:.0f}-{hi*100:.0f}%",
-                "total": 0, "wins": 0, "losses": 0, "pushes": 0,
-                "profit": 0.0,
-            })
-        return bins
-
     models = {
         "ats": {"result": "ats_result", "profit": "ats_profit", "odds": "ats_odds", "conf": cal_main},
         "ou":  {"result": "ou_result", "profit": "ou_profit", "odds": "ou_odds", "conf": "ou_conf_cal"},
         "ml":  {"result": "ml_result", "profit": "ml_profit", "odds": "ml_odds", "conf": "ml_conf_cal"},
     }
 
-    # Accumulate into per-year bins + overall
+    # Auto-derive per-market bin edges from the ACTUAL observed calibrated range,
+    # so each chart spans its real distribution (e.g. NBA ATS ~0.45-0.57) instead of
+    # a fixed 0.50-1.00 grid. All years share the same edges so the x-axis lines up.
     all_rows = rows.fetchall()
+    bin_specs = {}
+    for key, m in models.items():
+        cf_vals = [getattr(r, m["conf"]) for r in all_rows]
+        bin_specs[key] = _calib_bin_spec(cf_vals)
+
+    def _bucket_index(edges, idx_fn, cf):
+        if cf is None or cf != cf:
+            return -1
+        return idx_fn(cf)
+
+    def _empty_bins(edges):
+        bins = []
+        for bin_lo, bin_hi, _mid in edges:
+            bins.append({
+                "bin_lo": bin_lo, "bin_hi": bin_hi,
+                "label": f"{bin_lo*100:.0f}-{bin_hi*100:.0f}%",
+                "total": 0, "wins": 0, "losses": 0, "pushes": 0,
+                "profit": 0.0,
+            })
+        return bins
+
+    overall_bins: dict[str, list] = {k: _empty_bins(bin_specs[k][0]) for k in models}
+
+    # Accumulate into per-year bins + overall
     year_bins: dict[int, dict[str, list]] = {}
-    overall_bins: dict[str, list] = {k: _empty_bins() for k in models}
 
     for row in all_rows:
         yr = row.year
         if yr not in year_bins:
-            year_bins[yr] = {k: _empty_bins() for k in models}
+            year_bins[yr] = {k: _empty_bins(bin_specs[k][0]) for k in models}
 
         for key, m in models.items():
             cf = getattr(row, m["conf"])
             if cf is None or cf != cf:
                 continue
-            bidx = _bucket_index(cf)
+            edges, idx_fn = bin_specs[key]
+            bidx = _bucket_index(edges, idx_fn, cf)
+            if bidx < 0:
+                continue
             result = getattr(row, m["result"])
             profit = getattr(row, m["profit"]) or 0
 
             for bins in (year_bins[yr][key], overall_bins[key]):
                 b = bins[bidx]
                 b["total"] += 1
-                if result and result.lower() == "win":
+                if key == "ou":
+                    ou_pick = getattr(row, "ou_pick", None)
+                    if _ou_is_win(sport, ou_pick, result):
+                        b["wins"] += 1
+                    elif _ou_is_loss(sport, ou_pick, result):
+                        b["losses"] += 1
+                    elif result and result.lower() == "push":
+                        b["pushes"] += 1
+                elif result and result.lower() == "win":
                     b["wins"] += 1
                 elif result and result.lower() == "loss":
                     b["losses"] += 1

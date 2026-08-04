@@ -65,6 +65,7 @@ from app.routers import (
     admin,
     writeups,
     token_usage,
+    v1,
 )
 
 app.include_router(auth.router)
@@ -87,6 +88,12 @@ app.include_router(admin.router)
 app.include_router(writeups.router)
 app.include_router(token_usage.router)
 app.include_router(token_usage.admin_router)
+
+# ── Versioned API (v1) - future mobile public API contract ───────────
+# Re-exposes the mobile-facing subset under /api/v1 without duplicating
+# handlers, while keeping ALL legacy routes live for the current frontend.
+# /ingest and /admin are intentionally NOT included here (internal-only).
+app.include_router(v1.v1_router)
 
 
 @app.get("/")

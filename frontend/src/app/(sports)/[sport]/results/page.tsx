@@ -52,7 +52,7 @@ interface CalByYear {
 
 interface EvBin {
   ev_lo: number;
-  ev_hi: number;
+  ev_hi: number | null;
   label: string;
   total: number;
   wins: number;
@@ -93,31 +93,50 @@ const SPORT_LABELS: Record<string, string> = {
 
 function mergeBins(bins: CalBin[], n: number = 10): CalBin[] {
   if (!bins || bins.length === 0) return [];
-  const perGroup = Math.floor(bins.length / n);
-  const result: CalBin[] = [];
+  if (bins.length <= n) return bins;
+  // Merge all bins into exactly `n` groups WITHOUT dropping any: give every
+  // group an equal base size, then spread the remainder across the later
+  // groups so the full observed range (including a wide high-confidence tail)
+  // survives the merge.
+  const base = Math.floor(bins.length / n);
+  const rem = bins.length % n;
+  const groups: CalBin[][] = [];
+  let cursor = 0;
   for (let i = 0; i < n; i++) {
-    const group = bins.slice(i * perGroup, (i + 1) * perGroup);
-    result.push({
-      bin_lo: group[0].bin_lo,
-      bin_hi: group[group.length - 1].bin_hi,
-      label: `${(group[0].bin_lo * 100).toFixed(0)}-${(group[group.length - 1].bin_hi * 100).toFixed(0)}%`,
-      total: group.reduce((s, b) => s + b.total, 0),
-      wins: group.reduce((s, b) => s + b.wins, 0),
-      losses: group.reduce((s, b) => s + b.losses, 0),
-      pushes: group.reduce((s, b) => s + b.pushes, 0),
-      profit: group.reduce((s, b) => s + b.profit, 0),
-    });
+    const size = base + (i >= n - rem ? 1 : 0);
+    groups.push(bins.slice(cursor, cursor + size));
+    cursor += size;
   }
-  return result;
+  return groups.map((g) => ({
+    bin_lo: g[0].bin_lo,
+    bin_hi: g[g.length - 1].bin_hi,
+    label: `${(g[0].bin_lo * 100).toFixed(0)}-${(g[g.length - 1].bin_hi * 100).toFixed(0)}%`,
+    total: g.reduce((s, b) => s + b.total, 0),
+    wins: g.reduce((s, b) => s + b.wins, 0),
+    losses: g.reduce((s, b) => s + b.losses, 0),
+    pushes: g.reduce((s, b) => s + b.pushes, 0),
+    profit: g.reduce((s, b) => s + b.profit, 0),
+  }));
 }
 
 function mergeEvBins(bins: EvBin[], n: number = 8): EvBin[] {
   if (!bins || bins.length === 0) return [];
   const nonEmpty = bins.filter((b) => b.total > 0);
-  const perGroup = Math.max(Math.ceil(nonEmpty.length / n), 1);
+  // Never merge across the zero boundary: a bucket spanning e.g. -10 to +10
+  // hides whether plays were genuinely negative- or positive-EV. Merge the
+  // negative-side buckets and positive-side buckets separately, then concat.
+  // ev_hi may be null for the open-ended ∞ tail bucket (which is positive).
+  const neg = nonEmpty.filter((b) => b.ev_lo < 0 && (b.ev_hi ?? -1) <= 0);
+  const pos = nonEmpty.filter((b) => b.ev_lo >= 0);
+  const groups = [...mergeGroup(neg, n), ...mergeGroup(pos, n)];
+  return groups;
+}
+
+function mergeGroup(bins: EvBin[], n: number): EvBin[] {
+  const perGroup = Math.max(Math.ceil(bins.length / Math.max(n / 2, 1)), 1);
   const result: EvBin[] = [];
-  for (let i = 0; i < nonEmpty.length; i += perGroup) {
-    const group = nonEmpty.slice(i, i + perGroup);
+  for (let i = 0; i < bins.length; i += perGroup) {
+    const group = bins.slice(i, i + perGroup);
     result.push({
       ev_lo: group[0].ev_lo,
       ev_hi: group[group.length - 1].ev_hi,
@@ -131,10 +150,14 @@ function mergeEvBins(bins: EvBin[], n: number = 8): EvBin[] {
   return result;
 }
 
-function fmtEvLabel(evLo: number, evHi: number): string {
+function fmtEvLabel(evLo: number, evHi: number | null): string {
+  // Unknown odds bucket sentinel (backend uses ev_lo=1000000)
+  if (evLo >= 1000000) return "Unknown odds";
   const lo = evLo >= 0 ? `+${evLo}` : `${evLo}`;
+  // Open-ended tail bucket (ev_hi is Infinity -> serialized as null, or >= 1e6)
+  if (evHi === null || evHi === Infinity || evHi >= 1000000) return `${lo} to ∞`;
   const hi = evHi >= 0 ? `+${evHi}` : `${evHi}`;
-  return `${lo} TO ${hi}`;
+  return `${lo} to ${hi}`;
 }
 
 // ── Stat card (no PnL) ──────────────────────────────────────────────────────
@@ -208,10 +231,10 @@ function CalibrationChart({ bins, model }: { bins: CalBin[]; model: string }) {
     .filter((b) => b.total > 0)
     .map((b) => ({
       ...b,
-      calConf: b.total > 0 ? b.wins / b.total : 0,
-      rawRange: `${(b.bin_lo * 100).toFixed(0)}–${(b.bin_hi * 100).toFixed(0)}%`,
+      calConf: b.total > 0 ? b.wins / b.total : 0,          // win rate (0..1)
+      calRange: `.${(b.bin_lo * 100).toFixed(0).padStart(2, "0")} - .${(b.bin_hi * 100).toFixed(0).padStart(2, "0")}`,
     }))
-    .sort((a, b) => a.calConf - b.calConf);
+    .sort((a, b) => a.bin_lo - b.bin_lo);  // left → right: calibrated confidence, smallest to largest
 
   if (merged.length === 0) return null;
 
@@ -226,7 +249,7 @@ function CalibrationChart({ bins, model }: { bins: CalBin[]; model: string }) {
 
   const groups = merged.map((b, i) => {
     const cx = PL + i * groupW + groupW / 2;
-    const calPct = (b.calConf * 100).toFixed(1);
+    const winPct = (b.calConf * 100).toFixed(1);   // win rate % for this bucket
     const winH = (b.wins / yMax) * CH, lossH = (b.losses / yMax) * CH;
     const wx = cx - groupW * 0.3, lx = cx + groupW * 0.02;
     const baseY = PT + CH;
@@ -237,8 +260,10 @@ function CalibrationChart({ bins, model }: { bins: CalBin[]; model: string }) {
         {b.wins > 0 && <text x={wx + barW / 2} y={baseY - winH - 8} textAnchor="middle" fill={MODEL_CHART_COLORS[model]} fontSize={14} fontWeight={700}>{b.wins}</text>}
         <rect x={lx} y={baseY - lossH} width={barW} height={Math.max(lossH, 2)} fill="#ef4444" fillOpacity={0.65} rx={2} />
         {b.losses > 0 && <text x={lx + barW / 2} y={baseY - lossH - 8} textAnchor="middle" fill="#ef4444" fontSize={14} fontWeight={700}>{b.losses}</text>}
-        <text x={cx} y={H - PB + 24} textAnchor="middle" fill="white" fillOpacity={0.9} fontSize={15} fontWeight={700}>{calPct}%</text>
-        <text x={cx} y={H - PB + 44} textAnchor="middle" fill="white" fillOpacity={0.25} fontSize={12}>({b.rawRange})</text>
+        {/* top bold = win rate percentage for this bucket */}
+        <text x={cx} y={H - PB + 20} textAnchor="middle" fill="white" fontSize={16} fontWeight={800}>{winPct}%</text>
+        {/* bottom = calibrated confidence bucket range (no raw confidences shown) */}
+        <text x={cx} y={H - PB + 42} textAnchor="middle" fill="white" fillOpacity={0.75} fontSize={13}> ({b.calRange})</text>
       </g>
     );
   });
@@ -249,17 +274,17 @@ function CalibrationChart({ bins, model }: { bins: CalBin[]; model: string }) {
       {yTicks.map((t) => {
         const y = PT + CH - (t / yMax) * CH;
         return (<g key={t}>
-          <line x1={PL} y1={y} x2={W - PR} y2={y} stroke="white" strokeOpacity={0.08} strokeWidth={1} />
-          <text x={PL - 10} y={y + 4} textAnchor="end" fill="white" fillOpacity={0.35} fontSize={12}>{t}</text>
+          <line x1={PL} y1={y} x2={W - PR} y2={y} stroke="white" strokeOpacity={0.1} strokeWidth={1} />
+          <text x={PL - 10} y={y + 4} textAnchor="end" fill="white" fillOpacity={0.7} fontSize={12}>{t}</text>
         </g>);
       })}
       {groups}
       <rect x={PL} y={H - 18} width={14} height={14} rx={2} fill={MODEL_CHART_COLORS[model]} fillOpacity={0.75} />
-      <text x={PL + 20} y={H - 6} fill="white" fillOpacity={0.7} fontSize={14}>Wins</text>
+      <text x={PL + 20} y={H - 6} fill="white" fillOpacity={0.9} fontSize={14}>Wins</text>
       <rect x={PL + 80} y={H - 18} width={14} height={14} rx={2} fill="#ef4444" fillOpacity={0.65} />
-      <text x={PL + 100} y={H - 6} fill="white" fillOpacity={0.7} fontSize={14}>Losses</text>
-      <text x={W / 2} y={H - 4} textAnchor="middle" fill="white" fillOpacity={0.3} fontSize={12}>
-        Calibrated Confidence (actual win rate) · raw range in parentheses
+      <text x={PL + 100} y={H - 6} fill="white" fillOpacity={0.9} fontSize={14}>Losses</text>
+      <text x={W / 2} y={H - 4} textAnchor="middle" fill="white" fillOpacity={0.55} fontSize={12}>
+        Win rate by calibrated confidence bucket · bucket range in parentheses
       </text>
     </svg>
   );
@@ -296,7 +321,6 @@ function EvPnLChart({ bins, model }: { bins: EvBin[]; model: string }) {
     const cx = PL + i * groupW + groupW / 2;
     const profitH = (Math.abs(b.profit) / yMax) * half;
     const label = fmtEvLabel(b.ev_lo, b.ev_hi);
-    const wr = b.total > 0 ? (b.wins / b.total * 100).toFixed(1) : "0.0";
     const isPositive = b.profit >= 0;
     const color = isPositive ? "#34d399" : "#ef4444";
     const barY = isPositive ? midY - profitH : midY;
@@ -311,13 +335,9 @@ function EvPnLChart({ bins, model }: { bins: EvBin[]; model: string }) {
             {b.profit >= 0 ? "+" : ""}${Math.round(b.profit).toLocaleString()}
           </text>
         )}
-        {/* X-axis label */}
-        <text x={cx} y={H - PB + 24} textAnchor="middle" fill="white" fillOpacity={0.9} fontSize={14} fontWeight={700}>
-          {label}
-        </text>
-        {/* Win rate below */}
-        <text x={cx} y={H - PB + 44} textAnchor="middle" fill="white" fillOpacity={0.25} fontSize={12}>
-          {wr}% WR · {b.total}g
+        {/* EV score range in parentheses, brighter */}
+        <text x={cx} y={H - PB + 20} textAnchor="middle" fill="white" fillOpacity={0.85} fontSize={13}>
+          ({label})
         </text>
       </g>
     );
@@ -337,7 +357,7 @@ function EvPnLChart({ bins, model }: { bins: EvBin[]; model: string }) {
           return (
             <g key={val}>
               <line x1={PL} y1={y} x2={W - PR} y2={y} stroke="white" strokeOpacity={0.06} strokeWidth={1} />
-              <text x={PL - 10} y={y + 4} textAnchor="end" fill="white" fillOpacity={0.3} fontSize={12}>
+              <text x={PL - 10} y={y + 4} textAnchor="end" fill="white" fillOpacity={0.7} fontSize={12}>
                 {val >= 0 ? "+" : ""}${val.toLocaleString()}
               </text>
             </g>
@@ -350,8 +370,8 @@ function EvPnLChart({ bins, model }: { bins: EvBin[]; model: string }) {
       <text x={PL + 20} y={H - 6} fill="white" fillOpacity={0.7} fontSize={14}>Profit</text>
       <rect x={PL + 90} y={H - 18} width={14} height={14} rx={2} fill="#ef4444" fillOpacity={0.65} />
       <text x={PL + 110} y={H - 6} fill="white" fillOpacity={0.7} fontSize={14}>Loss</text>
-      <text x={W / 2} y={H - 4} textAnchor="middle" fill="white" fillOpacity={0.3} fontSize={12}>
-        EV Score Range · PnL per bucket · WR and games below each bucket
+      <text x={W / 2} y={H - 4} textAnchor="middle" fill="white" fillOpacity={0.55} fontSize={12}>
+        EV Score Range · PnL per bucket · win % above each bucket
       </text>
     </svg>
   );
@@ -391,8 +411,14 @@ function EvRecordChart({ bins, model }: { bins: EvBin[]; model: string }) {
         {b.wins > 0 && <text x={wx + barW / 2} y={baseY - winH - 8} textAnchor="middle" fill={MODEL_CHART_COLORS[model]} fontSize={14} fontWeight={700}>{b.wins}</text>}
         <rect x={lx} y={baseY - lossH} width={barW} height={Math.max(lossH, 2)} fill="#ef4444" fillOpacity={0.65} rx={2} />
         {b.losses > 0 && <text x={lx + barW / 2} y={baseY - lossH - 8} textAnchor="middle" fill="#ef4444" fontSize={14} fontWeight={700}>{b.losses}</text>}
-        <text x={cx} y={H - PB + 24} textAnchor="middle" fill="white" fillOpacity={0.9} fontSize={14} fontWeight={700}>{label}</text>
-        <text x={cx} y={H - PB + 44} textAnchor="middle" fill="white" fillOpacity={0.25} fontSize={12}>{wr}% WR</text>
+        {/* Win % above the bucket (bright, bold) */}
+        <text x={cx} y={H - PB + 20} textAnchor="middle" fill="white" fontSize={15} fontWeight={800}>
+          {wr}%
+        </text>
+        {/* EV score range in parentheses, brighter */}
+        <text x={cx} y={H - PB + 42} textAnchor="middle" fill="white" fillOpacity={0.85} fontSize={13}>
+          ({label})
+        </text>
       </g>
     );
   });
@@ -404,7 +430,7 @@ function EvRecordChart({ bins, model }: { bins: EvBin[]; model: string }) {
         const y = PT + CH - (t / yMax) * CH;
         return (<g key={t}>
           <line x1={PL} y1={y} x2={W - PR} y2={y} stroke="white" strokeOpacity={0.08} strokeWidth={1} />
-          <text x={PL - 10} y={y + 4} textAnchor="end" fill="white" fillOpacity={0.35} fontSize={12}>{t}</text>
+          <text x={PL - 10} y={y + 4} textAnchor="end" fill="white" fillOpacity={0.7} fontSize={12}>{t}</text>
         </g>);
       })}
       {groups}
@@ -412,8 +438,8 @@ function EvRecordChart({ bins, model }: { bins: EvBin[]; model: string }) {
       <text x={PL + 20} y={H - 6} fill="white" fillOpacity={0.7} fontSize={14}>Wins</text>
       <rect x={PL + 80} y={H - 18} width={14} height={14} rx={2} fill="#ef4444" fillOpacity={0.65} />
       <text x={PL + 100} y={H - 6} fill="white" fillOpacity={0.7} fontSize={14}>Losses</text>
-      <text x={W / 2} y={H - 4} textAnchor="middle" fill="white" fillOpacity={0.3} fontSize={12}>
-        EV Score Range · WR below each bucket
+      <text x={W / 2} y={H - 4} textAnchor="middle" fill="white" fillOpacity={0.55} fontSize={12}>
+        EV Score Range · win % above each bucket
       </text>
     </svg>
   );
@@ -429,8 +455,7 @@ function EvExplanation() {
         <p>
           <strong className="text-white">Expected Value (EV)</strong> is a betting metric
           that measures the expected profit or loss on a $100 bet, using the
-          model&apos;s <strong className="text-white">calibrated confidence</strong> (actual
-          observed win rate at the prediction&apos;s confidence level) and the available odds.
+          model&apos;s <strong className="text-white">calibrated confidence</strong> and the available odds.
         </p>
 
         <div className="bg-white/[0.05] rounded-xl p-4 font-mono text-xs text-gray-400 space-y-1">
@@ -438,21 +463,20 @@ function EvExplanation() {
           <p>EV = (CalibratedWinProb × ProfitAtOdds) − (LossProb × $100)</p>
           <p className="text-gray-500 mt-2">
             Calibrated Win Probability = the actual observed win rate for predictions at
-            that confidence level, not the model&apos;s raw confidence.
+            that confidence level.
           </p>
         </div>
 
         <div className="bg-white/[0.05] rounded-xl p-4 space-y-1">
           <p className="text-gray-300 font-semibold text-sm">Example</p>
           <p className="font-mono text-xs text-gray-400">
-            The model says 60% confident on Chiefs -7 at -110 odds.
+            The model projects a 57.2% win probability on Chiefs -7 at -110 odds.
           </p>
           <p className="font-mono text-xs text-gray-400">
-            But historically, predictions at 58–62% confidence won at 57.2% — that&apos;s the calibrated confidence.<br />
             EV = (0.572 × $90.91) − (0.428 × $100) = <strong className="text-green-400">+$9.12</strong>
           </p>
           <p className="text-xs text-gray-500 mt-1">
-            Each $100 bet is expected to profit $9.12 on average, using real historical calibration.
+            Each $100 bet is expected to profit $9.12 on average.
           </p>
         </div>
 
@@ -604,9 +628,10 @@ export default function ResultsPage() {
               <div>
                 <h2 className="text-lg font-semibold mb-2">Record by Calibrated Confidence</h2>
                 <p className="text-sm text-gray-500 max-w-3xl mb-6">
-                  For each confidence bucket, the bold number on the x-axis is the
-                  calibrated confidence — the actual observed win rate. The parentheses show
-                  the model&apos;s raw confidence range. Groups are sorted by calibrated confidence.
+                  Each bucket is a range of calibrated confidence (shown in parentheses,
+                  e.g. .48 - .50). The bold number above each bucket is the observed win rate
+                  percentage for that bucket. Buckets run left to right from lowest to highest
+                  calibrated confidence.
                 </p>
                 {["ats", "ou", "ml"].map((model) => {
                   const bins = calByYear.overall[model];
@@ -651,6 +676,9 @@ export default function ResultsPage() {
           {/* ── Record by EV Score ── */}
           {evByYear && (
             <section className="space-y-8">
+              {/* ── EV Explanation (above the EV graphs) ── */}
+              <EvExplanation />
+
               <div>
                 <h2 className="text-lg font-semibold mb-2">Record by EV Score</h2>
                 <p className="text-sm text-gray-500 max-w-3xl mb-6">
@@ -754,9 +782,6 @@ export default function ResultsPage() {
                   } />
                 ))}
               </div>
-
-              {/* ── EV Explanation ── */}
-              <EvExplanation />
             </section>
           )}
         </>

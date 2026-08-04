@@ -1608,9 +1608,9 @@ async def get_prediction_stats(
                COUNT(*) FILTER (WHERE LOWER(gp.{rl_col})='push') as ats_pushes,
                ROUND(COALESCE(SUM(gp.ats_profit) FILTER (WHERE gp.{rl_col} IS NOT NULL), 0))::int as ats_profit,
                COUNT(*) FILTER (WHERE gp.ou_result IS NOT NULL) as ou_games,
-               COUNT(*) FILTER (WHERE LOWER(gp.ou_result) IN ('win','over')) as ou_wins,
-               COUNT(*) FILTER (WHERE LOWER(gp.ou_result) IN ('loss','under')) as ou_losses,
-               COUNT(*) FILTER (WHERE LOWER(gp.ou_result) IN ('push')) as ou_pushes,
+               COUNT(*) FILTER (WHERE LOWER(gp.ou_result)='win') as ou_wins,
+               COUNT(*) FILTER (WHERE LOWER(gp.ou_result)='loss') as ou_losses,
+               COUNT(*) FILTER (WHERE LOWER(gp.ou_result)='push') as ou_pushes,
                ROUND(COALESCE(SUM(gp.ou_profit) FILTER (WHERE gp.ou_result IS NOT NULL), 0))::int as ou_profit,
                COUNT(*) FILTER (WHERE gp.ml_result IS NOT NULL) as ml_games,
                COUNT(*) FILTER (WHERE LOWER(gp.ml_result)='win') as ml_wins,
@@ -1772,14 +1772,10 @@ async def get_prediction_stats(
                     buckets[bk] = {model_type+"_w": 0, model_type+"_l": 0, "total": 0, "pushes": 0, "profit": 0}
                 res = {"ats": row[4], "ou": row[5], "ml": row[6]}[result_field]
                 pf = {"ats": row[7], "ou": row[8], "ml": row[9]}[result_field]
-                # Normalize: NFL uses 'Win'/'Loss'/'Push', NBA uses 'over'/'under'/'push' for O/U
+                # Normalize result to canonical Win/Loss/Push (all sports now
+                # store the OUTCOME, not the bet side).
                 if res:
-                    if result_field == "ou":
-                        ou_lower = res.strip().lower()
-                        res = {"win": "Win", "loss": "Loss", "push": "Push",
-                                "over": "Win", "under": "Loss"}.get(ou_lower)
-                    else:
-                        res = res.strip().title()
+                    res = res.strip().title()
                 if res == "Win":
                     buckets[bk][model_type+"_w"] += 1
                     buckets[bk]["total"] += 1
@@ -1824,14 +1820,10 @@ async def get_prediction_stats(
                 mc = row[10] if row[10] is not None and not (isinstance(row[10], float) and row[10] != row[10]) else row[0]
                 ats_r, ou_r, ml_r = row[4], row[5], row[6]
                 ats_p, ou_p, ml_p = row[7], row[8], row[9]
-                # Normalize results per sport format
+                # Normalize results to canonical Win/Loss/Push (all sports)
                 if ats_r: ats_r = ats_r.strip().title()
+                if ou_r: ou_r = ou_r.strip().title()
                 if ml_r: ml_r = ml_r.strip().title()
-                # O/U: NFL uses 'Win'/'Loss'/'Push', NBA uses 'over'/'under'/'push'
-                if ou_r:
-                    ou_lower = ou_r.strip().lower()
-                    ou_r = {"win": "Win", "loss": "Loss", "push": "Push",
-                             "over": "Win", "under": "Loss"}.get(ou_lower)
                 bk = _bucket(mc, "overall")
                 if bk is None:
                     continue
@@ -2068,15 +2060,10 @@ async def get_prediction_calibration(
         ats_r = r.ats_result
         ou_r = r.ou_result
         ml_r = r.ml_result
-        # Normalize sport result strings
-        # ATS/ML: 'Win', 'Loss', 'Push' (all sports same format)
+        # Normalize result strings to canonical Win/Loss/Push (all sports)
         if ats_r: ats_r = ats_r.strip().title()
         if ml_r: ml_r = ml_r.strip().title()
-        # O/U: NFL uses 'Win'/'Loss'/'Push', NBA uses 'over'/'under'/'push'
-        if ou_r:
-            ou_lower = ou_r.strip().lower()
-            ou_r = {"win": "Win", "loss": "Loss", "push": "Push",
-                     "over": "Win", "under": "Loss"}.get(ou_lower)
+        if ou_r: ou_r = ou_r.strip().title()
         ats_p = float(r.ats_profit or 0)
         ou_p = float(r.ou_profit or 0)
         ml_p = float(r.ml_profit or 0)
@@ -2297,10 +2284,7 @@ async def get_prediction_ev_distribution(
         ats_r = r.ats_result
         if ats_r: ats_r = ats_r.strip().title()
         ou_r = r.ou_result
-        if ou_r:
-            ou_lower = ou_r.strip().lower()
-            ou_r = {"win": "Win", "loss": "Loss", "push": "Push",
-                     "over": "Win", "under": "Loss"}.get(ou_lower)
+        if ou_r: ou_r = ou_r.strip().title()
         ml_r = r.ml_result
         if ml_r: ml_r = ml_r.strip().title()
 
