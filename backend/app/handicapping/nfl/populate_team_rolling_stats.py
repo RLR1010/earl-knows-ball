@@ -265,7 +265,7 @@ WITH per_game AS (
     JOIN nfl.teams t_home ON t_home.id = g.home_team_id
     JOIN nfl.teams t_away ON t_away.id = g.away_team_id
     LEFT JOIN nfl.betting_lines_consolidated bl ON c.game_id = bl.game_id
-    WHERE c.season_type = 'REG'
+    WHERE g.game_type = 'REG'
     WINDOW w AS (PARTITION BY c.season, c.team_abbr ORDER BY c.games_played
                  ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING)
 ),
