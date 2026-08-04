@@ -218,7 +218,44 @@ async def _mlb_mark_full_refresh(db, year):
     )
 
 
-async def _run_mlb_stats_refresh():
+async def _mlb_report_task_outcome(success: bool, error: str = "", started_at=None):
+    """Overwrite the scheduler's dispatch-time `task_runs` row with the REAL
+    outcome of the background refresh.
+
+    The scheduler marks api_call tasks `success` the moment the endpoint returns
+    (fire-and-forget, ~242ms). That fake status hides background failures. This
+    helper updates the latest `mlb-stats-refresh` run with the true result once
+    the detached work actually finishes.
+    """
+    from sqlalchemy import text as sa_text
+    from datetime import datetime, timezone
+    from app.database import async_session
+
+    finished_at = datetime.now(timezone.utc)
+    duration_ms = int((finished_at - started_at).total_seconds() * 1000) if started_at else 0
+
+    async with async_session() as s:
+        await s.execute(
+            sa_text("""
+                UPDATE task_runs
+                SET status = :s, finished_at = :f, duration_ms = :d, error_message = :e
+                WHERE id = (
+                    SELECT id FROM task_runs
+                    WHERE task_name = 'mlb-stats-refresh'
+                    ORDER BY started_at DESC, id DESC LIMIT 1
+                )
+            """),
+            {
+                "s": "success" if success else "failed",
+                "f": finished_at,
+                "d": duration_ms,
+                "e": (error or "")[:2000] if not success else None,
+            },
+        )
+        await s.commit()
+
+
+async def _run_mlb_stats_refresh(started_at=None):
     """Run MLB stats refresh in background.
 
     Every run syncs rosters, game statuses, probable pitchers, lineups,
@@ -252,6 +289,11 @@ async def _run_mlb_stats_refresh():
     # refresh fails or the service is down in the morning, the next 30-min run
     # picks it up instead of waiting until tomorrow's clock gate.
     FULL_REFRESH_STALE_SECONDS = 6 * 60 * 60
+
+    if started_at is None:
+        from datetime import datetime as _dt, timezone as _tz
+        started_at = _dt.now(_tz.utc)
+    step_failures: list[str] = []
 
     async with async_session() as db:
         need_full_refresh = await _mlb_full_refresh_due(db, CURRENT_YEAR, FULL_REFRESH_STALE_SECONDS)
@@ -311,6 +353,7 @@ async def _run_mlb_stats_refresh():
             logger.info(f"  Active: {summary.get('total_active', 0)}, IL: {summary.get('total_injured', 0)}")
         except Exception as e:
             logger.error(f"  Roster sync failed: {e}")
+            step_failures.append(f"Roster sync: {e}")
 
         # Step 5: Game status updates (always run)
         logger.info("[Step 5] Updating game statuses from MLB Stats API...")
@@ -333,6 +376,7 @@ async def _run_mlb_stats_refresh():
             logger.info(f"  Lineups: {lineup_result.get('lineups_saved', 0)} saved, {lineup_result.get('pitchers_updated', 0)} pitchers updated")
         except Exception as e:
             logger.error(f"  Lineups fetch failed: {e}")
+            step_failures.append(f"Lineups: {e}")
 
         # (Step 7b removed 2026-08-04)
         # Pick-card regeneration now handled entirely by the `mlb-lines-and-picks`
@@ -368,6 +412,8 @@ async def _run_mlb_stats_refresh():
                             f"{boxscore_result.get('weather_updated', 0)} weather updates")
             except Exception as e:
                 logger.error(f"  Boxscore loading failed: {e}")
+                step_failures.append(f"Boxscores: {e}")
+
             # Step 9 removed 2026-08-04: prediction-result writes were redundant —
             # refresh_boxscores_for_recent_games already writes actuals for FINAL games.
         except Exception as e:
@@ -385,6 +431,7 @@ async def _run_mlb_stats_refresh():
             )
         except Exception as e:
             logger.error(f"  Step 10 cumulative stats refresh failed: {e}")
+            step_failures.append(f"Cumulative stats: {e}")
 
         # Step 11: Refresh pre-computed rolling team & pitcher stats
         try:
@@ -400,6 +447,7 @@ async def _run_mlb_stats_refresh():
             )
         except Exception as e:
             logger.error(f"  Step 11 rolling stats refresh failed: {e}")
+            step_failures.append(f"Rolling stats: {e}")
 
         # Step 12: Refresh bullpen game stats (from pitcher_game_stats WHERE is_starter=FALSE)
         try:
@@ -413,6 +461,7 @@ async def _run_mlb_stats_refresh():
             )
         except Exception as e:
             logger.error(f"  Step 12 bullpen stats refresh failed: {e}")
+            step_failures.append(f"Bullpen stats: {e}")
 
         await pconn.close()
 
@@ -421,21 +470,46 @@ async def _run_mlb_stats_refresh():
             await db.commit()
         except Exception as e:
             logger.error(f"Final commit failed: {e}")
+            step_failures.append(f"Final commit: {e}")
 
-        logger.info(f"\n✅ MLB stats {label} complete!")
+        # Report the REAL outcome (overwrites the scheduler's fake dispatch success).
+        if step_failures:
+            joined = "; ".join(step_failures)
+            logger.error(f"\n❌ MLB stats {label} finished WITH ERRORS:\n  {joined}")
+            await _mlb_report_task_outcome(success=False, error=joined, started_at=started_at)
+        else:
+            logger.info(f"\n✅ MLB stats {label} complete!")
+            await _mlb_report_task_outcome(success=True, started_at=started_at)
 
 
 @router.post("/ingest/mlb/stats/refresh")
 async def ingest_mlb_stats_refresh():
     """
-    Refresh MLB player stats from statsapi.mlb.com.
+    Refresh MLB player stats from statsapi.mlb.com (fire-and-forget background task).
 
-    Morning (7-9AM): full batting/pitching stats refresh + pitchers + lineups
-    Daytime (12-10PM every 30min): pitchers + lineups only (quick)
-    When pitchers change, regenerates pick cards.
+    Every run: syncs rosters, game statuses, probable pitchers, lineups,
+    boxscores, and cumulative/rolling/bullpen stats.
+    Full batting/pitching season stats + games load only when stale (> 6h)
+    or never run (state-based gate; self-heals if a refresh fails).
+
+    The scheduler records dispatch success immediately (~242ms); the detached
+    task overwrites that with the REAL outcome on completion so the Tasks UI
+    shows true success/failure.
     """
     import asyncio
-    asyncio.create_task(_run_mlb_stats_refresh())
+    from datetime import datetime, timezone
+
+    started_at = datetime.now(timezone.utc)
+
+    async def _run_reported():
+        try:
+            await _run_mlb_stats_refresh(started_at)
+        except Exception as e:
+            import traceback
+            logger.error(f"MLB stats refresh CRASHED: {e}\n{traceback.format_exc()}")
+            await _mlb_report_task_outcome(success=False, error=f"{type(e).__name__}: {e}", started_at=started_at)
+
+    asyncio.create_task(_run_reported())
     return {"status": "started", "message": "MLB stats refresh running in background. Check API logs for progress."}
 
 
