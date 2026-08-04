@@ -218,14 +218,14 @@ async def _mlb_mark_full_refresh(db, year):
     )
 
 
-async def _mlb_report_task_outcome(success: bool, error: str = "", started_at=None):
+async def _report_task_outcome(task_name: str, success: bool, error: str = "", started_at=None):
     """Overwrite the scheduler's dispatch-time `task_runs` row with the REAL
-    outcome of the background refresh.
+    outcome of a background refresh.
 
     The scheduler marks api_call tasks `success` the moment the endpoint returns
     (fire-and-forget, ~242ms). That fake status hides background failures. This
-    helper updates the latest `mlb-stats-refresh` run with the true result once
-    the detached work actually finishes.
+    helper updates the latest run for `task_name` with the true result once the
+    detached work actually finishes.
     """
     from sqlalchemy import text as sa_text
     from datetime import datetime, timezone
@@ -241,11 +241,12 @@ async def _mlb_report_task_outcome(success: bool, error: str = "", started_at=No
                 SET status = :s, finished_at = :f, duration_ms = :d, error_message = :e
                 WHERE id = (
                     SELECT id FROM task_runs
-                    WHERE task_name = 'mlb-stats-refresh'
+                    WHERE task_name = :t
                     ORDER BY started_at DESC, id DESC LIMIT 1
                 )
             """),
             {
+                "t": task_name,
                 "s": "success" if success else "failed",
                 "f": finished_at,
                 "d": duration_ms,
@@ -476,10 +477,10 @@ async def _run_mlb_stats_refresh(started_at=None):
         if step_failures:
             joined = "; ".join(step_failures)
             logger.error(f"\n❌ MLB stats {label} finished WITH ERRORS:\n  {joined}")
-            await _mlb_report_task_outcome(success=False, error=joined, started_at=started_at)
+            await _report_task_outcome("mlb-stats-refresh", success=False, error=joined, started_at=started_at)
         else:
             logger.info(f"\n✅ MLB stats {label} complete!")
-            await _mlb_report_task_outcome(success=True, started_at=started_at)
+            await _report_task_outcome("mlb-stats-refresh", success=True, started_at=started_at)
 
 
 @router.post("/ingest/mlb/stats/refresh")
@@ -507,10 +508,172 @@ async def ingest_mlb_stats_refresh():
         except Exception as e:
             import traceback
             logger.error(f"MLB stats refresh CRASHED: {e}\n{traceback.format_exc()}")
-            await _mlb_report_task_outcome(success=False, error=f"{type(e).__name__}: {e}", started_at=started_at)
+            await _report_task_outcome("mlb-stats-refresh", success=False, error=f"{type(e).__name__}: {e}", started_at=started_at)
 
     asyncio.create_task(_run_reported())
     return {"status": "started", "message": "MLB stats refresh running in background. Check API logs for progress."}
+
+
+@router.post("/ingest/nfl/stats/refresh")
+async def ingest_nfl_stats_refresh():
+    """
+    Refresh NFL stats from nflverse (fire-and-forget background task).
+
+    Updates the six NFL statistical tables for the current season:
+      - nfl.player_weekly_stats    (nflverse player stats; idempotent per week)
+      - nfl.play_by_play           (raw nflverse PBP)
+      - nfl.game_stats             (base per-game team stats + advanced aggregates)
+      - nfl.cumulative_game_stats  (recompute) + qb_cumulative_stats (rank tiers)
+      - nfl.team_rolling_stats     (sync script, worker thread)
+      - nfl.qb_rolling_stats       (sync script, worker thread)
+
+    Football seasons run on a weekly cadence and every source here is
+    idempotent (per-week dedup) or upserting, so no staleness gate is needed —
+    each run loads any new data and rebuilds the derived tables.
+    """
+    import asyncio
+    from datetime import datetime, timezone
+
+    started_at = datetime.now(timezone.utc)
+
+    async def _run_reported():
+        try:
+            await _run_nfl_stats_refresh(started_at)
+        except Exception as e:
+            import traceback
+            logger.error(f"NFL stats refresh CRASHED: {e}\n{traceback.format_exc()}")
+            await _report_task_outcome("nfl-stats-refresh", success=False, error=f"{type(e).__name__}: {e}", started_at=started_at)
+
+    asyncio.create_task(_run_reported())
+    return {"status": "started", "message": "NFL stats refresh running in background. Check API logs for progress."}
+
+
+async def _run_nfl_stats_refresh(started_at=None):
+    """Run NFL stats refresh in background.
+
+    Loads any new nflverse PBP + player weeks, rebuilds per-game team stats,
+    recomputes cumulative + QB rankings, and refreshes the rolling-stats tables
+    (team + QB) via their sync scripts run on worker threads.
+    """
+    import logging
+
+    logger = logging.getLogger("earl.nfl_stats_refresh")
+
+    # nflverse files are downloaded to local cache; silence requests info spam.
+    import urllib3
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    logging.getLogger("urllib3").setLevel(logging.WARNING)
+    logging.getLogger("requests").setLevel(logging.WARNING)
+
+    logger.info("=" * 60)
+    logger.info("NFL Stats Refresh")
+
+    from datetime import date
+    from app.database import async_session
+
+    if started_at is None:
+        from datetime import datetime as _dt, timezone as _tz
+        started_at = _dt.now(_tz.utc)
+    step_failures: list[str] = []
+
+    season = date.today().year
+
+    async with async_session() as db:
+        # Step 1: nflverse player week stats (nfl.player_weekly_stats) — idempotent
+        logger.info("[Step 1] Loading nflverse player weekly stats...")
+        try:
+            from app.ingestion.nflverse import ingest_nflverse_stats
+            player_result = await ingest_nflverse_stats(db, season)
+            logger.info(f"  player_weekly_stats: {player_result}")
+        except Exception as e:
+            logger.error(f"  Player weekly stats failed: {e}")
+            step_failures.append(f"player_weekly_stats: {e}")
+
+        # Step 2: raw play-by-play (nfl.play_by_play) — idempotent per game
+        logger.info("[Step 2] Loading nflverse play-by-play...")
+        try:
+            from app.ingestion.nflverse_pbp import ingest_nfl_pbp
+            pbp_result = await ingest_nfl_pbp(db, [season])
+            logger.info(f"  play_by_play: {pbp_result.get('games_loaded', pbp_result)}")
+        except Exception as e:
+            logger.error(f"  Play-by-play failed: {e}")
+            step_failures.append(f"play_by_play: {e}")
+
+        # Step 3: base per-game team stats (nfl.game_stats) from nflverse team data
+        # ingest_all_years is a sync script (needs a sync Engine); run on worker thread.
+        logger.info("[Step 3] Building nfl.game_stats base rows from nflverse team stats...")
+        try:
+            from app.database import engine as sync_engine
+            from app.ingestion.nflverse_ingest import ingest_all_years
+            stored = await _run_in_thread(ingest_all_years, sync_engine, [season])
+            logger.info(f"  game_stats base rows: {stored}")
+        except Exception as e:
+            logger.error(f"  game_stats base build failed: {e}")
+            step_failures.append(f"game_stats base: {e}")
+
+        # Step 4: advanced per-game aggregates (UPDATE nfl.game_stats)
+        logger.info("[Step 4] Aggregating advanced per-game stats (pbp_game_stats)...")
+        try:
+            from app.ingestion.pbp_game_stats import aggregate_pbp_to_game_stats
+            agg_result = await aggregate_pbp_to_game_stats(db, seasons=[season])
+            logger.info(f"  advanced game_stats: {agg_result}")
+        except Exception as e:
+            logger.error(f"  Advanced game stats failed: {e}")
+            step_failures.append(f"game_stats advanced: {e}")
+
+        # Step 5: recompute cumulative game stats + QB rankings (qb_cumulative_stats)
+        logger.info("[Step 5] Recomputing cumulative + QB rankings...")
+        try:
+            from app.handicapping.nfl.cumulative_stats import recompute
+            cum_result = await recompute(db, seasons=[season])
+            logger.info(f"  cumulative/qb_cumulative: {cum_result}")
+        except Exception as e:
+            logger.error(f"  Cumulative recompute failed: {e}")
+            step_failures.append(f"cumulative_stats: {e}")
+
+        try:
+            await db.commit()
+        except Exception as e:
+            logger.error(f"  Commit failed: {e}")
+            step_failures.append(f"commit: {e}")
+
+    # Step 6 + 7: rolling stats — sync scripts on worker threads (no worker pinning)
+    logger.info("[Step 6] Refreshing nfl.team_rolling_stats...")
+    try:
+        from app.handicapping.nfl.populate_team_rolling_stats import run as run_team_rolling
+        team_res = await _run_in_thread(run_team_rolling)
+        logger.info(f"  team_rolling_stats: {team_res}")
+    except Exception as e:
+        logger.error(f"  team_rolling_stats failed: {e}")
+        step_failures.append(f"team_rolling_stats: {e}")
+
+    logger.info("[Step 7] Refreshing nfl.qb_cumulative_stats + qb_rolling_stats...")
+    try:
+        from app.database import engine as sync_engine
+        from app.handicapping.nfl.populate_qb_rolling_stats import populate_qb_tables
+        qb_res = await _run_in_thread(populate_qb_tables, sync_engine, [season])
+        logger.info(f"  qb_cumulative/qb_rolling: {qb_res}")
+    except Exception as e:
+        logger.error(f"  QB rolling stats failed: {e}")
+        step_failures.append(f"qb_rolling_stats: {e}")
+
+    # Report the REAL outcome to task_runs
+    if step_failures:
+        joined = "; ".join(step_failures)
+        logger.error(f"\n❌ NFL stats refresh finished WITH ERRORS:\n  {joined}")
+        await _report_task_outcome("nfl-stats-refresh", success=False, error=joined, started_at=started_at)
+    else:
+        logger.info(f"\n✅ NFL stats refresh complete!")
+        await _report_task_outcome("nfl-stats-refresh", success=True, started_at=started_at)
+
+
+async def _run_in_thread(func, *args, **kwargs):
+    """Run a sync function on the default executor (thread pool) without blocking
+    the event loop — the no-subprocess way to run the sync rolling-stats scripts
+    and the sync game_stats base loader."""
+    import asyncio
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, lambda: func(*args, **kwargs))
 
 
 @router.post("/ingest/mlb/lines-and-picks")
