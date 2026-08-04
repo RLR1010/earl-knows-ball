@@ -164,11 +164,68 @@ async def ingest_nfl_pace_data(
 
 # ── MLB Daily Pipeline Endpoints ────────────────────────────────────
 
+# Full-refresh staleness tracker. Replaces the old time-based (`hour < 10`)
+# morning gate with a state-based check so a failed/skipped morning run
+# self-heals on the next 30-min cycle.
+_MLB_REFRESH_TRACKER_SQL = """
+CREATE TABLE IF NOT EXISTS mlb.mlb_stats_refresh_tracker (
+    year   INTEGER PRIMARY KEY,
+    last_full_refresh_at TIMESTAMPTZ NOT NULL DEFAULT now()
+)
+"""
+
+
+async def _mlb_full_refresh_due(db, year, stale_seconds):
+    """Return True if the full batting/pitching/games refresh is stale or never ran."""
+    from sqlalchemy import text as sa_text
+    from datetime import datetime, timezone
+
+    # Ensure tracker table exists (idempotent).
+    await db.execute(sa_text(_MLB_REFRESH_TRACKER_SQL))
+
+    row = (await db.execute(
+        sa_text("""
+            SELECT last_full_refresh_at
+            FROM mlb.mlb_stats_refresh_tracker
+            WHERE year = :y
+        """),
+        {"y": year},
+    )).first()
+
+    if row is None:
+        return True  # never refreshed this season
+
+    last_at = row[0]
+    if last_at is None:
+        return True
+    # Normalize tz-aware comparison.
+    if last_at.tzinfo is None:
+        last_at = last_at.replace(tzinfo=timezone.utc)
+    age = datetime.now(timezone.utc) - last_at
+    return age.total_seconds() > stale_seconds
+
+
+async def _mlb_mark_full_refresh(db, year):
+    """Record a successful full refresh."""
+    from sqlalchemy import text as sa_text
+    await db.execute(
+        sa_text("""
+            INSERT INTO mlb.mlb_stats_refresh_tracker (year, last_full_refresh_at)
+            VALUES (:y, now())
+            ON CONFLICT (year) DO UPDATE SET last_full_refresh_at = now()
+        """),
+        {"y": year},
+    )
+
+
 async def _run_mlb_stats_refresh():
     """Run MLB stats refresh in background.
 
-    7:30 AM run: full batting/pitching stats + games + pitchers + lineups
-    Subsequent 30-min runs: only pitchers + lineups + check pitcher changes
+    Every run syncs rosters, game statuses, probable pitchers, lineups,
+    boxscores, cumulative/rolling/bullpen stats. The full batting/pitching
+    season stats + games load only when stale (> 6h) or never run — a
+    state-based gate that self-heals if a refresh fails, replacing the old
+    time-based morning-only check.
     """
     import logging
     import sys
@@ -188,12 +245,19 @@ async def _run_mlb_stats_refresh():
     from sqlalchemy import select
 
     CURRENT_YEAR = 2026
-    current_hour = datetime.now().hour
-    is_morning_run = current_hour < 10  # 7-9 AM = full stats
+
+    # State-based full-refresh gate (replaces old time-based `hour < 10` check):
+    # Load full batting/pitching season stats + games whenever the last full
+    # refresh is stale (> 6h) or has never succeeded. This self-heals — if a
+    # refresh fails or the service is down in the morning, the next 30-min run
+    # picks it up instead of waiting until tomorrow's clock gate.
+    FULL_REFRESH_STALE_SECONDS = 6 * 60 * 60
 
     async with async_session() as db:
+        need_full_refresh = await _mlb_full_refresh_due(db, CURRENT_YEAR, FULL_REFRESH_STALE_SECONDS)
+        await db.commit()
         logger.info("=" * 60)
-        label = "Full Refresh" if is_morning_run else "Quick Refresh (lineups + pitchers)"
+        label = "Full Refresh" if need_full_refresh else "Incremental Refresh (lineups, pitchers, stats)"
         logger.info(f"MLB Stats {label}")
         logger.info(f"Targeting year: {CURRENT_YEAR}")
         logger.info("=" * 60)
@@ -209,7 +273,7 @@ async def _run_mlb_stats_refresh():
 
         team_abbr_by_api_id = {api_id: abbr for api_id, abbr, _, _, _ in MLB_TEAMS}
 
-        if is_morning_run:
+        if need_full_refresh:
             # Batting
             logger.info(f"[Step 1] Loading batting stats for {CURRENT_YEAR}...")
             await load_batting_season(db, CURRENT_YEAR, season_id, team_map, team_abbr_by_api_id)
@@ -230,8 +294,14 @@ async def _run_mlb_stats_refresh():
             logger.info(f"[Step 3] Loading games for {CURRENT_YEAR}...")
             games = await load_games_for_season(db, CURRENT_YEAR, season_id, team_map, team_abbr_by_api_id)
             logger.info(f"  Games {CURRENT_YEAR}: {games}")
+
+            # Full refresh succeeded — record timestamp so the staleness gate
+            # resets. Only reached if batting+pitching+games all loaded.
+            await _mlb_mark_full_refresh(db, CURRENT_YEAR)
+            await db.commit()
+
         else:
-            logger.info("[Skipping] Full stats refresh — morning-only")
+            logger.info("[Skipping] Full stats refresh — recent refresh still fresh")
 
         # Step 4: Active roster sync (always run)
         logger.info("[Step 4] Syncing active 40-man rosters from MLB Stats API...")
@@ -251,44 +321,24 @@ async def _run_mlb_stats_refresh():
         logger.info("[Step 6] Updating probable pitchers for upcoming games...")
         pitcher_result = await update_probable_pitchers(db)
         pitchers_changed = pitcher_result.get('games_updated', 0)
-        pitcher_changed_ids = pitcher_result.get('updated_game_ids', [])
         logger.info(f"  Probable pitchers updated: {pitchers_changed}")
 
         # Step 7: Starting lineups (always run)
         logger.info("[Step 7] Fetching starting lineups...")
-        all_changed_ids = list(pitcher_changed_ids)
         from datetime import date
         try:
             from app.ingestion.mlb_lineups import update_lineups_for_date
             today = date.today()
             lineup_result = await update_lineups_for_date(db, today)
             logger.info(f"  Lineups: {lineup_result.get('lineups_saved', 0)} saved, {lineup_result.get('pitchers_updated', 0)} pitchers updated")
-            pitchers_changed += lineup_result.get('pitchers_updated', 0)
-            for gid in lineup_result.get('updated_game_ids', []):
-                if gid not in all_changed_ids:
-                    all_changed_ids.append(gid)
         except Exception as e:
             logger.error(f"  Lineups fetch failed: {e}")
 
-        # Step 7b: Regenerate pick cards for games where pitcher changed
-        if all_changed_ids:
-            logger.info(f"[Step 7b] {len(all_changed_ids)} games had pitcher changes — regenerating pick cards...")
-            try:
-                from app.handicapping.mlb.mlb_engine import batch_predict_upcoming_games
-                year = date.today().year
-                pick_results = await batch_predict_upcoming_games(
-                    db=db,
-                    game_ids=all_changed_ids,
-                    _logger=logger,
-                    year=year,
-                )
-                regenerated = len([p for p in pick_results if 'error' not in p])
-                logger.info(f"  Pick cards regenerated: {regenerated}/{len(all_changed_ids)}")
-            except Exception as e:
-                import traceback
-                logger.error(f"  Pick card regeneration failed: {e}\n{traceback.format_exc()}")
-        else:
-            logger.info("[Step 7b] No pitcher changes — picks unchanged")
+        # (Step 7b removed 2026-08-04)
+        # Pick-card regeneration now handled entirely by the `mlb-lines-and-picks`
+        # task (every 15 min), which re-predicts all future games with both spread
+        # and OU set. Regenerating here on every pitcher/lineup change duplicated
+        # that expensive model load for no unique value.
 
         # Step 8: Load boxscore stats for FINAL games (batting_game_stats, pitcher_game_stats)
         # Uses asyncpg to match boxscore_ingest's connection type
@@ -309,7 +359,6 @@ async def _run_mlb_stats_refresh():
             )
             from app.ingestion.boxscore_ingest import (
                 refresh_boxscores_for_recent_games,
-                update_prediction_results,
             )
             try:
                 boxscore_result = await refresh_boxscores_for_recent_games(pconn)
@@ -319,16 +368,10 @@ async def _run_mlb_stats_refresh():
                             f"{boxscore_result.get('weather_updated', 0)} weather updates")
             except Exception as e:
                 logger.error(f"  Boxscore loading failed: {e}")
-
-            # Step 9: Update prediction results for completed games
-            # (runs independently of boxscore loading)
-            try:
-                pred_updated = await update_prediction_results(pconn)
-                logger.info(f"  Step 9: Updated {pred_updated} predictions with actual results")
-            except Exception as e:
-                logger.error(f"  Step 9 prediction result update failed: {e}")
+            # Step 9 removed 2026-08-04: prediction-result writes were redundant —
+            # refresh_boxscores_for_recent_games already writes actuals for FINAL games.
         except Exception as e:
-            logger.error(f"  Outer boxscore/prediction block failed: {e}")
+            logger.error(f"  Outer boxscore block failed: {e}")
 
         # Step 10: Refresh cumulative season-to-date stats
         # Pre-computed in mlb.cumulative_game_stats table for fast GAME_QUERY
