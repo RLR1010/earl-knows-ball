@@ -1831,6 +1831,23 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
                 "adj_def_ypg": _r.adj_def_ypg or _r.rw_def_ypg or _r.def_ypg or 0.0,
                 # Streak
                 "win_streak": _r.win_streak or 0,
+                # Efficiency / drive stats (added 2026-08-04) — used to seed
+                # early-season games from previous-season data (MLB-style COALESCE)
+                "off_ypp": _r.off_ypp or 0.0,
+                "def_ypp": _r.def_ypp or 0.0,
+                "off_first_downs": _r.off_first_downs or 0.0,
+                "def_first_downs": _r.def_first_downs or 0.0,
+                "off_fourth_down_pct": _r.off_fourth_down_pct or 0.5,
+                "def_fourth_down_pct": _r.def_fourth_down_pct or 0.5,
+                "off_rz_trips": _r.off_rz_trips or 0.0,
+                "def_rz_trips": _r.def_rz_trips or 0.0,
+                "off_ints_thrown": _r.off_ints_thrown or 0.0,
+                "def_ints_thrown": _r.def_ints_thrown or 0.0,
+                "turnover_diff_r5": _r.turnover_diff_r5 or 0.0,
+                "off_pts_stddev_5": _r.off_pts_stddev_5 or 0.0,
+                "off_yds_stddev_5": _r.off_yds_stddev_5 or 0.0,
+                "def_pts_stddev_5": _r.def_pts_stddev_5 or 0.0,
+                "def_yds_stddev_5": _r.def_yds_stddev_5 or 0.0,
             }
         _pe.dispose()
     except Exception:
@@ -2337,43 +2354,42 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
         # Mapping from team_stats suffix (after alias) to prior_team_stats column
         _suffix_to_prior = {
             "off_ypg": "off_ypg",
-            "ypp": None,
+            "ypp": "off_ypp",
             "pass_ypg": "off_pass_ypg",
             "rush_ypg": "off_rush_ypg",
             "pass_ypa": "off_ypa",
             "rush_ypa": None,
-            "turnover_diff_r5": None,
+            "turnover_diff_r5": "turnover_diff_r5",
             "def_ypg": "def_ypg",
-            "def_ypp": None,
+            "def_ypp": "def_ypp",
             "def_pass_ypg": "def_pass_ypg",
             "def_rush_ypg": "def_rush_ypg",
-            "first_downs": None,
+            "first_downs": "off_first_downs",
             "third_down_pct": "off_third_down_pct",
-            "fourth_down_pct": None,
-            "rz_trips": None,
+            "fourth_down_pct": "off_fourth_down_pct",
+            "rz_trips": "off_rz_trips",
             "rz_td_pct": "off_rz_td_pct",
             "explosive_plays": "off_explosive_rate",
             "three_and_outs": "off_three_and_out_rate",
-            "ints_thrown": None,
-            "def_first_downs": None,
+            "ints_thrown": "off_ints_thrown",
+            "def_first_downs": "def_first_downs",
             "def_third_down_pct": "def_third_down_pct",
-            "def_fourth_down_pct": None,
-            "def_rz_trips": None,
+            "def_fourth_down_pct": "def_fourth_down_pct",
+            "def_rz_trips": "def_rz_trips",
             "def_rz_td_pct": "off_rz_td_pct",  # proxy: opponent's RZ TD rate ≈ def_rz_td_pct
             "def_explosive_plays": "def_explosive_rate",
             "def_three_and_outs": "def_three_and_out_rate",
-            "def_ints_thrown": None,
+            "def_ints_thrown": "def_ints_thrown",
             "off_epa_per_play": "off_epa_per_play",
-            "win_streak": None,
-            "off_pts_stddev_5": None,
-            "off_yds_stddev_5": None,
+            "off_pts_stddev_5": "off_pts_stddev_5",
+            "off_yds_stddev_5": "off_yds_stddev_5",
             "rw_off_ppg": "rw_off_ppg",
             "rw_off_ypg": "rw_off_ypg",
             "adj_off_ppg": "adj_off_ppg",
             "adj_off_ypg": "adj_off_ypg",
             "def_epa_per_play": "def_epa_per_play",
-            "def_pts_stddev_5": None,
-            "def_yds_stddev_5": None,
+            "def_pts_stddev_5": "def_pts_stddev_5",
+            "def_yds_stddev_5": "def_yds_stddev_5",
             "rw_def_ppg": "rw_def_ppg",
             "rw_def_ypg": "rw_def_ypg",
             "adj_def_ppg": "adj_def_ppg",
@@ -2387,14 +2403,19 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
                     continue
                 # week 1 games: fill from prior_team_stats (cumulative data is empty)
                 prior_key = _suffix_to_prior.get(suffix)
-                if prior_key is not None and (df["week"] == 1).any():
+                if prior_key is not None:
                     abbr_col = f"{prefix}_abbr"
                     if abbr_col in df.columns:
-                        w1_mask = df["week"] == 1
-                        df.loc[w1_mask, col] = df.loc[w1_mask].apply(
-                            lambda r: prior_map.get((r[abbr_col], r["season_year"] - 1), {}).get(prior_key, 0.0),
-                            axis=1
-                        )
+                        # MLB-style COALESCE across the whole season: fill any
+                        # missing/zero pre-game stat with previous-season value.
+                        # This seeds early-season games (Week 1+ before rolling
+                        # windows fill) instead of leaving 0s that distort the model.
+                        def _prior_fill(r):
+                            cur = r.get(col)
+                            if cur is not None and not pd.isna(cur) and cur != 0:
+                                return cur
+                            return prior_map.get((r[abbr_col], r["season_year"] - 1), {}).get(prior_key, 0.0)
+                        df[col] = df.apply(_prior_fill, axis=1)
                 df[col] = df[col].fillna(0.0)
 
         logger.info(

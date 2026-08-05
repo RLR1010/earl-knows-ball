@@ -45,6 +45,26 @@ def main():
             print(f"   Season {s}: final week = {w}")
         season_list = sorted(seasons.keys())
 
+        # Step 1b: Ensure new columns exist (idempotent). These backfill the
+        # remaining rolling/efficiency features from prior-season data so
+        # early-season games aren't seeded with 0.
+        print("\n1b. Ensuring prior_team_stats columns exist...")
+        _new_cols = {
+            "off_ypp": "NUMERIC", "def_ypp": "NUMERIC",
+            "off_first_downs": "NUMERIC", "def_first_downs": "NUMERIC",
+            "off_fourth_down_pct": "NUMERIC", "def_fourth_down_pct": "NUMERIC",
+            "off_rz_trips": "NUMERIC", "def_rz_trips": "NUMERIC",
+            "off_ints_thrown": "NUMERIC", "def_ints_thrown": "NUMERIC",
+            "turnover_diff_r5": "NUMERIC",
+            "off_pts_stddev_5": "NUMERIC", "off_yds_stddev_5": "NUMERIC",
+            "def_pts_stddev_5": "NUMERIC", "def_yds_stddev_5": "NUMERIC",
+        }
+        for col, ctype in _new_cols.items():
+            conn.execute(text(
+                f"ALTER TABLE nfl.prior_team_stats ADD COLUMN IF NOT EXISTS {col} {ctype}"
+            ))
+        conn.commit()
+
         # Step 2: Delete existing rows for all seasons we're rebuilding
         r = conn.execute(text("SELECT COUNT(*) FROM nfl.prior_team_stats"))
         print(f"\n2. Deleting {r.scalar()} existing rows...")
@@ -68,7 +88,16 @@ def main():
                 def_explosive_rate, def_three_and_out_rate, def_epa_per_play,
                 point_differential, yardage_differential, turnover_margin,
                 win_pct,
-                rw_off_ppg, rw_off_ypg, rw_def_ppg, rw_def_ypg
+                rw_off_ppg, rw_off_ypg, rw_def_ppg, rw_def_ypg,
+                win_streak,
+                off_ypp, def_ypp,
+                off_first_downs, def_first_downs,
+                off_fourth_down_pct, def_fourth_down_pct,
+                off_rz_trips, def_rz_trips,
+                off_ints_thrown, def_ints_thrown,
+                turnover_diff_r5,
+                off_pts_stddev_5, off_yds_stddev_5,
+                def_pts_stddev_5, def_yds_stddev_5
             )
             SELECT
                 cgs.team_abbr, cgs.season, cgs.games_played,
@@ -88,7 +117,19 @@ def main():
                 cgs.turnover_margin_avg,
                 COALESCE(wp.win_pct, 0),
                 cgs.rw_off_ppg, cgs.rw_off_ypg,
-                cgs.rw_def_ppg, cgs.rw_def_ypg
+                cgs.rw_def_ppg, cgs.rw_def_ypg,
+                cgs.win_streak,
+                cgs.off_ypp, cgs.def_ypp_allowed,
+                cgs.off_first_downs::numeric / NULLIF(cgs.games_played, 0),
+                cgs.def_first_downs_allowed::numeric / NULLIF(cgs.games_played, 0),
+                cgs.off_fourth_down_pct, cgs.def_fourth_down_pct,
+                cgs.off_red_zone_trips::numeric / NULLIF(cgs.games_played, 0),
+                cgs.def_red_zone_trips::numeric / NULLIF(cgs.games_played, 0),
+                cgs.off_interceptions::numeric / NULLIF(cgs.games_played, 0),
+                cgs.off_interceptions::numeric / NULLIF(cgs.games_played, 0),  -- def_ints_thrown proxy: own offense's INTs
+                cgs.turnover_margin_avg,
+                cgs.off_pts_stddev_5, cgs.off_yds_stddev_5,
+                cgs.def_pts_stddev_5, cgs.def_yds_stddev_5
             FROM nfl.cumulative_game_stats cgs
             INNER JOIN (
                 SELECT team_abbr, season, MAX(week) as max_week
@@ -135,15 +176,15 @@ def main():
                        COUNT(*) FILTER(WHERE def_explosive_rate > 0) as has_def_exp,
                        COUNT(*) FILTER(WHERE def_three_and_out_rate > 0) as has_def_3out,
                        COUNT(*) FILTER(WHERE off_epa_per_play != 0) as has_epa,
-                       ROUND(AVG(off_third_down_pct), 4) as avg_3rd,
-                       ROUND(AVG(off_rz_td_pct), 4) as avg_rz,
-                       ROUND(AVG(win_pct), 4) as avg_win_pct
+                       ROUND(AVG(off_third_down_pct)::numeric, 4) as avg_3rd,
+                       ROUND(AVG(off_rz_td_pct)::numeric, 4) as avg_rz,
+                       ROUND(AVG(win_pct)::numeric, 4) as avg_win_pct
                 FROM nfl.prior_team_stats
                 WHERE season = {season}
             """))
             row = r.fetchone()
             if row:
-                print(f"   Season {season:4s}: T={row[0]:3d} "
+                print(f"   Season {season:4d}: T={row[0]:3d} "
                       f"3rdD={row[1]:3d} RZTD={row[2]:3d} Expl={row[3]:3d} "
                       f"3Out={row[4]:3d} | "
                       f"D3rd={row[5]:3d} DExp={row[6]:3d} D3O={row[7]:3d} "
