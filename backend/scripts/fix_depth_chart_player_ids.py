@@ -120,7 +120,7 @@ def main():
     if ambiguous:
         print("\n--- ambiguous (need review) sample ---")
         for dc_id, teamid, raw, pool in ambiguous[:15]:
-            names = [f"{pname}(id{p[0]})" for p in pool]
+            names = [f"{x[3]}(id{x[0]})" for x in pool]
             print(f"  {raw} team{teamid}: {names}")
 
 
