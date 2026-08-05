@@ -1423,7 +1423,58 @@ class NFLDataLoader:
                     CASE WHEN a_roll.games_5 > 0
                         THEN a_roll.rush_yds_5 / a_roll.games_5
                         ELSE 0 END            AS away_qb_rush_ypg_5,
-                    a_roll.rush_att_5         AS away_qb_rush_att_5
+                    a_roll.rush_att_5         AS away_qb_rush_att_5,
+                    -- Home QB prior-season fallback (cumulative + rolling) — used
+                    -- when current-season pre-game stats don't exist yet (early season)
+                    h_cum_prev.games_played    AS home_qb_games_season_prev,
+                    h_cum_prev.passer_rating_cum AS home_qb_passer_rating_season_prev,
+                    h_cum_prev.any_a            AS home_qb_any_a_season_prev,
+                    h_cum_prev.ypa              AS home_qb_ypa_season_prev,
+                    h_cum_prev.td_pct           AS home_qb_td_pct_season_prev,
+                    h_cum_prev.int_pct          AS home_qb_int_pct_season_prev,
+                    h_cum_prev.sack_rate        AS home_qb_sack_rate_season_prev,
+                    CASE WHEN h_cum_prev.games_played > 0
+                        THEN h_cum_prev.cum_rush_yds / h_cum_prev.games_played
+                        ELSE 0 END              AS home_qb_rush_ypg_season_prev,
+                    CASE WHEN h_cum_prev.games_played > 0
+                        THEN h_cum_prev.cum_rush_att / h_cum_prev.games_played
+                        ELSE 0 END              AS home_qb_rush_att_pg_season_prev,
+                    h_roll_prev.games_5          AS home_qb_games_5_prev,
+                    h_roll_prev.passer_rating_5  AS home_qb_passer_rating_5_prev,
+                    h_roll_prev.any_a_5          AS home_qb_any_a_5_prev,
+                    h_roll_prev.ypa_5            AS home_qb_ypa_5_prev,
+                    h_roll_prev.td_pct_5         AS home_qb_td_pct_5_prev,
+                    h_roll_prev.int_pct_5        AS home_qb_int_pct_5_prev,
+                    h_roll_prev.sack_rate_5      AS home_qb_sack_rate_5_prev,
+                    CASE WHEN h_roll_prev.games_5 > 0
+                        THEN h_roll_prev.rush_yds_5 / h_roll_prev.games_5
+                        ELSE 0 END               AS home_qb_rush_ypg_5_prev,
+                    h_roll_prev.rush_att_5       AS home_qb_rush_att_5_prev,
+                    -- Away QB prior-season fallback
+                    a_cum_prev.games_played    AS away_qb_games_season_prev,
+                    a_cum_prev.passer_rating_cum AS away_qb_passer_rating_season_prev,
+                    a_cum_prev.any_a            AS away_qb_any_a_season_prev,
+                    a_cum_prev.ypa              AS away_qb_ypa_season_prev,
+                    a_cum_prev.td_pct           AS away_qb_td_pct_season_prev,
+                    a_cum_prev.int_pct          AS away_qb_int_pct_season_prev,
+                    a_cum_prev.sack_rate        AS away_qb_sack_rate_season_prev,
+                    CASE WHEN a_cum_prev.games_played > 0
+                        THEN a_cum_prev.cum_rush_yds / a_cum_prev.games_played
+                        ELSE 0 END              AS away_qb_rush_ypg_season_prev,
+                    CASE WHEN a_cum_prev.games_played > 0
+                        THEN a_cum_prev.cum_rush_att / a_cum_prev.games_played
+                        ELSE 0 END              AS away_qb_rush_att_pg_season_prev,
+                    a_roll_prev.games_5          AS away_qb_games_5_prev,
+                    a_roll_prev.passer_rating_5  AS away_qb_passer_rating_5_prev,
+                    a_roll_prev.any_a_5          AS away_qb_any_a_5_prev,
+                    a_roll_prev.ypa_5            AS away_qb_ypa_5_prev,
+                    a_roll_prev.td_pct_5         AS away_qb_td_pct_5_prev,
+                    a_roll_prev.int_pct_5        AS away_qb_int_pct_5_prev,
+                    a_roll_prev.sack_rate_5      AS away_qb_sack_rate_5_prev,
+                    CASE WHEN a_roll_prev.games_5 > 0
+                        THEN a_roll_prev.rush_yds_5 / a_roll_prev.games_5
+                        ELSE 0 END               AS away_qb_rush_ypg_5_prev,
+                    a_roll_prev.rush_att_5       AS away_qb_rush_att_5_prev
                 FROM nfl.games g
                 JOIN nfl.seasons s ON s.id = g.season_id
                 -- Home starter + their pre-game stats
@@ -1437,6 +1488,15 @@ class NFLDataLoader:
                     ORDER BY qc.game_date DESC
                     LIMIT 1
                 ) h_cum ON true
+                -- Home QB prior-season fallback (for early-season games when
+                -- the current-season pre-game stat is not yet available)
+                LEFT JOIN LATERAL (
+                    SELECT * FROM nfl.qb_cumulative_stats qc
+                    WHERE qc.player_id = h_st.player_id
+                      AND qc.season = s.year - 1
+                    ORDER BY qc.game_date DESC
+                    LIMIT 1
+                ) h_cum_prev ON true
                 LEFT JOIN LATERAL (
                     SELECT * FROM nfl.qb_rolling_stats qr
                     WHERE qr.player_id = h_st.player_id
@@ -1445,6 +1505,13 @@ class NFLDataLoader:
                     ORDER BY qr.game_date DESC
                     LIMIT 1
                 ) h_roll ON true
+                LEFT JOIN LATERAL (
+                    SELECT * FROM nfl.qb_rolling_stats qr
+                    WHERE qr.player_id = h_st.player_id
+                      AND qr.season = s.year - 1
+                    ORDER BY qr.game_date DESC
+                    LIMIT 1
+                ) h_roll_prev ON true
                 -- Away starter + their pre-game stats
                 LEFT JOIN projected_starter a_st
                     ON a_st.game_id = g.id AND a_st.team_id = g.away_team_id
@@ -1456,6 +1523,14 @@ class NFLDataLoader:
                     ORDER BY qc.game_date DESC
                     LIMIT 1
                 ) a_cum ON true
+                -- Away QB prior-season fallback
+                LEFT JOIN LATERAL (
+                    SELECT * FROM nfl.qb_cumulative_stats qc
+                    WHERE qc.player_id = a_st.player_id
+                      AND qc.season = s.year - 1
+                    ORDER BY qc.game_date DESC
+                    LIMIT 1
+                ) a_cum_prev ON true
                 LEFT JOIN LATERAL (
                     SELECT * FROM nfl.qb_rolling_stats qr
                     WHERE qr.player_id = a_st.player_id
@@ -1464,6 +1539,13 @@ class NFLDataLoader:
                     ORDER BY qr.game_date DESC
                     LIMIT 1
                 ) a_roll ON true
+                LEFT JOIN LATERAL (
+                    SELECT * FROM nfl.qb_rolling_stats qr
+                    WHERE qr.player_id = a_st.player_id
+                      AND qr.season = s.year - 1
+                    ORDER BY qr.game_date DESC
+                    LIMIT 1
+                ) a_roll_prev ON true
                 ORDER BY g.date
             """
             with self.engine.connect() as conn:
@@ -2456,6 +2538,59 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
     if qb_stats is not None and not qb_stats.empty:
         qb_merge = qb_stats.drop(columns=["team_id"], errors="ignore")
         df = df.merge(qb_merge, on="game_id", how="left")
+
+        # MLB-style prior-season COALESCE for QB pre-game stats: when the
+        # current-season value is missing/0 (e.g. Week 1 before any starts this
+        # season), fall back to the QB's final game of the previous season
+        # (`*_prev` columns). Then drop the `_prev` columns so they don't
+        # become standalone features.
+        _qb_prev_pairs = {
+            # (current-season column, prior-season column)
+            ("home_qb_games_season", "home_qb_games_season_prev"),
+            ("home_qb_passer_rating_season", "home_qb_passer_rating_season_prev"),
+            ("home_qb_any_a_season", "home_qb_any_a_season_prev"),
+            ("home_qb_ypa_season", "home_qb_ypa_season_prev"),
+            ("home_qb_td_pct_season", "home_qb_td_pct_season_prev"),
+            ("home_qb_int_pct_season", "home_qb_int_pct_season_prev"),
+            ("home_qb_sack_rate_season", "home_qb_sack_rate_season_prev"),
+            ("home_qb_rush_ypg_season", "home_qb_rush_ypg_season_prev"),
+            ("home_qb_rush_att_pg_season", "home_qb_rush_att_pg_season_prev"),
+            ("home_qb_games_5", "home_qb_games_5_prev"),
+            ("home_qb_passer_rating_5", "home_qb_passer_rating_5_prev"),
+            ("home_qb_any_a_5", "home_qb_any_a_5_prev"),
+            ("home_qb_ypa_5", "home_qb_ypa_5_prev"),
+            ("home_qb_td_pct_5", "home_qb_td_pct_5_prev"),
+            ("home_qb_int_pct_5", "home_qb_int_pct_5_prev"),
+            ("home_qb_sack_rate_5", "home_qb_sack_rate_5_prev"),
+            ("home_qb_rush_ypg_5", "home_qb_rush_ypg_5_prev"),
+            ("home_qb_rush_att_5", "home_qb_rush_att_5_prev"),
+            ("away_qb_games_season", "away_qb_games_season_prev"),
+            ("away_qb_passer_rating_season", "away_qb_passer_rating_season_prev"),
+            ("away_qb_any_a_season", "away_qb_any_a_season_prev"),
+            ("away_qb_ypa_season", "away_qb_ypa_season_prev"),
+            ("away_qb_td_pct_season", "away_qb_td_pct_season_prev"),
+            ("away_qb_int_pct_season", "away_qb_int_pct_season_prev"),
+            ("away_qb_sack_rate_season", "away_qb_sack_rate_season_prev"),
+            ("away_qb_rush_ypg_season", "away_qb_rush_ypg_season_prev"),
+            ("away_qb_rush_att_pg_season", "away_qb_rush_att_pg_season_prev"),
+            ("away_qb_games_5", "away_qb_games_5_prev"),
+            ("away_qb_passer_rating_5", "away_qb_passer_rating_5_prev"),
+            ("away_qb_any_a_5", "away_qb_any_a_5_prev"),
+            ("away_qb_ypa_5", "away_qb_ypa_5_prev"),
+            ("away_qb_td_pct_5", "away_qb_td_pct_5_prev"),
+            ("away_qb_int_pct_5", "away_qb_int_pct_5_prev"),
+            ("away_qb_sack_rate_5", "away_qb_sack_rate_5_prev"),
+            ("away_qb_rush_ypg_5", "away_qb_rush_ypg_5_prev"),
+            ("away_qb_rush_att_5", "away_qb_rush_att_5_prev"),
+        }
+        _qb_prev_cols = set()
+        for _cur, _prev in _qb_prev_pairs:
+            if _cur in df.columns and _prev in df.columns:
+                mask = df[_cur].isna() | (df[_cur] == 0)
+                df.loc[mask, _cur] = df.loc[mask, _prev]
+                _qb_prev_cols.add(_prev)
+        if _qb_prev_cols:
+            df = df.drop(columns=list(_qb_prev_cols), errors="ignore")
 
         # QB differentials (home minus away)
         computed_qb = pd.DataFrame({

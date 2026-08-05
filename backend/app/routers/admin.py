@@ -3526,7 +3526,44 @@ async def data_loader_load_game(
                         a_roll.int_pct_5          AS away_qb_int_pct_5,
                         a_roll.sack_rate_5        AS away_qb_sack_rate_5,
                         CASE WHEN a_roll.games_5 > 0 THEN a_roll.rush_yds_5 / a_roll.games_5 ELSE 0 END AS away_qb_rush_ypg_5,
-                        a_roll.rush_att_5         AS away_qb_rush_att_5
+                        a_roll.rush_att_5         AS away_qb_rush_att_5,
+                        -- Prior-season fallback columns (early-season seeding)
+                        h_cum_prev.games_played   AS home_qb_games_season_prev,
+                        h_cum_prev.passer_rating_cum AS home_qb_passer_rating_season_prev,
+                        h_cum_prev.any_a          AS home_qb_any_a_season_prev,
+                        h_cum_prev.ypa            AS home_qb_ypa_season_prev,
+                        h_cum_prev.td_pct         AS home_qb_td_pct_season_prev,
+                        h_cum_prev.int_pct        AS home_qb_int_pct_season_prev,
+                        h_cum_prev.sack_rate      AS home_qb_sack_rate_season_prev,
+                        CASE WHEN h_cum_prev.games_played > 0 THEN h_cum_prev.cum_rush_yds / h_cum_prev.games_played ELSE 0 END AS home_qb_rush_ypg_season_prev,
+                        CASE WHEN h_cum_prev.games_played > 0 THEN h_cum_prev.cum_rush_att / h_cum_prev.games_played ELSE 0 END AS home_qb_rush_att_pg_season_prev,
+                        h_roll_prev.games_5       AS home_qb_games_5_prev,
+                        h_roll_prev.passer_rating_5 AS home_qb_passer_rating_5_prev,
+                        h_roll_prev.any_a_5       AS home_qb_any_a_5_prev,
+                        h_roll_prev.ypa_5         AS home_qb_ypa_5_prev,
+                        h_roll_prev.td_pct_5      AS home_qb_td_pct_5_prev,
+                        h_roll_prev.int_pct_5     AS home_qb_int_pct_5_prev,
+                        h_roll_prev.sack_rate_5   AS home_qb_sack_rate_5_prev,
+                        CASE WHEN h_roll_prev.games_5 > 0 THEN h_roll_prev.rush_yds_5 / h_roll_prev.games_5 ELSE 0 END AS home_qb_rush_ypg_5_prev,
+                        h_roll_prev.rush_att_5    AS home_qb_rush_att_5_prev,
+                        a_cum_prev.games_played   AS away_qb_games_season_prev,
+                        a_cum_prev.passer_rating_cum AS away_qb_passer_rating_season_prev,
+                        a_cum_prev.any_a          AS away_qb_any_a_season_prev,
+                        a_cum_prev.ypa            AS away_qb_ypa_season_prev,
+                        a_cum_prev.td_pct         AS away_qb_td_pct_season_prev,
+                        a_cum_prev.int_pct        AS away_qb_int_pct_season_prev,
+                        a_cum_prev.sack_rate      AS away_qb_sack_rate_season_prev,
+                        CASE WHEN a_cum_prev.games_played > 0 THEN a_cum_prev.cum_rush_yds / a_cum_prev.games_played ELSE 0 END AS away_qb_rush_ypg_season_prev,
+                        CASE WHEN a_cum_prev.games_played > 0 THEN a_cum_prev.cum_rush_att / a_cum_prev.games_played ELSE 0 END AS away_qb_rush_att_pg_season_prev,
+                        a_roll_prev.games_5       AS away_qb_games_5_prev,
+                        a_roll_prev.passer_rating_5 AS away_qb_passer_rating_5_prev,
+                        a_roll_prev.any_a_5       AS away_qb_any_a_5_prev,
+                        a_roll_prev.ypa_5         AS away_qb_ypa_5_prev,
+                        a_roll_prev.td_pct_5      AS away_qb_td_pct_5_prev,
+                        a_roll_prev.int_pct_5     AS away_qb_int_pct_5_prev,
+                        a_roll_prev.sack_rate_5   AS away_qb_sack_rate_5_prev,
+                        CASE WHEN a_roll_prev.games_5 > 0 THEN a_roll_prev.rush_yds_5 / a_roll_prev.games_5 ELSE 0 END AS away_qb_rush_ypg_5_prev,
+                        a_roll_prev.rush_att_5    AS away_qb_rush_att_5_prev
                     FROM nfl.games g
                     JOIN nfl.seasons s ON s.id = g.season_id
                     LEFT JOIN projected_starter h_st ON h_st.game_id = g.id AND h_st.team_id = g.home_team_id
@@ -3540,6 +3577,16 @@ async def data_loader_load_game(
                         WHERE qr.player_id = h_st.player_id AND qr.season = s.year AND qr.game_date < g.date::date
                         ORDER BY qr.game_date DESC LIMIT 1
                     ) h_roll ON true
+                    LEFT JOIN LATERAL (
+                        SELECT * FROM nfl.qb_cumulative_stats qc
+                        WHERE qc.player_id = h_st.player_id AND qc.season = s.year - 1
+                        ORDER BY qc.game_date DESC LIMIT 1
+                    ) h_cum_prev ON true
+                    LEFT JOIN LATERAL (
+                        SELECT * FROM nfl.qb_rolling_stats qr
+                        WHERE qr.player_id = h_st.player_id AND qr.season = s.year - 1
+                        ORDER BY qr.game_date DESC LIMIT 1
+                    ) h_roll_prev ON true
                     LEFT JOIN projected_starter a_st ON a_st.game_id = g.id AND a_st.team_id = g.away_team_id
                     LEFT JOIN LATERAL (
                         SELECT * FROM nfl.qb_cumulative_stats qc
@@ -3551,6 +3598,16 @@ async def data_loader_load_game(
                         WHERE qr.player_id = a_st.player_id AND qr.season = s.year AND qr.game_date < g.date::date
                         ORDER BY qr.game_date DESC LIMIT 1
                     ) a_roll ON true
+                    LEFT JOIN LATERAL (
+                        SELECT * FROM nfl.qb_cumulative_stats qc
+                        WHERE qc.player_id = a_st.player_id AND qc.season = s.year - 1
+                        ORDER BY qc.game_date DESC LIMIT 1
+                    ) a_cum_prev ON true
+                    LEFT JOIN LATERAL (
+                        SELECT * FROM nfl.qb_rolling_stats qr
+                        WHERE qr.player_id = a_st.player_id AND qr.season = s.year - 1
+                        ORDER BY qr.game_date DESC LIMIT 1
+                    ) a_roll_prev ON true
                     ORDER BY g.date
                 """)
                 _qb_stats = _pd.read_sql(QB_SQL, _sync_engine)
