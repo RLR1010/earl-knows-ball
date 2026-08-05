@@ -140,7 +140,7 @@ def fetch_closing_data(conn, game_ids=None):
             bl.home_implied_probability AS closing_home_implied_prob,
             bl.away_implied_probability AS closing_away_implied_prob
         FROM nfl.betting_lines bl
-        WHERE bl.source = 'the_odds_api_closing'
+        WHERE bl.is_opening = false
           AND bl.spread IS NOT NULL
           AND bl.over_under IS NOT NULL
           AND bl.home_moneyline IS NOT NULL
@@ -181,7 +181,7 @@ def fetch_opening_data(conn, game_ids=None):
             bl.home_implied_probability AS opening_home_implied_prob,
             bl.away_implied_probability AS opening_away_implied_prob
         FROM nfl.betting_lines bl
-        WHERE bl.source = 'the_odds_api_opening'
+        WHERE bl.is_opening = true
           AND bl.spread IS NOT NULL
           AND bl.over_under IS NOT NULL
           AND bl.home_moneyline IS NOT NULL

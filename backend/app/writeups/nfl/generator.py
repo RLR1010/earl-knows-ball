@@ -180,6 +180,7 @@ Keep it article-like — no blockquotes, no emoji, no chat-style formatting.
                 writeup_obj.research_brief = research_data
                 writeup_obj.quality_checks = qc_data
                 writeup_obj.status = status
+                writeup_obj.published_at = writeup_obj.published_at or datetime.now()
                 writeup_obj.is_historical = is_hist
                 writeup_obj.historical_game_date = hist_game_date
                 db.add(writeup_obj)
@@ -193,6 +194,7 @@ Keep it article-like — no blockquotes, no emoji, no chat-style formatting.
                 research_brief=research_data,
                 quality_checks=qc_data,
                 status=status,
+                published_at=datetime.now(),
                 is_historical=is_hist,
                 historical_game_date=hist_game_date,
             )
@@ -203,16 +205,8 @@ Keep it article-like — no blockquotes, no emoji, no chat-style formatting.
         return writeup_obj.id
 
     def _derive_status(self, qc_results: list[dict[str, Any]]) -> str:
-        """Auto-set status based on quality checks."""
-        if not qc_results:
-            return "draft"
-        passed = sum(1 for q in qc_results if q.get("passed"))
-        total = len(qc_results)
-        if passed == total:
-            return "review"
-        if passed >= total / 2:
-            return "draft"
-        return "draft"
+        """Write-ups go live immediately — no draft/review workflow."""
+        return "published"
 
     # ── Message Builder Override ─────────────────────────────
 

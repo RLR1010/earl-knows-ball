@@ -125,10 +125,10 @@ async def list_mlb_games_for_content(
     params: dict = {}
 
     if from_date:
-        conditions.append("g.date >= :from_date")
+        conditions.append("g.date::date >= :from_date")
         params["from_date"] = dt_module.strptime(from_date[:10], "%Y-%m-%d").date()
     if to_date:
-        conditions.append("g.date <= :to_date")
+        conditions.append("g.date::date <= :to_date")
         params["to_date"] = dt_module.strptime(to_date[:10], "%Y-%m-%d").date()
     if status:
         conditions.append("w.status = :status")
@@ -459,36 +459,6 @@ async def update_mlb_writeup(
 
 
 # ──────────────────────────────────────────────
-#  Publish / update status
-# ──────────────────────────────────────────────
-
-@router.patch("/mlb/{writeup_id}/status")
-async def update_writeup_status(
-    writeup_id: int,
-    status: str = Query(...),
-    db: AsyncSession = Depends(get_db),
-):
-    """Update the status of a write-up (draft, review, published, archived)."""
-    valid = ("draft", "review", "published", "archived")
-    if status not in valid:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid status. Must be one of {valid}",
-        )
-
-    published_clause = ", published_at = NOW()" if status == "published" else ""
-    await db.execute(
-        text(f"""
-            UPDATE mlb.game_writeups
-            SET status = :status{published_clause}, updated_at = NOW()
-            WHERE id = :wid
-        """),
-        {"wid": writeup_id, "status": status},
-    )
-    await db.commit()
-
-    return {"id": writeup_id, "status": status, "ok": True}
-# ──────────────────────────────────────────────
 #  NFL WRITEUP ENDPOINTS
 # ──────────────────────────────────────────────
 
@@ -505,10 +475,10 @@ async def list_nfl_games_for_content(
     conditions = []
     params: dict = {}
     if from_date:
-        conditions.append("g.date >= :from_date")
+        conditions.append("g.date::date >= :from_date")
         params["from_date"] = dt_module.strptime(from_date[:10], "%Y-%m-%d").date()
     if to_date:
-        conditions.append("g.date <= :to_date")
+        conditions.append("g.date::date <= :to_date")
         params["to_date"] = dt_module.strptime(to_date[:10], "%Y-%m-%d").date()
     if status:
         conditions.append("w.status = :status")
@@ -554,7 +524,7 @@ async def nfl_nearest_game_date(
         text('SELECT DISTINCT CAST(g.date AS date) AS game_day'
             ' FROM nfl.games g'
             ' WHERE g.status IN (\'FINAL\', \'SCHEDULED\', \'IN_PROGRESS\')'
-            ' AND g.game_type = \'REG\''
+            ' AND g.game_type IN (\'REG\', \'PRE\')'
             ' ORDER BY game_day')
     )
     all_dates = [r[0] for r in rows.fetchall() if r[0]]
@@ -820,25 +790,6 @@ async def update_nfl_writeup(
     await db.execute(text(f"UPDATE nfl.game_writeups SET {set_clause} WHERE id = :wid"), params)
     await db.commit()
     return {"id": writeup_id, "updated": True}
-
-
-@router.patch("/nfl/{writeup_id}/status")
-async def update_nfl_writeup_status(
-    writeup_id: int,
-    status: str,
-    db: AsyncSession = Depends(get_db),
-):
-    """Update the status of an NFL writeup."""
-    valid = ("draft", "review", "published", "archived")
-    if status not in valid:
-        raise HTTPException(status_code=400, detail=f"Invalid status. Must be one of {valid}")
-    published_clause = ", published_at = NOW()" if status == "published" else ""
-    await db.execute(
-        text(f"UPDATE nfl.game_writeups SET status = :status{published_clause}, updated_at = NOW() WHERE id = :wid"),
-        {"wid": writeup_id, "status": status},
-    )
-    await db.commit()
-    return {"id": writeup_id, "status": status, "ok": True}
 
 
 # ══════════════════════════════════════════════
@@ -1208,23 +1159,4 @@ async def update_nba_writeup(
     await db.execute(text(f"UPDATE nba.game_writeups SET {set_clause} WHERE id = :wid"), params)
     await db.commit()
     return {"id": writeup_id, "updated": True}
-
-
-@router.patch("/nba/{writeup_id}/status")
-async def update_nba_writeup_status(
-    writeup_id: int,
-    status: str,
-    db: AsyncSession = Depends(get_db),
-):
-    """Update the status of an NBA writeup."""
-    valid = ("draft", "review", "published", "archived")
-    if status not in valid:
-        raise HTTPException(status_code=400, detail=f"Invalid status. Must be one of {valid}")
-    published_clause = ", published_at = NOW()" if status == "published" else ""
-    await db.execute(
-        text(f"UPDATE nba.game_writeups SET status = :status{published_clause}, updated_at = NOW() WHERE id = :wid"),
-        {"wid": writeup_id, "status": status},
-    )
-    await db.commit()
-    return {"id": writeup_id, "status": status, "ok": True}
 

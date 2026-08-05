@@ -310,6 +310,7 @@ Bullet lists work for key points. Keep it article-like — no blockquotes, no em
                         quality_checks = CAST(:qc AS jsonb),
                         generated_by = :gb,
                         total_tokens = :tt,
+                        published_at = NOW(),
                         updated_at = NOW()
                     WHERE id = :eid
                 """),
@@ -337,12 +338,12 @@ Bullet lists work for key points. Keep it article-like — no blockquotes, no em
                     (game_id, title, public_content, premium_content,
                      status, version, is_historical, historical_game_date,
                      research_brief, quality_checks, generated_by, total_tokens,
-                     created_at, updated_at)
+                     published_at, created_at, updated_at)
                 VALUES
                     (:gid, :title, :pub, :prem,
                      :status, :ver, :hist, :hgd,
                      CAST(:rb AS jsonb), CAST(:qc AS jsonb), :gb, :tt,
-                     NOW(), NOW())
+                     NOW(), NOW(), NOW())
                 RETURNING id
             """),
             {
@@ -366,10 +367,7 @@ Bullet lists work for key points. Keep it article-like — no blockquotes, no em
     # ── status derivation ────────────────────────────────────
 
     def _derive_status(self, qc_results: list[dict[str, Any]]) -> str:
-        if not qc_results:
-            return "draft"
-        if any(r.get("failed", False) for r in qc_results):
-            return "review"
+        """Write-ups go live immediately — no draft/review workflow."""
         return "published"
 
     # ── Public version generation ─────────────────────────────

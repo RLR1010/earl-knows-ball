@@ -16,10 +16,28 @@ interface Game {
   home_team: string;
   away_team: string;
   venue: string;
+  week?: number | null;
+  season_type?: string | null;
   writeup_id: number | null;
   writeup_title: string | null;
   writeup_status: string | null;
   writeup_version: number | null;
+}
+
+function weekLabel(game: Pick<Game, "season_type" | "week">): string | null {
+  const w = game.week;
+  if (!w) return null;
+  if (game.season_type === "PRE") return w >= 30 ? `PS Week ${w - 29}` : `PS Week ${w}`;
+  if (w >= 19) {
+    const labels: Record<number, string> = {
+      19: "Wild Card",
+      20: "Divisional",
+      21: "Conf Champ",
+      22: "Super Bowl",
+    };
+    return labels[w] || `Week ${w}`;
+  }
+  return `Week ${w}`;
 }
 
 interface WriteupSummary {
@@ -40,18 +58,16 @@ interface WriteupSummary {
 const token = () => localStorage.getItem("earl_token");
 
 const STATUS_COLORS: Record<string, string> = {
-  draft: "bg-yellow-500/20 text-yellow-400 border border-yellow-500/30",
-  review: "bg-blue-500/20 text-blue-400 border border-blue-500/30",
   published: "bg-green-500/20 text-green-400 border border-green-500/30",
-  archived: "bg-gray-500/20 text-gray-400 border border-gray-500/30",
 };
 
 const STATUS_LABELS: Record<string, string> = {
-  draft: "Draft",
-  review: "Review",
   published: "Published",
-  archived: "Archived",
 };
+
+// All write-ups are live immediately — normalize every status to published.
+const NORMALIZE_STATUS = (status: string | null | undefined): string | null =>
+  status ? "published" : null;
 
 function localDateStr(isoStr: string): string {
   return new Date(isoStr).toLocaleDateString("en-CA", {
@@ -110,11 +126,12 @@ function StatBox({
 }
 
 function StatusBadge({ status }: { status: string | null }) {
-  if (!status) return null;
-  const color = STATUS_COLORS[status] || STATUS_COLORS.draft;
+  const norm = NORMALIZE_STATUS(status);
+  if (!norm) return null;
+  const color = STATUS_COLORS[norm] || STATUS_COLORS.published;
   return (
     <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${color}`}>
-      {STATUS_LABELS[status] || status}
+      {STATUS_LABELS[norm] || norm}
     </span>
   );
 }
@@ -147,6 +164,11 @@ function GameCard({
       <div className="flex items-start justify-between mb-2">
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-1">
+            {(weekLabel(game) && game.season_type === "PRE") && (
+              <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide bg-purple-500/20 text-purple-300 border border-purple-500/30">
+                {weekLabel(game)}
+              </span>
+            )}
             <span className="font-semibold text-white text-sm">
               {game.away_team}
             </span>
@@ -224,7 +246,6 @@ export default function AdminContent() {
     total: 0,
     with_writeup: 0,
     published: 0,
-    review: 0,
   });
   const [showHistorical, setShowHistorical] = useState(false);
 
@@ -283,6 +304,8 @@ export default function AdminContent() {
         home_team: g.home_team || g.home_team_abbreviation || g.home_team_abbr,
         away_team: g.away_team || g.away_team_abbreviation || g.away_team_abbr,
         venue: g.venue || "",
+        week: g.week ?? null,
+        season_type: g.season_type ?? null,
         writeup_id: g.writeup_id || null,
         writeup_title: g.writeup_title || null,
         writeup_status: g.writeup_status || null,
@@ -293,8 +316,7 @@ export default function AdminContent() {
       setStats({
         total: gameList.length,
         with_writeup: gameList.filter((g) => g.writeup_status).length,
-        published: gameList.filter((g) => g.writeup_status === "published").length,
-        review: gameList.filter((g) => g.writeup_status === "review").length,
+        published: gameList.filter((g) => g.writeup_status).length,
       });
     } catch (e: any) {
       console.error("fetchGames error:", e);
@@ -497,18 +519,8 @@ export default function AdminContent() {
       <div className="grid grid-cols-4 gap-4 mb-6">
         <StatBox label="Games" value={stats.total} color="text-white" />
         <StatBox
-          label="With Write-up"
-          value={stats.with_writeup}
-          color="text-blue-400"
-        />
-        <StatBox
-          label="In Review"
-          value={stats.review}
-          color="text-yellow-400"
-        />
-        <StatBox
           label="Published"
-          value={stats.published}
+          value={stats.with_writeup}
           color="text-green-400"
         />
       </div>

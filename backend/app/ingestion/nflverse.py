@@ -51,8 +51,14 @@ async def fetch_nflverse_stats(season: int) -> pd.DataFrame:
 async def ingest_nflverse_stats(
     session: AsyncSession,
     season_year: int = 2025,
+    include_preseason: bool = False,
 ) -> dict:
-    """Load weekly player stats from nflverse for a single season."""
+    """Load weekly player stats from nflverse for a single season.
+
+    include_preseason=True keeps preseason (PRE) player-stats rows, which are
+    normally stripped to avoid polluting regular-season tables. Preseason rows
+    are tagged game_type='PRE' on their linked game.
+    """
     # Get or create season
     result = await session.execute(select(Season).where(Season.year == season_year))
     season = result.scalar_one_or_none()
@@ -78,15 +84,18 @@ async def ingest_nflverse_stats(
             player_cache[p.nflverse_id] = p
 
     # Pre-load games for this season (if any)
+    # Key includes game_type so a preseason and regular-season matchup between
+    # the same two teams in the same week never collide in the cache.
     result = await session.execute(select(Game).where(Game.season_id == season.id))
     for g in result.scalars().all():
-        game_cache[(g.home_team_id, g.away_team_id, g.week)] = g
+        game_cache[(g.home_team_id, g.away_team_id, g.week, g.game_type or "REG")] = g
 
     print(f"  Cached {len(player_cache)} players, {len(game_cache)} games for {season_year}")
 
     # Download
     df = await fetch_nflverse_stats(season_year)
-    df = df[df["season_type"].isin(["REG", "POST"])]
+    if not include_preseason:
+        df = df[df["season_type"].isin(["REG", "POST"])]
     print(f"  Downloaded {len(df)} stat rows")
 
     stats_added = 0
@@ -98,6 +107,9 @@ async def ingest_nflverse_stats(
         team_abbr = str(row.get("team", "")).strip()
         week = int(row.get("week", 0))
         opponent = str(row.get("opponent_team", "")).strip()
+        stype = str(row.get("season_type", "")).strip().upper() or "REG"
+        # Normalize nflverse season_type to our game_type value
+        game_type_val = stype  # nflverse uses PRE/REG/POST already
 
         if not gsis or not week:
             continue
@@ -124,9 +136,9 @@ async def ingest_nflverse_stats(
             continue
 
         # Try to match a game (optional — NULL if no match)
-        game = game_cache.get((opp_team.id, player_team.id, week))
+        game = game_cache.get((opp_team.id, player_team.id, week, game_type_val))
         if not game:
-            game = game_cache.get((player_team.id, opp_team.id, week))
+            game = game_cache.get((player_team.id, opp_team.id, week, game_type_val))
 
         game_id = game.id if game else None
 

@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS nfl.qb_cumulative_stats (
     player_id       INTEGER NOT NULL,
     season          INTEGER NOT NULL,
     game_id         INTEGER NOT NULL,
+    game_type       VARCHAR(10) NOT NULL DEFAULT 'REG',
     week            INTEGER NOT NULL,
     team_abbr       TEXT NOT NULL,
     opponent_abbr   TEXT,
@@ -75,7 +76,7 @@ CREATE TABLE IF NOT EXISTS nfl.qb_cumulative_stats (
     cum_fumbles       DOUBLE PRECISION,
     games_played      INTEGER,
 
-    PRIMARY KEY (player_id, season, game_id)
+    PRIMARY KEY (player_id, season, game_id, game_type)
 );
 """
 
@@ -88,6 +89,7 @@ CREATE TABLE IF NOT EXISTS nfl.qb_rolling_stats (
     player_id       INTEGER NOT NULL,
     season          INTEGER NOT NULL,
     game_id         INTEGER NOT NULL,
+    game_type       VARCHAR(10) NOT NULL DEFAULT 'REG',
     week            INTEGER NOT NULL,
     team_abbr       TEXT NOT NULL,
     opponent_abbr   TEXT,
@@ -166,7 +168,7 @@ CREATE TABLE IF NOT EXISTS nfl.qb_rolling_stats (
     fumbles_10         DOUBLE PRECISION,
     games_10           INTEGER,
 
-    PRIMARY KEY (player_id, season, game_id)
+    PRIMARY KEY (player_id, season, game_id, game_type)
 );
 """
 
@@ -195,7 +197,8 @@ WITH qb_games AS (
         COALESCE(pws.rush_yards::NUMERIC, 0)       AS rush_yds,
         COALESCE(pws.rush_tds::NUMERIC, 0)         AS rush_td,
         COALESCE(pws.sacks::NUMERIC, 0)            AS sck,
-        COALESCE(pws.fumbles::NUMERIC, 0)          AS fmb
+        COALESCE(pws.fumbles::NUMERIC, 0)          AS fmb,
+        g.game_type                                 AS game_type
     FROM nfl.player_weekly_stats pws
     JOIN nfl.games g     ON g.id    = pws.game_id
     JOIN nfl.seasons s   ON s.id    = pws.season_id
@@ -205,6 +208,7 @@ WITH qb_games AS (
     WHERE p.position = 'QB'
       AND pws.game_id IS NOT NULL
       AND s.year IS NOT NULL
+      AND g.game_type = :game_type
 )
 """
 
@@ -214,7 +218,7 @@ WITH qb_games AS (
 
 POPULATE_QB_CUMULATIVE_SQL = QB_SOURCE_CTE + """
 INSERT INTO nfl.qb_cumulative_stats (
-    player_id, season, game_id, week, team_abbr, opponent_abbr, game_date, starter_flag,
+    player_id, season, game_id, game_type, week, team_abbr, opponent_abbr, game_date, starter_flag,
     pass_attempts, pass_completions, pass_yards, pass_tds, pass_int,
     rush_attempts, rush_yards, rush_tds, sacks, fumbles,
     cum_pass_att, cum_pass_comp, cum_pass_yds, cum_pass_td, cum_pass_int,
@@ -223,7 +227,7 @@ INSERT INTO nfl.qb_cumulative_stats (
     games_played
 )
 SELECT
-    player_id, season, game_id, week, team_abbr, opponent_abbr, game_date, starter_flag,
+    player_id, season, game_id, game_type, week, team_abbr, opponent_abbr, game_date, starter_flag,
     pass_att, pass_comp, pass_yds, pass_td, pass_int,
     rush_att, rush_yds, rush_td, sck, fmb,
 
@@ -256,10 +260,10 @@ SELECT
     COUNT(*) OVER w_cum            AS games_played
 
 FROM qb_games
-WINDOW w_cum AS (PARTITION BY player_id, season ORDER BY game_date, game_id
+WINDOW w_cum AS (PARTITION BY player_id, season, game_type ORDER BY game_date, game_id
                  ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
 ORDER BY player_id, season, game_date, game_id
-ON CONFLICT (player_id, season, game_id) DO UPDATE SET
+ON CONFLICT (player_id, season, game_id, game_type) DO UPDATE SET
     week            = EXCLUDED.week,
     team_abbr       = EXCLUDED.team_abbr,
     opponent_abbr   = EXCLUDED.opponent_abbr,
@@ -302,7 +306,7 @@ ON CONFLICT (player_id, season, game_id) DO UPDATE SET
 
 POPULATE_QB_ROLLING_SQL = QB_SOURCE_CTE + """
 INSERT INTO nfl.qb_rolling_stats (
-    player_id, season, game_id, week, team_abbr, opponent_abbr, game_date, starter_flag,
+    player_id, season, game_id, game_type, week, team_abbr, opponent_abbr, game_date, starter_flag,
     pass_attempts, pass_completions, pass_yards, pass_tds, pass_int,
     rush_attempts, rush_yards, rush_tds, sacks, fumbles,
     pass_att_3, pass_comp_3, pass_yds_3, pass_td_3, pass_int_3,
@@ -316,7 +320,7 @@ INSERT INTO nfl.qb_rolling_stats (
     rush_att_10, rush_yds_10, rush_td_10, sacks_10, sack_rate_10, fumbles_10, games_10
 )
 SELECT
-    player_id, season, game_id, week, team_abbr, opponent_abbr, game_date, starter_flag,
+    player_id, season, game_id, game_type, week, team_abbr, opponent_abbr, game_date, starter_flag,
     pass_att, pass_comp, pass_yds, pass_td, pass_int,
     rush_att, rush_yds, rush_td, sck, fmb,
 
@@ -400,14 +404,14 @@ SELECT
 
 FROM qb_games
 WINDOW
-    w3  AS (PARTITION BY player_id, season ORDER BY game_date, game_id
+    w3  AS (PARTITION BY player_id, season, game_type ORDER BY game_date, game_id
             ROWS BETWEEN 2 PRECEDING AND CURRENT ROW),
-    w5  AS (PARTITION BY player_id, season ORDER BY game_date, game_id
+    w5  AS (PARTITION BY player_id, season, game_type ORDER BY game_date, game_id
             ROWS BETWEEN 4 PRECEDING AND CURRENT ROW),
-    w10 AS (PARTITION BY player_id, season ORDER BY game_date, game_id
+    w10 AS (PARTITION BY player_id, season, game_type ORDER BY game_date, game_id
             ROWS BETWEEN 9 PRECEDING AND CURRENT ROW)
 ORDER BY player_id, season, game_date, game_id
-ON CONFLICT (player_id, season, game_id) DO UPDATE SET
+ON CONFLICT (player_id, season, game_id, game_type) DO UPDATE SET
     week            = EXCLUDED.week,
     team_abbr       = EXCLUDED.team_abbr,
     opponent_abbr   = EXCLUDED.opponent_abbr,
@@ -499,12 +503,14 @@ def ensure_tables(engine) -> None:
 def populate_qb_tables(
     engine=None,
     seasons: list[int] | None = None,
+    game_type: str = "REG",
 ) -> dict:
     """Populate both nfl.qb_cumulative_stats and nfl.qb_rolling_stats.
 
     Args:
         engine: SQLAlchemy sync engine. If None, creates one.
         seasons: List of seasons to process. None = all available.
+        game_type: Which game_type to compute (REG|PRE|POST). Default REG.
 
     Returns:
         dict with row counts for both tables.
@@ -532,8 +538,8 @@ def populate_qb_tables(
                 )
 
             with engine.begin() as conn:
-                logger.info("Running QB %s stats population...", table_key)
-                r = conn.execute(text(sql_to_run))
+                logger.info("Running QB %s stats population (game_type=%s)...", table_key, game_type)
+                r = conn.execute(text(sql_to_run), {"game_type": game_type})
                 result[table_key] = r.rowcount
                 logger.info("Inserted/updated %d QB %s stat rows", r.rowcount, table_key)
 
@@ -545,12 +551,17 @@ def populate_qb_tables(
 
 def main() -> None:
     """CLI entry point."""
+    import argparse
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
+    _ap = argparse.ArgumentParser()
+    _ap.add_argument("--game-type", default="REG", choices=["REG", "PRE", "POST"],
+                     help="Which game_type to compute QB stats for (default REG)")
+    _args = _ap.parse_args()
 
-    result = populate_qb_tables()
+    result = populate_qb_tables(game_type=_args.game_type)
     logger.info("Done — cumulative: %d, rolling: %d", result["cumulative"], result["rolling"])
 
 

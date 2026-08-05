@@ -5,6 +5,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import PremiumGate from "./PremiumGate";
 import ShapBreakdown from "./ShapBreakdown";
+import PropBetsTab from "./PropBetsTab";
 import { useAuth } from "../lib/auth-context";
 
 interface MLBGameTabsProps {
@@ -21,10 +22,13 @@ export default function MLBGameTabs({ gameId, pickCard, game, formatOdds, boxsco
   const [activeTab, setActiveTab] = useState<string>("boxscore");
   const [writeup, setWriteup] = useState<any>(null);
   const [predictionStats, setPredictionStats] = useState<any>(null);
+  const [propBets, setPropBets] = useState<any[] | null>(null);
   const [loadingWriteup, setLoadingWriteup] = useState(false);
   const [loadingStats, setLoadingStats] = useState(false);
+  const [loadingProps, setLoadingProps] = useState(false);
 
   const hasBoxscore = !!(boxscore?.teams?.away?.teamStats || linescore?.teams?.away?.runs != null);
+  const hasProps = !!propBets && propBets.length > 0;
 
   // Track whether we've already attempted each fetch (prevents infinite loops on error)
   const writeupAttempted = useRef(false);
@@ -77,16 +81,34 @@ export default function MLBGameTabs({ gameId, pickCard, game, formatOdds, boxsco
     }
   }, [activeTab, gameId]);
 
+  // Preload prop bets for this game (determines whether the Prop Bets tab shows)
+  useEffect(() => {
+    if (propBets !== null) return;
+    setLoadingProps(true);
+    fetch(`/api/mlb/games/${gameId}/prop-bets`)
+      .then(r => r.json())
+      .then(data => {
+        setPropBets(Array.isArray(data) ? data : []);
+        setLoadingProps(false);
+      })
+      .catch(() => {
+        setPropBets([]);
+        setLoadingProps(false);
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gameId]);
+
   const tabs = [
     { key: "boxscore", label: "Box Score", enabled: hasBoxscore },
     { key: "summary", label: "Game Preview", enabled: true },
     { key: "picks", label: "Earl's Picks", enabled: true },
     { key: "analysis", label: "Detailed Analysis", enabled: true },
     { key: "stats", label: "Detailed Stats", enabled: true },
+    { key: "propBets", label: "Prop Bets", enabled: hasProps },
   ];
 
-  // If no boxscore, boxscore tab is hidden and default is Game Preview
-  const visibleTabs = tabs.filter(t => t.key !== "boxscore" || hasBoxscore);
+  // Only show enabled tabs; default to Game Preview if boxscore tab hidden
+  const visibleTabs = tabs.filter(t => (t.key === "boxscore" ? hasBoxscore : t.enabled));
 
   return (
     <div className="border border-white/10 rounded-xl bg-gradient-to-br from-blue-900/20 to-transparent mt-4">
@@ -114,6 +136,7 @@ export default function MLBGameTabs({ gameId, pickCard, game, formatOdds, boxsco
         {activeTab === "picks" && <PremiumGate>{renderEarlsPicks()}</PremiumGate>}
         {activeTab === "analysis" && <PremiumGate>{renderDetailedAnalysis()}</PremiumGate>}
         {activeTab === "stats" && <PremiumGate>{renderDetailedStats()}</PremiumGate>}
+        {activeTab === "propBets" && renderPropBets()}
       </div>
     </div>
   );
@@ -920,5 +943,9 @@ export default function MLBGameTabs({ gameId, pickCard, game, formatOdds, boxsco
         </div>
       </div>
     );
+  }
+
+  function renderPropBets() {
+    return <PropBetsTab sport="mlb" gameId={gameId} />;
   }
 }

@@ -688,7 +688,7 @@ async def _save_api_prediction(result: Dict[str, Any]) -> None:
     if not game_id:
         return
 
-    async with get_async_session() as session:
+    async with _get_async_session()() as session:
         # Wipe any previous API prediction for this game
         await session.execute(
             sa_delete(NFLGamePrediction).where(

@@ -515,7 +515,9 @@ async def ingest_mlb_stats_refresh():
 
 
 @router.post("/ingest/nfl/stats/refresh")
-async def ingest_nfl_stats_refresh():
+async def ingest_nfl_stats_refresh(
+    game_type: str = Query("REG", description="REG (default) or PRE for preseason stats"),
+):
     """
     Refresh NFL stats from nflverse (fire-and-forget background task).
 
@@ -523,37 +525,36 @@ async def ingest_nfl_stats_refresh():
       - nfl.player_weekly_stats    (nflverse player stats; idempotent per week)
       - nfl.play_by_play           (raw nflverse PBP)
       - nfl.game_stats             (base per-game team stats + advanced aggregates)
-      - nfl.cumulative_game_stats  (recompute) + qb_cumulative_stats (rank tiers)
-      - nfl.team_rolling_stats     (sync script, worker thread)
-      - nfl.qb_rolling_stats       (sync script, worker thread)
+      - nfl.cumulative_game_stats  (recompute, scoped to game_type) + qb_cumulative_stats
+      - nfl.team_rolling_stats     (scoped to game_type; PRE/REG coexist)
+      - nfl.qb_rolling_stats       (scoped to game_type)
 
-    Football seasons run on a weekly cadence and every source here is
-    idempotent (per-week dedup) or upserting, so no staleness gate is needed —
-    each run loads any new data and rebuilds the derived tables.
+    Pass game_type=PRE to build preseason stats in isolation. Preseason rows
+    never mix into REG inference/training (the loader defaults to REG).
     """
     import asyncio
     from datetime import datetime, timezone
 
+    default_game_type = (game_type or "REG").upper()
     started_at = datetime.now(timezone.utc)
 
     async def _run_reported():
         try:
-            await _run_nfl_stats_refresh(started_at)
-        except Exception as e:
+            await _run_nfl_stats_refresh(started_at, game_type=default_game_type)
+        except Exception:
             import traceback
-            logger.error(f"NFL stats refresh CRASHED: {e}\n{traceback.format_exc()}")
-            await _report_task_outcome("nfl-stats-refresh", success=False, error=f"{type(e).__name__}: {e}", started_at=started_at)
+            logger.error(f"NFL stats refresh CRASHED: {traceback.format_exc()}")
+            await _report_task_outcome("nfl-stats-refresh", success=False, error=f"crash", started_at=started_at)
 
     asyncio.create_task(_run_reported())
-    return {"status": "started", "message": "NFL stats refresh running in background. Check API logs for progress."}
+    return {"status": "started", "message": f"NFL stats refresh running (game_type={default_game_type}). Check API logs."}
 
 
-async def _run_nfl_stats_refresh(started_at=None):
+async def _run_nfl_stats_refresh(started_at=None, game_type: str = "REG"):
     """Run NFL stats refresh in background.
 
-    Loads any new nflverse PBP + player weeks, rebuilds per-game team stats,
-    recomputes cumulative + QB rankings, and refreshes the rolling-stats tables
-    (team + QB) via their sync scripts run on worker threads.
+    game_type scopes every derived-stat rebuild (cumulative, team_rolling,
+    qb_*) so preseason (PRE) can be built in isolation from regular season.
     """
     import logging
 
@@ -583,7 +584,8 @@ async def _run_nfl_stats_refresh(started_at=None):
         logger.info("[Step 1] Loading nflverse player weekly stats...")
         try:
             from app.ingestion.nflverse import ingest_nflverse_stats
-            player_result = await ingest_nflverse_stats(db, season)
+            player_result = await ingest_nflverse_stats(db, season,
+                                                         include_preseason=(game_type.upper() == "PRE"))
             logger.info(f"  player_weekly_stats: {player_result}")
         except Exception as e:
             logger.error(f"  Player weekly stats failed: {e}")
@@ -625,7 +627,7 @@ async def _run_nfl_stats_refresh(started_at=None):
         logger.info("[Step 5] Recomputing cumulative + QB rankings...")
         try:
             from app.handicapping.nfl.cumulative_stats import recompute
-            cum_result = await recompute(db, seasons=[season])
+            cum_result = await recompute(db, seasons=[season], game_type=game_type)
             logger.info(f"  cumulative/qb_cumulative: {cum_result}")
         except Exception as e:
             logger.error(f"  Cumulative recompute failed: {e}")
@@ -641,7 +643,7 @@ async def _run_nfl_stats_refresh(started_at=None):
     logger.info("[Step 6] Refreshing nfl.team_rolling_stats...")
     try:
         from app.handicapping.nfl.populate_team_rolling_stats import run as run_team_rolling
-        team_res = await _run_in_thread(run_team_rolling)
+        team_res = await _run_in_thread(run_team_rolling, game_type)
         logger.info(f"  team_rolling_stats: {team_res}")
     except Exception as e:
         logger.error(f"  team_rolling_stats failed: {e}")
@@ -651,7 +653,7 @@ async def _run_nfl_stats_refresh(started_at=None):
     try:
         from app.database import engine as sync_engine
         from app.handicapping.nfl.populate_qb_rolling_stats import populate_qb_tables
-        qb_res = await _run_in_thread(populate_qb_tables, sync_engine, [season])
+        qb_res = await _run_in_thread(populate_qb_tables, sync_engine, [season], game_type)
         logger.info(f"  qb_cumulative/qb_rolling: {qb_res}")
     except Exception as e:
         logger.error(f"  QB rolling stats failed: {e}")
@@ -905,7 +907,7 @@ async def ingest_nfl_lines_and_picks(
     logger = logging.getLogger("earl.nfl_lines_and_picks")
 
     from app.ingestion.nfl_betting_lines import snapshot_nfl_opening_lines
-    from app.handicapping.nfl.engine import batch_predict_upcoming_games
+    from app.handicapping.nfl.engine import (batch_predict_upcoming_games, CURRENT_NFL_YEAR)
 
     if not api_key:
         from app.core.config import settings as _nfl_settings
@@ -955,7 +957,10 @@ async def ingest_nfl_lines_and_picks(
         logger.info(f"NFL: {len(game_ids)} games have consolidated lines")
 
         if game_ids:
-            year = datetime.now(timezone.utc).year
+            # Use the engine's resolved live model year (max trained year), NOT the
+            # calendar year — no NFL model exists for the upcoming season until it's
+            # trained. Using calendar year silently left models unloaded.
+            year = CURRENT_NFL_YEAR
             pick_results = await batch_predict_upcoming_games(
                 game_ids=game_ids,
                 year=year,
@@ -1116,6 +1121,33 @@ async def run_fd_scraper():
         return {"status": "ok", "stats": stats}
     except Exception as e:
         logger.error(f"FD scraper failed: {e}")
+        return {"status": "error", "error": str(e)}
+
+
+@router.post("/ingest/betmgm-scraper")
+async def run_betmgm_scraper():
+    """
+    Run the BetMGM season-prop / futures scraper.
+
+    Fetches BetMGM's CDS futures fixtures for mlb/nfl/nba and saves:
+      - player season props (awards: MVP, Cy Young, ROY, DPOY, etc.)
+        to {sport}.player_season_props
+      - team props (championship odds, make/miss playoffs, win totals)
+        to {sport}.team_props
+    Bookmaker is 'betmgm' (additive to the FanDuel / the-odds-api rows).
+    Rendered as a subprocess by the task scheduler (like the FD scraper) so it
+    does not block a granian worker. Intended for daily cron.
+    """
+    import logging
+    logger = logging.getLogger("earl.betmgm_scraper_route")
+
+    try:
+        from app.scrapers.betmgm_run import run_betmgm_scrape
+        stats = await run_betmgm_scrape()
+        logger.info(f"BetMGM scraper complete: {stats}")
+        return {"status": "ok", "stats": stats}
+    except Exception as e:
+        logger.error(f"BetMGM scraper failed: {e}")
         return {"status": "error", "error": str(e)}
 
 

@@ -109,6 +109,7 @@ class MLBWriteupGenerator(BaseWriteupGenerator):
                         historical_game_date = :hist_date,
                         generated_by = :gen_by,
                         total_tokens = :tokens,
+                        published_at = NOW(),
                         updated_at = NOW()
                     WHERE game_id = :gid
                     RETURNING id
@@ -136,12 +137,12 @@ class MLBWriteupGenerator(BaseWriteupGenerator):
                         (game_id, title, public_content, premium_content,
                          research_brief, quality_checks, status, version,
                          is_historical, historical_game_date,
-                         generated_by, total_tokens)
+                         generated_by, total_tokens, published_at)
                     VALUES
                         (:gid, :title, :pub, :prem,
                          CAST(:rb AS jsonb), CAST(:qc AS jsonb), :status, :version,
                          :is_hist, :hist_date,
-                         :gen_by, :tokens)
+                         :gen_by, :tokens, NOW())
                     RETURNING id
                 """),
                 {
@@ -165,16 +166,8 @@ class MLBWriteupGenerator(BaseWriteupGenerator):
         return row_id
 
     def _derive_status(self, qc_results: list[dict[str, Any]]) -> str:
-        """Auto-set status based on quality checks."""
-        if not qc_results:
-            return "draft"
-        passed = sum(1 for q in qc_results if q.get("passed"))
-        total = len(qc_results)
-        if passed == total:
-            return "review"  # passed checks, needs human review before publish
-        if passed >= total / 2:
-            return "draft"  # some issues, needs work
-        return "draft"  # needs significant work
+        """Write-ups go live immediately — no draft/review workflow."""
+        return "published"
 
     async def generate_public(
         self,

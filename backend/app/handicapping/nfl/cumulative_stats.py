@@ -237,7 +237,7 @@ WITH team_games AS (
     JOIN nfl.game_stats opp
         ON opp.season = s.year AND opp.week = g.week
         AND opp.team_abbr = at.abbreviation
-    WHERE s.year = :season AND g.week >= 1 AND g.game_type = 'REG'
+    WHERE s.year = :season AND g.week >= 1 AND g.game_type = :game_type
 
     UNION ALL
 
@@ -317,7 +317,7 @@ WITH team_games AS (
     JOIN nfl.game_stats opp
         ON opp.season = s.year AND opp.week = g.week
         AND opp.team_abbr = ht.abbreviation
-    WHERE s.year = :season AND g.week >= 1 AND g.game_type = 'REG'
+    WHERE s.year = :season AND g.week >= 1 AND g.game_type = :game_type
 )
 SELECT * FROM team_games
 ORDER BY date, game_id, team_abbr
@@ -707,11 +707,11 @@ async def compute_rankings(db: AsyncSession, season: int):
         order = "ASC" if ascending else "DESC"
         await conn.execute(text(f"""
             WITH weeks AS (
-                SELECT DISTINCT week FROM nfl.cumulative_game_stats WHERE season = :s
+                SELECT DISTINCT week FROM nfl.cumulative_game_stats WHERE season = :s AND season_type = 'REG'
             ),
             team_weeks AS (
                 SELECT t.abbreviation, w.week
-                FROM (SELECT DISTINCT team_abbr AS abbreviation FROM nfl.cumulative_game_stats WHERE season = :s) t
+                FROM (SELECT DISTINCT team_abbr AS abbreviation FROM nfl.cumulative_game_stats WHERE season = :s AND season_type = 'REG') t
                 CROSS JOIN weeks w
             ),
             latest_stats AS (
@@ -719,7 +719,7 @@ async def compute_rankings(db: AsyncSession, season: int):
                     tw.abbreviation AS team_abbr, tw.week, cum.{source_col}
                 FROM team_weeks tw
                 LEFT JOIN nfl.cumulative_game_stats cum
-                    ON cum.season = :s AND cum.team_abbr = tw.abbreviation AND cum.week <= tw.week
+                    ON cum.season = :s AND cum.team_abbr = tw.abbreviation AND cum.week <= tw.week AND cum.season_type = 'REG'
                 ORDER BY tw.abbreviation, tw.week, cum.week DESC
             ),
             ranked AS (
@@ -731,7 +731,8 @@ async def compute_rankings(db: AsyncSession, season: int):
             UPDATE nfl.cumulative_game_stats cum
             SET {rank_col} = ranked.rn::smallint
             FROM ranked
-            WHERE cum.season = :s AND cum.team_abbr = ranked.team_abbr AND cum.week = ranked.week
+            WHERE cum.season = :s AND cum.team_abbr = ranked.team_abbr
+              AND cum.week = ranked.week AND cum.season_type = 'REG'
         """), {"s": season})
 
     await conn.commit()
@@ -748,8 +749,8 @@ async def ensure_table_exists(db: AsyncSession):
     logger.info("Ensured nfl.cumulative_game_stats table exists")
 
 
-async def compute_for_season(db: AsyncSession, season: int) -> dict:
-    """Compute cumulative stats for one season, upserting into the DB."""
+async def compute_for_season(db: AsyncSession, season: int, game_type: str = "REG") -> dict:
+    """Compute cumulative stats for one season+game_type, upserting into the DB."""
     from sqlalchemy import text as sql_text
 
     conn = await db.connection()
@@ -757,7 +758,7 @@ async def compute_for_season(db: AsyncSession, season: int) -> dict:
     # Fetch per-game data ordered chronologically
     rows_raw = await conn.execute(
         sql_text(PER_GAME_QUERY),
-        {"season": season},
+        {"season": season, "game_type": game_type},
     )
     all_games = [dict(r._mapping) for r in rows_raw]
 
@@ -812,61 +813,66 @@ async def compute_for_season(db: AsyncSession, season: int) -> dict:
     return {"season": season, "rows_processed": processed}
 
 
-async def recompute(db: AsyncSession, seasons: Optional[list[int]] = None) -> dict:
+async def recompute(db: AsyncSession, seasons: Optional[list[int]] = None, game_type: str = "REG") -> dict:
     """Recompute cumulative stats for all (or specified) seasons."""
     await ensure_table_exists(db)
     conn = await db.connection()
 
     if seasons is None:
         result = await conn.execute(
-            text("SELECT DISTINCT s.year AS season FROM nfl.games g JOIN nfl.seasons s ON s.id = g.season_id WHERE g.week >= 1 ORDER BY s.year DESC")
+            text("SELECT DISTINCT s.year AS season FROM nfl.games g JOIN nfl.seasons s ON s.id = g.season_id WHERE g.week >= 1 AND g.game_type = :game_type ORDER BY s.year DESC"),
+            {"game_type": game_type},
         )
         seasons = [row[0] for row in result]
 
     results = {}
     for season in seasons:
-        # Clean stale rows before recompute: drop any cumulative row whose game_id
-        # no longer corresponds to a REG game (e.g. preseason games that were
-        # mislabeled, or orphaned rows). A REG-only recompute won't regenerate them.
+        # Clean stale rows: drop any cumulative row of THIS game_type whose game_id
+        # no longer corresponds to a game of that type. PRE rows are never touched
+        # by a REG recompute, and vice versa.
         await conn.execute(
             text("""
                 DELETE FROM nfl.cumulative_game_stats c
                 WHERE c.season = :season
+                  AND c.season_type = :game_type
                   AND NOT EXISTS (
                     SELECT 1 FROM nfl.games g
                     JOIN nfl.seasons s ON s.id = g.season_id
                     WHERE g.id = c.game_id
                       AND s.year = :season
-                      AND g.game_type = 'REG'
+                      AND g.game_type = :game_type
                   )
             """),
-            {"season": season},
+            {"season": season, "game_type": game_type},
         )
-        res = await compute_for_season(db, season)
+        res = await compute_for_season(db, season, game_type)
         results[season] = res
         await compute_rankings(db, season)
 
     return results
 
 
-async def refresh_cumulative_stats(db: AsyncSession) -> dict:
+async def refresh_cumulative_stats(db: AsyncSession, game_type: str = "REG") -> dict:
     """Sync entry point: compute only seasons with missing games."""
     await ensure_table_exists(db)
     conn = await db.connection()
 
-    # Get existing max week per season in cumulative table
+    # Get existing max week per season for this game_type
     existing = await conn.execute(
         sql_text("""
             SELECT season, MAX(week) AS max_week
             FROM nfl.cumulative_game_stats
+            WHERE season_type = :game_type
             GROUP BY season
-        """)
+        """),
+        {"game_type": game_type},
     )
     existing_seasons = {row[0]: row[1] for row in existing}
 
-    # Get all seasons
+    # Get all seasons with games of this type
     all_seasons_res = await conn.execute(
-        sql_text("SELECT DISTINCT s.year AS season FROM nfl.games g JOIN nfl.seasons s ON s.id = g.season_id WHERE g.week >= 1 ORDER BY s.year")
+        sql_text("SELECT DISTINCT s.year AS season FROM nfl.games g JOIN nfl.seasons s ON s.id = g.season_id WHERE g.week >= 1 AND g.game_type = :game_type ORDER BY s.year"),
+        {"game_type": game_type},
     )
     all_seasons = [row[0] for row in all_seasons_res]
 
@@ -875,30 +881,31 @@ async def refresh_cumulative_stats(db: AsyncSession) -> dict:
         max_week = existing_seasons.get(season, 0)
         # Get max week in games for this season
         week_res = await conn.execute(
-            sql_text("SELECT MAX(week) FROM nfl.games g JOIN nfl.seasons s ON s.id = g.season_id WHERE s.year = :season"),
-            {"season": season},
+            sql_text("SELECT MAX(week) FROM nfl.games g JOIN nfl.seasons s ON s.id = g.season_id WHERE s.year = :season AND g.game_type = :game_type"),
+            {"season": season, "game_type": game_type},
         )
         season_max_week = (await week_res.fetchone())[0] or 0
 
         if season_max_week > max_week:
             logger.info(f"Season {season}: new weeks found ({max_week} → {season_max_week}), recomputing")
-            # Clean stale rows (see recompute) so mislabeled/orphaned rows don't linger.
+            # Clean stale rows of THIS game_type so mislabeled/orphaned rows don't linger
             await conn.execute(
                 text("""
                     DELETE FROM nfl.cumulative_game_stats c
                     WHERE c.season = :season
+                      AND c.season_type = :game_type
                       AND NOT EXISTS (
                         SELECT 1 FROM nfl.games g
                         JOIN nfl.seasons s ON s.id = g.season_id
                         WHERE g.id = c.game_id
                           AND s.year = :season
-                          AND g.game_type = 'REG'
+                          AND g.game_type = :game_type
                       )
                 """),
-                {"season": season},
+                {"season": season, "game_type": game_type},
             )
             await conn.execute(text("COMMIT"))
-            results[season] = await compute_for_season(db, season)
+            results[season] = await compute_for_season(db, season, game_type)
         else:
             logger.info(f"Season {season}: up to date (max_week={max_week})")
         await compute_rankings(db, season)

@@ -5,6 +5,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import PremiumGate from "./PremiumGate";
 import ShapBreakdown from "./ShapBreakdown";
+import PropBetsTab from "./PropBetsTab";
 import { useAuth } from "../lib/auth-context";
 
 // ── Types ─────────────────────────────────────────────────────
@@ -537,6 +538,8 @@ export default function NFLGameTabs({ gameId, boxscore, prediction, isFinal }: N
   const [activeTab, setActiveTab] = useState<string | null>(null);
   const [writeupData, setWriteupData] = useState<NFLWriteupData | null>(null);
   const [writeupLoading, setWriteupLoading] = useState(false);
+  const [propBets, setPropBets] = useState<any[] | null>(null);
+  const [propBetsLoading, setPropBetsLoading] = useState(false);
 
   const home_stats = boxscore.home_stats || { total_yards: null, pass_yards: null, rush_yards: null, turnovers: null, first_downs: null, third_down_pct: null, fourth_down_pct: null, time_of_possession: null, penalties: null, penalty_yards: null, top_players: [] };
   const away_stats = boxscore.away_stats || { total_yards: null, pass_yards: null, rush_yards: null, turnovers: null, first_downs: null, third_down_pct: null, fourth_down_pct: null, time_of_possession: null, penalties: null, penalty_yards: null, top_players: [] };
@@ -565,12 +568,31 @@ export default function NFLGameTabs({ gameId, boxscore, prediction, isFinal }: N
       .finally(() => setWriteupLoading(false));
   }, [activeTab, gameId, writeupData, writeupLoading]);
 
+  // Load prop bets availability for this game (controls whether the tab shows)
+  useEffect(() => {
+    if (propBets !== null) return;
+    setPropBetsLoading(true);
+    fetch(`/api/games/${gameId}/prop-bets`)
+      .then(r => r.json())
+      .then(d => {
+        setPropBets(Array.isArray(d) ? d : []);
+        setPropBetsLoading(false);
+      })
+      .catch(() => {
+        setPropBets([]);
+        setPropBetsLoading(false);
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gameId]);
+
+  const hasProps = !!propBets && propBets.length > 0;
   const tabs = [
     ...(isGameInProgress ? [{ key: "boxscore", label: "Box Score" }] : []),
     { key: "preview", label: "Game Preview" },
     ...(prediction ? [{ key: "picks", label: "Earl's Picks" }] : []),
     { key: "analysis", label: "Detailed Analysis" },
     { key: "stats", label: "Detailed Stats" },
+    ...(hasProps ? [{ key: "propBets", label: "Prop Bets" }] : []),
   ];
 
   if (tabs.length === 0) return null;
@@ -668,6 +690,9 @@ export default function NFLGameTabs({ gameId, boxscore, prediction, isFinal }: N
             <DetailedStatsTab gameId={gameId} boxscore={boxscore} />
           </PremiumGate>
         )}
+
+        {/* Prop Bets */}
+        {activeTab === "propBets" && <PropBetsTab sport="nfl" gameId={gameId} />}
       </div>
       </div>
     </div>

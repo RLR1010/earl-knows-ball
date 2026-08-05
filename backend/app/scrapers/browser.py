@@ -72,6 +72,13 @@ class BrowserManager:
             viewport={"width": 1920, "height": 1080},
             locale="en-US",
             timezone_id="America/Chicago",
+            # This host has user namespaces disabled (firefox can't create its
+            # userns sandbox). Disable the sandbox layers that require it so the
+            # headed browser launches. Safe for our scraping-only profile.
+            firefox_user_prefs={
+                "security.sandbox.content.level": 0,
+                "security.sandbox.plugin.level": 0,
+            },
         )
 
         # Apply stealth patches to disguise automation signals.

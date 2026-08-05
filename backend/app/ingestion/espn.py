@@ -160,29 +160,44 @@ async def ingest_espn_schedule(
         # Week-by-week with force_dates month chunks to avoid pagination issues with season-length date ranges
         # (The year+week param works, but SEASON_DATE_RANGES causes fetch_espn_scoreboard to paginate
         #  the entire season for each week when a date range exists. Month-by-month avoids this.)
-        for month in range(9, 13):  # Sep-Dec
-            month_range = f"{season_year}{month:02d}01-{season_year}{month:02d}31"
-            events = await fetch_espn_scoreboard(season_year, seasontype, None, force_dates=month_range)
-            if events:
-                all_events.extend(events)
-        for month in range(1, 3):  # Jan-Feb (next year)
-            month_range = f"{season_year+1}{month:02d}01-{season_year+1}{month:02d}31"
-            events = await fetch_espn_scoreboard(season_year, seasontype, None, force_dates=month_range)
-            if events:
-                all_events.extend(events)
+        if seasontype == 1:
+            # Preseason runs Aug–Sep; fetch those months (current year only)
+            for month in range(8, 11):  # Aug-Oct
+                month_range = f"{season_year}{month:02d}01-{season_year}{month:02d}31"
+                events = await fetch_espn_scoreboard(season_year, seasontype, None, force_dates=month_range)
+                if events:
+                    all_events.extend(events)
+        else:
+            for month in range(9, 13):  # Sep-Dec
+                month_range = f"{season_year}{month:02d}01-{season_year}{month:02d}31"
+                events = await fetch_espn_scoreboard(season_year, seasontype, None, force_dates=month_range)
+                if events:
+                    all_events.extend(events)
+            for month in range(1, 3):  # Jan-Feb (next year)
+                month_range = f"{season_year+1}{month:02d}01-{season_year+1}{month:02d}31"
+                events = await fetch_espn_scoreboard(season_year, seasontype, None, force_dates=month_range)
+                if events:
+                    all_events.extend(events)
     else:
         # Week param returned stale data — fall back to month-by-month dates
         print(f"  [Earl] Week param returned {event_season} data, falling back to month-by-month")
-        for month in range(9, 13):  # Sep-Dec
-            month_range = f"{season_year}{month:02d}01-{season_year}{month:02d}31"
-            events = await fetch_espn_scoreboard(season_year, seasontype, None, force_dates=month_range)
-            if events:
-                all_events.extend(events)
-        for month in range(1, 3):  # Jan-Feb (next year)
-            month_range = f"{season_year+1}{month:02d}01-{season_year+1}{month:02d}31"
-            events = await fetch_espn_scoreboard(season_year, seasontype, None, force_dates=month_range)
-            if events:
-                all_events.extend(events)
+        if seasontype == 1:
+            for month in range(8, 11):  # Aug-Oct
+                month_range = f"{season_year}{month:02d}01-{season_year}{month:02d}31"
+                events = await fetch_espn_scoreboard(season_year, seasontype, None, force_dates=month_range)
+                if events:
+                    all_events.extend(events)
+        else:
+            for month in range(9, 13):  # Sep-Dec
+                month_range = f"{season_year}{month:02d}01-{season_year}{month:02d}31"
+                events = await fetch_espn_scoreboard(season_year, seasontype, None, force_dates=month_range)
+                if events:
+                    all_events.extend(events)
+            for month in range(1, 3):  # Jan-Feb (next year)
+                month_range = f"{season_year+1}{month:02d}01-{season_year+1}{month:02d}31"
+                events = await fetch_espn_scoreboard(season_year, seasontype, None, force_dates=month_range)
+                if events:
+                    all_events.extend(events)
 
     for event in all_events:
         competitions = event.get("competitions", [])
@@ -230,12 +245,21 @@ async def ingest_espn_schedule(
 
         # Get week from the event data
         event_week = event.get("week", {}).get("number", 0)
+        game_type = "REG" if seasontype == 2 else ("PRE" if seasontype == 1 else "POST")
+
+        # ESPN reuses week numbers across preseason (1-4) and regular season (1-18),
+        # which would collide in our schedule. Renumber preseason weeks into a
+        # distinct unused range (30-33) so they stay separate from regular season/playoffs.
+        if game_type == "PRE" and event_week:
+            stored_week = 29 + event_week  # PRE week 1 -> 30, ... PRE week 4 -> 33
+        else:
+            stored_week = event_week if event_week else 1
 
         game = Game(
             id=game_id,
             season_id=season.id,
-            week=event_week if event_week else 1,
-            game_type="REG" if seasontype == 2 else ("PRE" if seasontype == 1 else "POST"),
+            week=stored_week,
+            game_type=game_type,
             home_team_id=home_team.id,
             away_team_id=away_team.id,
             date=game_date,

@@ -8,8 +8,17 @@ import { api, Game, formatSpread, formatSpreadAway, formatOverUnder } from "@/li
 import { getTeamLogoUrl } from "@/lib/team_logos";
 import GameCalendar from "@/components/GameCalendar";
 
-const WEEKS = Array.from({ length: 22 }, (_, i) => i + 1);
+// Regular season (1-18) + playoffs (19-22). Preseason weeks are stored in a
+// distinct range (30-33) so they never collide with the regular season.
+const REGULAR_WEEKS = Array.from({ length: 22 }, (_, i) => i + 1);
+const PRESEASON_WEEKS = [30, 31, 32, 33]; // stored as 29 + preseason_week
 
+const PRESEASON_LABELS: Record<number, string> = {
+  30: "PS Week 1",
+  31: "PS Week 2",
+  32: "PS Week 3",
+  33: "PS Week 4",
+};
 const PLAYOFF_LABELS: Record<number, string> = {
   19: "Wild Card",
   20: "Divisional",
@@ -17,6 +26,7 @@ const PLAYOFF_LABELS: Record<number, string> = {
   22: "Super Bowl",
 };
 function weekLabel(w: number): string {
+  if (w >= 30 && w <= 33) return PRESEASON_LABELS[w] || `PS Week ${w - 29}`;
   if (w >= 19) return PLAYOFF_LABELS[w] || `Week ${w}`;
   return `Week ${w}`;
 }
@@ -778,8 +788,25 @@ function NFLSchedule({ sport }: { sport: string }) {
         </select>
       </div>
 
+      <div className="text-[10px] uppercase tracking-wider text-gray-500 font-semibold">Preseason</div>
       <div className="flex gap-1 flex-wrap">
-        {WEEKS.map((w) => (
+        {PRESEASON_WEEKS.map((w) => (
+          <button
+            key={w}
+            onClick={() => setWeek(w)}
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
+              week === w
+                ? "bg-earl-600 text-white"
+                : "bg-white/5 text-gray-400 hover:bg-white/10"
+            }`}
+          >
+            {weekLabel(w)}
+          </button>
+        ))}
+      </div>
+      <div className="text-[10px] uppercase tracking-wider text-gray-500 font-semibold">Regular Season & Playoffs</div>
+      <div className="flex gap-1 flex-wrap">
+        {REGULAR_WEEKS.map((w) => (
           <button
             key={w}
             onClick={() => setWeek(w)}

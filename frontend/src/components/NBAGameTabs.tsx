@@ -6,6 +6,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import PremiumGate from "./PremiumGate";
 import ShapBreakdown from "./ShapBreakdown";
+import PropBetsTab from "./PropBetsTab";
 import { useAuth } from "../lib/auth-context";
 
 interface NBABoxScoreData {
@@ -163,10 +164,13 @@ export default function NBAGameTabs({ gameId, prediction }: NBAGameTabsProps) {
   const [activeTab, setActiveTab] = useState<string>("boxscore");
   const [writeup, setWriteup] = useState<any>(null);
   const [loadingWriteup, setLoadingWriteup] = useState(false);
+  const [propBets, setPropBets] = useState<any[] | null>(null);
+  const [loadingProps, setLoadingProps] = useState(false);
   const writeupAttempted = useRef(false);
 
   const isFinal = data?.status === "FINAL" || data?.status === "final";
   const hasBoxscore = !!(data && isFinal);
+  const hasProps = !!propBets && propBets.length > 0;
 
   useEffect(() => {
     if (!gameId) return;
@@ -218,12 +222,30 @@ export default function NBAGameTabs({ gameId, prediction }: NBAGameTabsProps) {
     }
   }, [activeTab, gameId]);
 
+  // Load prop bets availability for this game (controls whether the tab shows)
+  useEffect(() => {
+    if (propBets !== null) return;
+    setLoadingProps(true);
+    fetch(`/api/nba/games/${gameId}/prop-bets`)
+      .then((r) => r.json())
+      .then((d) => {
+        setPropBets(Array.isArray(d) ? d : []);
+        setLoadingProps(false);
+      })
+      .catch(() => {
+        setPropBets([]);
+        setLoadingProps(false);
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gameId]);
+
   const tabs = [
     { key: "boxscore", label: "Box Score", enabled: hasBoxscore },
     { key: "summary", label: "Game Preview", enabled: true },
     { key: "picks", label: "Earl's Picks", enabled: true },
     { key: "analysis", label: "Detailed Analysis", enabled: true },
     { key: "stats", label: "Detailed Stats", enabled: true },
+    { key: "propBets", label: "Prop Bets", enabled: hasProps },
   ];
 
   const activeTabs = tabs.filter((t) => t.enabled);
@@ -770,6 +792,7 @@ export default function NBAGameTabs({ gameId, prediction }: NBAGameTabsProps) {
             {activeTab === "picks" && <PremiumGate>{renderPicks()}</PremiumGate>}
             {activeTab === "analysis" && <PremiumGate>{renderAnalysis()}</PremiumGate>}
             {activeTab === "stats" && <PremiumGate><DetailedStatsTab gameId={gameId} /></PremiumGate>}
+            {activeTab === "propBets" && <PropBetsTab sport="nba" gameId={gameId} />}
           </div>
         </div>
       )}

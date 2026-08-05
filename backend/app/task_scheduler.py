@@ -347,11 +347,21 @@ async def stop_scheduler():
 
 
 async def trigger_task(task_name: str) -> bool:
-    """Manually trigger a task to run now."""
-    if _scheduler is None:
-        return False
-    job = _scheduler.get_job(task_name)
-    if not job:
-        return False
-    _scheduler.modify_job(task_name, next_run_time=datetime.now(TZ))
+    """Manually trigger a task to run now.
+
+    Runs the task directly via wrapped_job on the current worker instead of
+    relying on next_run_time + the scheduler singleton. This avoids the race
+    where the scheduler (`_scheduler`) only lives in ONE worker but API
+    requests are load-balanced across all workers — without this, clicking
+    "Run" only worked if the request happened to land on the scheduler worker.
+    """
+    # Verify the task exists before firing it off.
+    async with async_session() as db:
+        row = await db.execute(
+            text("SELECT 1 FROM task_config WHERE name = :name AND enabled = true"),
+            {"name": task_name},
+        )
+        if not row.fetchone():
+            return False
+    asyncio.create_task(wrapped_job(task_name))
     return True

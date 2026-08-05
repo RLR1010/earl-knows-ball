@@ -47,6 +47,8 @@ class SportConfig:
     # generic query joins games -> season by year; override with season_stmt if
     # the sport stores season differently.
     year: int
+    odds_keys: list | None = None  # optional extra Odds API sport keys to also pull (e.g. NFL preseason)
+    window_hours: int = LINE_WINDOW_HOURS  # how far ahead to look for upcoming games/odds
 
 
 def _implied_prob(american_odds: float) -> float:
@@ -122,6 +124,11 @@ def _get_ssl_context():
 async def snapshot_opening_lines(cfg: SportConfig, db, api_key: str, days: int = 3):
     """Fetch current season's lines from the Odds API and upsert per-book rows.
 
+    Pulls from ``cfg.odds_key`` plus any extra keys in ``cfg.odds_keys`` (e.g.
+    ``americanfootball_nfl_preseason``) so preseason + regular-season games in
+    the same window both get odds. All events are matched against the same set
+    of upcoming DB games; a game is ingested from the first key that has it.
+
     Mirrors ``mlb_betting_lines.snapshot_mlb_opening_lines`` but parameterized
     by ``SportConfig`` so NFL / NBA / MLB ingest identical data the same way.
 
@@ -146,7 +153,7 @@ async def snapshot_opening_lines(cfg: SportConfig, db, api_key: str, days: int =
 
     now = datetime.now(timezone.utc)
     window_start = now - timedelta(hours=2)
-    window_end = now + timedelta(hours=LINE_WINDOW_HOURS)
+    window_end = now + timedelta(hours=cfg.window_hours)
 
     games = (
         await db.execute(
@@ -175,8 +182,8 @@ async def snapshot_opening_lines(cfg: SportConfig, db, api_key: str, days: int =
         games_by_abbr.setdefault(g.home_abbr, []).append(g)
         games_by_abbr.setdefault(g.away_abbr, []).append(g)
 
-    # 2. Call the Odds API.
-    url = f"{ODDS_API_BASE}/sports/{cfg.odds_key}/odds/"
+    # 2. Call the Odds API (primary key + any extra keys, e.g. preseason).
+    odds_keys = list(dict.fromkeys([cfg.odds_key] + (cfg.odds_keys or [])))
     params = {
         "apiKey": api_key,
         "regions": "us",
@@ -184,16 +191,22 @@ async def snapshot_opening_lines(cfg: SportConfig, db, api_key: str, days: int =
         "oddsFormat": "american",
         "dateFormat": "iso",
     }
+    all_events = []
     async with httpx.AsyncClient(verify=_get_ssl_context()) as client:
-        resp = await client.get(url, params=params)
-        resp.raise_for_status()
-        data = resp.json()
+        for key in odds_keys:
+            url = f"{ODDS_API_BASE}/sports/{key}/odds/"
+            resp = await client.get(url, params=params)
+            resp.raise_for_status()
+            key_events = resp.json()
+            logger.info(f"  [{sport}] Odds API '{key}' returned {len(key_events)} events")
+            all_events.extend(key_events)
 
     loaded = 0
     updated_game_ids = set()
     skipped = []
+    seen_gids = set()
 
-    for event in data:
+    for event in all_events:
         try:
             home_name = event.get("home_team", "")
             away_name = event.get("away_team", "")
@@ -217,6 +230,9 @@ async def snapshot_opening_lines(cfg: SportConfig, db, api_key: str, days: int =
                 continue
 
             gid = game.id
+            if gid in seen_gids:
+                # Already ingested from another Odds API key (preseason vs regular).
+                continue
             game_started = game.date <= now
 
             bookmakers = event.get("bookmakers", [])
@@ -329,6 +345,7 @@ async def snapshot_opening_lines(cfg: SportConfig, db, api_key: str, days: int =
 
             if any_saved:
                 updated_game_ids.add(gid)
+                seen_gids.add(gid)
             else:
                 skipped.append(f"No valid sportsbook data for {gid}")
 
@@ -339,7 +356,7 @@ async def snapshot_opening_lines(cfg: SportConfig, db, api_key: str, days: int =
 
     await db.commit()
     logger.info(
-        f"[{sport}] per-book lines: {loaded} rows for {len(data)} games, "
+        f"[{sport}] per-book lines: {loaded} rows for {len(all_events)} events, "
         f"{len(updated_game_ids)} updated"
     )
     return {"loaded": loaded, "updated_game_ids": list(updated_game_ids), "skipped": skipped}

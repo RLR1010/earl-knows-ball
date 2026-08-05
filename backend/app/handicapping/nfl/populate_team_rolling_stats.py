@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS nfl.team_rolling_stats (
     game_id          INTEGER NOT NULL,
     team_abbr        VARCHAR(3) NOT NULL,
     season           INTEGER NOT NULL,
+    game_type        VARCHAR(10) NOT NULL DEFAULT 'REG',
     week             INTEGER NOT NULL,
     game_date        DATE,
     is_home          BOOLEAN,
@@ -192,7 +193,9 @@ CREATE INDEX IF NOT EXISTS idx_trs_game       ON nfl.team_rolling_stats (game_id
 
 
 POPULATE_SQL = """
-TRUNCATE nfl.team_rolling_stats;
+-- Clean only rows of THIS game_type so PRE and REG can coexist side-by-side.
+-- (A full TRUNCATE here would wipe preseason rows on every regular-season run.)
+DELETE FROM nfl.team_rolling_stats WHERE game_type = :game_type;
 
 -- Step 1: Per-game values by diffing cumulative totals from cumulative_game_stats.
 WITH per_game AS (
@@ -200,6 +203,7 @@ WITH per_game AS (
         c.game_id,
         c.team_abbr,
         c.season,
+        c.season_type AS game_type,
         c.week,
         g.date AS game_date,
         CASE WHEN t_home.abbreviation = c.team_abbr THEN true ELSE false END AS is_home,
@@ -265,8 +269,8 @@ WITH per_game AS (
     JOIN nfl.teams t_home ON t_home.id = g.home_team_id
     JOIN nfl.teams t_away ON t_away.id = g.away_team_id
     LEFT JOIN nfl.betting_lines_consolidated bl ON c.game_id = bl.game_id
-    WHERE g.game_type = 'REG'
-    WINDOW w AS (PARTITION BY c.season, c.team_abbr ORDER BY c.games_played
+    WHERE g.game_type = :game_type
+    WINDOW w AS (PARTITION BY c.season, c.season_type, c.team_abbr ORDER BY c.games_played
                  ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING)
 ),
 derived AS (
@@ -336,7 +340,7 @@ derived AS (
 -- Step 2: Rolling window averages (INCLUDING current game's data)
 rolling AS (
     SELECT
-        game_id, team_abbr, season, week, game_date, is_home, games_played,
+        game_id, team_abbr, season, game_type, week, game_date, is_home, games_played,
 
         -- Offensive rolling
         AVG(off_pts_pg)       FILTER (WHERE off_pts_pg IS NOT NULL) OVER w3  AS off_pts_r3,
@@ -484,17 +488,17 @@ rolling AS (
     FROM derived
     -- INCLUDING current game's data (data loader processes completed games)
     WINDOW
-        w3  AS (PARTITION BY season, team_abbr ORDER BY games_played
+        w3  AS (PARTITION BY season, game_type, team_abbr ORDER BY games_played
                 ROWS BETWEEN 2 PRECEDING AND CURRENT ROW),
-        w5  AS (PARTITION BY season, team_abbr ORDER BY games_played
+        w5  AS (PARTITION BY season, game_type, team_abbr ORDER BY games_played
                 ROWS BETWEEN 4 PRECEDING AND CURRENT ROW),
-        w10 AS (PARTITION BY season, team_abbr ORDER BY games_played
+        w10 AS (PARTITION BY season, game_type, team_abbr ORDER BY games_played
                 ROWS BETWEEN 9 PRECEDING AND CURRENT ROW)
 ),
 -- Step 3: Season-to-date cumulative stats (including current game)
 season_cumul AS (
     SELECT
-        game_id, team_abbr, season, games_played,
+        game_id, team_abbr, season, game_type, games_played,
         SUM(won::int) OVER w_season AS cum_wins,
         COUNT(*) OVER w_season - SUM(won::int) OVER w_season AS cum_losses,
         SUM(covered::int) FILTER (WHERE covered IS NOT NULL) OVER w_season AS cum_ats_wins,
@@ -502,25 +506,25 @@ season_cumul AS (
         SUM(over_result::int) FILTER (WHERE over_result IS NOT NULL) OVER w_season AS cum_ou_overs,
         SUM(CASE WHEN over_result IS NOT NULL THEN 1 ELSE 0 END) OVER w_season AS cum_ou_games
     FROM derived
-    WINDOW w_season AS (PARTITION BY season, team_abbr ORDER BY games_played
+    WINDOW w_season AS (PARTITION BY season, game_type, team_abbr ORDER BY games_played
                         ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
 ),
 -- Step 4: Streaks via gaps-and-islands (including current game)
 islands AS (
     SELECT *,
-        ROW_NUMBER() OVER (PARTITION BY season, team_abbr ORDER BY games_played)
-            - ROW_NUMBER() OVER (PARTITION BY season, team_abbr, won ORDER BY games_played) AS win_grp,
-        ROW_NUMBER() OVER (PARTITION BY season, team_abbr ORDER BY games_played)
-            - ROW_NUMBER() OVER (PARTITION BY season, team_abbr, covered ORDER BY games_played) AS cover_grp,
-        ROW_NUMBER() OVER (PARTITION BY season, team_abbr ORDER BY games_played)
-            - ROW_NUMBER() OVER (PARTITION BY season, team_abbr, over_result ORDER BY games_played) AS ou_grp
+        ROW_NUMBER() OVER (PARTITION BY season, game_type, team_abbr ORDER BY games_played)
+            - ROW_NUMBER() OVER (PARTITION BY season, game_type, team_abbr, won ORDER BY games_played) AS win_grp,
+        ROW_NUMBER() OVER (PARTITION BY season, game_type, team_abbr ORDER BY games_played)
+            - ROW_NUMBER() OVER (PARTITION BY season, game_type, team_abbr, covered ORDER BY games_played) AS cover_grp,
+        ROW_NUMBER() OVER (PARTITION BY season, game_type, team_abbr ORDER BY games_played)
+            - ROW_NUMBER() OVER (PARTITION BY season, game_type, team_abbr, over_result ORDER BY games_played) AS ou_grp
     FROM derived
 ),
 streak_counts AS (
     SELECT *,
-        ROW_NUMBER() OVER (PARTITION BY season, team_abbr, won, win_grp ORDER BY games_played) AS win_streak_n,
-        ROW_NUMBER() OVER (PARTITION BY season, team_abbr, covered, cover_grp ORDER BY games_played) AS cover_streak_n,
-        ROW_NUMBER() OVER (PARTITION BY season, team_abbr, over_result, ou_grp ORDER BY games_played) AS ou_streak_n
+        ROW_NUMBER() OVER (PARTITION BY season, game_type, team_abbr, won, win_grp ORDER BY games_played) AS win_streak_n,
+        ROW_NUMBER() OVER (PARTITION BY season, game_type, team_abbr, covered, cover_grp ORDER BY games_played) AS cover_streak_n,
+        ROW_NUMBER() OVER (PARTITION BY season, game_type, team_abbr, over_result, ou_grp ORDER BY games_played) AS ou_streak_n
     FROM islands
 ),
 streaks AS (
@@ -545,7 +549,7 @@ season_ranks AS (
     FROM rolling r
 )
 INSERT INTO nfl.team_rolling_stats (
-    game_id, team_abbr, season, week, game_date, is_home, games_played, feeds_into_game_id,
+    game_id, team_abbr, season, game_type, week, game_date, is_home, games_played, feeds_into_game_id,
     off_pts_r3, off_pts_r5, off_pts_r10,
     off_yds_r3, off_yds_r5, off_yds_r10,
     pass_yds_r3, pass_yds_r5, pass_yds_r10,
@@ -603,8 +607,8 @@ INSERT INTO nfl.team_rolling_stats (
     off_passing_rank, def_passing_rating_rank
 )
 SELECT
-    r.game_id, r.team_abbr, r.season, r.week, r.game_date, r.is_home, r.games_played,
-    LEAD(r.game_id) OVER (PARTITION BY r.team_abbr, r.season ORDER BY r.game_date) AS feeds_into_game_id,
+    r.game_id, r.team_abbr, r.season, r.game_type, r.week, r.game_date, r.is_home, r.games_played,
+    LEAD(r.game_id) OVER (PARTITION BY r.team_abbr, r.season, r.game_type ORDER BY r.game_date) AS feeds_into_game_id,
     r.off_pts_r3, r.off_pts_r5, r.off_pts_r10,
     r.off_yds_r3, r.off_yds_r5, r.off_yds_r10,
     r.pass_yds_r3, r.pass_yds_r5, r.pass_yds_r10,
@@ -691,11 +695,11 @@ def create_table() -> None:
     logger.info("nfl.team_rolling_stats table created/verified")
 
 
-def populate() -> None:
-    """Populate nfl.team_rolling_stats."""
+def populate(game_type: str = "REG") -> None:
+    """Populate nfl.team_rolling_stats for a given game_type (REG|PRE)."""
     with SessionLocal() as session:
-        logger.info("Populating nfl.team_rolling_stats...")
-        result = session.execute(text(POPULATE_SQL))
+        logger.info("Populating nfl.team_rolling_stats (game_type=%s)...", game_type)
+        result = session.execute(text(POPULATE_SQL), {"game_type": game_type})
         session.commit()
         if result.rowcount >= 0:
             logger.info("Populated %d rows", result.rowcount)
@@ -703,12 +707,17 @@ def populate() -> None:
             logger.info("Populate complete (rowcount unavailable)")
 
 
-def run() -> None:
+def run(game_type: str = "REG") -> None:
     """Create table and populate in one call."""
     create_table()
-    populate()
+    populate(game_type)
 
 
 if __name__ == "__main__":
+    import argparse
     logging.basicConfig(level=logging.INFO)
-    run()
+    _ap = argparse.ArgumentParser()
+    _ap.add_argument("--game-type", default="REG", choices=["REG", "PRE", "POST"],
+                     help="Which game_type to compute rolling stats for (default REG)")
+    _args = _ap.parse_args()
+    run(_args.game_type)

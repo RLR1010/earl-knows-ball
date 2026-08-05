@@ -975,14 +975,16 @@ class NFLDataLoader:
         db_url: Optional[str] = None,
         ats_only: bool = False,
         ou_only: bool = False,
+        game_type: Optional[str] = None,
     ):
         self.db_url: str = db_url or DEFAULT_DB_URL
         self.ats_only: bool = ats_only
         self.ou_only: bool = ou_only
+        self.game_type: Optional[str] = game_type
         self._engine: Any = None
         logger.info(
-            "NFLDataLoader initialized (ats_only=%s, ou_only=%s)",
-            ats_only, ou_only,
+            "NFLDataLoader initialized (ats_only=%s, ou_only=%s, game_type=%s)",
+            ats_only, ou_only, game_type,
         )
 
     @property
@@ -1034,6 +1036,7 @@ class NFLDataLoader:
         limit: Optional[int] = None,
         include_upcoming: bool = False,
         game_ids: Optional[List[int]] = None,
+        game_type: Optional[str] = None,
     ) -> str:
         """Construct the SQL query with optional filters.
 
@@ -1066,6 +1069,11 @@ class NFLDataLoader:
             ids_str = ", ".join(str(i) for i in game_ids)
             conditions.append(f"g.id IN ({ids_str})")
 
+        if game_type is None:
+            game_type = self.game_type
+        if game_type:
+            conditions.append(f"g.game_type = '{game_type}'")
+
         sql = GAME_QUERY.strip().rstrip(";")
 
         if conditions:
@@ -1090,6 +1098,7 @@ class NFLDataLoader:
         limit: Optional[int] = None,
         include_upcoming: bool = False,
         game_ids: Optional[List[int]] = None,
+        game_type: Optional[str] = None,
     ) -> pd.DataFrame:
         """Execute the game query and return raw DataFrame."""
         sql = self._build_query(
@@ -1098,6 +1107,7 @@ class NFLDataLoader:
             limit=limit,
             include_upcoming=include_upcoming,
             game_ids=game_ids,
+            game_type=game_type,
         )
         t0 = time.time()
         df = pd.read_sql(sql, self.engine)
@@ -1112,6 +1122,7 @@ class NFLDataLoader:
         limit: Optional[int] = None,
         include_upcoming: bool = False,
         game_ids: Optional[List[int]] = None,
+        game_type: Optional[str] = None,
     ) -> pd.DataFrame:
         """Load raw NFL game data from the database.
 
@@ -1158,6 +1169,7 @@ class NFLDataLoader:
         include_upcoming: bool = False,
         feature_names: Optional[List[str]] = None,
         game_ids: Optional[List[int]] = None,
+        game_type: Optional[str] = None,
         build_features_fn=None,
         **build_kwargs,
     ) -> pd.DataFrame:
@@ -1191,11 +1203,17 @@ class NFLDataLoader:
             limit=limit,
             include_upcoming=include_upcoming,
             game_ids=game_ids,
+            game_type=game_type,
         )
 
         if df.empty:
             logger.warning("No games returned — returning empty DataFrame")
             return df
+
+        # Resolve the stats gate: explicit game_type > constructor > REG default.
+        # Defaulting to REG means preseason rows (game_type='PRE') are NEVER mixed
+        # into regular-season inference/training unless the caller asks for PRE.
+        gt = game_type or self.game_type or "REG"
 
         # 2. Load team stats from nfl.team_rolling_stats (pre-computed, backward-looking)
         team_stats = None
@@ -1262,9 +1280,10 @@ class NFLDataLoader:
                 LEFT JOIN nfl.games g ON t.game_id = g.id
                 LEFT JOIN nfl.teams ht ON g.home_team_id = ht.id
                 LEFT JOIN nfl.teams at ON g.away_team_id = at.id
+                WHERE t.game_type = %(gt)s
                 ORDER BY t.season, t.week, t.team_abbr
             """
-            ts_df = pd.read_sql(CUM_SQL, self.engine)
+            ts_df = pd.read_sql(CUM_SQL, self.engine, params={"gt": gt})
             if not ts_df.empty:
                 team_stats = ts_df.dropna(subset=["feeds_into_game_id"])
                 team_stats["feeds_into_game_id"] = team_stats["feeds_into_game_id"].astype(int)
@@ -1485,6 +1504,7 @@ class NFLDataLoader:
                     WHERE qc.player_id = h_st.player_id
                       AND qc.season = s.year
                       AND qc.game_date < g.date::date
+                      AND qc.game_type = %(gt)s
                     ORDER BY qc.game_date DESC
                     LIMIT 1
                 ) h_cum ON true
@@ -1494,6 +1514,7 @@ class NFLDataLoader:
                     SELECT * FROM nfl.qb_cumulative_stats qc
                     WHERE qc.player_id = h_st.player_id
                       AND qc.season = s.year - 1
+                      AND qc.game_type = %(gt)s
                     ORDER BY qc.game_date DESC
                     LIMIT 1
                 ) h_cum_prev ON true
@@ -1502,6 +1523,7 @@ class NFLDataLoader:
                     WHERE qr.player_id = h_st.player_id
                       AND qr.season = s.year
                       AND qr.game_date < g.date::date
+                      AND qr.game_type = %(gt)s
                     ORDER BY qr.game_date DESC
                     LIMIT 1
                 ) h_roll ON true
@@ -1509,6 +1531,7 @@ class NFLDataLoader:
                     SELECT * FROM nfl.qb_rolling_stats qr
                     WHERE qr.player_id = h_st.player_id
                       AND qr.season = s.year - 1
+                      AND qr.game_type = %(gt)s
                     ORDER BY qr.game_date DESC
                     LIMIT 1
                 ) h_roll_prev ON true
@@ -1520,6 +1543,7 @@ class NFLDataLoader:
                     WHERE qc.player_id = a_st.player_id
                       AND qc.season = s.year
                       AND qc.game_date < g.date::date
+                      AND qc.game_type = %(gt)s
                     ORDER BY qc.game_date DESC
                     LIMIT 1
                 ) a_cum ON true
@@ -1528,6 +1552,7 @@ class NFLDataLoader:
                     SELECT * FROM nfl.qb_cumulative_stats qc
                     WHERE qc.player_id = a_st.player_id
                       AND qc.season = s.year - 1
+                      AND qc.game_type = %(gt)s
                     ORDER BY qc.game_date DESC
                     LIMIT 1
                 ) a_cum_prev ON true
@@ -1536,6 +1561,7 @@ class NFLDataLoader:
                     WHERE qr.player_id = a_st.player_id
                       AND qr.season = s.year
                       AND qr.game_date < g.date::date
+                      AND qr.game_type = %(gt)s
                     ORDER BY qr.game_date DESC
                     LIMIT 1
                 ) a_roll ON true
@@ -1543,13 +1569,14 @@ class NFLDataLoader:
                     SELECT * FROM nfl.qb_rolling_stats qr
                     WHERE qr.player_id = a_st.player_id
                       AND qr.season = s.year - 1
+                      AND qr.game_type = %(gt)s
                     ORDER BY qr.game_date DESC
                     LIMIT 1
                 ) a_roll_prev ON true
                 ORDER BY g.date
             """
             with self.engine.connect() as conn:
-                qb_stats = pd.read_sql_query(QB_SQL, conn)
+                qb_stats = pd.read_sql_query(QB_SQL, conn, params={"gt": gt})
             logger.info(
                 "Loaded %d QB stat rows (%d-%d)",
                 len(qb_stats),
@@ -1614,6 +1641,7 @@ class NFLDataLoader:
         self,
         game_ids: List[int],
         feature_names: Optional[List[str]] = None,
+        game_type: Optional[str] = None,
     ) -> pd.DataFrame:
         """Load features for specific games (inference without labels).
 
@@ -1623,11 +1651,16 @@ class NFLDataLoader:
             Primary keys of the games to load.
         feature_names :
             Feature columns to return (defaults to DB trainable features).
+        game_type :
+            If given (e.g. ``'PRE'``), only load features for games of that
+            type and pull matching game_type stats. Falls back to the
+            constructor-level game_type when ``None``.
         """
         return self.load_data(
             game_ids=game_ids,
             include_upcoming=True,
             feature_names=feature_names,
+            game_type=game_type,
         )
 
     def get_feature_columns(
@@ -1797,6 +1830,10 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
     df["game_date"] = pd.to_datetime(df["game_date"])
     df["home_last_game"] = pd.to_datetime(df["home_last_game"], errors="coerce")
     df["away_last_game"] = pd.to_datetime(df["away_last_game"], errors="coerce")
+    # Normalize tz-awareness (live games come in tz-aware; historical are naive)
+    for _col in ("game_date", "home_last_game", "away_last_game"):
+        if getattr(df[_col].dtype, "tz", None) is not None:
+            df[_col] = df[_col].dt.tz_localize(None)
     df["home_rest_days"] = (df["game_date"] - df["home_last_game"]).dt.days.fillna(7)
     df["away_rest_days"] = (df["game_date"] - df["away_last_game"]).dt.days.fillna(7)
     df["rest_diff"] = df["home_rest_days"] - df["away_rest_days"]
@@ -1872,7 +1909,7 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
         from sqlalchemy import text as _qt
         _pe = _ce(p_url)
         with _pe.connect() as _cx:
-            _db = _cx.execute(_qt("SELECT * FROM nfl.prior_team_stats")).fetchall()
+            _db = _cx.execute(_qt("SELECT * FROM nfl.prior_team_stats WHERE game_type = 'REG'")).fetchall()
         for _r in _db:
             prior_map[(_r.team_abbr, _r.season)] = {
                 "win_pct": _r.win_pct or 0.5,

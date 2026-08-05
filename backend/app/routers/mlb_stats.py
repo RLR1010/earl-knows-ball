@@ -1624,6 +1624,27 @@ async def mlb_game_boxscore(
     }
 
 
+@router.get("/mlb/games/{game_id}/prop-bets")
+async def mlb_game_prop_bets(
+    game_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """Return all player prop bets stored for an MLB game, or empty list if none."""
+    result = await db.execute(
+        text(
+            """
+            SELECT player_name, team_id, prop_type, line, odds,
+                   direction
+            FROM mlb.player_daily_props
+            WHERE game_id = :game_id AND bookmaker = 'DraftKings'
+            ORDER BY player_name, prop_type
+            """
+        ),
+        {"game_id": str(game_id)},
+    )
+    return [dict(r) for r in result.mappings().all()]
+
+
 # ── Injured List ────────────────────────────────────────────────────
 
 

@@ -401,6 +401,28 @@ async def get_game(game_id: int, db: AsyncSession = Depends(get_db)):
 
 
 
+@router.get("/games/{game_id}/prop-bets")
+async def get_nfl_prop_bets(
+    game_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """Return all player prop bets stored for an NFL game, or empty list if none."""
+    result = await db.execute(
+        text(
+            """
+            SELECT player_name, team_id, prop_type, line, odds,
+                   direction
+            FROM nfl.player_daily_props
+            WHERE game_id = :game_id AND bookmaker = 'DraftKings'
+            ORDER BY player_name, prop_type
+            """
+        ),
+        {"game_id": str(game_id)},
+    )
+    rows = result.mappings().all()
+    return [dict(r) for r in rows]
+
+
 @router.get("/handicapping/predictions/{game_id}")
 async def get_nfl_prediction(
     game_id: int,
