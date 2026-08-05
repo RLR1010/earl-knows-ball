@@ -258,6 +258,107 @@ TOOL_DEFINITIONS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_team_trends",
+            "description": "Get a team's recent performance trends (runs scored/allowed, team batting avg/OBP/SLG/OPS, team ERA/WHIP, win%) over the last 5, 10, 15, and 20 games from rolling stats.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "team_name": {"type": "string", "description": "Team name, abbreviation, or city"},
+                    "window": {"type": "string", "enum": ["5", "10", "15", "20", "all"], "description": "Trend window: '5', '10', '15', '20', or 'all' (default 'all')"},
+                },
+                "required": ["team_name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_team_comparison",
+            "description": "Compare two MLB teams side by side on team batting (AVG, OBP, SLG, OPS) and team pitching (ERA, WHIP, K/9, BB/9) using cumulative season stats.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "team_a": {"type": "string", "description": "First team name/abbreviation/city"},
+                    "team_b": {"type": "string", "description": "Second team name/abbreviation/city"},
+                },
+                "required": ["team_a", "team_b"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_team_pitching_rankings",
+            "description": "Rank all MLB pitching staffs by a category (team ERA, WHIP, K/9, BB/9) using cumulative season stats.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "category": {"type": "string", "enum": ["era", "whip", "k9", "bb9"], "description": "Ranking category"},
+                    "limit": {"type": "integer", "description": "Number of ranked teams to return (default 10)"},
+                },
+                "required": ["category"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_pitcher_form",
+            "description": "Get a starting pitcher's recent form: YTD and last 5/10/15/20-game ERA, WHIP, K/9, BB/9, K/BB, quality start rate, plus home/road and day/night ERA splits and rest days.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "player_name": {"type": "string", "description": "Pitcher name"},
+                },
+                "required": ["player_name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_team_season_futures",
+            "description": "Get a team's season futures odds: win the championship, make/miss the playoffs, regular season win total over/under.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "team_name": {"type": "string", "description": "Team name, abbreviation, or city"},
+                },
+                "required": ["team_name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_player_season_props",
+            "description": "Get a player's season-long award props (MVP, Cy Young, Rookie of the Year, etc.) with odds and implied probability.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "player_name": {"type": "string", "description": "Player name"},
+                },
+                "required": ["player_name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_game_weather",
+            "description": "Get the weather forecast for an MLB game (temperature, wind speed/direction, condition). Useful for assessing outdoor ballpark conditions.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "game_id": {"type": "integer", "description": "The MLB game ID"},
+                },
+                "required": ["game_id"],
+            },
+        },
+    },
 ]
 
 # ---------------------------------------------------------------------------
@@ -294,6 +395,21 @@ async def _resolve_current_season(db: AsyncSession) -> MLBSeason | None:
         select(MLBSeason).order_by(MLBSeason.year.desc()).limit(1)
     )
     return result.scalars().first()
+
+
+async def _resolve_props_season(db: AsyncSession) -> int:
+    """Most recent season for which futures/props exist (upcoming or current)."""
+    r = await db.execute(text(
+        "SELECT GREATEST(COALESCE(MAX(season_year), 0), 0) FROM mlb.team_props"
+    ))
+    val = r.scalar_one_or_none()
+    if not val:
+        r2 = await db.execute(text(
+            "SELECT GREATEST(COALESCE(MAX(season_year), 0), 0) FROM mlb.player_season_props"
+        ))
+        val = r2.scalar_one_or_none()
+    cur = await _resolve_current_season(db)
+    return int(val or (cur.year if cur else 0))
 
 
 # ---------------------------------------------------------------------------
@@ -1012,6 +1128,258 @@ async def _search_articles_tool(db: AsyncSession, args: dict) -> list[dict]:
 # Dispatcher
 # ---------------------------------------------------------------------------
 
+async def _get_team_trends(db: AsyncSession, args: dict) -> dict:
+    """Recent performance trends from mlb.team_rolling_stats."""
+    team = await _resolve_team(db, args.get("team_name", ""))
+    if not team:
+        return {"error": f"Team not found: {args.get('team_name', '')}"}
+    window = args.get("window", "all").strip().lower()
+
+    suffixes = ["5", "10", "15", "20"]
+    if window in suffixes:
+        suffixes = [window]
+
+    # Column sets per rolling window (schema is irregular across 5/10/15/20)
+    window_cols = {
+        "5": ["avg5", "obp5", "slg5", "ops5", "era5", "whip5", "k9_5", "bb9_5"],
+        "10": ["avg10", "obp10", "slg10", "ops10", "era10", "whip10", "k9_10", "bb9_10"],
+        "15": ["avg15", "slg15", "ops15", "era15", "whip15"],
+        "20": ["avg20", "slg20", "ops20", "era20", "whip20"],
+    }
+    selected = []
+    for sfx in suffixes:
+        selected.extend(window_cols[sfx])
+
+    sql = text(
+        f"""SELECT game_id, game_date, team_side, rf, ra, home_score, away_score, closing_ou,
+              win_pct, win_pct5, win_pct10, win_pct15, spread_pct, over_pct, over_pct5, over_pct10, over_pct15, {', '.join(selected)}
+        FROM mlb.team_rolling_stats
+        WHERE team_id = :tid
+        ORDER BY game_date DESC LIMIT 40"""
+    )
+    r = await db.execute(sql, {"tid": team.id})
+    rows = r.mappings().all()
+    if not rows:
+        return {"error": f"No rolling stats found for {team.name}"}
+
+    def f(v):
+        return round(float(v), 3) if v is not None else None
+
+    games = []
+    for row in rows[:8]:
+        g = {"date": str(row.game_date)[:10], "side": row.team_side, "runs_for": row.rf, "runs_against": row.ra}
+        for col in selected:
+            g[col] = f(row[col])
+        games.append(g)
+
+    latest = rows[0]
+    summary = {"win_pct": f(latest.win_pct), "win_pct_5": f(latest.win_pct5), "win_pct_10": f(latest.win_pct10), "over_pct_5": f(latest.over_pct5), "over_pct_10": f(latest.over_pct10)}
+    for sfx in suffixes:
+        for col in window_cols[sfx]:
+            summary[col] = f(latest[col])
+
+    return {"team": team.name, "abbreviation": team.abbreviation, "windows": suffixes, "latest_summary": summary, "recent_games": games}
+
+
+async def _get_team_comparison(db: AsyncSession, args: dict) -> dict:
+    """Side-by-side team comparison from mlb.cumulative_game_stats."""
+    a = await _resolve_team(db, args.get("team_a", ""))
+    b = await _resolve_team(db, args.get("team_b", ""))
+    if not a or not b:
+        missing = [args.get("team_a"), args.get("team_b")] if not a else [args.get("team_b")]
+        return {"error": f"Team(s) not found: {', '.join(str(m) for m in missing)}"}
+
+    sql = text(
+        """SELECT game_id, bat_at_bats, bat_hits, bat_runs, bat_home_runs, bat_walks, bat_strikeouts,
+              bat_total_bases, bat_plate_appearances, cum_avg, cum_obp, cum_slg, cum_ops, cum_babip, cum_k_rate, cum_bb_rate,
+              pitch_ip, pitch_er, pitch_strikeouts, pitch_batters_faced, cum_era, cum_whip, cum_k9, cum_bb9
+        FROM mlb.cumulative_game_stats
+        WHERE team_id IN (:a, :b)
+        ORDER BY game_timestamp DESC LIMIT 4"""
+    )
+    r = await db.execute(sql, {"a": a.id, "b": b.id})
+    rows = r.mappings().all()
+    if not rows:
+        return {"error": f"Cumulative stats not found for {a.name} vs {b.name}"}
+
+    def f(v):
+        return round(float(v), 3) if v is not None else None
+
+    la = await db.execute(text(
+        "SELECT * FROM mlb.cumulative_game_stats WHERE team_id = :a ORDER BY game_timestamp DESC LIMIT 1"), {"a": a.id})
+    lb = await db.execute(text(
+        "SELECT * FROM mlb.cumulative_game_stats WHERE team_id = :b ORDER BY game_timestamp DESC LIMIT 1"), {"b": b.id})
+    da, db_ = la.mappings().first(), lb.mappings().first()
+    if not da or not db_:
+        return {"error": f"Cumulative stats not found for {a.name} vs {b.name}"}
+
+    batting = [("cum_avg", "Batting AVG"), ("cum_obp", "Batting OBP"), ("cum_slg", "Batting SLG"), ("cum_ops", "Batting OPS"), ("cum_k_rate", "K Rate"), ("cum_bb_rate", "BB Rate")]
+    pitching = [("cum_era", "Team ERA"), ("cum_whip", "Team WHIP"), ("cum_k9", "Team K/9"), ("cum_bb9", "Team BB/9")]
+    result = {"compare": {}}
+    for col, label in batting + pitching:
+        result["compare"][label] = {
+            a.abbreviation: f(da[col]),
+            b.abbreviation: f(db_[col]),
+        }
+    result["team_a"] = f"{a.name} ({a.abbreviation})"
+    result["team_b"] = f"{b.name} ({b.abbreviation})"
+    return result
+
+
+async def _get_team_pitching_rankings(db: AsyncSession, args: dict) -> dict:
+    """Rank MLB pitching staffs by ERA/WHIP/K9/BB9 from cumulative_game_stats."""
+    cat = args.get("category", "era")
+    limit = min(args.get("limit", 10), 30)
+    col = {"era": "cum_era", "whip": "cum_whip", "k9": "cum_k9", "bb9": "cum_bb9"}.get(cat)
+    if not col:
+        return {"error": f"Unknown category: {cat}. Use era, whip, k9, or bb9."}
+    order = "ASC" if cat in ("era", "whip", "bb9") else "DESC"
+
+    # Fetch the latest cumulative row per team, then rank
+    sql = text(
+        f"""SELECT team_id, {col} AS val FROM (
+            SELECT team_id, {col}, ROW_NUMBER() OVER (PARTITION BY team_id ORDER BY game_timestamp DESC) rn
+            FROM mlb.cumulative_game_stats
+        ) t WHERE rn = 1
+        ORDER BY val {order} NULLS LAST
+        LIMIT :limit"""
+    )
+    r = await db.execute(sql, {"limit": limit})
+    rows = r.mappings().all()
+    ranking = []
+    for idx, row in enumerate(rows, 1):
+        team = await db.execute(text("SELECT name, abbreviation FROM mlb.teams WHERE id = :tid"), {"tid": row.team_id})
+        t = team.mappings().first()
+        ranking.append({"rank": idx, "team": (t.name if t else "?"), "abbreviation": (t.abbreviation if t else "?"), "value": round(float(row.val), 3) if row.val is not None else None})
+    return {"category": cat, "ranking": ranking}
+
+
+async def _get_pitcher_form(db: AsyncSession, args: dict) -> dict:
+    """Pitcher recent form from mlb.pitcher_rolling_stats."""
+    name = args.get("player_name", "").strip()
+    if not name:
+        return {"error": "player_name required"}
+    player = (await db.execute(select(MLBPlayer).where(MLBPlayer.name.ilike(f"%{name}%")).limit(1))).scalars().first()
+    if not player:
+        return {"error": f"Player not found: {name}"}
+
+    # pitcher_rolling_stats.player_id stores the MLB StatsAPI id (mlb_id), not mlb.players.id
+    pid = player.mlb_id or player.id
+    sql = text(
+        """SELECT * FROM mlb.pitcher_rolling_stats
+        WHERE player_id = :pid
+        ORDER BY game_date DESC LIMIT 1"""
+    )
+    r = await db.execute(sql, {"pid": pid})
+    row = r.mappings().first()
+    if not row:
+        return {"error": f"No pitching stats found for {player.name}"}
+
+    def f(v):
+        return round(float(v), 3) if v is not None else None
+
+    def win(w):
+        return {"era": f(row[f"era_{w}"]), "whip": f(row[f"whip_{w}"]), "k9": f(row[f"k9_{w}"]), "bb9": f(row[f"bb9_{w}"]), "kbb": f(row.get(f"kbb_{w}"))}
+
+    return {
+        "player": player.name,
+        "team_abbr": row.team_abbr,
+        "is_starter": bool(row.is_starter),
+        "rest_days": row.rest_days,
+        "latest_start": str(row.game_date)[:10],
+        "this_start": {"ip": row.ip_outs / 3 if row.ip_outs else None, "er": row.er, "k": row.strikeouts, "era": f(row.era_this_start), "whip": f(row.whip_this_start), "quality_start": bool(row.is_quality_start)},
+        "ytd": {"era": f(row.era_ytd), "whip": f(row.whip_ytd), "k9": f(row.k9_ytd), "bb9": f(row.bb9_ytd), "kbb": f(row.kbb_ytd), "fip": f(row.fip_ytd), "qs_rate": f(row.qs_rate_ytd), "starts": row.starts_ytd},
+        "last_5": win(5), "last_10": win(10), "last_15": win(15), "last_20": win(20),
+        "splits": {"home_era": f(row.home_era_ytd), "road_era": f(row.road_era_ytd), "day_era": f(row.day_era_ytd), "night_era": f(row.night_era_ytd)},
+    }
+
+
+async def _get_team_season_futures(db: AsyncSession, args: dict) -> dict:
+    """Team season futures odds from mlb.team_props."""
+    team = await _resolve_team(db, args.get("team_name", ""))
+    if not team:
+        return {"error": f"Team not found: {args.get('team_name', '')}"}
+    season = await _resolve_props_season(db)
+
+    sql = text(
+        """SELECT * FROM mlb.team_props
+        WHERE team_id = :tid AND season_year = :season
+        ORDER BY scraped_at DESC LIMIT 20"""
+    )
+    r = await db.execute(sql, {"tid": team.id, "season": season})
+    rows = r.mappings().all()
+    if not rows:
+        return {"error": f"No season futures found for {team.name}"}
+
+    def f(v):
+        return round(float(v), 1) if v is not None else None
+
+    by_book = {}
+    for row in rows:
+        bm = row.bookmaker or "?"
+        if bm not in by_book:
+            by_book[bm] = {"bookmaker": bm, "championship_odds": f(row.championship_odds), "make_playoffs_odds": f(row.make_playoffs_odds), "miss_playoffs_odds": f(row.miss_playoffs_odds), "win_total": f(row.win_total), "win_total_over_odds": f(row.win_total_over_odds), "win_total_under_odds": f(row.win_total_under_odds)}
+    return {"team": team.name, "abbreviation": team.abbreviation, "season": season, "futures": list(by_book.values())}
+
+
+async def _get_player_season_props(db: AsyncSession, args: dict) -> dict:
+    """Player season award props from mlb.player_season_props."""
+    name = args.get("player_name", "").strip()
+    if not name:
+        return {"error": "player_name required"}
+    season = await _resolve_props_season(db)
+
+    sql = text(
+        """SELECT * FROM mlb.player_season_props
+        WHERE season_year = :season AND LOWER(player_name) ILIKE :name
+        ORDER BY scraped_at DESC"""
+    )
+    r = await db.execute(sql, {"season": season, "name": f"%{name.lower()}%"})
+    rows = r.mappings().all()
+    if not rows:
+        return {"error": f"No season props found for player '{name}'"}
+
+    seen = {}
+    for row in rows:
+        key = (row.prop_type, row.bookmaker)
+        if key not in seen:
+            seen[key] = row
+    props = []
+    for key, row in seen.items():
+        props.append({
+            "prop_type": row.prop_type,
+            "bookmaker": row.bookmaker,
+            "odds": row.odds,
+            "implied_probability": round(float(row.implied_probability) * 100, 1) if row.implied_probability is not None else None,
+        })
+    return {"player_name": name, "season": season, "props": props}
+
+
+async def _get_game_weather(db: AsyncSession, args: dict) -> dict:
+    """Weather forecast for an MLB game from mlb.weather_forecasts."""
+    gid = args.get("game_id")
+    if not gid:
+        return {"error": "game_id required"}
+    sql = text(
+        """SELECT * FROM mlb.weather_forecasts
+        WHERE game_id = :gid
+        ORDER BY forecast_observed_at DESC LIMIT 1"""
+    )
+    r = await db.execute(sql, {"gid": gid})
+    row = r.mappings().first()
+    if not row:
+        return {"error": f"No weather forecast found for game {gid}"}
+    return {
+        "game_id": gid,
+        "temperature_f": row.temperature,
+        "wind_speed_mph": row.wind_speed,
+        "wind_direction": row.wind_direction_cardinal,
+        "condition": row.weather_condition,
+        "observed_at": str(row.forecast_observed_at)[:16],
+        "source": row.source,
+    }
+
+
 _TOOL_MAP = {
     "search_teams": _search_teams,
     "get_team_stats": _get_team_stats,
@@ -1026,6 +1394,13 @@ _TOOL_MAP = {
     "get_game_prediction": _get_game_prediction,
     "get_team_splits": _get_team_splits,
     "search_articles": _search_articles_tool,
+    "get_team_trends": _get_team_trends,
+    "get_team_comparison": _get_team_comparison,
+    "get_team_pitching_rankings": _get_team_pitching_rankings,
+    "get_pitcher_form": _get_pitcher_form,
+    "get_team_season_futures": _get_team_season_futures,
+    "get_player_season_props": _get_player_season_props,
+    "get_game_weather": _get_game_weather,
 }
 
 
