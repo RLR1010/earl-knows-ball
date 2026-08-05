@@ -15,7 +15,6 @@ from app.models.nba import (
     NBAPlayer,
     NBAPlayerSeasonStats,
     NBAPlayerGameStats,
-    NBADfsSalary,
 )
 
 logger = logging.getLogger("earl.chat_tools.nba")
@@ -44,6 +43,30 @@ async def _resolve_season_id(db: AsyncSession, year: int | None = None) -> int:
     if val is None:
         raise ValueError(f"No NBA season found for year {year}")
     return val
+
+
+async def _resolve_data_season_id(db: AsyncSession, table: str) -> int:
+    """Return the most recent season_id that actually has rows in the given nba table."""
+    r = await db.execute(text(f"SELECT MAX(season_id) FROM nba.{table}"))
+    sid = r.scalar_one_or_none()
+    if sid is None:
+        return await _resolve_season_id(db, None)
+    return int(sid)
+
+
+async def _resolve_props_season(db: AsyncSession) -> int:
+    """Most recent season for which futures/props exist (upcoming or current)."""
+    r = await db.execute(text(
+        "SELECT GREATEST(COALESCE(MAX(season_year), 0), 0) FROM nba.team_props"
+    ))
+    val = r.scalar_one_or_none()
+    if not val:
+        r2 = await db.execute(text(
+            "SELECT GREATEST(COALESCE(MAX(season_year), 0), 0) FROM nba.player_season_props"
+        ))
+        val = r2.scalar_one_or_none()
+    cur = await _resolve_season_year(db)
+    return int(val or cur)
 
 
 async def _resolve_team_id(db: AsyncSession, name_or_abbr: str) -> int | None:
@@ -193,24 +216,9 @@ TOOL_DEFINITIONS = [
         },
     },
     {
-        "type": "function",
-        "function": {
-            "name": "get_dfs_salaries",
-            "description": "Get DK/FD DFS salaries for NBA players on a given team for a given date.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "team_name": {"type": "string", "description": "Team name or abbreviation"},
-                    "game_date": {"type": "string", "description": "Date YYYY-MM-DD (defaults to today)"},
-                },
-                "required": ["team_name"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_game_prediction",
+    "type": "function",
+    "function": {
+        "name": "get_game_prediction",
             "description": "Get Earl's model prediction for an NBA game: ATS pick, O/U pick, moneyline with confidence.",
             "parameters": {
                 "type": "object",
@@ -251,6 +259,81 @@ TOOL_DEFINITIONS = [
                     "limit": {"type": "integer", "description": "Games to return (default 10, max 20)"},
                 },
                 "required": ["team_name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_team_trends",
+            "description": "Get an NBA team's recent performance trends: net rating, offensive/defensive rating, effective FG%, pace, ATS and over/under performance over the last 5 and 10 games, plus recent-weighted and adjusted metrics.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "team_name": {"type": "string", "description": "Team name or abbreviation"},
+                    "season_year": {"type": "integer", "description": "Season year (defaults to current)"},
+                },
+                "required": ["team_name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_team_comparison",
+            "description": "Compare two NBA teams side by side: points scored/allowed, field goal/3-point percentages, rebounds, offensive/defensive/net rating, and pace.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "team_a": {"type": "string", "description": "First team name or abbreviation"},
+                    "team_b": {"type": "string", "description": "Second team name or abbreviation"},
+                    "season_year": {"type": "integer", "description": "Season year (defaults to current)"},
+                },
+                "required": ["team_a", "team_b"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_team_rankings",
+            "description": "Rank all NBA teams by a category: net rating, offensive rating, defensive rating, points per game, or pace.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "category": {"type": "string", "enum": ["net", "ortg", "drtg", "ppg", "pace"], "description": "Ranking category"},
+                    "season_year": {"type": "integer", "description": "Season year (defaults to current)"},
+                    "limit": {"type": "integer", "description": "Number of ranked teams to return (default 10)"},
+                },
+                "required": ["category"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_team_season_futures",
+            "description": "Get an NBA team's season futures: odds to win the championship, make/miss the playoffs, and regular season win total over/under.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "team_name": {"type": "string", "description": "Team name or abbreviation"},
+                },
+                "required": ["team_name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_player_season_props",
+            "description": "Get an NBA player's season-long awards props (MVP, Rookie of the Year, etc.) with odds and implied probability.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "player_name": {"type": "string", "description": "Player name"},
+                },
+                "required": ["player_name"],
             },
         },
     },
@@ -565,28 +648,6 @@ async def _get_player_game_logs(db: AsyncSession, args: dict) -> dict:
     return {"player": player.name, "season_year": year, "game_logs": games}
 
 
-async def _get_dfs_salaries(db: AsyncSession, args: dict) -> dict:
-    tid = await _resolve_team_id(db, args.get("team_name", ""))
-    if not tid:
-        return {"error": f"Team not found: {args.get('team_name', '')}"}
-    game_date_str = args.get("game_date")
-    game_date = date.fromisoformat(game_date_str) if game_date_str else _today_chicago()
-
-    stmt = select(NBADfsSalary).where(
-        NBADfsSalary.team_id == tid,
-        NBADfsSalary.game_date == game_date,
-    ).order_by(NBADfsSalary.salary.desc())
-    r = await db.execute(stmt)
-    salaries = []
-    for s in r.scalars():
-        salaries.append({
-            "player_id": s.player_id,
-            "salary": s.salary,
-            "site": s.site,
-            "position": s.position,
-        })
-    return {"game_date": str(game_date), "salaries": salaries}
-
 
 async def _get_game_prediction(db: AsyncSession, args: dict) -> dict:
     gid = args["game_id"]
@@ -715,6 +776,187 @@ async def _get_team_schedule(db: AsyncSession, args: dict) -> dict:
 
 # ─── Handler Map ─────────────────────────────────────────────────────────────
 
+async def _get_team_trends(db: AsyncSession, args: dict) -> dict:
+    """Recent performance trends from nba.team_rolling_stats."""
+    tid = await _resolve_team_id(db, args.get("team_name", ""))
+    if not tid:
+        return {"error": f"Team not found: {args.get('team_name', '')}"}
+    if args.get("season_year"):
+        season_id = await _resolve_season_id(db, args.get("season_year"))
+    else:
+        season_id = await _resolve_data_season_id(db, "team_rolling_stats")
+
+    # Fetch latest available rolling row per team (order by game_date desc)
+    sql = text(
+        """SELECT * FROM nba.team_rolling_stats
+        WHERE team_id = :tid AND season_id = :sid
+        ORDER BY game_date DESC LIMIT 1"""
+    )
+    r = await db.execute(sql, {"tid": tid, "sid": season_id})
+    row = r.mappings().first()
+    if not row:
+        return {"error": f"No rolling stats found for team id {tid} in season {args.get('season_year')}"}
+
+    def f(v):
+        return round(float(v), 1) if v is not None else None
+
+    return {
+        "latest_game": str(row.game_date)[:10],
+        "last_5": {"wins": row.wins_5, "net_rating": f(row.net_rtg_r5), "ortg": f(row.ortg_r5), "drtg": f(row.drtg_r5), "efg_pct": f(row.efg_r5), "pace": f(row.pace_r5), "ast_ratio": f(row.ast_ratio_r5), "ats_margin": f(row.ats_margin_5), "ats_wins": row.ats_wins_5, "ou_over_wins": row.ou_wins_5, "ou_margin": f(row.ou_margin_5)},
+        "last_10": {"wins": row.wins_10, "net_rating": f(row.net_rtg_r10), "ortg": f(row.ortg_r10), "drtg": f(row.drtg_r10), "efg_pct": f(row.efg_r10), "pace": f(row.pace_r10), "ats_margin": f(row.ats_margin_10), "ats_wins": row.ats_wins_10, "ou_over_wins": row.ou_wins_10},
+        "recent_weighted_3": {"ppg": f(row.rw3_ppg), "net_rating": f(row.rw3_net_rtg), "drtg": f(row.rw3_drtg), "efg_pct": f(row.rw3_efg_pct)},
+        "recent_weighted_5": {"ppg": f(row.rw5_ppg), "net_rating": f(row.rw5_net_rtg), "drtg": f(row.rw5_drtg), "efg_pct": f(row.rw5_efg_pct)},
+        "year_adjusted": {"off_rating": f(row.adj_off_10), "def_rating": f(row.adj_def_10)},
+        "consistency": {"net_rating_cv": f(row.cv10_net_rtg), "ppg_cv10": f(row.cv10_ppg), "ppg_cv20": f(row.cv20_ppg), "recency_net_rating": f(row.recency_net_rtg), "recency_ppg": f(row.recency_ppg)},
+        "star_ppg_5": f(row.star_ppg_5),
+    }
+
+
+async def _get_team_comparison(db: AsyncSession, args: dict) -> dict:
+    """Side-by-side team comparison from nba.cumulative_game_stats."""
+    ta = await _resolve_team_id(db, args.get("team_a", ""))
+    tb = await _resolve_team_id(db, args.get("team_b", ""))
+    if not ta or not tb:
+        missing = [args.get("team_a"), args.get("team_b")] if not ta else [args.get("team_b")]
+        return {"error": f"Team(s) not found: {', '.join(str(m) for m in missing)}"}
+    if args.get("season_year"):
+        season_id = await _resolve_season_id(db, args.get("season_year"))
+    else:
+        season_id = await _resolve_data_season_id(db, "cumulative_game_stats")
+
+    sql = text(
+        """SELECT team_id, game_id, game_date,
+              cum_ppg, cum_oppg, cum_margin_pg, cum_fg_pct, cum_fg3_pct, cum_ft_pct,
+              cum_reb_pg, cum_ast_pg, cum_stl_pg, cum_blk_pg, cum_tov_pg,
+              cum_ortg, cum_drtg, cum_net_ortg, cum_pace, cum_win_pct
+        FROM nba.cumulative_game_stats
+        WHERE team_id IN (:a, :b) AND season_id = :sid
+        ORDER BY game_date DESC LIMIT 4"""
+    )
+    r = await db.execute(sql, {"a": ta, "b": tb, "sid": season_id})
+    rows = r.mappings().all()
+    if not rows:
+        return {"error": f"Cumulative stats not found for comparison in season {args.get('season_year')}"}
+
+    def f(v):
+        return round(float(v), 3) if v is not None else None
+
+    # Latest per team
+    la = (await db.execute(text("SELECT * FROM nba.cumulative_game_stats WHERE team_id = :t AND season_id = :s ORDER BY game_date DESC LIMIT 1"), {"t": ta, "s": season_id})).mappings().first()
+    lb = (await db.execute(text("SELECT * FROM nba.cumulative_game_stats WHERE team_id = :t AND season_id = :s ORDER BY game_date DESC LIMIT 1"), {"t": tb, "s": season_id})).mappings().first()
+    if not la or not lb:
+        return {"error": "Cumulative stats not found"}
+
+    name_a = (await _team_abbr(db, ta))
+    name_b = (await _team_abbr(db, tb))
+    metrics = [
+        ("cum_ppg", "PPG"), ("cum_oppg", "OPPG"), ("cum_margin_pg", "Margin"),
+        ("cum_fg_pct", "FG%"), ("cum_fg3_pct", "3P%"), ("cum_ft_pct", "FT%"),
+        ("cum_reb_pg", "Rebs"), ("cum_ast_pg", "Assists"), ("cum_stl_pg", "Steals"),
+        ("cum_blk_pg", "Blocks"), ("cum_tov_pg", "TOs"),
+        ("cum_ortg", "ORTG"), ("cum_drtg", "DRTG"), ("cum_net_ortg", "Net Rtg"),
+        ("cum_pace", "Pace"), ("cum_win_pct", "Win %"),
+    ]
+    result = {"compare": {}, "team_a": name_a, "team_b": name_b}
+    for col, label in metrics:
+        result["compare"][label] = {name_a: f(la[col]), name_b: f(lb[col])}
+    return result
+
+
+async def _team_abbr(db: AsyncSession, tid: int) -> str:
+    r = await db.execute(text("SELECT abbreviation FROM nba.teams WHERE id = :t"), {"t": tid})
+    return r.scalar_one_or_none() or str(tid)
+
+
+async def _get_team_rankings(db: AsyncSession, args: dict) -> dict:
+    """Rank NBA teams by category from nba.cumulative_game_stats."""
+    cat = args.get("category", "net")
+    if args.get("season_year"):
+        season_id = await _resolve_season_id(db, args.get("season_year"))
+    else:
+        season_id = await _resolve_data_season_id(db, "cumulative_game_stats")
+    limit = min(args.get("limit", 10), 30)
+    col = {"net": "cum_net_ortg", "ortg": "cum_ortg", "drtg": "cum_drtg", "ppg": "cum_ppg", "pace": "cum_pace"}.get(cat)
+    if not col:
+        return {"error": f"Unknown category: {cat}. Use net, ortg, drtg, ppg, or pace."}
+    order = "DESC" if cat != "drtg" else "ASC"
+
+    sql = text(
+        f"""SELECT team_id, {col} AS val FROM (
+            SELECT team_id, {col}, ROW_NUMBER() OVER (PARTITION BY team_id ORDER BY game_date DESC) rn
+            FROM nba.cumulative_game_stats WHERE season_id = :sid
+        ) t WHERE rn = 1 ORDER BY val {order} NULLS LAST LIMIT :limit"""
+    )
+    r = await db.execute(sql, {"sid": season_id, "limit": limit})
+    rows = r.mappings().all()
+    ranking = []
+    for idx, row in enumerate(rows, 1):
+        abbr = await _team_abbr(db, row.team_id)
+        ranking.append({"rank": idx, "team": abbr, "value": round(float(row.val), 1) if row.val is not None else None})
+    return {"category": cat, "season_year": args.get("season_year"), "ranking": ranking}
+
+
+async def _get_team_season_futures(db: AsyncSession, args: dict) -> dict:
+    """Team season futures odds from nba.team_props."""
+    tid = await _resolve_team_id(db, args.get("team_name", ""))
+    if not tid:
+        return {"error": f"Team not found: {args.get('team_name', '')}"}
+    season = await _resolve_props_season(db)
+
+    sql = text(
+        """SELECT * FROM nba.team_props
+        WHERE team_id = :tid AND season_year = :season
+        ORDER BY scraped_at DESC LIMIT 20"""
+    )
+    r = await db.execute(sql, {"tid": tid, "season": season})
+    rows = r.mappings().all()
+    if not rows:
+        return {"error": f"No season futures found for team id {tid}"}
+
+    def f(v):
+        return round(float(v), 1) if v is not None else None
+
+    by_book = {}
+    for row in rows:
+        bm = row.bookmaker or "?"
+        if bm not in by_book:
+            by_book[bm] = {"bookmaker": bm, "championship_odds": f(row.championship_odds), "make_playoffs_odds": f(row.make_playoffs_odds), "miss_playoffs_odds": f(row.miss_playoffs_odds), "win_total": f(row.win_total), "win_total_over_odds": f(row.win_total_over_odds), "win_total_under_odds": f(row.win_total_under_odds)}
+    return {"season": season, "futures": list(by_book.values())}
+
+
+async def _get_player_season_props(db: AsyncSession, args: dict) -> dict:
+    """Player season award props from nba.player_season_props."""
+    name = args.get("player_name", "").strip()
+    if not name:
+        return {"error": "player_name required"}
+    season = await _resolve_props_season(db)
+
+    sql = text(
+        """SELECT * FROM nba.player_season_props
+        WHERE season_year = :season AND LOWER(player_name) ILIKE :name
+        ORDER BY scraped_at DESC"""
+    )
+    r = await db.execute(sql, {"season": season, "name": f"%{name.lower()}%"})
+    rows = r.mappings().all()
+    if not rows:
+        return {"error": f"No season props found for player '{name}'"}
+
+    seen = {}
+    for row in rows:
+        key = (row.prop_type, row.bookmaker)
+        if key not in seen:
+            seen[key] = row
+    props = []
+    for key, row in seen.items():
+        props.append({
+            "prop_type": row.prop_type,
+            "bookmaker": row.bookmaker,
+            "odds": row.odds,
+            "implied_probability": round(float(row.implied_probability) * 100, 1) if row.implied_probability is not None else None,
+        })
+    return {"player_name": name, "season": season, "props": props}
+
+
 _TOOL_HANDLERS = {
     "get_team_info": _get_team_info,
     "get_team_stats": _get_team_stats,
@@ -724,10 +966,14 @@ _TOOL_HANDLERS = {
     "get_head_to_head": _get_head_to_head,
     "get_player_stats": _get_player_stats,
     "get_player_game_logs": _get_player_game_logs,
-    "get_dfs_salaries": _get_dfs_salaries,
     "get_game_prediction": _get_game_prediction,
     "search_articles": _search_articles,
     "get_team_schedule": _get_team_schedule,
+    "get_team_trends": _get_team_trends,
+    "get_team_comparison": _get_team_comparison,
+    "get_team_rankings": _get_team_rankings,
+    "get_team_season_futures": _get_team_season_futures,
+    "get_player_season_props": _get_player_season_props,
 }
 
 
