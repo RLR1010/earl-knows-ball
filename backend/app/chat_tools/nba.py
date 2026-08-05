@@ -203,7 +203,7 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "get_player_game_logs",
-            "description": "Get game-by-game stats for an NBA player over a season: points, rebounds, assists, fantasy. Great for seeing streaks and trends.",
+            "description": "Get game-by-game stats for an NBA player over a season: points, rebounds, assists, steals, blocks. Great for seeing streaks and trends.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -643,7 +643,6 @@ async def _get_player_game_logs(db: AsyncSession, args: dict) -> dict:
             "three_att": row.three_att,
             "ft_made": row.ft_made,
             "ft_att": row.ft_att,
-            "fantasy_points": row.fantasy_points,
         })
     return {"player": player.name, "season_year": year, "game_logs": games}
 

@@ -266,7 +266,7 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "get_player_stats",
-            "description": "Get season or weekly stats for an NFL player by name: passing, rushing, receiving, fantasy points.",
+            "description": "Get season or weekly stats for an NFL player by name: passing, rushing, receiving.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -782,8 +782,7 @@ async def _get_player_stats(db: AsyncSession, args: dict) -> dict:
             COALESCE(SUM(rush_tds), 0) AS rush_td,
             COALESCE(SUM(receptions), 0) AS rec,
             COALESCE(SUM(receiving_yards), 0) AS rec_yds,
-            COALESCE(SUM(receiving_tds), 0) AS rec_td,
-            COALESCE(SUM(fantasy_points_ppr), 0) AS fantasy_ppr
+            COALESCE(SUM(receiving_tds), 0) AS rec_td
         FROM nfl.player_weekly_stats
         WHERE player_id = :pid AND season_id = :sid
     """)
@@ -800,7 +799,6 @@ async def _get_player_stats(db: AsyncSession, args: dict) -> dict:
         "passing": {"yards": s.pass_yds, "tds": s.pass_td, "ints": s.ints},
         "rushing": {"attempts": s.rush_att, "yards": s.rush_yds, "tds": s.rush_td},
         "receiving": {"receptions": s.rec, "yards": s.rec_yds, "tds": s.rec_td},
-        "fantasy_ppr": round(float(s.fantasy_ppr), 1),
     }
 
 
@@ -850,7 +848,6 @@ async def _get_player_weekly_log(db: AsyncSession, args: dict) -> dict:
             "targets": row.targets,
             "rec_yds": row.receiving_yards,
             "rec_td": row.receiving_tds,
-            "fantasy_ppr": row.fantasy_points_ppr,
         })
     return {"player": player.name, "season_year": year, "game_logs": games}
 
