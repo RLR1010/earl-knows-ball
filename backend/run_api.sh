@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
+# Generic Earl backend launcher for Granian.
+# Honors EARL_ROLE (default "all" = current dev-box behavior: everything).
+#   EARL_ROLE=api     -> user-facing routers only (v1/mobile, chat, games, ...)
+#   EARL_ROLE=compute -> ingest/stats/writeups/admin + the task scheduler
+#   EARL_ROLE=all     -> everything + scheduler (dev box)
 cd "$(dirname "$0")"
+export EARL_ROLE="${EARL_ROLE:-all}"
 VIRTUAL_ENV_DIR="$(dirname "$0")/../venv"
 if [ -f "$VIRTUAL_ENV_DIR/bin/activate" ]; then
     source "$VIRTUAL_ENV_DIR/bin/activate"
