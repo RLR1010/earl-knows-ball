@@ -18,6 +18,7 @@ const NAV_GROUPS = [
     label: "Site Content",
     items: [
       { label: "Game Previews", path: "/admin/content" },
+      { label: "Original Articles", path: "/admin/original-articles" },
       { label: "Articles", path: "/admin/articles" },
       { label: "RSS Feeds", path: "/admin/articles/rss" },
     ],

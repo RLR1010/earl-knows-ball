@@ -321,13 +321,12 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "get_team_season_futures",
-            "description": "Get a team's season futures odds: win the championship, make/miss the playoffs, regular season win total over/under.",
+            "description": "Season-long futures odds. OMIT team_name to get ALL teams ranked by championship odds from favorite to biggest underdog (lowest number = best odds = favorite, e.g. +350 beats +1200). Provide team_name to get a single team's full futures (championship, make/miss playoffs, win total over/under).",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "team_name": {"type": "string", "description": "Team name, abbreviation, or city"},
+                    "team_name": {"type": "string", "description": "Team name, abbreviation, or city (optional). Omit to rank all teams by championship odds, favorites first."},
                 },
-                "required": ["team_name"],
             },
         },
     },
@@ -1295,11 +1294,52 @@ async def _get_pitcher_form(db: AsyncSession, args: dict) -> dict:
 
 
 async def _get_team_season_futures(db: AsyncSession, args: dict) -> dict:
-    """Team season futures odds from mlb.team_props."""
+    """Team season futures odds from mlb.team_props.
+
+    If a team_name is given, returns that team's full futures across books.
+    If omitted, returns ALL teams ranked by championship odds from favorite to
+    biggest underdog (lowest number = best odds = favorite sorts first).
+    """
+    season = await _resolve_props_season(db)
+
+    # ----- ranked list of all teams (no team_name) -----
+    if not args.get("team_name", "").strip():
+        sql = text(
+            """SELECT t.name AS team_name, p.bookmaker, p.championship_odds
+               FROM mlb.team_props p
+               JOIN mlb.teams t ON t.id = p.team_id
+               WHERE p.season_year = :season AND p.championship_odds IS NOT NULL
+               ORDER BY p.championship_odds ASC  -- smallest = favorite first
+               """
+        )
+        r = await db.execute(sql, {"season": season})
+        rows = r.mappings().all()
+        if not rows:
+            return {"error": f"No season futures found for season {season}"}
+
+        best: dict[str, dict] = {}
+        for row in rows:
+            team = row.team_name
+            if team not in best or row.championship_odds < best[team]["championship_odds"]:
+                best[team] = {
+                    "team_name": team,
+                    "bookmaker": row.bookmaker,
+                    "championship_odds": round(float(row.championship_odds), 1),
+                }
+        ranking = sorted(best.values(), key=lambda t: t["championship_odds"])
+        favorite = ranking[0]["team_name"] if ranking else None
+        return {
+            "season": season,
+            "note": "Ranked by championship odds, lowest (best) odds first = favorite. Only the best book price per team shown.",
+            "favorite": favorite,
+            "team_count": len(ranking),
+            "ranking": ranking,
+        }
+
+    # ----- single-team lookup -----
     team = await _resolve_team(db, args.get("team_name", ""))
     if not team:
         return {"error": f"Team not found: {args.get('team_name', '')}"}
-    season = await _resolve_props_season(db)
 
     sql = text(
         """SELECT * FROM mlb.team_props
@@ -1380,6 +1420,31 @@ async def _get_game_weather(db: AsyncSession, args: dict) -> dict:
     }
 
 
+# Alias map: model-invoked name variants -> canonical registered tool name.
+# DeepSeek occasionally omits the "_season_" segment (get_team_futures) or
+# uses a slightly different tokenization; route those to the real tool so the
+# research call succeeds instead of returning an "Unknown tool" error.
+_TOOL_ALIASES = {
+    "get_team_futures": "get_team_season_futures",
+    "get_team_future": "get_team_season_futures",
+    "get_team_season_future": "get_team_season_futures",
+    "get_player_props": "get_player_season_props",
+    "get_player_season_prop": "get_player_season_props",
+    "get_defense_rankings": "get_team_pitching_rankings",
+    "get_team_rankings": "get_team_pitching_rankings",
+    "get_game_forecast": "get_game_weather",
+    "get_weather": "get_game_weather",
+}
+
+
+def _normalize_tool_name(name: str) -> str:
+    """Map a model-invoked tool name to its canonical registered name."""
+    if not name:
+        return name
+    normalized = name.strip()
+    return _TOOL_ALIASES.get(normalized, normalized)
+
+
 _TOOL_MAP = {
     "search_teams": _search_teams,
     "get_team_stats": _get_team_stats,
@@ -1414,7 +1479,7 @@ async def execute_mlb_tool(db: AsyncSession, tool_call) -> str:
     Returns:
         JSON string with the result.
     """
-    func_name = tool_call.function.name
+    func_name = _normalize_tool_name(tool_call.function.name)
     try:
         args = json.loads(tool_call.function.arguments)
     except (json.JSONDecodeError, TypeError):

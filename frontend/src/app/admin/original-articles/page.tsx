@@ -1,0 +1,699 @@
+"use client";
+
+import { useEffect, useState, useCallback } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+
+const SPORTS = ["mlb", "nfl", "nba"] as const;
+type Sport = (typeof SPORTS)[number];
+
+const SPORT_LABEL: Record<Sport, string> = { mlb: "MLB", nfl: "NFL", nba: "NBA" };
+
+interface Article {
+  id: number;
+  sport: Sport;
+  title: string;
+  summary: string | null;
+  content: string;
+  status: string;
+  published_at: string | null;
+  created_at: string;
+  author?: string;
+  tokens_used?: number | null;
+  has_prompt?: boolean;
+  has_research?: boolean;
+  research_steps?: number;
+}
+
+interface ArticleDetail extends Article {
+  prompt_json?: unknown[];
+  research_json?: unknown[];
+}
+
+const token = () => localStorage.getItem("earl_token");
+const JSON_HEADERS = { "Content-Type": "application/json" };
+const authHeaders = (extra: Record<string, string> = {}) => {
+  const t = token();
+  return { ...JSON_HEADERS, ...(t ? { Authorization: `Bearer ${t}` } : {}), ...extra };
+};
+
+const DEFAULT_INSTRUCTIONS: Record<Sport, string> = {
+  nfl: "Write an original NFL article previewing this week's slate of games. Cover marquee matchups, key storylines, injuries, and betting angles (spread/OU). Use research to back up your points.",
+  nba: "Write an original NBA article previewing this week's slate of games. Cover marquee matchups, star players, injuries, and betting angles (spread/OU). Use research to back up your points.",
+  mlb: "Write an original MLB article previewing this week's slate of games. Cover pitching matchups, hot/cold lineups, injuries, and betting angles (run line/OU). Use research to back up your points.",
+};
+
+type Tab = "create" | "edit";
+
+export default function AdminOriginalArticles() {
+  const [tab, setTab] = useState<Tab>("create");
+
+  // --- shared sport state ---
+  const [sport, setSport] = useState<Sport>("mlb");
+  const [articles, setArticles] = useState<Article[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  // --- create article state ---
+  const [instructions, setInstructions] = useState("");
+  const [author, setAuthor] = useState("Earl");
+  const [draftId, setDraftId] = useState<number | null>(null);
+  const [draft, setDraft] = useState<{
+    title: string;
+    content: string;
+    summary: string;
+    tokens?: number;
+    prompt?: unknown[];
+    research?: unknown[];
+  } | null>(null);
+  const [generating, setGenerating] = useState(false);
+
+  // --- edit article state ---
+  const [editing, setEditing] = useState<Article | null>(null);
+  const [editTitle, setEditTitle] = useState("");
+  const [editContent, setEditContent] = useState("");
+  const [editAuthor, setEditAuthor] = useState("Earl");
+  const [saving, setSaving] = useState(false);
+  const [editMarkdown, setEditMarkdown] = useState(false);
+
+  // --- research panel state ---
+  const [openResearchId, setOpenResearchId] = useState<number | null>(null);
+  const [researchDetail, setResearchDetail] = useState<ArticleDetail | null>(null);
+  const [researchLoading, setResearchLoading] = useState(false);
+
+  const fetchArticles = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await fetch(`/api/admin/original-articles/${sport}`, {
+        headers: authHeaders(),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setArticles(data.articles ?? []);
+      }
+    } catch {
+    } finally {
+      setLoading(false);
+    }
+  }, [sport]);
+
+  useEffect(() => {
+    setDraft(null);
+    fetchArticles();
+  }, [sport, fetchArticles]);
+
+  // ───────────────────────────
+  //  Create Article
+  // ───────────────────────────
+
+  const handleGenerate = async () => {
+    if (!instructions.trim()) {
+      alert("Enter instructions for the article first.");
+      return;
+    }
+    setDraft(null);
+    setGenerating(true);
+    try {
+      const res = await fetch(`/api/original-articles/${sport}/generate`, {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify({ instructions }),
+      });
+      if (!res.ok) {
+        let detail = `HTTP ${res.status}`;
+        try {
+          const e = await res.json();
+          detail = e.detail || detail;
+        } catch {}
+        throw new Error(detail);
+      }
+      const data = await res.json();
+      setDraftId(data.draft_id ?? null);
+      setDraft({
+        title: data.title,
+        content: data.content,
+        summary: data.summary,
+        tokens: data.tokens,
+        prompt: data.prompt,
+        research: data.research,
+      });
+      await fetchArticles(); // draft now visible in Edit tab
+    } catch (e: any) {
+      alert(`Generation failed: ${e.message}`);
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  const handlePublish = async () => {
+    if (!draft) return;
+    setSaving(true);
+    try {
+      // Publish flips the generated draft (already persisted with prompt/research
+      // + token count) to published via PATCH. Fall back to POST /publish only
+      // if there's no persisted draft to update.
+      let data: any;
+      if (draftId) {
+        const res = await fetch(`/api/admin/original-articles/${sport}/${draftId}`, {
+          method: "PATCH",
+          headers: authHeaders(),
+          body: JSON.stringify({
+            title: draft.title,
+            content: draft.content,
+            author: author.trim() || "Earl",
+            status: "published",
+          }),
+        });
+        if (!res.ok) {
+          let detail = `HTTP ${res.status}`;
+          try {
+            const e = await res.json();
+            detail = e.detail || detail;
+          } catch {}
+          throw new Error(detail);
+        }
+        const upd = await res.json();
+        data = { article: upd.article };
+      } else {
+        const res = await fetch(`/api/original-articles/${sport}/publish`, {
+          method: "POST",
+          headers: authHeaders(),
+        body: JSON.stringify({
+          title: draft.title,
+          content: draft.content,
+          summary: draft.summary,
+          instructions,
+          prompt: draft.prompt,
+          research: draft.research,
+          author: author.trim() || "Earl",
+          tokens_used: draft.tokens ?? null,
+        }),
+      });
+      if (!res.ok) {
+        let detail = `HTTP ${res.status}`;
+        try {
+          const e = await res.json();
+          detail = e.detail || detail;
+        } catch {}
+        throw new Error(detail);
+      }
+      data = await res.json(); // fallback POST /publish (no persisted draft)
+      }
+      setDraft(null);
+      setDraftId(null);
+      setInstructions("");
+      await fetchArticles();
+      alert(`✅ Published "${data.article.title}" to /${sport}.`);
+    } catch (e: any) {
+      alert(`Publish failed: ${e.message}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // ───────────────────────────
+  //  Edit Articles
+  // ───────────────────────────
+
+  const startEdit = (a: Article) => {
+    setEditing(a);
+    setEditTitle(a.title);
+    setEditContent(a.content);
+    setEditAuthor(a.author || "Earl");
+    setEditMarkdown(false);
+  };
+
+  const cancelEdit = () => {
+    setEditing(null);
+  };
+
+  const handleSaveEdit = async () => {
+    if (!editing) return;
+    if (!editTitle.trim() || !editContent.trim()) {
+      alert("Title and content cannot be empty.");
+      return;
+    }
+    setSaving(true);
+    try {
+      const res = await fetch(`/api/admin/original-articles/${editing.sport}/${editing.id}`, {
+        method: "PATCH",
+        headers: authHeaders(),
+        body: JSON.stringify({
+          title: editTitle.trim(),
+          content: editContent,
+          author: editAuthor.trim() || "Earl",
+          summary: null, // re-derive on backend
+        }),
+      });
+      if (!res.ok) {
+        let detail = `HTTP ${res.status}`;
+        try {
+          const e = await res.json();
+          detail = e.detail || detail;
+        } catch {}
+        throw new Error(detail);
+      }
+      await fetchArticles();
+      setEditing(null);
+      alert("✅ Article saved.");
+    } catch (e: any) {
+      alert(`Save failed: ${e.message}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleToggleStatus = async (a: Article) => {
+    const next = a.status === "published" ? "draft" : "published";
+    if (!confirm(`Move "${a.title.slice(0, 60)}..." to ${next === "published" ? "published" : "draft"}?`))
+      return;
+    try {
+      const res = await fetch(`/api/admin/original-articles/${a.sport}/${a.id}`, {
+        method: "PATCH",
+        headers: authHeaders(),
+        body: JSON.stringify({ status: next }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await fetchArticles();
+    } catch (e: any) {
+      alert(`Status change failed: ${e.message}`);
+    }
+  };
+
+  const handleDelete = async (id: number, title: string) => {
+    if (!confirm(`Delete article "${title.slice(0, 60)}..."? This cannot be undone.`)) return;
+    try {
+      const res = await fetch(`/api/admin/original-articles/${sport}/${id}`, {
+        method: "DELETE",
+        headers: authHeaders(),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (editing?.id === id) setEditing(null);
+      if (openResearchId === id) {
+        setOpenResearchId(null);
+        setResearchDetail(null);
+      }
+      await fetchArticles();
+    } catch (e: any) {
+      alert(`Delete failed: ${e.message}`);
+    }
+  };
+
+  const toggleResearch = async (a: Article) => {
+    if (openResearchId === a.id) {
+      setOpenResearchId(null);
+      setResearchDetail(null);
+      return;
+    }
+    setOpenResearchId(a.id);
+    setResearchDetail(null);
+    setResearchLoading(true);
+    try {
+      const res = await fetch(`/api/admin/original-articles/${a.sport}/${a.id}`, {
+        headers: authHeaders(),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setResearchDetail(data.article ?? null);
+    } catch (e: any) {
+      setOpenResearchId(null);
+      setResearchDetail(null);
+      alert(`Could not load research: ${e.message}`);
+    } finally {
+      setResearchLoading(false);
+    }
+  };
+
+  const tabButton = (t: Tab, label: string) => (
+    <button
+      onClick={() => setTab(t)}
+      className={`px-4 py-2 rounded-md text-sm font-medium transition ${
+        t === tab ? "bg-blue-600 text-white" : "text-gray-300 hover:bg-white/5 hover:text-white"
+      }`}
+    >
+      {label}
+    </button>
+  );
+
+  const sportTab = (s: Sport) => (
+    <button
+      key={s}
+      onClick={() => setSport(s)}
+      className={`px-4 py-2 rounded-md text-sm font-medium transition ${
+        s === sport
+          ? "bg-blue-600 text-white"
+          : "text-gray-300 hover:bg-white/5 hover:text-white"
+      }`}
+    >
+      {SPORT_LABEL[s]}
+    </button>
+  );
+
+  const statusBadge = (status: string) =>
+    status === "published" ? (
+      <span className="text-xs px-2 py-0.5 rounded-full bg-green-600/20 text-green-400 border border-green-600/30">
+        Published
+      </span>
+    ) : (
+      <span className="text-xs px-2 py-0.5 rounded-full bg-yellow-600/20 text-yellow-400 border border-yellow-600/30">
+        Draft
+      </span>
+    );
+
+  return (
+    <div className="max-w-5xl mx-auto p-6">
+      <div className="mb-6">
+        <h1 className="text-2xl font-bold mb-1">Original Articles</h1>
+        <p className="text-sm text-gray-400">
+          Write LLM-authored editorial articles using the same research tools as chat, or manage existing
+          articles.
+        </p>
+      </div>
+
+      {/* Top-level tabs: Create Article / Edit Articles */}
+      <div className="flex gap-1 mb-6 bg-white/[0.03] border border-white/10 rounded-lg p-1 w-fit">
+        {tabButton("create", "Create Article")}
+        {tabButton("edit", "Edit Articles")}
+      </div>
+
+      {/* Sport tabs (shared) */}
+      <div className="flex gap-1 mb-6 bg-white/[0.03] border border-white/10 rounded-lg p-1 w-fit">
+        {SPORTS.map(sportTab)}
+      </div>
+
+      {tab === "create" ? (
+        <>
+          {/* Composer */}
+          <div className="bg-white/[0.03] border border-white/10 rounded-lg p-5 mb-8">
+            <div className="flex items-center justify-between mb-2">
+              <label className="text-sm font-medium text-gray-200">
+                Article instructions ({SPORT_LABEL[sport]})
+              </label>
+              <button
+                className="text-xs text-gray-400 hover:text-gray-200 underline"
+                onClick={() => setInstructions(DEFAULT_INSTRUCTIONS[sport])}
+              >
+                Use default prompt
+              </button>
+            </div>
+            <textarea
+              className="w-full bg-black/40 border border-white/10 rounded-md p-3 text-sm min-h-[110px] focus:outline-none focus:border-blue-500"
+              placeholder="Describe the article you want written… e.g. Preview this week's marquee matchup and give betting angles."
+              value={instructions}
+              onChange={(e) => setInstructions(e.target.value)}
+            />
+            <div className="flex items-center gap-3 mt-3">
+              <button
+                onClick={handleGenerate}
+                disabled={generating || saving}
+                className="px-4 py-2 rounded-md bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-sm font-medium"
+              >
+                {generating ? "Generating…" : "Generate article"}
+              </button>
+              {generating && (
+                <span className="text-xs text-blue-300 animate-pulse">
+                  Researching via chat engine (stats, lines, injuries)…
+                </span>
+              )}
+            </div>
+            <div className="flex items-center gap-2 mt-3 pt-3 border-t border-white/10">
+              <label className="text-xs text-gray-400 shrink-0">Author</label>
+              <input
+                className="flex-1 max-w-xs bg-black/40 border border-white/10 rounded-md p-2 text-sm focus:outline-none focus:border-blue-500"
+                value={author}
+                onChange={(e) => setAuthor(e.target.value)}
+                placeholder="Earl"
+              />
+            </div>
+          </div>
+
+          {/* Draft preview */}
+          {draft && (
+            <div className="bg-white/[0.03] border border-white/10 rounded-lg p-5 mb-8">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-lg font-semibold">Draft — {SPORT_LABEL[sport]}</h2>
+                <div className="flex items-center gap-3">
+                  {typeof draft.tokens === "number" && (
+                    <span className="text-xs text-gray-500">{draft.tokens.toLocaleString()} tokens</span>
+                  )}
+                  <button
+                    onClick={() => handlePublish()}
+                    disabled={saving}
+                    className="px-4 py-2 rounded-md bg-green-600 hover:bg-green-500 disabled:opacity-50 text-sm font-medium"
+                  >
+                    {saving ? "Publishing…" : "Publish to /" + sport}
+                  </button>
+                </div>
+              </div>
+              <div className="writeup-content max-h-[60vh] overflow-y-auto">
+                <div className="text-gray-300 leading-relaxed">
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{draft.content}</ReactMarkdown>
+                </div>
+              </div>
+            </div>
+          )}
+        </>
+      ) : (
+        /* ── Edit Articles ── */
+        <div>
+          {loading ? (
+            <div className="text-sm text-gray-500">Loading…</div>
+          ) : articles.length === 0 ? (
+            <div className="text-sm text-gray-500 bg-white/[0.03] border border-white/10 rounded-lg p-4">
+              No original articles for {SPORT_LABEL[sport]} yet.
+            </div>
+          ) : (
+            <ul className="divide-y divide-white/10 border border-white/10 rounded-lg">
+              {articles.map((a) => (
+                <li key={a.id}>
+                  <div className="flex items-center justify-between px-4 py-3 gap-4">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-medium text-white truncate">{a.title}</span>
+                        {statusBadge(a.status)}
+                      </div>
+                      <div className="text-xs text-gray-500 mt-0.5">
+                        {a.author && (
+                          <>
+                            <span className="text-gray-300">{a.author}</span>
+                            {" · "}
+                          </>
+                        )}
+                        {a.published_at
+                          ? `Published ${new Date(a.published_at).toLocaleString()}`
+                          : "Not published yet"}
+                        {" · "}
+                        {a.summary?.slice(0, 120) || "No summary"}
+                        {typeof a.tokens_used === "number" && (
+                          <>
+                            {" · "}
+                            {a.tokens_used.toLocaleString()} tokens
+                          </>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <a
+                        href={`/${a.sport}/articles/${a.id}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-xs text-blue-400 hover:text-blue-300"
+                      >
+                        View
+                      </a>
+                      <button
+                        onClick={() => startEdit(a)}
+                        className="text-xs text-blue-400 hover:text-blue-300"
+                      >
+                        Edit
+                      </button>
+                      <button
+                        onClick={() => toggleResearch(a)}
+                        className="text-xs text-purple-400 hover:text-purple-300"
+                        title={(a.has_research ? `${a.research_steps ?? 0} research steps` : "No research stored") + "; view prompt + research"}
+                      >
+                        Research
+                      </button>
+                      <button
+                        onClick={() => handleToggleStatus(a)}
+                        className="text-xs text-yellow-400 hover:text-yellow-300"
+                        title={a.status === "published" ? "Move to draft" : "Publish"}
+                      >
+                        {a.status === "published" ? "→ Draft" : "→ Publish"}
+                      </button>
+                      <button
+                        onClick={() => handleDelete(a.id, a.title)}
+                        className="text-xs text-red-400 hover:text-red-300"
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Research + Prompt panel */}
+                  {openResearchId === a.id && (
+                    <ResearchPanel
+                      loading={researchLoading}
+                      detail={researchDetail}
+                      hasResearch={!!a.has_research}
+                      onClose={() => {
+                        setOpenResearchId(null);
+                        setResearchDetail(null);
+                      }}
+                    />
+                  )}
+
+                  {/* Inline editor */}
+                  {editing && editing.id === a.id && (
+                    <div className="border-t border-white/10 bg-black/20 p-4">
+                      <div className="flex items-center justify-between mb-3">
+                        <span className="text-sm font-medium text-gray-200">Editing</span>
+                        <div className="flex items-center gap-3">
+                          <button
+                            onClick={() => setEditMarkdown(!editMarkdown)}
+                            className="text-xs text-gray-400 hover:text-gray-200 underline"
+                          >
+                            {editMarkdown ? "View rendered" : "Edit markdown"}
+                          </button>
+                          <button
+                            onClick={cancelEdit}
+                            className="text-xs text-gray-400 hover:text-gray-200"
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            onClick={handleSaveEdit}
+                            disabled={saving}
+                            className="px-3 py-1.5 rounded-md bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-sm font-medium"
+                          >
+                            {saving ? "Saving…" : "Save"}
+                          </button>
+                        </div>
+                      </div>
+                      <input
+                        className="w-full bg-black/40 border border-white/10 rounded-md p-2 mb-2 text-sm focus:outline-none focus:border-blue-500"
+                        value={editTitle}
+                        onChange={(e) => setEditTitle(e.target.value)}
+                        placeholder="Title"
+                      />
+                      <div className="flex items-center gap-2 mb-2">
+                        <label className="text-xs text-gray-400 shrink-0">Author</label>
+                        <input
+                          className="flex-1 bg-black/40 border border-white/10 rounded-md p-2 text-sm focus:outline-none focus:border-blue-500"
+                          value={editAuthor}
+                          onChange={(e) => setEditAuthor(e.target.value)}
+                          placeholder="Earl"
+                        />
+                      </div>
+                      <textarea
+                        className="w-full bg-black/40 border border-white/10 rounded-md p-3 text-sm min-h-[200px] font-mono focus:outline-none focus:border-blue-500"
+                        value={editContent}
+                        onChange={(e) => setEditContent(e.target.value)}
+                        placeholder="Article content (markdown)"
+                      />
+                    </div>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ResearchPanel({
+  loading,
+  detail,
+  hasResearch,
+  onClose,
+}: {
+  loading: boolean;
+  detail: ArticleDetail | null;
+  hasResearch: boolean;
+  onClose: () => void;
+}) {
+  const prompt = detail?.prompt_json;
+  const research = detail?.research_json;
+
+  return (
+    <div className="border-t border-white/10 bg-black/25 p-4">
+      <div className="flex items-center justify-between mb-3">
+        <span className="text-sm font-medium text-gray-200">Prompt + Research</span>
+        <button onClick={onClose} className="text-xs text-gray-400 hover:text-gray-200">
+          Close
+        </button>
+      </div>
+
+      {loading ? (
+        <div className="text-sm text-gray-500">Loading…</div>
+      ) : !hasResearch && !prompt ? (
+        <div className="text-sm text-gray-500">No prompt or research stored for this article.</div>
+      ) : (
+        <div className="space-y-4 text-sm">
+          {/* Prompt */}
+          <div>
+            <div className="text-xs uppercase tracking-wide text-gray-500 mb-1">Prompt</div>
+            {prompt && prompt.length ? (
+              <div className="space-y-2">
+                {prompt.map((m: any, i: number) => (
+                  <div key={i} className="bg-white/[0.03] border border-white/10 rounded p-2">
+                    <div className="text-[11px] uppercase text-gray-500 mb-1">{m.role}</div>
+                    <pre className="text-xs text-gray-300 whitespace-pre-wrap font-sans">
+                      {typeof m.content === "string" ? m.content : JSON.stringify(m.content, null, 2)}
+                    </pre>
+                    {m.has_tool_calls ? (
+                      <div className="text-[11px] text-purple-300 mt-1">
+                        {m.has_tool_calls} research call(s)
+                      </div>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="text-xs text-gray-500">No prompt stored.</div>
+            )}
+          </div>
+
+          {/* Research trace */}
+          <div>
+            <div className="text-xs uppercase tracking-wide text-gray-500 mb-1">
+              Research performed
+            </div>
+            {research && research.length ? (
+              <ol className="space-y-2 list-none">
+                {research.map((step: any, i: number) => (
+                  <li key={i} className="bg-white/[0.03] border border-white/10 rounded p-2">
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="text-[11px] text-gray-500">{i + 1}.</span>
+                      <span className="text-xs font-medium text-purple-300">
+                        {step.tool}
+                      </span>
+                    </div>
+                    {step.arguments && Object.keys(step.arguments).length > 0 && (
+                      <pre className="text-xs text-gray-400 whitespace-pre-wrap font-sans mb-1">
+                        {JSON.stringify(step.arguments)}
+                      </pre>
+                    )}
+                    <div className="text-xs text-gray-300">
+                      <span className="text-gray-500">→ </span>
+                      {typeof step.result === "string" ? (
+                        step.result
+                      ) : (
+                        <pre className="text-xs text-gray-300 whitespace-pre-wrap font-sans inline">
+                          {JSON.stringify(step.result, null, 2)}
+                        </pre>
+                      )}
+                    </div>
+                  </li>
+                ))}
+              </ol>
+            ) : (
+              <div className="text-xs text-gray-500">No research stored.</div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

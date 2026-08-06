@@ -97,6 +97,7 @@ from app.routers import (
     teams,
     admin,
     writeups,
+    original_articles,
     token_usage,
     v1,
 )
@@ -126,6 +127,7 @@ _COMPUTE_FACING = [
     nba_stats,
     admin,
     writeups,
+    original_articles,
 ]
 
 if EARL_ROLE in ("all", "api"):
@@ -138,6 +140,8 @@ if EARL_ROLE in ("all", "api"):
 if EARL_ROLE in ("all", "compute"):
     for r in _COMPUTE_FACING:
         _include(r.router)
+    # original articles has a separate admin router under /api/admin.
+    _include(original_articles.admin_router)
 
 
 @app.get("/")

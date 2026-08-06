@@ -862,6 +862,22 @@ async def ingest_mlb_lines_and_picks(
         )
         game_ids_needing_picks = [row[0] for row in result.fetchall()]
 
+        # Snapshot existing picks BEFORE they are overwritten so we can detect
+        # whether OU / ML / ATS changed (batch_predict deletes+reinserts source='api').
+        old_picks: dict[int, dict] = {}
+        if game_ids_needing_picks:
+            old_res = await db.execute(
+                sa_text("""
+                    SELECT game_id, ou_pick, ml_pick, run_line_pick
+                    FROM mlb.game_predictions
+                    WHERE source = 'api'
+                      AND game_id = ANY(:gids)
+                """),
+                {"gids": game_ids_needing_picks},
+            )
+            for gid, ou, ml, rl in old_res.fetchall():
+                old_picks[gid] = {"ou_pick": ou, "ml_pick": ml, "run_line_pick": rl}
+
         if not game_ids_needing_picks:
             results["predictions"] = {"picks_generated": 0, "note": "No future scheduled games with consolidated lines"}
         else:
@@ -876,6 +892,98 @@ async def ingest_mlb_lines_and_picks(
                 "games_attempted": len(game_ids_needing_picks),
                 "game_results": pick_results,
             }
+
+            # ── Step 4: Regenerate premium writeups when a pick changed ──
+            # Picks are refreshed throughout the day until game time. The morning
+            # writeup uses picks as a guide, so if OU / ML / ATS changed on a game
+            # that already has a premium writeup, regenerate it to stay in sync.
+            regenerated: list[int] = []
+            regen_failures: list[dict] = []
+            if game_ids_needing_picks:
+                try:
+                    wu_rows = await db.execute(
+                        sa_text("""
+                            SELECT game_id
+                            FROM mlb.game_writeups
+                            WHERE game_id = ANY(:gids)
+                              AND premium_content IS NOT NULL
+                              AND premium_content != ''
+                        """),
+                        {"gids": game_ids_needing_picks},
+                    )
+                    games_with_premium = {r[0] for r in wu_rows.fetchall()}
+
+                    new_res = await db.execute(
+                        sa_text("""
+                            SELECT game_id, ou_pick, ml_pick, run_line_pick
+                            FROM mlb.game_predictions
+                            WHERE source = 'api'
+                              AND game_id = ANY(:gids)
+                        """),
+                        {"gids": game_ids_needing_picks},
+                    )
+                    new_picks: dict[int, dict] = {}
+                    for gid, ou, ml, rl in new_res.fetchall():
+                        new_picks[gid] = {"ou_pick": ou, "ml_pick": ml, "run_line_pick": rl}
+
+                    from app.writeups.mlb.generator import MLBWriteupGenerator
+                    gen = MLBWriteupGenerator()
+
+                    # Only regenerate when a pick FLIPS SIDE — not when a margin/
+                    # line just drifts. OU/ML are already side-only (Over/Under, home/away).
+                    # ATS run_line_pick is "<team> <+/-val>"; side = team token only, so
+                    # spread movement (e.g. +1.5 → +2.5 on the same team) does NOT fire.
+                    def _ats_side(val):
+                        if not val:
+                            return None
+                        return str(val).split()[0].strip()
+
+                    def _pick_flipped(old_v, new_v):
+                        # normalize empties; flip = different non-empty side
+                        a = (old_v or "").strip()
+                        b = (new_v or "").strip()
+                        if a == b:
+                            return False
+                        return bool(a) and bool(b)
+
+                    for gid in game_ids_needing_picks:
+                        if gid not in games_with_premium:
+                            continue
+                        old = old_picks.get(gid)
+                        new = new_picks.get(gid)
+                        if old is None or new is None:
+                            continue
+                        flipped = (
+                            _pick_flipped(old.get("ou_pick"), new.get("ou_pick"))
+                            or _pick_flipped(old.get("ml_pick"), new.get("ml_pick"))
+                            or _pick_flipped(
+                                _ats_side(old.get("run_line_pick")),
+                                _ats_side(new.get("run_line_pick")),
+                            )
+                        )
+                        if not flipped:
+                            continue
+                        try:
+                            writeup, _qc = await gen.generate(
+                                db, gid, is_historical=False,
+                                as_of_date=None, reasoning="minimal",
+                            )
+                            if "error" in writeup:
+                                raise RuntimeError(writeup["error"])
+                            regenerated.append(gid)
+                            logger.info(f"Pick flipped side for game {gid} — regenerated premium writeup")
+                        except Exception as exc:
+                            regen_failures.append({"game_id": gid, "error": str(exc)[:200]})
+                            logger.warning(f"Writeup regen failed for game {gid}: {exc}")
+                except Exception as exc:
+                    logger.warning(f"Writeup regeneration pass failed: {exc}")
+                    regen_failures.append({"game_id": None, "error": f"pass_failed: {exc}"})
+
+                results["writeup_regen"] = {
+                    "regenerated_count": len(regenerated),
+                    "regenerated_game_ids": regenerated,
+                    "failures": regen_failures,
+                }
             logger.info(
                 f"Lines+picks: {lines_result.get('loaded', 0)} new lines, "
                 f"{len(game_ids_needing_picks)} games, "

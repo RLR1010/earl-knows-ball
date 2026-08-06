@@ -313,13 +313,12 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "get_team_season_futures",
-            "description": "Get an NBA team's season futures: odds to win the championship, make/miss the playoffs, and regular season win total over/under.",
+            "description": "Season-long futures odds. OMIT team_name to get ALL teams ranked by championship odds from favorite to biggest underdog (lowest number = best odds = favorite, e.g. -150 or +450 beats +3000). Provide team_name to get a single team's full futures (championship, make/miss playoffs, win total over/under).",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "team_name": {"type": "string", "description": "Team name or abbreviation"},
+                    "team_name": {"type": "string", "description": "Team name or abbreviation (optional). Omit to rank all teams by championship odds, favorites first."},
                 },
-                "required": ["team_name"],
             },
         },
     },
@@ -896,11 +895,52 @@ async def _get_team_rankings(db: AsyncSession, args: dict) -> dict:
 
 
 async def _get_team_season_futures(db: AsyncSession, args: dict) -> dict:
-    """Team season futures odds from nba.team_props."""
+    """Team season futures odds from nba.team_props.
+
+    If a team_name is given, returns that team's full futures across books.
+    If omitted, returns ALL teams ranked by championship odds from favorite to
+    biggest underdog (lowest number = best odds = favorite sorts first).
+    """
+    season = await _resolve_props_season(db)
+
+    # ----- ranked list of all teams (no team_name) -----
+    if not args.get("team_name", "").strip():
+        sql = text(
+            """SELECT t.name AS team_name, p.bookmaker, p.championship_odds
+               FROM nba.team_props p
+               JOIN nba.teams t ON t.id = p.team_id
+               WHERE p.season_year = :season AND p.championship_odds IS NOT NULL
+               ORDER BY p.championship_odds ASC  -- smallest = favorite first
+               """
+        )
+        r = await db.execute(sql, {"season": season})
+        rows = r.mappings().all()
+        if not rows:
+            return {"error": f"No season futures found for season {season}"}
+
+        best: dict[str, dict] = {}
+        for row in rows:
+            team = row.team_name
+            if team not in best or row.championship_odds < best[team]["championship_odds"]:
+                best[team] = {
+                    "team_name": team,
+                    "bookmaker": row.bookmaker,
+                    "championship_odds": round(float(row.championship_odds), 1),
+                }
+        ranking = sorted(best.values(), key=lambda t: t["championship_odds"])
+        favorite = ranking[0]["team_name"] if ranking else None
+        return {
+            "season": season,
+            "note": "Ranked by championship odds, lowest (best) odds first = favorite. Only the best book price per team shown.",
+            "favorite": favorite,
+            "team_count": len(ranking),
+            "ranking": ranking,
+        }
+
+    # ----- single-team lookup -----
     tid = await _resolve_team_id(db, args.get("team_name", ""))
     if not tid:
         return {"error": f"Team not found: {args.get('team_name', '')}"}
-    season = await _resolve_props_season(db)
 
     sql = text(
         """SELECT * FROM nba.team_props
@@ -956,6 +996,25 @@ async def _get_player_season_props(db: AsyncSession, args: dict) -> dict:
     return {"player_name": name, "season": season, "props": props}
 
 
+
+
+# Alias map: model-invoked name variants -> canonical registered tool name.
+_TOOL_ALIASES = {
+    "get_team_futures": "get_team_season_futures",
+    "get_team_future": "get_team_season_futures",
+    "get_team_season_future": "get_team_season_futures",
+    "get_player_props": "get_player_season_props",
+    "get_player_season_prop": "get_player_season_props",
+}
+
+
+def _normalize_tool_name(name: str) -> str:
+    """Map a model-invoked tool name to its canonical registered name."""
+    if not name:
+        return name
+    return _TOOL_ALIASES.get(name.strip(), name.strip())
+
+
 _TOOL_HANDLERS = {
     "get_team_info": _get_team_info,
     "get_team_stats": _get_team_stats,
@@ -988,7 +1047,7 @@ async def execute_nba_tool(db: AsyncSession, tool_call) -> str:
     Returns:
         JSON string with the result.
     """
-    func_name = tool_call.function.name
+    func_name = _normalize_tool_name(tool_call.function.name)
     try:
         args = json.loads(tool_call.function.arguments)
     except (json.JSONDecodeError, TypeError):

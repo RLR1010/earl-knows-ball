@@ -421,14 +421,13 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "get_team_season_futures",
-            "description": "Get a team's season-long futures odds (to win championship, make/miss playoffs, regular season win total, over/under).",
+            "description": "Season-long futures odds. OMIT team_name to get ALL teams ranked by championship odds from favorite to biggest underdog (lowest number = best odds = favorite, e.g. -120 or +200 beats +4000). Provide team_name to get a single team's full futures (championship, make/miss playoffs, win total over/under).",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "team_name": {"type": "string", "description": "Team name or abbreviation"},
+                    "team_name": {"type": "string", "description": "Team name or abbreviation (optional). Omit to rank all teams by championship odds, favorites first."},
                     "season_year": {"type": "integer", "description": "Season year (defaults to current)"},
                 },
-                "required": ["team_name"],
             },
         },
     },
@@ -1054,11 +1053,58 @@ async def _get_qb_trends(db: AsyncSession, args: dict) -> dict:
 
 
 async def _get_team_season_futures(db: AsyncSession, args: dict) -> dict:
-    """Team season futures odds from nfl.team_props."""
+    """Team season futures odds from nfl.team_props.
+
+    If a team_name is given, returns that team's full futures. If omitted,
+    returns all teams ranked by championship odds: the team with the SMALLEST
+    number (best/most negative odds) is the favorite and sorts first, up to
+    the LARGEST number (most positive / biggest underdog) last.
+    """
+    season = args.get("season_year") or await _resolve_props_season(db)
+
+    # ----- ranked list of all teams (no team_name) -----
+    if not args.get("team_name", "").strip():
+        sql = text(
+            """SELECT m.name AS team_name, p.bookmaker, p.championship_odds,
+                      p.win_total, p.win_total_over_odds, p.win_total_under_odds,
+                      p.make_playoffs_odds
+               FROM nfl.team_props p
+               JOIN nfl.teams m ON m.id = p.team_id
+               WHERE p.season_year = :season AND p.championship_odds IS NOT NULL
+               ORDER BY p.championship_odds ASC  -- smallest = favorite first
+               """
+        )
+        r = await db.execute(sql, {"season": season})
+        rows = r.mappings().all()
+        if not rows:
+            return {"error": f"No season futures found for season {season}"}
+
+        # Collapse to best (lowest) championship odds per team, keeping the book.
+        best: dict[str, dict] = {}
+        for row in rows:
+            team = row.team_name
+            if team not in best or row.championship_odds < best[team]["championship_odds"]:
+                best[team] = {
+                    "team_name": team,
+                    "bookmaker": row.bookmaker,
+                    "championship_odds": round(float(row.championship_odds), 1),
+                    "win_total": round(float(row.win_total), 1) if row.win_total is not None else None,
+                    "make_playoffs_odds": round(float(row.make_playoffs_odds), 1) if row.make_playoffs_odds is not None else None,
+                }
+        ranking = sorted(best.values(), key=lambda t: t["championship_odds"])
+        favorite = ranking[0]["team_name"] if ranking else None
+        return {
+            "season": season,
+            "note": "Ranked by championship odds, lowest (best) odds first = favorite. Only the best book price per team shown.",
+            "favorite": favorite,
+            "team_count": len(ranking),
+            "ranking": ranking,
+        }
+
+    # ----- single-team lookup (legacy path) -----
     tid = await _resolve_team_id(db, args.get("team_name", ""))
     if not tid:
         return {"error": f"Team not found: {args.get('team_name', '')}"}
-    season = args.get("season_year") or await _resolve_props_season(db)
 
     sql = text(
         """SELECT * FROM nfl.team_props
@@ -1241,6 +1287,25 @@ async def _get_team_schedule(db: AsyncSession, args: dict) -> dict:
 
 # ─── Handler Map ─────────────────────────────────────────────────────────────
 
+# Alias map: model-invoked name variants -> canonical registered tool name.
+_TOOL_ALIASES = {
+    "get_team_futures": "get_team_season_futures",
+    "get_team_future": "get_team_season_futures",
+    "get_team_season_future": "get_team_season_futures",
+    "get_player_props": "get_player_season_props",
+    "get_player_season_prop": "get_player_season_props",
+    "get_defense_rankings": "get_team_defense_rankings",
+    "get_defense_ranking": "get_team_defense_rankings",
+}
+
+
+def _normalize_tool_name(name: str) -> str:
+    """Map a model-invoked tool name to its canonical registered name."""
+    if not name:
+        return name
+    return _TOOL_ALIASES.get(name.strip(), name.strip())
+
+
 _TOOL_HANDLERS = {
     "get_team_info": _get_team_info,
     "get_team_stats": _get_team_stats,
@@ -1276,7 +1341,7 @@ async def execute_nfl_tool(db: AsyncSession, tool_call) -> str:
     Returns:
         JSON string with the result.
     """
-    func_name = tool_call.function.name
+    func_name = _normalize_tool_name(tool_call.function.name)
     try:
         args = json.loads(tool_call.function.arguments)
     except (json.JSONDecodeError, TypeError):

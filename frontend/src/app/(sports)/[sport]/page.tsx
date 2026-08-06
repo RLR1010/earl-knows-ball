@@ -58,6 +58,12 @@ export default async function SportHomePage({ params }: { params: Promise<{ spor
             Schedule
           </Link>
           <Link
+            href={`/${sport}/articles`}
+            className="px-6 py-3 rounded-full border border-white/20 text-gray-300 font-semibold hover:bg-white/5 transition"
+          >
+            Articles
+          </Link>
+          <Link
             href="/chat"
             className="px-6 py-3 rounded-full bg-white/10 text-white font-semibold hover:bg-white/20 transition"
           >
