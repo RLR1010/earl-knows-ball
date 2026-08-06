@@ -396,6 +396,12 @@ async def batch_predict_upcoming_games(
                 shap_info=shap_info,
             )
 
+            # Commit after EACH game so the DELETE+INSERT row locks on
+            # mlb.game_predictions are released immediately instead of being
+            # held for the whole batch. Prevents the shared Postgres from being
+            # locked (stalling api-box readers) while the batch is still running.
+            await db.commit()
+
             pick_results.append(
                 {
                     "game_id": gid,

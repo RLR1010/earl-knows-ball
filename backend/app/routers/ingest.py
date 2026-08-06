@@ -836,7 +836,7 @@ async def ingest_mlb_lines_and_picks(
         if updated_game_ids:
             try:
                 from app.ingestion.mlb_betting_lines_consolidate import run as consolidate_mlb
-                consolidate_mlb(game_ids_filter=set(updated_game_ids))
+                await _run_in_thread(consolidate_mlb, set(updated_game_ids))
                 results["consolidated"] = {"status": "ok", "games": len(updated_game_ids)}
             except Exception as exc:
                 logger.error(f"Consolidation failed: {exc}")
@@ -1040,7 +1040,7 @@ async def ingest_nfl_lines_and_picks(
         if updated_game_ids:
             try:
                 from app.ingestion.nfl_betting_lines_consolidate import run as consolidate_nfl
-                consolidate_nfl(game_ids_filter=set(updated_game_ids))
+                await _run_in_thread(consolidate_nfl, set(updated_game_ids))
                 results["consolidated"] = {"status": "ok", "games": len(updated_game_ids)}
             except Exception as exc:
                 logger.error(f"Consolidation failed: {exc}")
