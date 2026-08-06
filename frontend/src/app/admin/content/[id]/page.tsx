@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
+import { useSeo } from "@/components/Seo";
 
 /* ─────────────────────────────────────────────
    Types
@@ -58,6 +59,7 @@ const STATUS_LABELS: Record<string, string> = {
    ───────────────────────────────────────────── */
 
 export default function ContentEditor() {
+  useSeo({ title: "Content Editor — Admin — Earl Knows Ball" });
   const params = useParams();
   const router = useRouter();
   const searchParams = useSearchParams();

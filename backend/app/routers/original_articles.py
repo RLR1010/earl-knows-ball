@@ -74,6 +74,8 @@ class GenerateRequest(BaseModel):
     model: Optional[str] = Field(None)  # optional override
     author: Optional[str] = Field(None, min_length=1, max_length=100)
     tokens_used: Optional[int] = Field(None, ge=0)
+    reasoning: Optional[str] = Field(None)  # minimal | low | medium | high | xhigh
+    word_count: Optional[tuple[int, int]] = Field(None)  # (min_words, max_words)
 
 
 class PublishRequest(BaseModel):
@@ -88,6 +90,8 @@ class PublishRequest(BaseModel):
     research: Optional[Any] = Field(None)
     author: Optional[str] = Field(None, min_length=1, max_length=100)
     tokens_used: Optional[int] = Field(None, ge=0)
+    reasoning: Optional[str] = Field(None)
+    word_count: Optional[tuple[int, int]] = Field(None)
 
 
 class UpdateRequest(BaseModel):
@@ -96,6 +100,8 @@ class UpdateRequest(BaseModel):
     summary: Optional[str] = Field(None, max_length=500)
     status: Optional[str] = Field(None, pattern="^(published|draft)$")
     author: Optional[str] = Field(None, min_length=1, max_length=100)
+    reasoning: Optional[str] = Field(None)
+    word_count: Optional[tuple[int, int]] = Field(None)
 
 
 def _validate_sport(sport: str) -> str:
@@ -182,6 +188,48 @@ def _guess_summary(content: str, limit: int = 280) -> str:
     return cut.rstrip(".,;: ") + "…"
 
 
+def _slugify_title(title: str) -> str:
+    """Turn a title into an SEO-friendly slug fragment."""
+    t = (title or "").strip().lower()
+    t = re.sub(r"[^a-z0-9]+", "-", t)
+    t = re.sub(r"-{2,}", "-", t).strip("-")
+    return t[:80] or "article"
+
+
+def _article_slug(dt, title: str) -> str:
+    """Build the full unique slug: YYYY-MM-DD-<title-slug>."""
+    if dt is None:
+        prefix = "0000-00-00"
+    elif hasattr(dt, "astimezone"):
+        prefix = dt.astimezone(timezone.utc).strftime("%Y-%m-%d")
+    else:
+        prefix = dt.strftime("%Y-%m-%d")
+    return f"{prefix}-{_slugify_title(title)}"
+
+
+async def _assign_unique_slug(db, sport: str, article_id: int, base: str) -> str:
+    """Set a unique (per sport) slug on the article, suffixing with -N if taken."""
+    cand = base
+    idx = 0
+    while True:
+        taken = await db.execute(
+            text(
+                "SELECT 1 FROM public.original_articles "
+                "WHERE sport = :s AND slug = :sl AND id <> :i LIMIT 1"
+            ),
+            {"s": sport, "sl": cand, "i": article_id},
+        )
+        if taken.scalar() is None:
+            break
+        idx += 1
+        cand = f"{base}-{idx}"
+    await db.execute(
+        text("UPDATE public.original_articles SET slug = :sl WHERE id = :i"),
+        {"sl": cand, "i": article_id},
+    )
+    return cand
+
+
 # ──────────────────────────────────────────────
 #  Generate a draft article (research-loop, reused chat engine)
 # ──────────────────────────────────────────────
@@ -196,19 +244,32 @@ async def generate_original_article(
     sport = _validate_sport(sport)
     engine = ENGINES[sport]
 
+    reasoning = (req.reasoning or "medium").strip().lower()
+    _allowed_reasoning = {"minimal", "low", "medium", "high", "xhigh", "max"}
+    if reasoning not in _allowed_reasoning:
+        raise HTTPException(status_code=422, detail=f"reasoning must be one of {sorted(_allowed_reasoning)}.")
+
+    length_clause = ""
+    if req.word_count is not None:
+        lo, hi = req.word_count
+        if lo <= 0 or hi < lo:
+            raise HTTPException(status_code=422, detail="word_count range is invalid.")
+        length_clause = f" Aim for approximately {lo}–{hi} words (about {lo // 90}–{hi // 90} minutes of reading)."
+
     messages: list[dict[str, Any]] = [
         {
             "role": "system",
             "content": (
                 f"{engine.system_prompt}\n\n---\n\n{ARTICLE_SYSTEM_PROMPT}\n\n"
                 f"Write for the {sport.upper()} section of the site."
+                f"{length_clause}"
             ),
         },
         {"role": "user", "content": req.instructions},
     ]
 
     try:
-        answer, tokens = await engine.research_and_answer(db, messages, max_turns=15)
+        answer, tokens = await engine.research_and_answer(db, messages, max_turns=15, reasoning=reasoning)
     except Exception as e:  # noqa: BLE001
         logger.exception("Original-article generation failed for %s", sport)
         raise HTTPException(status_code=500, detail=f"Article generation failed: {e}")
@@ -228,21 +289,25 @@ async def generate_original_article(
     trace = _capture_research(messages)
     now = datetime.now(timezone.utc)
     author = (req.author or "Earl").strip()
+    final_word_count = len(re.findall(r"\S+", answer))
+    word_lo, word_hi = req.word_count if req.word_count is not None else (None, None)
 
     # Persist immediately as a DRAFT so it shows up in the Edit Articles tab
     # (and so token/prompt/research provenance survives a page refresh). The
     # admin then flips it to published (or edits it) explicitly.
+    draft_slug = _article_slug(now, title)
     insert = await db.execute(
         text(
             """
             INSERT INTO public.original_articles
-                (sport, title, summary, content, instructions, status,
-                 created_at, updated_at, prompt_json, research_json, author, tokens_used)
+                (sport, title, summary, content, instructions, status, slug,
+                 created_at, updated_at, prompt_json, research_json, author, tokens_used,
+                 reasoning, word_min, word_max, word_count)
             VALUES
-                (:sport, :title, :summary, :content, :instructions, 'draft',
+                (:sport, :title, :summary, :content, :instructions, 'draft', :slug,
                  :now, :now, CAST(:prompt AS jsonb), CAST(:research AS jsonb),
-                 :author, :tokens_used)
-            RETURNING id, sport, title, summary, content, instructions, status,
+                 :author, :tokens_used, :reasoning, :word_lo, :word_hi, :word_count)
+            RETURNING id, sport, title, summary, content, instructions, status, slug,
                       created_at, author, tokens_used
             """
         ),
@@ -251,12 +316,17 @@ async def generate_original_article(
             "title": title,
             "summary": _guess_summary(answer),
             "content": answer,
+            "slug": draft_slug,
             "instructions": req.instructions,
             "now": now,
             "prompt": json.dumps(trace["prompt"]),
             "research": json.dumps(trace["tool_calls"]),
             "author": author,
             "tokens_used": tokens,
+            "reasoning": reasoning,
+            "word_lo": word_lo,
+            "word_hi": word_hi,
+            "word_count": final_word_count,
         },
     )
     draft_row = insert.mappings().first()
@@ -279,7 +349,6 @@ async def generate_original_article(
 
 # ──────────────────────────────────────────────
 #  Publish
-# ──────────────────────────────────────────────
 
 
 @router.post("/original-articles/{sport}/publish")
@@ -295,20 +364,21 @@ async def publish_original_article(
         text(
             """
             INSERT INTO public.original_articles
-                (sport, title, summary, content, instructions, status,
+                (sport, title, summary, content, instructions, status, slug,
                  created_at, updated_at, published_at, prompt_json, research_json,
-                 author, tokens_used)
+                 author, tokens_used, reasoning, word_min, word_max, word_count)
             VALUES
-                (:sport, :title, :summary, :content, :instructions, 'published',
+                (:sport, :title, :summary, :content, :instructions, 'published', :slug,
                  :now, :now, :now, CAST(:prompt AS jsonb), CAST(:research AS jsonb),
-                 :author, :tokens_used)
-            RETURNING id, sport, title, summary, content, instructions, status,
+                 :author, :tokens_used, :reasoning, :word_lo, :word_hi, :word_count)
+            RETURNING id, sport, title, summary, content, instructions, status, slug,
                       published_at, created_at, author, tokens_used
             """
         ),
         {
             "sport": sport,
             "title": req.title.strip(),
+            "slug": _article_slug(now, req.title.strip()),
             "summary": (req.summary or _guess_summary(req.content)),
             "content": req.content,
             "instructions": req.instructions,
@@ -317,6 +387,10 @@ async def publish_original_article(
             "research": json.dumps(req.research) if req.research is not None else "null",
             "author": author or "Earl",
             "tokens_used": req.tokens_used,
+            "reasoning": (req.reasoning or "medium"),
+            "word_lo": (req.word_count[0] if req.word_count else None),
+            "word_hi": (req.word_count[1] if req.word_count else None),
+            "word_count": len(re.findall(r"\S+", req.content)),
         },
     )
     row = result.mappings().first()
@@ -340,7 +414,7 @@ async def list_original_articles(
     result = await db.execute(
         text(
             """
-            SELECT id, sport, title, summary, content, status, published_at, created_at, author
+            SELECT id, sport, title, summary, content, status, slug, published_at, created_at, author
             FROM public.original_articles
             WHERE sport = :sport AND status = 'published'
             ORDER BY published_at DESC
@@ -353,27 +427,42 @@ async def list_original_articles(
     return {"sport": sport, "articles": rows}
 
 
-@router.get("/original-articles/{sport}/{article_id}")
+@router.get("/original-articles/{sport}/{ref}")
 async def get_original_article(
     sport: str,
-    article_id: int,
+    ref: str,
     db: AsyncSession = Depends(get_db),
 ):
     sport = _validate_sport(sport)
-    result = await db.execute(
-        text(
-            """
-            SELECT id, sport, title, summary, content, status, published_at, created_at, author, tokens_used
-            FROM public.original_articles
-            WHERE id = :aid AND sport = :sport
-            """
-        ),
-        {"sport": sport, "aid": article_id},
-    )
+    # `ref` may be a numeric id (legacy) or an SEO slug (date + title).
+    if ref.isdigit():
+        result = await db.execute(
+            text(
+                """
+                SELECT id, sport, title, summary, content, status, slug,
+                       published_at, created_at, author, tokens_used
+                FROM public.original_articles
+                WHERE id = :aid AND sport = :sport
+                """
+            ),
+            {"sport": sport, "aid": int(ref)},
+        )
+    else:
+        result = await db.execute(
+            text(
+                """
+                SELECT id, sport, title, summary, content, status, slug,
+                       published_at, created_at, author, tokens_used
+                FROM public.original_articles
+                WHERE slug = :sl AND sport = :sport
+                """
+            ),
+            {"sport": sport, "sl": ref},
+        )
     row = result.mappings().first()
     if not row:
         raise HTTPException(status_code=404, detail="Article not found")
-    return {"article": dict(row)}
+    return {"article": dict(row), "slug": row["slug"]}
 
 
 # Admin routes live under `/api/admin` (matching the existing admin.py
@@ -382,6 +471,144 @@ async def get_original_article(
 # router (no prefix), served via the catch-all /api/:path* -> /:path* rewrite.
 
 admin_router = APIRouter(prefix="/api/admin", tags=["original-articles-admin"])
+
+
+class ReEditRequest(BaseModel):
+    instructions: str = Field(..., min_length=1, max_length=4000)
+    include_research: bool = True
+
+
+def _format_research_steps(steps: list[dict]) -> str:
+    """Render stored research tool calls/results into a readable transcript block.
+
+    Each step is {tool, arguments, result}. Results are trimmed so the context
+    stays within the model's window; the model can always re-query for more.
+    """
+    if not steps:
+        return ""
+    lines: list[str] = []
+    for i, st in enumerate(steps, 1):
+        tool = st.get("tool") or "unknown"
+        args = st.get("arguments") or {}
+        result = st.get("result")
+        try:
+            args_txt = json.dumps(args, default=str)[:600]
+        except Exception:  # noqa: BLE001
+            args_txt = str(args)[:600]
+        try:
+            result_txt = json.dumps(result, default=str)
+        except Exception:  # noqa: BLE001
+            result_txt = str(result)
+        # Trim oversized results to keep the transcript manageable.
+        if len(result_txt) > 15000:
+            result_txt = result_txt[:15000] + "…[truncated]"
+        lines.append(f"### Step {i}: {tool}")
+        lines.append(f"Arguments: {args_txt}")
+        lines.append(f"Result: {result_txt}")
+    return "\n\n".join(lines)
+
+
+@admin_router.post("/original-articles/{sport}/{article_id}/re-edit")
+async def re_edit_original_article(
+    sport: str,
+    article_id: int,
+    req: ReEditRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Regenerate an existing article guided by the user's edit instructions.
+
+    Loads the article's stored content and sends the user's instructions to the
+    sport engine's research-and-answer loop, which may do fresh research to
+    inform the rewrite. Returns the new title + content; the client persists
+    via the normal PATCH endpoint.
+    """
+    sport = _validate_sport(sport)
+    engine = ENGINES[sport]
+
+    result = await db.execute(
+        text(
+            """
+            SELECT id, sport, title, content, summary, author, research_json, prompt_json
+            FROM public.original_articles
+            WHERE id = :id AND sport = :sport
+            """
+        ),
+        {"id": article_id, "sport": sport},
+    )
+    row = result.mappings().first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Article not found.")
+
+    # Load the research the model already gathered when it wrote this article,
+    # so we can hand it back instead of re-researching from scratch.
+    steps: list[dict] = []
+    if req.include_research and row["research_json"]:
+        rj = row["research_json"]
+        if isinstance(rj, str):
+            try:
+                rj = json.loads(rj)
+            except (json.JSONDecodeError, TypeError):
+                rj = None
+        if isinstance(rj, list):
+            steps = [s for s in rj if isinstance(s, dict)]
+    transcript = _format_research_steps(steps)[:120000]
+
+    system_block = (
+        f"{engine.system_prompt}\n\n---\n\n{ARTICLE_SYSTEM_PROMPT}\n\n"
+        f"You are revising an existing article for the {sport.upper()} "
+        f"section of the site. Follow the user's revision instructions "
+        f"and rewrite the article accordingly. Return the full updated "
+        f"article as markdown with a `# ` title on the first line. "
+        f"Do not lose information or drop sections unless instructed."
+    )
+    if transcript:
+        system_block += (
+            "\n\n---\n\n"
+            "PRIOR RESEARCH ALREADY GATHERED FOR THIS ARTICLE:\n"
+            f"{transcript}\n\n"
+            "These are the tool results the previous draft was built from. You may "
+            "rely on them to answer the revision. If the revision needs data not "
+            "covered here, call the research tools to gather it — otherwise avoid "
+            "duplicating research you already have."
+        )
+
+    messages: list[dict[str, Any]] = [
+        {"role": "system", "content": system_block},
+        {
+            "role": "user",
+            "content": (
+                f"EXISTING ARTICLE TITLE:\n{row['title']}\n\n"
+                f"EXISTING ARTICLE CONTENT:\n{row['content']}\n\n"
+                f"REVISION INSTRUCTIONS:\n{req.instructions}\n\n"
+                f"Rewrite the article now."
+            ),
+        },
+    ]
+
+    try:
+        answer, tokens = await engine.research_and_answer(db, messages, max_turns=15)
+    except Exception as e:  # noqa: BLE001
+        logger.exception("Original-article re-edit failed for %s", sport)
+        raise HTTPException(status_code=500, detail=f"Article re-edit failed: {e}")
+
+    if not answer or not answer.strip():
+        raise HTTPException(status_code=502, detail="The model returned an empty article.")
+
+    # Pull the first `# ` headline off the top as the title if present.
+    title = ""
+    m = re.search(r"^#\s+(.+)$", answer, flags=re.MULTILINE)
+    if m:
+        title = m.group(1).strip()
+    else:
+        title = row["title"]
+
+    return {
+        "article_id": article_id,
+        "sport": sport,
+        "title": title,
+        "content": answer,
+        "tokens": tokens,
+    }
 
 
 @admin_router.get("/original-articles/{sport}")
@@ -394,8 +621,9 @@ async def admin_list_original_articles(
     result = await db.execute(
         text(
             """
-            SELECT id, sport, title, summary, status, published_at, created_at,
+            SELECT id, sport, title, summary, content, status, slug, published_at, created_at,
                    updated_at, author, tokens_used,
+                   reasoning, word_min, word_max, word_count,
                    (prompt_json IS NOT NULL) AS has_prompt,
                    (research_json IS NOT NULL) AS has_research,
                    jsonb_array_length(COALESCE(research_json, '[]'::jsonb)) AS research_steps
@@ -444,9 +672,9 @@ async def admin_get_original_article(
     result = await db.execute(
         text(
             """
-            SELECT id, sport, title, summary, content, instructions, status,
+            SELECT id, sport, title, summary, content, instructions, status, slug,
                    published_at, created_at, updated_at, prompt_json, research_json,
-                   author, tokens_used
+                   author, tokens_used, reasoning, word_min, word_max, word_count
             FROM public.original_articles
             WHERE id = :aid AND sport = :sport
             """
@@ -496,6 +724,17 @@ async def update_original_article(
     elif new_status == "draft":
         published_at = None
 
+    # Regenerate the SEO slug when title or publish date changes.
+    slug_changed = (
+        (req.title is not None and req.title.strip() != row.title)
+        or (published_at != row.published_at)
+    )
+    if req.title is not None:
+        row.title = new_title
+    if slug_changed:
+        await _assign_unique_slug(db, sport, article_id, _article_slug(published_at, new_title))
+
+    # -- start --
     result = await db.execute(
         text(
             """
@@ -506,7 +745,11 @@ async def update_original_article(
                 status = :status,
                 published_at = :published_at,
                 updated_at = :now,
-                author = :author
+                author = :author,
+                word_count = :word_count,
+                reasoning = COALESCE(:reasoning, reasoning),
+                word_min = COALESCE(:word_lo, word_min),
+                word_max = COALESCE(:word_hi, word_max)
             WHERE id = :aid AND sport = :sport
             RETURNING id, sport, title, summary, content, status, published_at,
                       updated_at, author, tokens_used
@@ -520,6 +763,10 @@ async def update_original_article(
             "published_at": published_at,
             "now": now,
             "author": new_author or "Earl",
+            "word_count": len(re.findall(r"\S+", new_content)),
+            "reasoning": (req.reasoning if req.reasoning else None),
+            "word_lo": (req.word_count[0] if req.word_count else None),
+            "word_hi": (req.word_count[1] if req.word_count else None),
             "aid": article_id,
             "sport": sport,
         },

@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
+import { useSeo } from "@/components/Seo";
 
 interface PlayerProfile {
   id: number;
@@ -104,6 +105,14 @@ export default function PlayerProfilePage() {
   const playerId = params?.id || "";
   const [profile, setProfile] = useState<PlayerProfile | null>(null);
   const [loading, setLoading] = useState(true);
+
+  const sportLabel = sport === "nfl" ? "NFL" : sport === "nba" ? "NBA" : sport === "mlb" ? "MLB" : sport.toUpperCase();
+  const playerName = profile?.name || "Player";
+  useSeo({
+    title: `${playerName} — ${sportLabel} Player Profile | Earl Knows Ball`,
+    description: `View ${playerName}'s ${sportLabel} stats, recent seasons, and profile on Earl Knows Ball.`,
+    keywords: `${sport}, ${sportLabel}, ${playerName}, player, stats, profile, Earl Knows Ball`,
+  });
 
   useEffect(() => {
     if (!playerId) return;

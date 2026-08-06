@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
+import { useSeo } from "@/components/Seo";
 
 interface Plan {
   id: string;
@@ -29,6 +30,7 @@ const emptyPlan = {
 const token = () => localStorage.getItem("earl_token");
 
 export default function AdminPlans() {
+  useSeo({ title: "Plans — Admin — Earl Knows Ball" });
   const [plans, setPlans] = useState<Plan[]>([]);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState<Plan | "new" | null>(null);

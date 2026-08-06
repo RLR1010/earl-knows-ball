@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useSeo } from "@/components/Seo";
 
 // ── Data Definitions ──────────────────────────────────────────────
 
@@ -26,6 +27,7 @@ interface ArticleCount {
 // ── Main Component ──
 
 export default function SiteStructurePage() {
+  useSeo({ title: "Site Structure — Admin — Earl Knows Ball" });
   const [expanded, setExpanded] = useState<string[]>([]);
 
   const toggle = (id: string) => {

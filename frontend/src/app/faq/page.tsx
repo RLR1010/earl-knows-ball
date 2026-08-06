@@ -1,7 +1,10 @@
 import type { Metadata } from "next";
 
 export const metadata: Metadata = {
-  title: "FAQ — Earl Knows Ball",
+  title: "FAQ",
+  description:
+    "Frequently asked questions about Earl Knows Ball — how the AI handicapper works, picks, probabilities, betting data, subscription plans, and support.",
+  keywords: ["Earl Knows Ball FAQ", "AI sports handicapping", "sports betting help", "betting picks questions"],
 };
 
 export default function FAQPage() {

@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
+import { useSeo } from "@/components/Seo";
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -153,6 +154,13 @@ export default function PropsPage() {
   const [data, setData] = useState<PropsResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+
+  const sportLabel = sport === "nfl" ? "NFL" : sport === "nba" ? "NBA" : sport === "mlb" ? "MLB" : sport.toUpperCase();
+  useSeo({
+    title: `${sportLabel} Player Props & Odds | Earl Knows Ball`,
+    description: `Compare ${sportLabel} player props and betting odds from Earl Knows Ball.`,
+    keywords: `${sport}, ${sportLabel}, player props, props, odds, betting, Earl Knows Ball`,
+  });
 
   const apiPath =
     sport === "mlb"

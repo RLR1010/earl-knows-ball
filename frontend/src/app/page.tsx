@@ -1,4 +1,26 @@
+import type { Metadata } from "next";
 import UpcomingGames from "@/components/UpcomingGames";
+
+export const metadata: Metadata = {
+  title: "Earl Knows Ball — AI-Powered Sports Handicapping & Picks",
+  description:
+    "Earl Knows Ball is the ultimate AI sports handicapping tool for NFL, MLB, and NBA. Get picks with probabilities, betting lines, trends, and a chat handicapper that explains every call.",
+  keywords: [
+    "sports betting picks",
+    "AI handicapper",
+    "NFL predictions",
+    "MLB predictions",
+    "NBA predictions",
+    "betting odds and spreads",
+  ],
+  openGraph: {
+    title: "Earl Knows Ball — AI-Powered Sports Handicapping & Picks",
+    description: "The ultimate AI sports handicapping tool for NFL, MLB, and NBA.",
+    url: "https://earlknowsball.com/",
+    siteName: "Earl Knows Ball",
+    type: "website",
+  },
+};
 
 export default function Home() {
   return (

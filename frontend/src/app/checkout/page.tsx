@@ -2,6 +2,7 @@
 
 import { Suspense, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
+import { useSeo } from "@/components/Seo";
 
 declare global {
   interface Window {
@@ -112,6 +113,11 @@ function CheckoutForm() {
 }
 
 export default function CheckoutPage() {
+  useSeo({
+    title: "Checkout — Earl Knows Ball",
+    description: "Complete your Earl Knows Ball premium subscription checkout securely with Stripe and start beating the books.",
+    keywords: "checkout, subscribe, Earl Knows Ball, premium membership, payment",
+  });
   return (
     <Suspense fallback={<div className="min-h-screen bg-neutral-950" />}>
       <CheckoutForm />

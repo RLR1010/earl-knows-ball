@@ -2,8 +2,14 @@
 import { useRouter } from "next/navigation";
 import { useState, type FormEvent } from "react";
 import { useAuth } from "@/lib/auth-context";
+import { useSeo } from "@/components/Seo";
 
 export default function LoginPage() {
+  useSeo({
+    title: "Log In — Earl Knows Ball",
+    description: "Log in to Earl Knows Ball to access your AI handicapping chat, premium game picks, and personalized analysis.",
+    keywords: "log in, Earl Knows Ball, sports betting, AI handicapping",
+  });
   const router = useRouter();
   const { sendCode, verifyCode } = useAuth();
   const [email, setEmail] = useState("");

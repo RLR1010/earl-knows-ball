@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { useSeo } from "@/components/Seo";
 
 const SPORTS = ["mlb", "nfl", "nba"] as const;
 type Sport = (typeof SPORTS)[number];
@@ -23,6 +24,11 @@ interface Article {
   has_prompt?: boolean;
   has_research?: boolean;
   research_steps?: number;
+  reasoning?: string | null;
+  word_min?: number | null;
+  word_max?: number | null;
+  word_count?: number | null;
+  slug?: string | null;
 }
 
 interface ArticleDetail extends Article {
@@ -46,6 +52,7 @@ const DEFAULT_INSTRUCTIONS: Record<Sport, string> = {
 type Tab = "create" | "edit";
 
 export default function AdminOriginalArticles() {
+  useSeo({ title: "Original Articles — Admin — Earl Knows Ball" });
   const [tab, setTab] = useState<Tab>("create");
 
   // --- shared sport state ---
@@ -56,6 +63,8 @@ export default function AdminOriginalArticles() {
   // --- create article state ---
   const [instructions, setInstructions] = useState("");
   const [author, setAuthor] = useState("Earl");
+  const [reasoning, setReasoning] = useState("medium");
+  const [wordRange, setWordRange] = useState<[number, number]>([400, 700]);
   const [draftId, setDraftId] = useState<number | null>(null);
   const [draft, setDraft] = useState<{
     title: string;
@@ -74,6 +83,9 @@ export default function AdminOriginalArticles() {
   const [editAuthor, setEditAuthor] = useState("Earl");
   const [saving, setSaving] = useState(false);
   const [editMarkdown, setEditMarkdown] = useState(false);
+  const [editInstructions, setEditInstructions] = useState("");
+  const [includeResearch, setIncludeResearch] = useState(true);
+  const [reediting, setReediting] = useState(false);
 
   // --- research panel state ---
   const [openResearchId, setOpenResearchId] = useState<number | null>(null);
@@ -116,7 +128,7 @@ export default function AdminOriginalArticles() {
       const res = await fetch(`/api/original-articles/${sport}/generate`, {
         method: "POST",
         headers: authHeaders(),
-        body: JSON.stringify({ instructions }),
+        body: JSON.stringify({ instructions, reasoning, word_count: wordRange }),
       });
       if (!res.ok) {
         let detail = `HTTP ${res.status}`;
@@ -220,10 +232,50 @@ export default function AdminOriginalArticles() {
     setEditContent(a.content);
     setEditAuthor(a.author || "Earl");
     setEditMarkdown(false);
+    setEditInstructions("");
   };
 
   const cancelEdit = () => {
     setEditing(null);
+  };
+
+  const handleReEdit = async () => {
+    if (!editing) return;
+    if (!editInstructions.trim()) {
+      alert("Enter instructions for the AI rewrite first.");
+      return;
+    }
+    setReediting(true);
+    try {
+      const res = await fetch(
+        `/api/admin/original-articles/${editing.sport}/${editing.id}/re-edit`,
+        {
+          method: "POST",
+          headers: authHeaders(),
+          body: JSON.stringify({
+            instructions: editInstructions.trim(),
+            include_research: includeResearch,
+          }),
+        }
+      );
+      if (!res.ok) {
+        let detail = `HTTP ${res.status}`;
+        try {
+          const e = await res.json();
+          detail = e.detail || detail;
+        } catch {}
+        throw new Error(detail);
+      }
+      const data = await res.json();
+      setEditTitle(data.title || editTitle);
+      setEditContent(data.content || editContent);
+      setEditMarkdown(false);
+      alert("✅ AI rewrite ready. Review it, then hit Save to persist.");
+    } catch (e: any) {
+      alert(`AI rewrite failed: ${e.message}`);
+    } finally {
+      setReediting(false);
+    }
   };
 
   const handleSaveEdit = async () => {
@@ -401,6 +453,39 @@ export default function AdminOriginalArticles() {
               value={instructions}
               onChange={(e) => setInstructions(e.target.value)}
             />
+            <div className="flex flex-wrap items-center gap-4 mt-3">
+              <div className="flex items-center gap-2">
+                <label className="text-xs text-gray-400 shrink-0">Reasoning</label>
+                <select
+                  className="bg-black/40 border border-white/10 rounded-md p-2 text-sm focus:outline-none focus:border-blue-500"
+                  value={reasoning}
+                  onChange={(e) => setReasoning(e.target.value)}
+                >
+                  <option value="minimal">Minimal</option>
+                  <option value="low">Low</option>
+                  <option value="medium">Medium</option>
+                  <option value="high">High</option>
+                  <option value="xhigh">Extra high</option>
+                </select>
+              </div>
+              <div className="flex items-center gap-2">
+                <label className="text-xs text-gray-400 shrink-0">Length</label>
+                <select
+                  className="bg-black/40 border border-white/10 rounded-md p-2 text-sm focus:outline-none focus:border-blue-500"
+                  value={wordRange.join("–")}
+                  onChange={(e) => {
+                    const [lo, hi] = e.target.value.split("–").map((s) => parseInt(s, 10));
+                    if (!Number.isNaN(lo) && !Number.isNaN(hi)) setWordRange([lo, hi]);
+                  }}
+                >
+                  <option value="300–500">Short (~300–500 words)</option>
+                  <option value="400–700">Medium (~400–700 words)</option>
+                  <option value="700–1100">Long (~700–1,100 words)</option>
+                  <option value="1100–1600">Very long (~1,100–1,600 words)</option>
+                  <option value="1600–2200">Deep dive (~1,600–2,200 words)</option>
+                </select>
+              </div>
+            </div>
             <div className="flex items-center gap-3 mt-3">
               <button
                 onClick={handleGenerate}
@@ -490,10 +575,27 @@ export default function AdminOriginalArticles() {
                           </>
                         )}
                       </div>
+                      <div className="text-[11px] text-gray-600 mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5">
+                        <span>Reasoning: <span className="text-gray-400 capitalize">{a.reasoning || "medium"}</span></span>
+                        <span>
+                          Target: <span className="text-gray-400">
+                            {typeof a.word_min === "number" && typeof a.word_max === "number"
+                              ? `${a.word_min.toLocaleString()}–${a.word_max.toLocaleString()} words`
+                              : "—"}
+                          </span>
+                        </span>
+                        <span>
+                          Final: <span className="text-gray-400">
+                            {typeof a.word_count === "number"
+                              ? `${a.word_count.toLocaleString()} words`
+                              : "—"}
+                          </span>
+                        </span>
+                      </div>
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
                       <a
-                        href={`/${a.sport}/articles/${a.id}`}
+                        href={`/${a.sport}/articles/${a.slug || a.id}`}
                         target="_blank"
                         rel="noreferrer"
                         className="text-xs text-blue-400 hover:text-blue-300"
@@ -582,6 +684,32 @@ export default function AdminOriginalArticles() {
                           value={editAuthor}
                           onChange={(e) => setEditAuthor(e.target.value)}
                           placeholder="Earl"
+                        />
+                      </div>
+                      <div className="mb-2 rounded-md border border-white/10 bg-black/25">
+                        <div className="flex items-center justify-between px-3 py-2">
+                          <label className="text-xs text-gray-300 flex items-center gap-1.5 select-none cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={includeResearch}
+                              onChange={(e) => setIncludeResearch(e.target.checked)}
+                              className="accent-emerald-500"
+                            />
+                            Send previously gathered research
+                          </label>
+                          <button
+                            onClick={handleReEdit}
+                            disabled={reediting || !editInstructions.trim()}
+                            className="px-3 py-1 rounded-md bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-xs font-medium"
+                          >
+                            {reediting ? "Rewriting…" : "Apply with AI"}
+                          </button>
+                        </div>
+                        <textarea
+                          className="w-full bg-transparent border-t border-white/10 p-3 text-sm min-h-[80px] focus:outline-none resize-y"
+                          value={editInstructions}
+                          onChange={(e) => setEditInstructions(e.target.value)}
+                          placeholder={"Tell the AI what to change, e.g. \"Add a section on the QB matchup\" or \"Tighten the intro and expand the betting analysis\". It sends the article's prior research (toggle above) plus these instructions, and can pull more data if needed."}
                         />
                       </div>
                       <textarea

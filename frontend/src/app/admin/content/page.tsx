@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
+import { useSeo } from "@/components/Seo";
 
 const SPORTS = ["mlb", "nfl", "nba"] as const;
 type Sport = (typeof SPORTS)[number];
@@ -234,6 +235,7 @@ function GameCard({
    ───────────────────────────────────────────── */
 
 export default function AdminContent() {
+  useSeo({ title: "Content — Admin — Earl Knows Ball" });
   const router = useRouter();
   const [sport, setSport] = useState<Sport>("mlb");
   const [daysOffset, setDaysOffset] = useState(0);

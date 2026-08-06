@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
+import { useSeo } from "@/components/Seo";
 
 interface PaymentRecord {
   id: string;
@@ -56,6 +57,7 @@ const STATUS_COLORS: Record<string, string> = {
 };
 
 export default function AdminPayments() {
+  useSeo({ title: "Payments — Admin — Earl Knows Ball" });
   const [data, setData] = useState<PaymentListResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");

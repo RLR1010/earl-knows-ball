@@ -122,6 +122,7 @@ class ToolChatEngine:
         db: Any,
         messages: list[dict],
         max_turns: int = 15,
+        reasoning: str | None = None,
     ) -> tuple[str, int]:
         """Run the tool-calling research loop and return DeepSeek's final answer.
 
@@ -129,12 +130,21 @@ class ToolChatEngine:
             db: Database session (AsyncSession or sync session).
             messages: List of message dicts.
             max_turns: Maximum tool-calling rounds before forcing a final answer.
+            reasoning: Optional reasoning_effort override ("minimal", "low",
+                "medium", "high"). If None, uses the engine default.
 
         Returns:
             Tuple of (final answer text, total tokens used).
         """
         original_answer = ""
         total_tokens = 0
+
+        # Build the chat extra_body once; override reasoning_effort if requested.
+        research_extra_body = dict(self._chat_extra_body)
+        if reasoning:
+            research_extra_body["reasoning_effort"] = reasoning
+            # Reasoning must be paired with thinking enabled to take effect.
+            research_extra_body["thinking"] = {"type": "enabled"}
 
         try:
             client = AsyncOpenAI(
@@ -146,7 +156,7 @@ class ToolChatEngine:
             # First call with tools available
             response = await self._chat_create(client,
                 model=self.model,
-                extra_body=self._chat_extra_body,
+                extra_body=research_extra_body,
                 messages=messages,
                 tools=self.tools,
                 tool_choice="auto",
@@ -184,7 +194,7 @@ class ToolChatEngine:
                 # Next turn
                 response = await self._chat_create(client,
                     model=self.model,
-                    extra_body=self._chat_extra_body,
+                    extra_body=research_extra_body,
                     messages=messages,
                     tools=self.tools,
                     tool_choice="auto",
@@ -213,7 +223,7 @@ class ToolChatEngine:
                 messages.append({"role": "user", "content": "You have all the data you need. Provide your final answer now based on the tool results. Be concise."})
                 response = await self._chat_create(client,
                     model=self.model,
-                    extra_body=self._chat_extra_body,
+                    extra_body=research_extra_body,
                     messages=messages,
                 )
                 if response.usage:

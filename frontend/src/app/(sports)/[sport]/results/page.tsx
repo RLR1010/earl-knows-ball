@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
+import { useSeo } from "@/components/Seo";
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -533,6 +534,12 @@ export default function ResultsPage() {
   const params = useParams();
   const router = useRouter();
   const sport = (params.sport as string || "nfl").toLowerCase();
+  const sportLabel = sport === "nfl" ? "NFL" : sport === "nba" ? "NBA" : sport === "mlb" ? "MLB" : sport.toUpperCase();
+  useSeo({
+    title: `${sportLabel} Betting Results & Records | Earl Knows Ball`,
+    description: `Review ${sportLabel} betting results, records, and historical picks performance on Earl Knows Ball.`,
+    keywords: `${sport}, ${sportLabel}, betting results, records, picks, performance, Earl Knows Ball`,
+  });
 
   const [summary, setSummary] = useState<Summary | null>(null);
   const [yearly, setYearly] = useState<YearlyData | null>(null);

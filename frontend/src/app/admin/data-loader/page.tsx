@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useCallback } from "react";
+import { useSeo } from "@/components/Seo";
 
 /* ── Types ────────────────────────────────────────────────────────── */
 
@@ -142,6 +143,7 @@ function FeatureRow({ feat }: { feat: FeatureItem }) {
 /* ── Main Page ────────────────────────────────────────────────────── */
 
 export default function DataLoaderPage() {
+  useSeo({ title: "Data Loader — Admin — Earl Knows Ball" });
   const [sport, setSport] = useState<"nfl" | "mlb" | "nba">("nfl");
   const [gameId, setGameId] = useState("");
   const [loading, setLoading] = useState(false);

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
+import { useSeo } from "@/components/Seo";
 
 const SPORTS = ["nfl", "nba", "mlb"] as const;
 type Sport = (typeof SPORTS)[number];
@@ -42,6 +43,7 @@ function StatBox({ label, value, color }: { label: string; value: string | numbe
 }
 
 export default function AdminArticles() {
+  useSeo({ title: "Articles — Admin — Earl Knows Ball" });
   const [sport, setSport] = useState<Sport>("nfl");
   const [stats, setStats] = useState<ArticleStats | null>(null);
   const [articles, setArticles] = useState<Article[]>([]);

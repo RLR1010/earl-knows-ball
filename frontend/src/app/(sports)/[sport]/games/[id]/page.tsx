@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useParams, useSearchParams } from "next/navigation";
 import Link from "next/link";
+import { useSeo } from "@/components/Seo";
 import NBAGameTabs from "@/components/NBAGameTabs";
 import MLBGameTabs from "@/components/MLBGameTabs";
 import NFLGameTabs, { BettingLinesCard } from "@/components/NFLGameTabs";
@@ -265,6 +266,27 @@ export default function GameDetailPage() {
   // NBA data
   const [nbaPrediction, setNbaPrediction] = useState<GamePrediction | null>(null);
   const [nbaGameLine, setNbaGameLine] = useState<{ spread: number | null; over_under: number | null } | null>(null);
+
+  // SEO: build a dynamic title from whichever team data is available.
+  const matchup =
+    (prediction?.away_team && prediction.home_team)
+      ? `${prediction.away_team} @ ${prediction.home_team}`
+      : (nbaPrediction?.away_team && nbaPrediction.home_team)
+        ? `${nbaPrediction.away_team} @ ${nbaPrediction.home_team}`
+        : null;
+  useSeo(
+    matchup
+      ? {
+          title: `${matchup} Picks, Odds & Prediction — ${sport.toUpperCase()} | Earl Knows Ball`,
+          description: `AI handicapping for ${matchup}: spread, over/under, and moneyline picks with probabilities, betting trends, and key matchups for the ${sport.toUpperCase()} game.`,
+          keywords: `${sport} picks, ${matchup}, ${sport} betting odds, ${sport} spread, ${sport} prediction, ${sport} over under, AI handicapper`,
+        }
+      : {
+          title: `${sport.toUpperCase()} Game Picks & Prediction — Earl Knows Ball`,
+          description: `AI handicapping and betting picks for the ${sport.toUpperCase()} game with probabilities, lines, and key matchups.`,
+          keywords: `${sport} picks, ${sport} prediction, ${sport} betting odds, AI handicapper`,
+        },
+  );
 
   // NFL data fetching
   useEffect(() => {

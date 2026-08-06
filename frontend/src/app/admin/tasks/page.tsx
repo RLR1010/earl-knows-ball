@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
+import { useSeo } from "@/components/Seo";
 
 const token = () => localStorage.getItem("earl_token");
 
@@ -85,6 +86,7 @@ function Time({ t }: { t: string | null }) {
 }
 
 export default function TasksPage() {
+  useSeo({ title: "Tasks — Admin — Earl Knows Ball" });
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);

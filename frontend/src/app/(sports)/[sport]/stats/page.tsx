@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
+import { useSeo } from "@/components/Seo";
 
 // ── NFL Types ─────────────────────────────────────────────────────
 
@@ -618,6 +619,13 @@ function NBAStats({ sport }: { sport: string }) {
 export default function StatsPage() {
   const params = useParams<{ sport: string }>();
   const sport = params?.sport || "nfl";
+
+  const sportLabel = sport === "nfl" ? "NFL" : sport === "nba" ? "NBA" : sport === "mlb" ? "MLB" : sport.toUpperCase();
+  useSeo({
+    title: `${sportLabel} Stats & Leaders | Earl Knows Ball`,
+    description: `Explore ${sportLabel} stats, leaderboards, and advanced numbers on Earl Knows Ball.`,
+    keywords: `${sport}, ${sportLabel}, stats, leaders, leaderboards, analytics, Earl Knows Ball`,
+  });
 
   return (
     <div className="space-y-6">

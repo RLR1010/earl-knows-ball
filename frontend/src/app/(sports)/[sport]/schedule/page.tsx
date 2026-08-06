@@ -7,6 +7,7 @@ import Image from "next/image";
 import { api, Game, formatSpread, formatSpreadAway, formatOverUnder } from "@/lib/api";
 import { getTeamLogoUrl } from "@/lib/team_logos";
 import GameCalendar from "@/components/GameCalendar";
+import { useSeo } from "@/components/Seo";
 
 // Regular season (1-18) + playoffs (19-22). Preseason weeks are stored in a
 // distinct range (30-33) so they never collide with the regular season.
@@ -888,6 +889,13 @@ function NFLSchedule({ sport }: { sport: string }) {
 export default function SchedulePage() {
   const params = useParams<{ sport: string }>();
   const sport = params?.sport || "nfl";
+
+  const sportLabel = sport === "nfl" ? "NFL" : sport === "nba" ? "NBA" : sport === "mlb" ? "MLB" : sport.toUpperCase();
+  useSeo({
+    title: `${sportLabel} Schedule, Odds & Lines | Earl Knows Ball`,
+    description: `View the ${sportLabel} schedule, spreads, and betting lines on Earl Knows Ball.`,
+    keywords: `${sport}, ${sportLabel}, schedule, odds, spreads, lines, betting, Earl Knows Ball`,
+  });
 
   return (
     <>

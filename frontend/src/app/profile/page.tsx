@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useAuth } from "@/lib/auth-context";
 import { api, type PaymentRecord, type TokenUsageResponse } from "@/lib/api";
 import { useRouter } from "next/navigation";
+import { useSeo } from "@/components/Seo";
 
 function formatCents(cents: number, currency: string) {
   const symbol = currency === "usd" ? "$" : currency === "eur" ? "€" : "£";
@@ -60,6 +61,11 @@ function paymentBadge(status: string) {
 }
 
 export default function ProfilePage() {
+  useSeo({
+    title: "My Profile — Earl Knows Ball",
+    description: "Manage your Earl Knows Ball membership, subscription, and payment history right from your profile.",
+    keywords: "profile, account, subscription, payments, Earl Knows Ball",
+  });
   const { user, loading: authLoading } = useAuth();
   const router = useRouter();
   const [payments, setPayments] = useState<PaymentRecord[]>([]);

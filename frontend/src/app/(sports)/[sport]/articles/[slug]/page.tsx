@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { useSeo } from "@/components/Seo";
 
 interface PublicArticle {
   id: number;
@@ -13,22 +14,44 @@ interface PublicArticle {
   content: string;
   published_at: string | null;
   author?: string;
+  slug?: string | null;
+}
+
+function setCanonical(url: string) {
+  let link = document.head.querySelector<HTMLLinkElement>('link[rel="canonical"]');
+  if (!link) {
+    link = document.createElement("link");
+    link.rel = "canonical";
+    document.head.appendChild(link);
+  }
+  link.href = url;
 }
 
 export default function SportArticleDetailPage({
   params,
 }: {
-  params: Promise<{ sport: string; id: string }>;
+  params: Promise<{ sport: string; slug: string }>;
 }) {
   const [sport, setSport] = useState<string>("");
   const [article, setArticle] = useState<PublicArticle | null | "loading">("loading");
 
+  const seoTitle = article && article !== "loading" ? `${article.title} — Earl Knows Ball` : `${sport.toUpperCase()} Article — Earl Knows Ball`;
+  const seoDesc =
+    article && article !== "loading"
+      ? (article.summary || `${article.title} analysis and handicapping from Earl Knows Ball.`)
+      : `Original handicapping article for the ${sport.toUpperCase()} — Earl Knows Ball.`;
+  useSeo({
+    title: seoTitle,
+    description: seoDesc,
+    keywords: `${sport} original article, ${sport} handicapping, ${sport} picks, betting analysis, Earl Knows Ball`,
+  });
+
   useEffect(() => {
     let active = true;
     params
-      .then(({ sport, id }) => {
+      .then(({ sport, slug }) => {
         setSport(sport);
-        return fetch(`/api/original-articles/${sport}/${id}`)
+        return fetch(`/api/original-articles/${sport}/${slug}`)
           .then((r) => (r.ok ? r.json() : { article: null }))
           .then((d) => active && setArticle(d.article ?? null))
           .catch(() => active && setArticle(null));
@@ -38,6 +61,17 @@ export default function SportArticleDetailPage({
       active = false;
     };
   }, [params]);
+
+  // Set the SEO canonical URL once we know the article's slug.
+  useEffect(() => {
+    if (article && article !== "loading" && article.slug && sport) {
+      setCanonical(`https://earlknowsball.com/${sport}/articles/${article.slug}`);
+    } else if (!article || article === null) {
+      // Fall back to the URL slug if we couldn't resolve a stored slug.
+      // (handled by params below)
+      setCanonical("");
+    }
+  }, [article, sport]);
 
   if (article === "loading") {
     return (

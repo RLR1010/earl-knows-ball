@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { api, Player } from "@/lib/api";
+import { useSeo } from "@/components/Seo";
 
 interface MLBPlayer {
   id: number;
@@ -48,6 +49,13 @@ export default function PlayersPage() {
   const sport = params?.sport || "nfl";
   const isMLB = sport === "mlb";
   const isNBA = sport === "nba";
+
+  const sportLabel = sport === "nfl" ? "NFL" : sport === "nba" ? "NBA" : sport === "mlb" ? "MLB" : sport.toUpperCase();
+  useSeo({
+    title: `${sportLabel} Players Roster | Earl Knows Ball`,
+    description: `Browse ${sportLabel} player rosters, stats, and profiles on Earl Knows Ball.`,
+    keywords: `${sport}, ${sportLabel}, players, roster, stats, profiles, fantasy, Earl Knows Ball`,
+  });
 
   const [players, setPlayers] = useState<(Player | MLBPlayer | NBAPlayer)[]>([]);
   const [position, setPosition] = useState("ALL");

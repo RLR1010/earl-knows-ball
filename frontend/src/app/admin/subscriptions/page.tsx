@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
+import { useSeo } from "@/components/Seo";
 
 interface Subscription {
   id: string;
@@ -31,6 +32,7 @@ const STATUS_COLORS: Record<string, string> = {
 const token = () => localStorage.getItem("earl_token");
 
 export default function AdminSubscriptions() {
+  useSeo({ title: "Subscriptions — Admin — Earl Knows Ball" });
   const [subscriptions, setSubscriptions] = useState<Subscription[]>([]);
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState("");

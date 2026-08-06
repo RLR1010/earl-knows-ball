@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { useSeo } from "@/components/Seo";
 
 interface Plan {
   id: string;
@@ -25,6 +26,11 @@ const formatPrice = (cents: number, currency: string, interval: string) => {
 };
 
 export default function PricingPage() {
+  useSeo({
+    title: "Pricing & Plans — Earl Knows Ball",
+    description: "Choose a premium plan for Earl Knows Ball and unlock AI handicapping chat, expert game picks, and write-ups across NFL, NBA, and MLB.",
+    keywords: "pricing, plans, premium, Earl Knows Ball, sports betting picks, AI handicapping",
+  });
   const router = useRouter();
   const [plans, setPlans] = useState<Plan[]>([]);
   const [loadingPlans, setLoadingPlans] = useState(true);

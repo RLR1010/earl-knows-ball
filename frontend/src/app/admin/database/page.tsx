@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
+import { useSeo } from "@/components/Seo";
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -32,6 +33,7 @@ const token = () => localStorage.getItem("earl_token");
 const SCHEMAS = ["public", "nfl", "nba", "mlb"];
 
 export default function DatabaseExplorer() {
+  useSeo({ title: "Database Explorer — Admin — Earl Knows Ball" });
   const [schemas] = useState<string[]>(SCHEMAS);
   const [selectedSchema, setSelectedSchema] = useState<string>("public");
   const [tables, setTables] = useState<string[]>([]);

@@ -1,7 +1,10 @@
 import type { Metadata } from "next";
 
 export const metadata: Metadata = {
-  title: "Privacy Policy — Earl Knows Ball",
+  title: "Privacy Policy",
+  description:
+    "How Earl Knows Ball collects, uses, and protects your data. Our privacy policy explains what we store and how we keep your information safe.",
+  keywords: ["Earl Knows Ball privacy", "sports betting privacy policy", "data protection"],
 };
 
 export default function PrivacyPage() {

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
+import { useSeo } from "@/components/Seo";
 
 const SPORTS = [
   { key: "nfl", label: "NFL", color: "bg-green-600", emoji: "🏈" },
@@ -401,6 +402,7 @@ const token = () => localStorage.getItem("earl_token");
 // ── Main Page ──
 
 export default function PredictionsPage() {
+  useSeo({ title: "Predictions — Admin — Earl Knows Ball" });
   const [sport, setSport] = useState("mlb");
   const [data, setData] = useState<PredictionData | null>(null);
   const [calData, setCalData] = useState<CalibrationData | null>(null);

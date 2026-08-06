@@ -1,4 +1,5 @@
 import Link from "next/link";
+import type { Metadata } from "next";
 
 const SPORT_INFO: Record<string, { emoji: string; name: string; subtitle: string }> = {
   nfl: {
@@ -17,6 +18,42 @@ const SPORT_INFO: Record<string, { emoji: string; name: string; subtitle: string
     subtitle: "30 teams seeded, AI chat active with 61k+ articles. Handicapping and DFS coming soon.",
   },
 };
+
+const SPORT_META: Record<string, { desc: string; kw: string[] }> = {
+  nfl: {
+    desc: "NFL picks, betting lines, spreads, over/under predictions, and AI handicapping. Earl Knows Ball covers every game with data-backed analysis.",
+    kw: ["NFL picks", "NFL betting", "football spread predictions", "NFL over under", "NFL AI handicapper"],
+  },
+  nba: {
+    desc: "NBA picks, betting lines, spreads, over/under predictions, and AI handicapping. Earl Knows Ball breaks down every basketball matchup.",
+    kw: ["NBA picks", "NBA betting", "basketball spread predictions", "NBA over under", "NBA AI handicapper"],
+  },
+  mlb: {
+    desc: "MLB picks, betting lines, run lines, over/under predictions, and AI handicapping. Earl Knows Ball handicaps every baseball game.",
+    kw: ["MLB picks", "MLB betting", "baseball predictions", "MLB run line", "MLB AI handicapper"],
+  },
+};
+
+export async function generateMetadata({ params }: { params: Promise<{ sport: string }> }): Promise<Metadata> {
+  const { sport } = await params;
+  const name = (SPORT_INFO[sport]?.name || sport?.toUpperCase() || "Sports").toUpperCase();
+  const meta = SPORT_META[sport] || {
+    desc: "Sports picks and AI handicapping from Earl Knows Ball.",
+    kw: ["sports picks", "AI handicapping"],
+  };
+  return {
+    title: `${name} Picks, Odds & AI Handicapping`,
+    description: meta.desc,
+    keywords: meta.kw,
+    openGraph: {
+      title: `${name} Picks, Odds & AI Handicapping`,
+      description: meta.desc,
+      url: `https://earlknowsball.com/${sport}`,
+      siteName: "Earl Knows Ball",
+      type: "website",
+    },
+  };
+}
 
 export default async function SportHomePage({ params }: { params: Promise<{ sport: string }> }) {
   const { sport } = await params;

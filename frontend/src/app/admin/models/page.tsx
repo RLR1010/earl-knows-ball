@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { api } from "@/lib/api";
+import { useSeo } from "@/components/Seo";
 
 const SPORTS = [
   { key: "mlb", label: "MLB", color: "bg-red-600", emoji: "⚾" },
@@ -465,6 +466,7 @@ function ModelVariantSection({ variant: _variant, loadedRunInfo, trainingRuns, o
 }
 
 export default function AdminModels() {
+  useSeo({ title: "Models — Admin — Earl Knows Ball" });
   const [sport, setSport] = useState("nfl");
   const [variant, setVariant] = useState<string>("ATS");
   const [data, setData] = useState<SportModelDetail | null>(null);

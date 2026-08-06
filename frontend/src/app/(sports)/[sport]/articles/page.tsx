@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { useSeo } from "@/components/Seo";
 
 interface PublicArticle {
   id: number;
@@ -10,6 +11,7 @@ interface PublicArticle {
   summary: string | null;
   published_at: string | null;
   author?: string;
+  slug?: string | null;
 }
 
 const SPORT_NAME: Record<string, string> = { nfl: "NFL", nba: "NBA", mlb: "MLB" };
@@ -33,6 +35,12 @@ export default function SportArticlesPage({ params }: { params: Promise<{ sport:
   }, [params]);
 
   const name = SPORT_NAME[sport] || sport.toUpperCase();
+
+  useSeo({
+    title: `Articles & AI Handicapping — ${name} | Earl Knows Ball`,
+    description: `Read ${name} original articles, analysis, and AI handicapping content from Earl Knows Ball.`,
+    keywords: `${sport}, ${name}, sports betting, AI handicapping, picks, analysis, Earl Knows Ball`,
+  });
 
   return (
     <div className="max-w-4xl mx-auto px-4 py-12">
@@ -58,7 +66,7 @@ export default function SportArticlesPage({ params }: { params: Promise<{ sport:
           {articles.map((a) => (
             <li key={a.id}>
               <Link
-                href={`/${sport}/articles/${a.id}`}
+                href={`/${sport}/articles/${a.slug || a.id}`}
                 className="block px-5 py-4 hover:bg-white/[0.04] transition group"
               >
                 <div className="text-sm text-gray-500 mb-1">

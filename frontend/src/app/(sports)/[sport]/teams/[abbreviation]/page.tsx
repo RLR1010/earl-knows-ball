@@ -8,6 +8,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { api, Team, Game, DepthChartEntry, BoxScore, formatSpread, formatSpreadAway, formatOverUnder } from "@/lib/api";
 import { getTeamLogoUrl } from "@/lib/team_logos";
+import { useSeo } from "@/components/Seo";
 
 // ── Team metadata ─────────────────────────────────────────────────────
 const NFL_TEAMS: Record<string, { name: string; conf: string; div: string }> = {
@@ -322,11 +323,20 @@ export default function TeamDetailPage() {
   const teams = getTeamsForSport(sport);
   const meta = teams[abbr];
 
+  const sportLabel = sport === "nfl" ? "NFL" : sport === "nba" ? "NBA" : sport === "mlb" ? "MLB" : sport.toUpperCase();
+
   const [team, setTeam] = useState<Team | null>(null);
   const [loading, setLoading] = useState(true);
   const [games, setGames] = useState<any[]>([]);
   const [gamesLoading, setGamesLoading] = useState(false);
   const isMLB = sport === "mlb";
+
+  const teamName = team?.name || meta?.name || abbrUpper;
+  useSeo({
+    title: `${teamName} — ${sportLabel} Team | Earl Knows Ball`,
+    description: `View ${teamName} ${sportLabel} schedule, odds, depth chart, and stats on Earl Knows Ball.`,
+    keywords: `${sport}, ${sportLabel}, ${teamName}, team, schedule, odds, depth chart, stats, Earl Knows Ball`,
+  });
 
   // NBA schedule day-by-day state
   const [nbaDate, setNbaDate] = useState(() => {

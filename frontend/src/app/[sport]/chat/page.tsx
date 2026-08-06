@@ -8,6 +8,7 @@ import { markdownComponents } from "@/components/markdown";
 import ChatSidebar from "@/components/ChatSidebar";
 import LoginModal from "@/components/LoginModal";
 import { useAuth } from "@/lib/auth-context";
+import { useSeo } from "@/components/Seo";
 
 type Sport = "nfl" | "nba" | "mlb";
 
@@ -51,6 +52,13 @@ export default function ChatPage() {
   const params = useParams();
   const rawSport = params.sport as string;
   const sport: Sport = rawSport === "nba" || rawSport === "mlb" ? rawSport : "nfl";
+
+  const sportName = SPORT_NAMES[sport];
+  useSeo({
+    title: `${sportName} AI Handicapping Chat — Earl Knows Ball`,
+    description: `Chat with Earl about ${sportName} — get AI handicapping insight on spreads, player props, matchups, and more.`,
+    keywords: `${sportName} chat, AI handicapping, Earl Knows Ball, sports betting, ${sportName.toLowerCase()} picks`,
+  });
 
   const [messages, setMessages] = useState<Message[]>([
     { role: "assistant", content: SPORT_WELCOME[sport] },

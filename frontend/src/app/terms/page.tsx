@@ -1,7 +1,10 @@
 import type { Metadata } from "next";
 
 export const metadata: Metadata = {
-  title: "Terms & Conditions — Earl Knows Ball",
+  title: "Terms & Conditions",
+  description:
+    "The terms and conditions for using Earl Knows Ball, the AI-powered sports handicapping service. Please read before using the platform.",
+  keywords: ["Earl Knows Ball terms", "sports betting terms of service", "betting site terms"],
 };
 
 export default function TermsPage() {

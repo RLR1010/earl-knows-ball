@@ -2,8 +2,14 @@
 
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
+import { useSeo } from "@/components/Seo";
 
 export default function CheckoutSuccessPage() {
+  useSeo({
+    title: "Payment Successful — Earl Knows Ball",
+    description: "Your Earl Knows Ball premium subscription is active. Welcome to the squad — your edge against the books.",
+    keywords: "payment successful, premium active, Earl Knows Ball, subscribed",
+  });
   const router = useRouter();
 
   useEffect(() => {

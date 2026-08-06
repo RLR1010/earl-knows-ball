@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
+import { useSeo } from "@/components/Seo";
 
 const SPORTS = ["nfl", "nba", "mlb"] as const;
 type Sport = (typeof SPORTS)[number];
@@ -45,6 +46,7 @@ function websiteUrl(url: string) {
 }
 
 export default function AdminRSSFeeds() {
+  useSeo({ title: "RSS Feeds — Admin — Earl Knows Ball" });
   const searchParams = useSearchParams();
   const router = useRouter();
 

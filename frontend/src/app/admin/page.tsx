@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useSeo } from "@/components/Seo";
 
 interface DashboardStats {
   total_users: number;
@@ -31,6 +32,7 @@ function StatCard({ label, value, subtitle, color }: { label: string; value: str
 }
 
 export default function AdminDashboard() {
+  useSeo({ title: "Admin Dashboard — Earl Knows Ball" });
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
