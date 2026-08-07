@@ -70,6 +70,9 @@ class MLBWriteupGenerator(BaseWriteupGenerator):
         qc_json = json.dumps(
             qc_results or writeup.get("quality_checks"), default=str
         ) if (qc_results or writeup.get("quality_checks")) else None
+        accuracy_json = json.dumps(
+            writeup.get("accuracy_check"), default=str
+        ) if writeup.get("accuracy_check") else None
 
         status = self._derive_status(qc_results)
         is_hist = writeup.get("is_historical", False)
@@ -109,8 +112,11 @@ class MLBWriteupGenerator(BaseWriteupGenerator):
                         historical_game_date = :hist_date,
                         generated_by = :gen_by,
                         total_tokens = :tokens,
+                        accuracy_check = CAST(:acc AS jsonb),
+                        accuracy_check_tokens = :acc_tokens,
                         seo_description = :seo_desc,
                         seo_keywords = :seo_kw,
+                        slug = :slug,
                         published_at = NOW(),
                         updated_at = NOW()
                     WHERE game_id = :gid
@@ -129,8 +135,11 @@ class MLBWriteupGenerator(BaseWriteupGenerator):
                     "hist_date": hist_game_date,
                     "gen_by": writeup.get("generated_by", self.MODEL),
                     "tokens": writeup.get("total_tokens"),
+                    "acc": accuracy_json,
+                    "acc_tokens": writeup.get("accuracy_check_tokens"),
                     "seo_desc": writeup.get("seo_description"),
                     "seo_kw": writeup.get("seo_keywords"),
+                    "slug": writeup.get("slug"),
                 },
             )
             row_id = result.scalar()
@@ -142,13 +151,15 @@ class MLBWriteupGenerator(BaseWriteupGenerator):
                          research_brief, quality_checks, status, version,
                          is_historical, historical_game_date,
                          generated_by, total_tokens,
-                         seo_description, seo_keywords, published_at)
+                         accuracy_check, accuracy_check_tokens,
+                         seo_description, seo_keywords, slug, published_at)
                     VALUES
                         (:gid, :title, :pub, :prem,
                          CAST(:rb AS jsonb), CAST(:qc AS jsonb), :status, :version,
                          :is_hist, :hist_date,
                          :gen_by, :tokens,
-                         :seo_desc, :seo_kw, NOW())
+                         CAST(:acc AS jsonb), :acc_tokens,
+                         :seo_desc, :seo_kw, :slug, NOW())
                     RETURNING id
                 """),
                 {
@@ -164,8 +175,11 @@ class MLBWriteupGenerator(BaseWriteupGenerator):
                     "hist_date": hist_game_date,
                     "gen_by": writeup.get("generated_by", self.MODEL),
                     "tokens": writeup.get("total_tokens"),
+                    "acc": accuracy_json,
+                    "acc_tokens": writeup.get("accuracy_check_tokens"),
                     "seo_desc": writeup.get("seo_description"),
                     "seo_kw": writeup.get("seo_keywords"),
+                    "slug": writeup.get("slug"),
                 },
             )
             row_id = result.scalar()

@@ -321,6 +321,103 @@ async def _generate_seo(title: str, summary: str, content: str) -> dict[str, str
     }
 
 
+ORIGINAL_ARTICLE_ACCURACY_SYSTEM_PROMPT = (
+    "You are the final fact-checker for a sports editorial article. Your ONLY "
+    "job is to verify the article against the RESEARCH DATA provided. You do "
+    "NOT rewrite, edit, or improve it.\n\n"
+    "Check EVERY factual claim, statistic, player, coach, team, venue, date, "
+    "and specific number against the research. A claim is a problem if EITHER:\n"
+    "  1. FACT-NOT-IN-RESEARCH — the article asserts a specific fact, stat, or "
+    "     names a person/team that does not appear anywhere in the research.\n"
+    "  2. CONTRADICTS-RESEARCH — the article states a number or name that "
+    "     conflicts with the research.\n"
+    "Only flag claims the article treats as true facts. Do not flag general "
+    "prose or reasonable color. Do not flag facts that ARE present in the "
+    "research.\n\n"
+    "NO-PREDICTIONS RULE:\n"
+    "This is an editorial article that goes on the public site. It must NOT "
+    "make any betting prediction, pick, or recommendation. Verify the article "
+    "contains NO: point-spread or ATS pick, moneyline pick, over/under pick, "
+    "projected or final score, betting recommendation, or any statement telling "
+    "a reader to bet or that a specific team will win.\n\n"
+    "Return a JSON object ONLY (no markdown) with this shape:\n"
+    "{\"passed\": true|false, \"findings\": "
+    "[{\"type\": \"fact-not-in-research\" | \"contradicts-research\" | "
+    "\"prediction\", \"claim\": \"exact text from article\", "
+    "\"section\": \"body\" | \"title\" | \"summary\", "
+    "\"detail\": \"explain which research field it should match or rule it broke\"}]}\n"
+    "passed=true only if there are NO findings."
+)
+
+
+async def _verify_original_accuracy(
+    title: str, content: str, research_trace: list
+) -> tuple[dict, int]:
+    """Post-draft fact-check of an original article against its research trace.
+
+    Returns (accuracy_check_dict, tokens_used). If the check can't run (no
+    API key / failure), returns ({'passed': False, 'error': ...}, 0).
+    """
+    if not settings.deepseek_api_key:
+        return ({"passed": False, "skipped": True, "error": "no api key"}, 0)
+    client = AsyncOpenAI(
+        api_key=settings.deepseek_api_key,
+        base_url=f"{settings.deepseek_base_url.rstrip('/')}/v1",
+        timeout=90.0,
+    )
+    research_text = (json.dumps(research_trace, default=str) or "")[:12000]
+    article_text = f"TITLE:\n{title}\n\nBODY:\n{(content or '')[:28000]}"
+    try:
+        resp = await client.chat.completions.create(
+            model=settings.deepseek_model,
+            messages=[
+                {"role": "system", "content": ORIGINAL_ARTICLE_ACCURACY_SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": f"=== RESEARCH DATA ===\n{research_text}\n\n"
+                    f"=== ARTICLE TO VERIFY ===\n{article_text}",
+                },
+            ],
+            temperature=0.0,
+            max_tokens=1600,
+        )
+        raw = resp.choices[0].message.content or ""
+        tokens = resp.usage.total_tokens if resp.usage else 0
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Original-article accuracy check failed: %s", e)
+        return ({"passed": False, "error": str(e)[:300]}, 0)
+
+    data = _extract_seo_json(raw)
+    if not isinstance(data, dict):
+        data = {}
+    passed = bool(data.get("passed"))
+    findings = data.get("findings")
+    if not isinstance(findings, list):
+        # Fallback: run a lightweight local no-predictions test if parse failed.
+        artifacts = [
+            "spread", "against the spread", "ats ", "moneyline", "over/under",
+            "over under", "pick:", "pick: ", "bet ", "to cover", "projected score",
+            "final score", "win outright", "fade ", "tail "
+        ]
+        findings = []
+        lowered = (title + " " + (content or "")).lower()
+        for art in artifacts:
+            if art.strip() in lowered:
+                findings.append(
+                    {
+                        "type": "prediction",
+                        "claim": "",
+                        "section": "body",
+                        "detail": f"Possible betting/prediction language detected: \"{art}\"",
+                    }
+                )
+        passed = len(findings) == 0 and bool(data.get("passed", True))
+    return (
+        {"passed": passed, "findings": findings, "raw": raw, "tokens": tokens},
+        tokens,
+    )
+
+
 # ──────────────────────────────────────────────
 #  Generate a draft article (research-loop, reused chat engine)
 # ──────────────────────────────────────────────
@@ -391,18 +488,25 @@ async def generate_original_article(
     # Ask the LLM which teams are mentioned, most-mentioned first.
     teams = await extract_teams(sport, title, answer)
 
+    # Post-draft accuracy verification: check facts vs. research + no-predictions.
+    accuracy_check, accuracy_tokens = await _verify_original_accuracy(
+        title, answer, trace.get("tool_calls") or []
+    )
+
     insert = await db.execute(
         text(
             """
             INSERT INTO public.original_articles
                 (sport, title, summary, content, instructions, status, slug,
                  created_at, updated_at, prompt_json, research_json, author, tokens_used,
-                 reasoning, word_min, word_max, word_count, teams)
+                 reasoning, word_min, word_max, word_count, teams,
+                 accuracy_check, accuracy_check_tokens)
             VALUES
                 (:sport, :title, :summary, :content, :instructions, 'draft', :slug,
                  :now, :now, CAST(:prompt AS jsonb), CAST(:research AS jsonb),
                  :author, :tokens_used, :reasoning, :word_lo, :word_hi, :word_count,
-                 CAST(:teams AS jsonb))
+                 CAST(:teams AS jsonb),
+                 CAST(:accuracy AS jsonb), :accuracy_tokens)
             RETURNING id, sport, title, summary, content, instructions, status, slug,
                       created_at, author, tokens_used
             """
@@ -424,6 +528,8 @@ async def generate_original_article(
             "word_hi": word_hi,
             "word_count": final_word_count,
             "teams": json.dumps(teams),
+            "accuracy": json.dumps(accuracy_check if isinstance(accuracy_check, dict) else {}),
+            "accuracy_tokens": accuracy_tokens,
         },
     )
     draft_row = insert.mappings().first()
@@ -439,6 +545,8 @@ async def generate_original_article(
         "author": draft_row["author"],
         "tokens_used": draft_row["tokens_used"],
         "tokens": tokens,
+        "accuracy_check": accuracy_check,
+        "accuracy_check_tokens": accuracy_tokens,
         "prompt": trace["prompt"],
         "research": trace["tool_calls"],
     }

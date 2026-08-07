@@ -163,6 +163,9 @@ Keep it article-like — no blockquotes, no emoji, no chat-style formatting.
 
         research_data = NFLWriteupGenerator._convert_for_json(writeup.get("research_brief") or None)
         qc_data = NFLWriteupGenerator._convert_for_json(qc_results or writeup.get("quality_checks") or None)
+        accuracy_data = NFLWriteupGenerator._convert_for_json(
+            writeup.get("accuracy_check") or None
+        )
 
         existing_row = await db.execute(
             text("SELECT id, version FROM nfl.game_writeups WHERE game_id = :gid"),
@@ -179,12 +182,15 @@ Keep it article-like — no blockquotes, no emoji, no chat-style formatting.
                 writeup_obj.premium_content = writeup.get("premium_content", "")
                 writeup_obj.research_brief = research_data
                 writeup_obj.quality_checks = qc_data
+                writeup_obj.accuracy_check = accuracy_data
+                writeup_obj.accuracy_check_tokens = writeup.get("accuracy_check_tokens")
                 writeup_obj.status = status
                 writeup_obj.published_at = writeup_obj.published_at or datetime.now()
                 writeup_obj.is_historical = is_hist
                 writeup_obj.historical_game_date = hist_game_date
                 writeup_obj.seo_description = writeup.get("seo_description")
                 writeup_obj.seo_keywords = writeup.get("seo_keywords")
+                writeup_obj.slug = writeup.get("slug")
                 db.add(writeup_obj)
         else:
             writeup_obj = NFLGameWriteup(
@@ -195,12 +201,15 @@ Keep it article-like — no blockquotes, no emoji, no chat-style formatting.
                 premium_content=writeup.get("premium_content", ""),
                 research_brief=research_data,
                 quality_checks=qc_data,
+                accuracy_check=accuracy_data,
+                accuracy_check_tokens=writeup.get("accuracy_check_tokens"),
                 status=status,
                 published_at=datetime.now(),
                 is_historical=is_hist,
                 historical_game_date=hist_game_date,
                 seo_description=writeup.get("seo_description"),
                 seo_keywords=writeup.get("seo_keywords"),
+                slug=writeup.get("slug"),
             )
             db.add(writeup_obj)
 

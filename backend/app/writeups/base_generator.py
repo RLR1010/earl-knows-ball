@@ -4,7 +4,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
+
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -281,16 +283,19 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
             stripped.pop(key, None)
 
         public_system = self.public_system_prompt(is_historical)
-        public_prompt = self._build_messages(stripped)
+        public_prompt = self._build_messages(stripped) + "\n\n" + self.SEO_OUTPUT_INSTRUCTION
 
         raw_public = await self._call_deepseek(public_system, public_prompt, max_tokens=16384, reasoning=reasoning, usage_log=usage_log)
         if raw_public is None:
             return {"error": "DeepSeek API call failed for public section"}
 
         # Parse title + body from public response
+        raw_public, seo_from_public = self._extract_seo_block(raw_public)
         pub_lines = raw_public.strip().split("\n", 1)
         title = pub_lines[0].strip().strip("#").strip() if pub_lines else ""
         public_content = pub_lines[1].strip() if len(pub_lines) > 1 else ""
+        seo_description = seo_from_public.get("seo_description")
+        seo_keywords = seo_from_public.get("seo_keywords")
 
         # ---- 2B. Premium call — full research with picks ----
         premium_system = self.premium_system_prompt(is_historical)
@@ -322,26 +327,88 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
             "is_historical": is_historical,
         }
 
-        # ---- 3b. Generate SEO meta (description + keywords) ----
-        seo = await self._generate_seo(
-            title or "", (public_content or "") + "\n" + (premium_content or "")
-        )
-        parsed["seo_description"] = (seo.get("seo_description") or "").strip()[:500] or None
-        parsed["seo_keywords"] = (seo.get("seo_keywords") or "").strip()[:500] or None
+        # ---- 3b. SEO meta (description + keywords) ----
+        # Prefer SEO parsed from the public-generation response (no extra LLM
+        # call). Fall back to _generate_seo only if unusable.
+        seo_desc = (seo_description or "").strip()[:500]
+        seo_kw = (seo_keywords or "").strip()[:500]
+        if not seo_desc:
+            _seo = await self._generate_seo(
+                title or "",
+                (public_content or "") + "\n" + (premium_content or ""),
+                usage_log=usage_log,
+            )
+            seo_desc = (_seo.get("seo_description") or "").strip()[:500]
+            seo_kw = (_seo.get("seo_keywords") or "").strip()[:500]
+        parsed["seo_description"] = seo_desc or None
+        parsed["seo_keywords"] = seo_kw or None
 
         # ---- 4. Quality checks ----
         qc_results = self.run_quality_checks(parsed, research)
         parsed["qc_results"] = qc_results
+
+        # ---- 4b. Accuracy verification (final fact-check) ----
+        # Verify every fact/stat/name in the article is traceable to the research
+        # brief, and that the PUBLIC section contains no betting predictions.
+        # Bounded fix-loop: at most 1 revision pass if findings surface.
+        accuracy_check = await self._verify_accuracy(
+            parsed.get("public_content", ""),
+            parsed.get("premium_content", ""),
+            research,
+            usage_log=usage_log,
+        )
+        retries_used = 0
+        has_findings = bool(accuracy_check.get("findings")) and not accuracy_check.get("skipped")
+        if has_findings:
+            corrected = await self._correct_article(
+                parsed.get("public_content", ""),
+                parsed.get("premium_content", ""),
+                research,
+                accuracy_check.get("findings") or [],
+                usage_log=usage_log,
+            )
+            retries_used = 1
+            if corrected:
+                if corrected.get("public_content"):
+                    parsed["public_content"] = corrected["public_content"]
+                if corrected.get("premium_content"):
+                    parsed["premium_content"] = corrected["premium_content"]
+                parsed["title"] = corrected.get("title") or parsed.get("title")
+                # Re-run QC + accuracy on the corrected article.
+                qc_results = self.run_quality_checks(parsed, research)
+                parsed["qc_results"] = qc_results
+                accuracy_check = await self._verify_accuracy(
+                    parsed.get("public_content", ""),
+                    parsed.get("premium_content", ""),
+                    research,
+                    usage_log=usage_log,
+                )
+
+        accuracy_check["retries_used"] = retries_used
+        parsed["accuracy_check"] = accuracy_check
+        parsed["accuracy_check_tokens"] = accuracy_check.get("tokens") or 0
+
+        # ---- Slug (deterministic: YYYY-MM-DD-<title>) ----
+        gd = None
+        try:
+            gd = research.get("game_summary", {}).get("date")
+        except Exception:  # noqa: BLE001
+            gd = None
+        parsed["slug"] = self._derive_slug(game_id, parsed.get("title", ""), gd)
 
         # ---- Test instrumentation ----
         # Used for A/B reasoning comparisons.
         if usage_log is not None:
             parsed["reasoning_effort"] = reasoning
             parsed["usage_log"] = usage_log
-            total = sum(
-                (item.get("total_tokens") or 0) for item in usage_log
-            )
-            parsed["total_tokens"] = total or None
+            token_totals = [
+                item["total_tokens"]
+                for item in usage_log
+                if isinstance(item, dict) and isinstance(item.get("total_tokens"), int)
+            ]
+            parsed["total_tokens"] = sum(token_totals) if token_totals else 0
+        else:
+            parsed["total_tokens"] = 0
 
         # ---- 5. Store ----
         await self.store(game_id, parsed, qc_results)
@@ -394,7 +461,7 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
         content = lines[1].strip() if len(lines) > 1 else cleaned
         return {"title": title, "content": content}
 
-    async def _call_deepseek(self, system: str, user_prompt: str, *, max_tokens: int | None = None, reasoning: str | None = None, usage_log: list[dict[str, Any]] | None = None) -> str | None:
+    async def _call_deepseek(self, system: str, user_prompt: str, *, max_tokens: int | None = None, reasoning: str | None = None, usage_log: list[dict[str, Any]] | None = None, max_attempts: int | None = None) -> str | None:
         """Call DeepSeek via OpenAI SDK and return the raw response content.
 
         Retries with backoff on API errors and empty responses. A known
@@ -410,7 +477,11 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
         "elapsed_s", "prompt_tokens", "completion_tokens", "reasoning_tokens",
         "total_tokens"}``.
         """
-        max_attempts = getattr(self, "MAX_DEEPSEEK_ATTEMPTS", 3)
+        attempts_limit = (
+            max_attempts
+            if max_attempts is not None
+            else getattr(self, "MAX_DEEPSEEK_ATTEMPTS", 3)
+        )
         backoff = getattr(self, "DEEPSEEK_BACKOFF_BASE", 2.0)
 
         async def _attempt(use_reasoning: str | None) -> str | None:
@@ -452,11 +523,17 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
                     "attempt": len(usage_log) + 1,
                     "reasoning": use_reasoning,
                     "elapsed_s": elapsed_s,
-                    "prompt_tokens": getattr(usage, "prompt_tokens", None),
-                    "completion_tokens": getattr(usage, "completion_tokens", None),
-                    "reasoning_tokens": getattr(usage, "completion_tokens_details", None)
-                        and getattr(usage.completion_tokens_details, "reasoning_tokens", None),
-                    "total_tokens": getattr(usage, "total_tokens", None),
+                    "prompt_tokens": getattr(usage, "prompt_tokens", 0) or 0,
+                    "completion_tokens": getattr(usage, "completion_tokens", 0) or 0,
+                    "reasoning_tokens": (
+                        getattr(
+                            getattr(usage, "completion_tokens_details", None),
+                            "reasoning_tokens",
+                            0,
+                        )
+                        or 0
+                    ),
+                    "total_tokens": getattr(usage, "total_tokens", 0) or 0,
                 })
             if not content or not content.strip():
                 return None
@@ -465,7 +542,7 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
         last_error: Exception | None = None
         empty_attempts = 0
 
-        for attempt in range(1, max_attempts + 1):
+        for attempt in range(1, attempts_limit + 1):
             try:
                 content = await _attempt(reasoning)
                 if content is not None:
@@ -474,21 +551,21 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
                 logger.warning(
                     "DeepSeek returned empty response (attempt %d/%d)%s — %s",
                     attempt,
-                    max_attempts,
+                    attempts_limit,
                     f" with reasoning={reasoning!r}" if reasoning else "",
-                    "retrying" if attempt < max_attempts else "giving up",
+                    "retrying" if attempt < attempts_limit else "giving up",
                 )
             except Exception as e:
                 last_error = e
-                logger.warning("DeepSeek API call failed (attempt %d/%d): %s", attempt, max_attempts, e)
-            if attempt < max_attempts:
+                logger.warning("DeepSeek API call failed (attempt %d/%d): %s", attempt, attempts_limit, e)
+            if attempt < attempts_limit:
                 await asyncio.sleep(backoff * attempt)
 
         # Fallback: thinking mode likely ate the whole token budget. Try once
         # without thinking to guarantee content comes back.
-        if reasoning and empty_attempts == max_attempts:
+        if reasoning and empty_attempts == attempts_limit:
             logger.warning("DeepSeek empty responses with thinking enabled — retrying without thinking")
-            for fb_attempt in range(1, max_attempts + 1):
+            for fb_attempt in range(1, attempts_limit + 1):
                 try:
                     content = await _attempt(None)
                     if content is not None:
@@ -496,16 +573,16 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
                 except Exception as e:
                     last_error = e
                     logger.error("DeepSeek API call failed on no-thinking fallback: %s", e)
-                logger.warning("DeepSeek no-thinking fallback empty (attempt %d/%d)", fb_attempt, max_attempts)
-                if fb_attempt < max_attempts:
+                logger.warning("DeepSeek no-thinking fallback empty (attempt %d/%d)", fb_attempt, attempts_limit)
+                if fb_attempt < attempts_limit:
                     await asyncio.sleep(backoff * fb_attempt)
-            logger.error("DeepSeek returned empty response after %d attempts (incl. no-thinking fallback)", max_attempts)
+            logger.error("DeepSeek returned empty response after %d attempts (incl. no-thinking fallback)", attempts_limit)
             return None
 
-        if empty_attempts == max_attempts:
-            logger.error("DeepSeek returned empty response after %d attempts", max_attempts)
+        if empty_attempts == attempts_limit:
+            logger.error("DeepSeek returned empty response after %d attempts", attempts_limit)
         else:
-            logger.error("DeepSeek API call failed after %d attempts: %s", max_attempts, last_error)
+            logger.error("DeepSeek API call failed after %d attempts: %s", attempts_limit, last_error)
         return None
 
     # ── SEO Meta Generation ────────────────────────────────
@@ -525,34 +602,50 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
         "\"...\"}. No markdown fences, no commentary."
     )
 
-    async def _generate_seo(self, title: str, content: str) -> dict[str, str]:
-        """Return {seo_description, seo_keywords} via a lightweight DeepSeek call."""
+    async def _generate_seo(
+        self, title: str, content: str, *, usage_log: Optional[list] = None
+    ) -> dict[str, str]:
+        """Return {seo_description, seo_keywords}: a meta-description + keywords.
+
+        Uses the shared ``_call_deepseek`` (retry + reason-aware) so SEO is never
+        blank because of a single flaky call, and its tokens are counted in
+        ``usage_log``. Falls back to a title-derived description if the model is
+        unreachable.
+        """
         if not settings.deepseek_api_key:
             return {}
-        client = AsyncOpenAI(
-            api_key=settings.deepseek_api_key,
-            base_url=f"{settings.deepseek_base_url}/v1",
-            timeout=self.TIMEOUT,
-        )
         body = (content or "")[:4000]
-        try:
-            resp = await client.chat.completions.create(
-                model=self.MODEL,
-                messages=[
-                    {"role": "system", "content": self.SEO_PROMPT},
-                    {"role": "user", "content": f"TITLE:\n{title}\n\nBODY (truncated):\n{body}"},
-                ],
-                temperature=0.3,
-                max_tokens=500,
-            )
-        except Exception as e:  # noqa: BLE001
-            logger.warning("SEO generation failed for %r: %s", title, e)
-            return {}
-        raw = resp.choices[0].message.content or ""
-        data = self._extract_seo_json(raw)
+        user_prompt = f"TITLE:\n{title}\n\nBODY (truncated):\n{body}"
+        raw = await self._call_deepseek(
+            self.SEO_PROMPT,
+            user_prompt,
+            max_tokens=500,
+            reasoning=None,
+            max_attempts=1,
+            usage_log=usage_log,
+        )
+        data = self._extract_seo_json(raw or "") if raw else {}
+        seo_description = (data.get("seo_description") or "").strip()[:500]
+        seo_keywords = (data.get("seo_keywords") or "").strip()[:500]
+        if not seo_description:
+            # Title-based fallback so SEO is never blank.
+            seo_description = (title or content or "")[:160].strip()
+        if not seo_keywords:
+            # Title/keyword fallback so keywords are never blank either.
+            words = [
+                w.lower()
+                for w in re.findall(r"[A-Za-z][A-Za-z0-9\-']*", title or "")
+            ]
+            seen = []
+            for w in words:
+                if w not in seen and len(w) >= 4:
+                    seen.append(w)
+                if len(seen) >= 6:
+                    break
+            seo_keywords = ", ".join(seen)
         return {
-            "seo_description": (data.get("seo_description") or "").strip()[:500],
-            "seo_keywords": (data.get("seo_keywords") or "").strip()[:500],
+            "seo_description": seo_description,
+            "seo_keywords": seo_keywords,
         }
 
     @staticmethod
@@ -586,6 +679,280 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
                         except Exception:
                             break
         return {}
+
+    # ── Accuracy Verification ───────────────────────────────
+
+    ACCURACY_SYSTEM_PROMPT = (
+        "You are the final fact-checker for sports preview articles. "
+        "Your ONLY job is to verify the article against the research data "
+        "provided. You do NOT rewrite, edit, or improve the article.\n\n"
+        "Check EVERY factual claim, statistic, player, coach, team, venue, "
+        "date, and trademarked/detailed number against the RESEARCH DATA. "
+        "A claim is a problem if EITHER:\n"
+        "  1. FACT-NOT-IN-RESEARCH — the article asserts a specific fact, "
+        "     stat (e.g. a batting average, PPG, win%, an injury), or names "
+        "     a person/team that does not appear anywhere in the research.\n"
+        "  2. CONTRADICTS-RESEARCH — the article states a number or name that "
+        "     conflicts with the research (e.g. wrong record, wrong player, "
+        "     wrong venue).\n"
+        "Only flag claims the article treats as true facts. Do not flag general "
+        "prose, reasonable color, or facts that ARE present in the research.\n\n"
+        "PUBLIC-CONTENT PREDICTION RULE:\n"
+        "The PUBLIC section of an article must NEVER make any betting "
+        "prediction, pick, or recommendation. Verify the public section \"PUBLIC\" "
+        "(and titles/SEO) contains NO: point-spread or against-the-spread pick, "
+        "moneyline pick, over/under pick, projected/final score, betting "
+        "recommendation, or any statement telling a reader to bet or that a specific "
+        "team will win.\n\n"
+        "The PREMIUM section (\"PREMIUM\") is allowed to contain picks and is "
+        "NOT subject to the prediction rule — do not flag betting content there.\n\n"
+        "Return a JSON object ONLY (no markdown, no commentary) with this shape:\n"
+        "{\n"
+        "  \"passed\": true|false,\n"
+        "  \"findings\": [\n"
+        "    {\"type\": \"fact-not-in-research\" | \"contradicts-research\" | \"prediction-in-public\", "
+        "\"claim\": \"the exact text from the article\", "
+        "\"section\": \"public\" | \"premium\" | \"seo\", "
+        "\"detail\": \"explain which research field it should match or which rule it broke\"}\n"
+        "  ]\n"
+        "}\n"
+        "passed=true only if there are NO findings. If you legitimately find "
+        "nothing wrong, \"passed\": true and an empty findings list. Do not "
+        "invent problems."
+    )
+
+    def _summary_of_research(self, research: dict[str, Any]) -> str:
+        """Flatten the research dict into a compact, serializable text summary."""
+        def _flatten(value: Any, depth: int = 0) -> list[str]:
+            out: list[str] = []
+            if isinstance(value, dict):
+                for k, v in value.items():
+                    out.append(f"{'  '*depth}{k}:")
+                    out += _flatten(v, depth + 1)
+            elif isinstance(value, list):
+                for i, v in enumerate(value):
+                    out.append(f"{'  '*depth}[{i}]")
+                    out += _flatten(v, depth + 1)
+            elif value is not None:
+                out.append(f"{'  '*depth}{value}")
+            return out
+
+        try:
+            return "\n".join(_flatten(research))
+        except Exception:  # noqa: BLE001
+            try:
+                return json.dumps(research, default=str)[:12000]
+            except Exception:  # noqa: BLE001
+                return str(research)[:12000]
+
+    # Instruct the model to append SEO metadata after the article so it is
+    # derived from the SAME response (no extra LLM call).
+    SEO_OUTPUT_INSTRUCTION = (
+        "\n\nAfter the article, on the final lines, provide search-engine meta "
+        "metadata with EXACTLY this format (no extra commentary):\n"
+        "SEO_DESCRIPTION: <one sentence, under 160 chars, marketing tone>\n"
+        "SEO_KEYWORDS: <comma-separated keywords, 3-8 items>"
+    )
+
+    def _extract_seo_block(self, text: str) -> tuple[str, dict[str, str]]:
+        """Extract trailing SEO_DESCRIPTION/SEO_KEYWORDS lines from a response.
+
+        Returns (clean_text, {seo_description, seo_keywords}). The instruction
+        block is removed from the returned text.
+        """
+        text = text or ""
+        desc = None
+        kw = None
+        lines = text.split("\n")
+        keep = []
+        for ln in lines:
+            s = ln.strip()
+            m = re.match(r"^SEO_DESCRIPTION:\s*(.*)$", s, re.IGNORECASE)
+            if m and m.group(1).strip():
+                desc = m.group(1).strip()
+                continue
+            m = re.match(r"^SEO_KEYWORDS:\s*(.*)$", s, re.IGNORECASE)
+            if m and m.group(1).strip():
+                kw = m.group(1).strip()
+                continue
+            keep.append(ln)
+        return ("\n".join(keep).strip(), {"seo_description": desc or "", "seo_keywords": kw or ""})
+
+    async def _verify_accuracy(
+        self,
+        public_content: str,
+        premium_content: str,
+        research: dict[str, Any],
+        *,
+        usage_log: Optional[list] = None,
+    ) -> dict[str, Any]:
+        """Final fact-check of the assembled article against the research brief.
+
+        Returns a dict like:
+            {"passed": bool, "findings": [...], "raw": str, "tokens": int}
+
+        The check verifies every fact/stat/name is traceable to research and
+        that the PUBLIC section contains NO betting predictions. Premium picks
+        are allowed and not flagged.
+        """
+        article_blocks = []
+        article_blocks.append("[PUBLIC]\n" + (public_content or "").strip())
+        article_blocks.append("[PREMIUM]\n" + (premium_content or "").strip())
+        article_text = "\n\n".join(a for a in article_blocks if a.strip())
+
+        if not article_text.strip():
+            return {
+                "skipped": True,
+                "passed": False,
+                "findings": [],
+                "error": "No article content to verify.",
+                "raw": "",
+                "tokens": 0,
+            }
+
+        research_summary = self._build_messages(research)[:12000]
+        user_prompt = (
+            "=== RESEARCH DATA ===\n"
+            f"{research_summary}\n\n"
+            "=== ARTICLE TO VERIFY ===\n"
+            f"{article_text[:28000]}\n\n"
+            "Verify the article against the research and return the JSON result. "
+            "Remember the PUBLIC section must contain no betting predictions."
+        )
+
+        accuracy_log: list = []
+        raw = await self._call_deepseek(
+            self.ACCURACY_SYSTEM_PROMPT,
+            user_prompt,
+            max_tokens=1800,
+            reasoning=None,
+            max_attempts=1,
+            usage_log=accuracy_log,
+        )
+        tokens = sum((item.get("total_tokens") or 0) for item in accuracy_log)
+
+        if usage_log is not None:
+            usage_log.extend(accuracy_log)
+
+        if not raw:
+            return {
+                "skipped": True,
+                "passed": False,
+                "findings": [],
+                "error": "Accuracy check returned no response.",
+                "raw": "",
+                "tokens": tokens,
+            }
+
+        data = self._extract_seo_json(raw) or {}
+        passed = bool(data.get("passed"))
+        findings = data.get("findings") or []
+        if not isinstance(findings, list):
+            findings = []
+        return {
+            "passed": passed,
+            "findings": findings,
+            "raw": raw,
+            "tokens": tokens,
+        }
+
+    def _render_full_article(self, parsed: dict[str, Any]) -> str:
+        """Concatenate public + premium content for verification/fix loops."""
+        parts = []
+        if parsed.get("public_content"):
+            parts.append(parsed["public_content"])
+        if parsed.get("premium_content"):
+            parts.append(parsed["premium_content"])
+        return "\n\n".join(parts)
+
+    CORRECT_SYSTEM_PROMPT = (
+        "You are a careful sports editor making minimal corrections to a "
+        "preview article. You only fix the EXACT problems listed below. "
+        "Do not rewrite, embellish, or change anything else. Do not invent "
+        "new facts or numbers — only remove/soften claims that do not match "
+        "the research."
+    )
+
+    async def _correct_article(
+        self,
+        public_content: str,
+        premium_content: str,
+        research: dict[str, Any],
+        findings: list[Any],
+        *,
+        usage_log: Optional[list] = None,
+    ) -> dict[str, Any]:
+        """Bounded single revision pass fixing accuracy-check findings.
+
+        Sends the article and the list of findings back to the LLM with
+        instructions to correct only those items. Returns a dict with corrected
+        ``public_content`` / ``premium_content`` and ``title`` (empty dict if the
+        correction call fails).
+        """
+        findings_text = json.dumps(findings, ensure_ascii=False, indent=2)
+        research_summary = self._summary_of_research(research)[:12000]
+        user_prompt = (
+            "=== RESEARCH DATA ===\n"
+            f"{research_summary}\n\n"
+            "=== ACCURACY FINDINGS TO FIX ===\n"
+            f"{findings_text}\n\n"
+            "=== CURRENT PUBLIC SECTION ===\n"
+            f"{(public_content or '').strip()}\n\n"
+            "=== CURRENT PREMIUM SECTION ===\n"
+            f"{(premium_content or '').strip()}\n\n"
+            "Return the FULL corrected article ONLY, in this exact format:\n"
+            "TITLE: <title>\n\n"
+            "[PUBLIC]\n<corrected public content — must contain NO betting "
+            "predictions or picks>\n\n[PREMIUM]\n<corrected premium content — "
+            "picks allowed here>\n"
+        )
+
+        raw = await self._call_deepseek(
+            self.CORRECT_SYSTEM_PROMPT,
+            user_prompt,
+            max_tokens=40000,
+            reasoning=None,
+            usage_log=usage_log,
+        )
+        if not raw:
+            return {}
+
+        result: dict[str, Any] = {}
+        title = None
+        text = raw
+        title_match = re.match(r"^\s*TITLE:\s*(.+)$", text, flags=re.MULTILINE)
+        if title_match:
+            title = title_match.group(1).strip()[:300]
+            text = re.sub(r"^\s*TITLE:\s*.+?$\n*", "", text, count=1, flags=re.MULTILINE)
+
+        pub_match = re.search(r"\[PUBLIC\]\s*(.*?)(?:\s*\[PREMIUM\]|\Z)", text, flags=re.DOTALL)
+        pre_match = re.search(r"\[PREMIUM\]\s*(.*)\Z", text, flags=re.DOTALL)
+        if pub_match:
+            result["public_content"] = pub_match.group(1).strip()
+        if pre_match and pre_match.group(1).strip():
+            result["premium_content"] = pre_match.group(1).strip()
+        if title:
+            result["title"] = title
+        return result
+
+    @staticmethod
+    def slugify_title(title: str) -> str:
+        """Turn a title into a URL-safe slug fragment (mirrors Original Articles)."""
+        t = (title or "").strip().lower()
+        t = re.sub(r"[^a-z0-9]+", "-", t).strip("-")
+        t = re.sub(r"-{2,}", "-", t)
+        return t[:80]
+
+    def _derive_slug(self, game_id: int, title: str, game_date: Any = None) -> str:
+        """Deterministic writeup slug: YYYY-MM-DD-<title-slug> (uses game date)."""
+        date_part = ""
+        if game_date is not None:
+            try:
+                date_part = game_date.strftime("%Y-%m-%d")
+            except Exception:  # noqa: BLE001
+                date_part = str(game_date)[:10]
+        base = self.slugify_title(title) or f"writeup-{game_id}"
+        return f"{date_part}-{base}" if date_part else base
 
     # ── Prompt Building ─────────────────────────────────────
 
@@ -810,6 +1177,7 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
         game_id: int,
         research: dict[str, Any],
         is_historical: bool = False,
+        usage_log: Optional[list] = None,
     ) -> dict[str, Any]:
         """Generate a public-only write-up (no picks, no premium section).
 
@@ -818,27 +1186,68 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
         and the stripped research keeps proprietary data out of the prompt.
         """
         system = self.public_system_prompt(is_historical)
-        user_prompt = self._build_public_messages(research)
+        user_prompt = self._build_public_messages(research) + "\n\n" + self.SEO_OUTPUT_INSTRUCTION
 
         raw = await self._call_deepseek(system, user_prompt)
         if raw is None:
             return {"error": "DeepSeek API call failed — check logs"}
 
         # Parse into title + content (free-form; we expect first line as title)
+        raw, seo_from_resp = self._extract_seo_block(raw)
         lines = raw.strip().split("\n", 1)
         title = lines[0].strip().strip("#").strip() if lines else ""
         content = lines[1].strip() if len(lines) > 1 else ""
 
-        # Generate SEO meta (description + keywords) for <head>.
-        seo = await self._generate_seo(title or "", content or "")
+        # SEO meta: prefer from the public response (no extra call); fall back
+        # to _generate_seo only if the model omitted it.
+        seo_desc = (seo_from_resp.get("seo_description") or "").strip()[:500]
+        seo_kw = (seo_from_resp.get("seo_keywords") or "").strip()[:500]
+        if not seo_desc:
+            _seo = await self._generate_seo(title or "", content or "", usage_log=usage_log)
+            seo_desc = (_seo.get("seo_description") or "").strip()[:500]
+            seo_kw = (_seo.get("seo_keywords") or "").strip()[:500]
+        seo = {"seo_description": seo_desc, "seo_keywords": seo_kw}
 
+        # Final accuracy verification: facts traceable to research + NO betting
+        # predictions in public content. Bounded fix-loop (1 retry max).
+        accuracy_check = await self._verify_accuracy(
+            content or "", "", research, usage_log=usage_log
+        )
+        retries_used = 0
+        if accuracy_check.get("findings") and not accuracy_check.get("skipped"):
+            corrected = await self._correct_article(
+                content or "",
+                "",
+                research,
+                accuracy_check.get("findings") or [],
+                usage_log=usage_log,
+            )
+            retries_used = 1
+            if corrected.get("public_content"):
+                content = corrected["public_content"]
+            if corrected.get("title"):
+                title = corrected["title"]
+            # Re-run checks on the corrected content.
+            accuracy_check = await self._verify_accuracy(
+                content or "", "", research, usage_log=usage_log
+            )
+        accuracy_check["retries_used"] = retries_used
+
+        gd = None
+        try:
+            gd = research.get("game_summary", {}).get("date")
+        except Exception:  # noqa: BLE001
+            gd = None
         return {
             "title": title,
             "public_content": content,
             "research_brief": research,
             "is_historical": is_historical,
+            "slug": self._derive_slug(game_id, title, gd),
             "seo_description": (seo.get("seo_description") or "").strip()[:500] or None,
             "seo_keywords": (seo.get("seo_keywords") or "").strip()[:500] or None,
+            "accuracy_check": accuracy_check,
+            "accuracy_check_tokens": accuracy_check.get("tokens") or 0,
         }
 
     # ── Quality Checks ──────────────────────────────────────

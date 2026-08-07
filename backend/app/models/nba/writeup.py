@@ -43,6 +43,11 @@ class NBAGameWriteup(Base):
     # Quality check results
     quality_checks = Column(JSON, nullable=True)
 
+    # Post-generation accuracy-verification results (facts vs. research,
+    # and no-predictions rule for public content)
+    accuracy_check = Column(JSON, nullable=True)
+    accuracy_check_tokens = Column(Integer, nullable=True)
+
     # Status lifecycle: draft → review → published → archived
     STATUS_CHOICES = ("draft", "review", "published", "archived")
     status = Column(String(20), nullable=False, default="draft", index=True)

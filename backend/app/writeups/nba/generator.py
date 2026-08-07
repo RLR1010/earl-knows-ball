@@ -273,6 +273,9 @@ Bullet lists work for key points. Keep it article-like — no blockquotes, no em
         qc_json = json.dumps(
             qc_results or writeup.get("quality_checks"), default=str
         ) if (qc_results or writeup.get("quality_checks")) else None
+        accuracy_json = json.dumps(
+            writeup.get("accuracy_check"), default=str
+        ) if writeup.get("accuracy_check") else None
 
         status = self._derive_status(qc_results)
         is_hist = writeup.get("is_historical", False)
@@ -310,8 +313,11 @@ Bullet lists work for key points. Keep it article-like — no blockquotes, no em
                         quality_checks = CAST(:qc AS jsonb),
                         generated_by = :gb,
                         total_tokens = :tt,
+                        accuracy_check = CAST(:acc AS jsonb),
+                        accuracy_check_tokens = :acc_tokens,
                         seo_description = :sd,
                         seo_keywords = :sk,
+                        slug = :slug,
                         published_at = NOW(),
                         updated_at = NOW()
                     WHERE id = :eid
@@ -329,8 +335,11 @@ Bullet lists work for key points. Keep it article-like — no blockquotes, no em
                     "qc": qc_json or "[]",
                     "gb": writeup.get("generated_by") or "deepseek",
                     "tt": writeup.get("total_tokens") or 0,
+                    "acc": accuracy_json,
+                    "acc_tokens": writeup.get("accuracy_check_tokens"),
                     "sd": writeup.get("seo_description"),
                     "sk": writeup.get("seo_keywords"),
+                    "slug": writeup.get("slug"),
                 },
             )
             await db.commit()
@@ -342,13 +351,15 @@ Bullet lists work for key points. Keep it article-like — no blockquotes, no em
                     (game_id, title, public_content, premium_content,
                      status, version, is_historical, historical_game_date,
                      research_brief, quality_checks, generated_by, total_tokens,
-                     seo_description, seo_keywords,
+                     accuracy_check, accuracy_check_tokens,
+                     seo_description, seo_keywords, slug,
                      published_at, created_at, updated_at)
                 VALUES
                     (:gid, :title, :pub, :prem,
                      :status, :ver, :hist, :hgd,
                      CAST(:rb AS jsonb), CAST(:qc AS jsonb), :gb, :tt,
-                     :sd, :sk, NOW(), NOW(), NOW())
+                     CAST(:acc AS jsonb), :acc_tokens,
+                     :sd, :sk, :slug, NOW(), NOW(), NOW())
                 RETURNING id
             """),
             {
@@ -364,8 +375,11 @@ Bullet lists work for key points. Keep it article-like — no blockquotes, no em
                 "qc": qc_json or "[]",
                 "gb": writeup.get("generated_by") or "deepseek",
                 "tt": writeup.get("total_tokens") or 0,
+                "acc": accuracy_json,
+                "acc_tokens": writeup.get("accuracy_check_tokens"),
                 "sd": writeup.get("seo_description"),
                 "sk": writeup.get("seo_keywords"),
+                "slug": writeup.get("slug"),
             },
         )
         await db.commit()
