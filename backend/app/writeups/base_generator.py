@@ -933,7 +933,7 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
             self.CORRECT_SYSTEM_PROMPT,
             user_prompt,
             max_tokens=40000,
-            reasoning=None,
+            reasoning="minimal",
             usage_log=usage_log,
         )
         if not raw:
