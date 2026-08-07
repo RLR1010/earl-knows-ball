@@ -842,11 +842,13 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
         # gets a real accuracy check (quality is a priority). Use minimal
         # reasoning (helps spot subtle inconsistencies) but give it enough room:
         # a too-small max_tokens made DeepSeek spend the whole budget on hidden
-        # thinking and return empty content, so the budget is raised to 4000.
+        # thinking and return empty content, so the budget is raised for now to
+        # 50000 (generous) to rule out token-capping as the cause of missing /
+        # truncated accuracy JSON. Input stays cached; only output burns.
         raw = await self._call_deepseek(
             self.ACCURACY_SYSTEM_PROMPT,
             user_prompt,
-            max_tokens=4000,
+            max_tokens=50000,
             reasoning="minimal",
             max_attempts=2,
             usage_log=accuracy_log,
