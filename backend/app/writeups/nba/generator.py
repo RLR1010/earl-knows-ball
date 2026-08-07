@@ -310,6 +310,8 @@ Bullet lists work for key points. Keep it article-like — no blockquotes, no em
                         quality_checks = CAST(:qc AS jsonb),
                         generated_by = :gb,
                         total_tokens = :tt,
+                        seo_description = :sd,
+                        seo_keywords = :sk,
                         published_at = NOW(),
                         updated_at = NOW()
                     WHERE id = :eid
@@ -327,6 +329,8 @@ Bullet lists work for key points. Keep it article-like — no blockquotes, no em
                     "qc": qc_json or "[]",
                     "gb": writeup.get("generated_by") or "deepseek",
                     "tt": writeup.get("total_tokens") or 0,
+                    "sd": writeup.get("seo_description"),
+                    "sk": writeup.get("seo_keywords"),
                 },
             )
             await db.commit()
@@ -338,12 +342,13 @@ Bullet lists work for key points. Keep it article-like — no blockquotes, no em
                     (game_id, title, public_content, premium_content,
                      status, version, is_historical, historical_game_date,
                      research_brief, quality_checks, generated_by, total_tokens,
+                     seo_description, seo_keywords,
                      published_at, created_at, updated_at)
                 VALUES
                     (:gid, :title, :pub, :prem,
                      :status, :ver, :hist, :hgd,
                      CAST(:rb AS jsonb), CAST(:qc AS jsonb), :gb, :tt,
-                     NOW(), NOW(), NOW())
+                     :sd, :sk, NOW(), NOW(), NOW())
                 RETURNING id
             """),
             {
@@ -359,6 +364,8 @@ Bullet lists work for key points. Keep it article-like — no blockquotes, no em
                 "qc": qc_json or "[]",
                 "gb": writeup.get("generated_by") or "deepseek",
                 "tt": writeup.get("total_tokens") or 0,
+                "sd": writeup.get("seo_description"),
+                "sk": writeup.get("seo_keywords"),
             },
         )
         await db.commit()

@@ -26,6 +26,8 @@ class Game(Base):
     status = Column(Enum(GameStatus), default=GameStatus.SCHEDULED)
     home_score = Column(Integer, nullable=True)
     away_score = Column(Integer, nullable=True)
+    quarter = Column(Integer, nullable=True)
+    clock = Column(String(8), nullable=True)
     venue = Column(String(200), nullable=True)
     roof_type = Column(String(20), nullable=True)  # dome, outdoor, retractable
     surface = Column(String(50), nullable=True)

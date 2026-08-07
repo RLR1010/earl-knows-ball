@@ -28,11 +28,14 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from openai import AsyncOpenAI
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.database import get_db
+from app.services.team_extractor import extract_teams
 
 # Per-sport chat engines (reused so articles get the same research tools as chat).
 from app.routers.chat import nfl_chat_engine
@@ -92,6 +95,8 @@ class PublishRequest(BaseModel):
     tokens_used: Optional[int] = Field(None, ge=0)
     reasoning: Optional[str] = Field(None)
     word_count: Optional[tuple[int, int]] = Field(None)
+    seo_description: Optional[str] = Field(None, max_length=500)
+    seo_keywords: Optional[str] = Field(None, max_length=500)
 
 
 class UpdateRequest(BaseModel):
@@ -102,6 +107,8 @@ class UpdateRequest(BaseModel):
     author: Optional[str] = Field(None, min_length=1, max_length=100)
     reasoning: Optional[str] = Field(None)
     word_count: Optional[tuple[int, int]] = Field(None)
+    seo_description: Optional[str] = Field(None, max_length=500)
+    seo_keywords: Optional[str] = Field(None, max_length=500)
 
 
 def _validate_sport(sport: str) -> str:
@@ -231,6 +238,90 @@ async def _assign_unique_slug(db, sport: str, article_id: int, base: str) -> str
 
 
 # ──────────────────────────────────────────────
+#  SEO meta generation (description + keywords for <head>)
+# ──────────────────────────────────────────────
+
+SEO_SYSTEM_PROMPT = (
+    "You are an SEO specialist for Earl Knows Ball, a premium sports handicapping "
+    "site. Given an article's title, summary, and body, produce a compelling meta "
+    "description and a keyword list."
+    "\nRules:"
+    "\n- Meta description: 140-160 chars, 1-2 punchy sentences that summarize and "
+    "  entice clicks. Plain text, no quotes, no trailing period if it exceeds the "
+    "  limit."
+    "\n- Keywords: a comma-separated list of 5-8 lowercase SEO phrases a bettor "
+    "  would search, e.g. 'mlb betting picks, padres vs dodgers, over under odds'."
+    "  No spaces after commas, no trailing comma."
+    "\n- Return ONLY JSON: {\"seo_description\": \"...\", \"seo_keywords\": "
+    "\"...\"}. No markdown, no commentary."
+)
+
+
+def _extract_seo_json(raw: str) -> dict:
+    """Best-effort parse of the LLM's SEO JSON (handles code fences)."""
+    if not raw:
+        return {}
+    fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw, re.DOTALL)
+    if fenced:
+        raw = fenced.group(1)
+    try:
+        data = json.loads(raw)
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
+    start = raw.find("{")
+    if start != -1:
+        depth = 0
+        for i in range(start, len(raw)):
+            if raw[i] == "{":
+                depth += 1
+            elif raw[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        return json.loads(raw[start : i + 1])
+                    except Exception:
+                        break
+    return {}
+
+
+async def _generate_seo(title: str, summary: str, content: str) -> dict[str, str]:
+    """Return {seo_description, seo_keywords} using the DeepSeek LLM."""
+    if not settings.deepseek_api_key:
+        return {}
+    client = AsyncOpenAI(
+        api_key=settings.deepseek_api_key,
+        base_url=f"{settings.deepseek_base_url.rstrip('/')}/v1",
+        timeout=60.0,
+    )
+    body = (content or "")[:4000]
+    try:
+        resp = await client.chat.completions.create(
+            model=settings.deepseek_model,
+            messages=[
+                {"role": "system", "content": SEO_SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": f"TITLE:\n{title}\n\nSUMMARY:\n{summary}"
+                    f"\n\nBODY (truncated):\n{body}",
+                },
+            ],
+            temperature=0.3,
+            max_tokens=600,
+        )
+        raw = resp.choices[0].message.content or ""
+    except Exception as e:  # noqa: BLE001
+        logger.warning("SEO generation failed for %r: %s", title, e)
+        return {}
+    data = _extract_seo_json(raw)
+    return {
+        "seo_description": (data.get("seo_description") or "").strip()[:500],
+        "seo_keywords": (data.get("seo_keywords") or "").strip()[:500],
+    }
+
+
+# ──────────────────────────────────────────────
 #  Generate a draft article (research-loop, reused chat engine)
 # ──────────────────────────────────────────────
 
@@ -296,17 +387,22 @@ async def generate_original_article(
     # (and so token/prompt/research provenance survives a page refresh). The
     # admin then flips it to published (or edits it) explicitly.
     draft_slug = _article_slug(now, title)
+
+    # Ask the LLM which teams are mentioned, most-mentioned first.
+    teams = await extract_teams(sport, title, answer)
+
     insert = await db.execute(
         text(
             """
             INSERT INTO public.original_articles
                 (sport, title, summary, content, instructions, status, slug,
                  created_at, updated_at, prompt_json, research_json, author, tokens_used,
-                 reasoning, word_min, word_max, word_count)
+                 reasoning, word_min, word_max, word_count, teams)
             VALUES
                 (:sport, :title, :summary, :content, :instructions, 'draft', :slug,
                  :now, :now, CAST(:prompt AS jsonb), CAST(:research AS jsonb),
-                 :author, :tokens_used, :reasoning, :word_lo, :word_hi, :word_count)
+                 :author, :tokens_used, :reasoning, :word_lo, :word_hi, :word_count,
+                 CAST(:teams AS jsonb))
             RETURNING id, sport, title, summary, content, instructions, status, slug,
                       created_at, author, tokens_used
             """
@@ -327,6 +423,7 @@ async def generate_original_article(
             "word_lo": word_lo,
             "word_hi": word_hi,
             "word_count": final_word_count,
+            "teams": json.dumps(teams),
         },
     )
     draft_row = insert.mappings().first()
@@ -360,19 +457,28 @@ async def publish_original_article(
     sport = _validate_sport(sport)
     now = datetime.now(timezone.utc)
     author = (req.author or "Earl").strip()
+    title = req.title.strip()
+    summary = (req.summary or _guess_summary(req.content))
+    # Generate/refresh SEO meta unless the client passed explicit values.
+    seo = {"seo_description": req.seo_description, "seo_keywords": req.seo_keywords}
+    if not ((req.seo_description or "").strip() and (req.seo_keywords or "").strip()):
+        seo = await _generate_seo(title, summary, req.content)
     result = await db.execute(
         text(
             """
             INSERT INTO public.original_articles
                 (sport, title, summary, content, instructions, status, slug,
                  created_at, updated_at, published_at, prompt_json, research_json,
-                 author, tokens_used, reasoning, word_min, word_max, word_count)
+                 author, tokens_used, reasoning, word_min, word_max, word_count,
+                 seo_description, seo_keywords)
             VALUES
                 (:sport, :title, :summary, :content, :instructions, 'published', :slug,
                  :now, :now, :now, CAST(:prompt AS jsonb), CAST(:research AS jsonb),
-                 :author, :tokens_used, :reasoning, :word_lo, :word_hi, :word_count)
+                 :author, :tokens_used, :reasoning, :word_lo, :word_hi, :word_count,
+                 :seo_desc, :seo_kw)
             RETURNING id, sport, title, summary, content, instructions, status, slug,
-                      published_at, created_at, author, tokens_used
+                      published_at, created_at, author, tokens_used,
+                      seo_description, seo_keywords
             """
         ),
         {
@@ -391,6 +497,8 @@ async def publish_original_article(
             "word_lo": (req.word_count[0] if req.word_count else None),
             "word_hi": (req.word_count[1] if req.word_count else None),
             "word_count": len(re.findall(r"\S+", req.content)),
+            "seo_desc": (seo.get("seo_description") or "").strip()[:500] or None,
+            "seo_kw": (seo.get("seo_keywords") or "").strip()[:500] or None,
         },
     )
     row = result.mappings().first()
@@ -414,7 +522,8 @@ async def list_original_articles(
     result = await db.execute(
         text(
             """
-            SELECT id, sport, title, summary, content, status, slug, published_at, created_at, author
+            SELECT id, sport, title, summary, content, status, slug, published_at, created_at, author,
+                   seo_description, seo_keywords, teams
             FROM public.original_articles
             WHERE sport = :sport AND status = 'published'
             ORDER BY published_at DESC
@@ -440,7 +549,8 @@ async def get_original_article(
             text(
                 """
                 SELECT id, sport, title, summary, content, status, slug,
-                       published_at, created_at, author, tokens_used
+                       published_at, created_at, author, tokens_used,
+                       seo_description, seo_keywords, teams
                 FROM public.original_articles
                 WHERE id = :aid AND sport = :sport
                 """
@@ -452,7 +562,8 @@ async def get_original_article(
             text(
                 """
                 SELECT id, sport, title, summary, content, status, slug,
-                       published_at, created_at, author, tokens_used
+                       published_at, created_at, author, tokens_used,
+                       seo_description, seo_keywords, teams
                 FROM public.original_articles
                 WHERE slug = :sl AND sport = :sport
                 """
@@ -528,7 +639,8 @@ async def re_edit_original_article(
     result = await db.execute(
         text(
             """
-            SELECT id, sport, title, content, summary, author, research_json, prompt_json
+            SELECT id, sport, title, content, summary, author, research_json, prompt_json,
+                   seo_description, seo_keywords
             FROM public.original_articles
             WHERE id = :id AND sport = :sport
             """
@@ -624,6 +736,7 @@ async def admin_list_original_articles(
             SELECT id, sport, title, summary, content, status, slug, published_at, created_at,
                    updated_at, author, tokens_used,
                    reasoning, word_min, word_max, word_count,
+                   seo_description, seo_keywords,
                    (prompt_json IS NOT NULL) AS has_prompt,
                    (research_json IS NOT NULL) AS has_research,
                    jsonb_array_length(COALESCE(research_json, '[]'::jsonb)) AS research_steps
@@ -674,7 +787,8 @@ async def admin_get_original_article(
             """
             SELECT id, sport, title, summary, content, instructions, status, slug,
                    published_at, created_at, updated_at, prompt_json, research_json,
-                   author, tokens_used, reasoning, word_min, word_max, word_count
+                   author, tokens_used, reasoning, word_min, word_max, word_count,
+                   seo_description, seo_keywords
             FROM public.original_articles
             WHERE id = :aid AND sport = :sport
             """
@@ -734,6 +848,26 @@ async def update_original_article(
     if slug_changed:
         await _assign_unique_slug(db, sport, article_id, _article_slug(published_at, new_title))
 
+    # SEO: persist explicit values, else (re)generate on publish/content/title change.
+    seo_desc = req.seo_description if req.seo_description is not None else None
+    seo_kw = req.seo_keywords if req.seo_keywords is not None else None
+    content_or_title_changed = (
+        (req.content is not None and req.content != row.content)
+        or (req.title is not None and req.title.strip() != row.title)
+    )
+    # Regenerate SEO on publish/content/title change, OR when the client explicitly
+    # cleared the fields (requests a fresh LLM write).
+    seo_wants_refresh = not ((seo_desc or "").strip() and (seo_kw or "").strip())
+    if new_status == "published" and (content_or_title_changed or seo_wants_refresh):
+        gen = await _generate_seo(new_title, new_summary, new_content)
+        seo_desc = seo_desc or (gen.get("seo_description") or "")
+        seo_kw = seo_kw or (gen.get("seo_keywords") or "")
+
+    # Re-extract mentioned teams (most-mentioned first) if the body changed.
+    new_teams = None
+    if req.content is not None and req.content != row.content:
+        new_teams = await extract_teams(sport, new_title, new_content)
+
     # -- start --
     result = await db.execute(
         text(
@@ -749,10 +883,14 @@ async def update_original_article(
                 word_count = :word_count,
                 reasoning = COALESCE(:reasoning, reasoning),
                 word_min = COALESCE(:word_lo, word_min),
-                word_max = COALESCE(:word_hi, word_max)
+                word_max = COALESCE(:word_hi, word_max),
+                seo_description = COALESCE(:seo_desc, seo_description),
+                seo_keywords = COALESCE(:seo_kw, seo_keywords),
+                teams = COALESCE(CAST(:teams AS jsonb), teams)
             WHERE id = :aid AND sport = :sport
             RETURNING id, sport, title, summary, content, status, published_at,
-                      updated_at, author, tokens_used
+                      updated_at, author, tokens_used,
+                      seo_description, seo_keywords
             """
         ),
         {
@@ -767,6 +905,9 @@ async def update_original_article(
             "reasoning": (req.reasoning if req.reasoning else None),
             "word_lo": (req.word_count[0] if req.word_count else None),
             "word_hi": (req.word_count[1] if req.word_count else None),
+            "seo_desc": (seo_desc or "").strip()[:500] or None,
+            "seo_kw": (seo_kw or "").strip()[:500] or None,
+            "teams": json.dumps(new_teams) if new_teams is not None else None,
             "aid": article_id,
             "sport": sport,
         },

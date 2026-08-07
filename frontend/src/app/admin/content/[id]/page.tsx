@@ -183,8 +183,10 @@ export default function ContentEditor() {
 
     try {
       // Call backend directly to avoid proxy timeout
+      // Full write-up regeneration runs a research loop + enrichment and can take
+      // ~4-5 min. Give it generous headroom (420s) past the ~4.5 min typical run.
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 180_000);
+      const timeout = setTimeout(() => controller.abort(), 420_000);
       const res = await fetch(
         `/writeups/${sport}/generate/${writeup.game_id}`,
         {
@@ -202,7 +204,7 @@ export default function ContentEditor() {
       await fetchWriteup();
     } catch (e: any) {
       if (e.name === "AbortError") {
-        alert("Regeneration timed out after 3 minutes.");
+        alert("Regeneration timed out after 7 minutes. It may still be running in the background — refresh in a bit.");
       } else {
         alert(`Regeneration failed: ${e.message}`);
       }

@@ -183,6 +183,8 @@ Keep it article-like — no blockquotes, no emoji, no chat-style formatting.
                 writeup_obj.published_at = writeup_obj.published_at or datetime.now()
                 writeup_obj.is_historical = is_hist
                 writeup_obj.historical_game_date = hist_game_date
+                writeup_obj.seo_description = writeup.get("seo_description")
+                writeup_obj.seo_keywords = writeup.get("seo_keywords")
                 db.add(writeup_obj)
         else:
             writeup_obj = NFLGameWriteup(
@@ -197,6 +199,8 @@ Keep it article-like — no blockquotes, no emoji, no chat-style formatting.
                 published_at=datetime.now(),
                 is_historical=is_hist,
                 historical_game_date=hist_game_date,
+                seo_description=writeup.get("seo_description"),
+                seo_keywords=writeup.get("seo_keywords"),
             )
             db.add(writeup_obj)
 

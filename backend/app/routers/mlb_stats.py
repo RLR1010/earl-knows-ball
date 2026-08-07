@@ -1,5 +1,7 @@
 """MLB stats endpoints — batting, pitching, team stats by season."""
 import json
+import time
+import threading
 
 from fastapi import APIRouter, Depends, Query, HTTPException
 from pydantic import BaseModel
@@ -10,6 +12,44 @@ import httpx
 from sqlalchemy import select, text
 from app.database import get_db, async_session
 from app.models.mlb import MLBPlayer, MLBBettingLine
+
+
+# ---------------------------------------------------------------------------
+# In-process TTL cache for the MLB Stats API live proxy.
+#
+# mlb_game_boxscore proxys statsapi.mlb.com (feed/live + boxscore) on every page
+# load. Under heavy traffic (thousands of users refreshing game pages) that means
+# thousands of redundant requests to a rate-limited external API per minute.
+# This cache short-circuits repeat fetches for the SAME game within a short TTL
+# (~30s), collapsing a burst of viewers into ~1 external call per game per TTL.
+#
+# Trade-off: it is per-worker (each of the N granian workers has its own copy),
+# so a burst that fans across all workers still makes up to N calls per TTL per
+# game. That is a ~9x reduction even at 8 workers vs. 0 caching, and is a big,
+# zero-infra win. A shared Redis cache would collapse it to exactly 1, but the
+# in-process version is the right first step.
+# ---------------------------------------------------------------------------
+_MLB_BOX_CACHE_TTL = 30  # seconds we keep a proxied MLB boxscore fresh
+_mlb_box_cache_lock = threading.Lock()
+_mlb_box_cache = {}  # key: mlb_game_id -> (expires_at_monotonic, live_data, boxscore_data)
+
+
+def _mlb_box_get_cached(gid: int):
+    with _mlb_box_cache_lock:
+        item = _mlb_box_cache.get(gid)
+        if item and item[0] >= time.monotonic():
+            return item[1], item[2]
+        return None
+
+
+def _mlb_box_store(gid: int, live_data, boxscore_data):
+    with _mlb_box_cache_lock:
+        _mlb_box_cache[gid] = (time.monotonic() + _MLB_BOX_CACHE_TTL, live_data, boxscore_data)
+        # Simple bound on cache size (drop oldest when it grows large) to avoid
+        # an unbounded dict across thousands of distinct games.
+        if len(_mlb_box_cache) > 512:
+            for k in sorted(_mlb_box_cache, key=lambda k: _mlb_box_cache[k][0])[:256]:
+                del _mlb_box_cache[k]
 from app.models import User
 from app.routers.auth import get_optional_user
 from app.handicapping.mlb.mlb_splits import MLBSplitAnalyzer
@@ -1209,27 +1249,35 @@ async def mlb_game_boxscore(
 
     game_dict = dict(game)
 
-    # Fetch live feed + boxscore from MLB API if we have an mlb_game_id
+    # Fetch live feed + boxscore from MLB API if we have an mlb_game_id.
+    # Wrapped in a short TTL cache so heavy page-refresh traffic collapses to a
+    # small number of external statsapi calls per game instead of one per request.
     boxscore_data = None
     live_data = None
     if game_dict["mlb_game_id"]:
         gid = game_dict["mlb_game_id"]
-        try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                # Live feed — has game status + linescore
-                resp = await client.get(
-                    f"https://statsapi.mlb.com/api/v1.1/game/{gid}/feed/live"
-                )
-                if resp.status_code == 200:
-                    live_data = resp.json()
-                # Boxscore — has player stats
-                resp2 = await client.get(
-                    f"https://statsapi.mlb.com/api/v1/game/{gid}/boxscore"
-                )
-                if resp2.status_code == 200:
-                    boxscore_data = resp2.json()
-        except Exception:
-            pass
+        cached = _mlb_box_get_cached(gid)
+        if cached:
+            live_data, boxscore_data = cached
+        else:
+            try:
+                async with httpx.AsyncClient(timeout=10) as client:
+                    # Live feed — has game status + linescore
+                    resp = await client.get(
+                        f"https://statsapi.mlb.com/api/v1.1/game/{gid}/feed/live"
+                    )
+                    if resp.status_code == 200:
+                        live_data = resp.json()
+                    # Boxscore — has player stats
+                    resp2 = await client.get(
+                        f"https://statsapi.mlb.com/api/v1/game/{gid}/boxscore"
+                    )
+                    if resp2.status_code == 200:
+                        boxscore_data = resp2.json()
+                if live_data is not None or boxscore_data is not None:
+                    _mlb_box_store(gid, live_data, boxscore_data)
+            except Exception:
+                pass
 
     # Sync DB status/scores from live feed
     if live_data:

@@ -28,6 +28,8 @@ class GameOut(BaseModel):
     away_team: str | None = None
     home_score: int | None = None
     away_score: int | None = None
+    quarter: int | None = None
+    clock: str | None = None
     home_team_id: int | None = None
     away_team_id: int | None = None
     spread: float | None = None          # from home team perspective (+ = home underdog, - = home favorite)
@@ -97,6 +99,8 @@ async def _game_to_out(game: Game, spread: float | None = None, over_under: floa
         away_team=game.away_team.abbreviation if game.away_team else None,
         home_score=game.home_score,
         away_score=game.away_score,
+        quarter=game.quarter,
+        clock=game.clock,
         home_team_id=game.home_team_id,
         away_team_id=game.away_team_id,
         spread=spread,

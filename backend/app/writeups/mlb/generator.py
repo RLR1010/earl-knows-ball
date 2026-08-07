@@ -109,6 +109,8 @@ class MLBWriteupGenerator(BaseWriteupGenerator):
                         historical_game_date = :hist_date,
                         generated_by = :gen_by,
                         total_tokens = :tokens,
+                        seo_description = :seo_desc,
+                        seo_keywords = :seo_kw,
                         published_at = NOW(),
                         updated_at = NOW()
                     WHERE game_id = :gid
@@ -127,6 +129,8 @@ class MLBWriteupGenerator(BaseWriteupGenerator):
                     "hist_date": hist_game_date,
                     "gen_by": writeup.get("generated_by", self.MODEL),
                     "tokens": writeup.get("total_tokens"),
+                    "seo_desc": writeup.get("seo_description"),
+                    "seo_kw": writeup.get("seo_keywords"),
                 },
             )
             row_id = result.scalar()
@@ -137,12 +141,14 @@ class MLBWriteupGenerator(BaseWriteupGenerator):
                         (game_id, title, public_content, premium_content,
                          research_brief, quality_checks, status, version,
                          is_historical, historical_game_date,
-                         generated_by, total_tokens, published_at)
+                         generated_by, total_tokens,
+                         seo_description, seo_keywords, published_at)
                     VALUES
                         (:gid, :title, :pub, :prem,
                          CAST(:rb AS jsonb), CAST(:qc AS jsonb), :status, :version,
                          :is_hist, :hist_date,
-                         :gen_by, :tokens, NOW())
+                         :gen_by, :tokens,
+                         :seo_desc, :seo_kw, NOW())
                     RETURNING id
                 """),
                 {
@@ -158,6 +164,8 @@ class MLBWriteupGenerator(BaseWriteupGenerator):
                     "hist_date": hist_game_date,
                     "gen_by": writeup.get("generated_by", self.MODEL),
                     "tokens": writeup.get("total_tokens"),
+                    "seo_desc": writeup.get("seo_description"),
+                    "seo_kw": writeup.get("seo_keywords"),
                 },
             )
             row_id = result.scalar()

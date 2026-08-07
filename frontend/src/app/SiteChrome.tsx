@@ -17,8 +17,10 @@ const SPORTS: { key: Sport; label: string; emoji: string }[] = [
 const SUB_NAV_ITEMS = [
   { label: "Home", path: "" },
   { label: "Schedule", path: "/schedule" },
+  { label: "Analysis", path: "/analysis" },
   { label: "Teams", path: "/teams" },
   { label: "Props", path: "/props" },
+  { label: "Articles", path: "/articles" },
   { label: "Results", path: "/results" },
   { label: "Chat With Earl", path: "/chat" },
 ];

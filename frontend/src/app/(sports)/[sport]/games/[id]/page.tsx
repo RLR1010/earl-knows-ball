@@ -15,6 +15,7 @@ interface GameInfo {
   venue: string | null; roof_type: string | null;
   home_team: string; away_team: string;
   home_score: number | null; away_score: number | null;
+  quarter: number | null; clock: string | null;
   spread?: number | null; over_under?: number | null;
 }
 
@@ -183,8 +184,22 @@ function NFLPickCard({ pred }: { pred: GamePrediction }) {
 // ── NFL Box Score ──
 function NFLBoxScore({ data }: { data: NFLBoxScore }) {
   const { game, home_stats, away_stats } = data;
+  const isLive = game.status?.toLowerCase() === "in_progress";
   const isFinal = game.status?.toLowerCase() === "final";
-  const badge = isFinal ? { label: "FINAL", cls: "text-green-400" } : { label: game.status?.toUpperCase() || "SCHEDULED", cls: "text-earl-400" };
+  function nflStatusBadge(s?: string) {
+    switch (s?.toLowerCase()) {
+      case "in_progress": return { label: "LIVE", cls: "text-red-400 animate-pulse" };
+      case "final": return { label: "FINAL", cls: "text-green-400" };
+      default: return { label: (s || "SCHEDULED").toUpperCase(), cls: "text-earl-400" };
+    }
+  }
+  const badge = nflStatusBadge(game.status);
+  function formatDate(iso: string) { const d = new Date(iso); return d.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric", timeZone: "America/New_York" }); }
+  function quarterOrdinal(n?: number | null) {
+    if (n == null) return "";
+    const s = ["", "1st", "2nd", "3rd", "4th", "OT", "2OT", "3OT"][n] || `${n}Q`;
+    return s;
+  }
   const hWon = isFinal && (game.home_score ?? 0) > (game.away_score ?? 0);
   const aWon = isFinal && (game.away_score ?? 0) > (game.home_score ?? 0);
 
@@ -192,23 +207,31 @@ function NFLBoxScore({ data }: { data: NFLBoxScore }) {
     <div className="space-y-6">
       <div className="border border-white/10 rounded-xl p-6 bg-gradient-to-r from-white/5 to-white/0 text-center">
         <span className={`text-sm font-bold ${badge.cls}`}>{badge.label}</span>
-        {game.week && <span className="text-sm text-gray-500 ml-3">Week {game.week}</span>}
+        {isLive && game.quarter != null && (
+          <span className="text-sm font-semibold text-white ml-3">
+            {quarterOrdinal(game.quarter)}
+            {game.clock && <span className="text-gray-400 ml-1">· {game.clock}</span>}
+          </span>
+        )}
+        {game.date && <span className="text-xs text-gray-500 ml-3">{formatDate(game.date)}</span>}
         <div className="flex items-center justify-center gap-8 md:gap-16 mt-4">
           <div className="text-right">
             <div className="text-lg font-semibold text-gray-300">{game.away_team}</div>
             <div className={`text-5xl font-bold mt-1 ${aWon ? "text-earl-400" : "text-gray-400"}`}>
-              {(isFinal || badge.label === "LIVE") && game.away_score != null ? game.away_score : "-"}
+              {(isFinal || isLive) && game.away_score != null ? game.away_score : "-"}
             </div>
           </div>
           <div className="text-3xl text-gray-600 font-bold">@</div>
           <div className="text-left">
             <div className="text-lg font-semibold text-gray-300">{game.home_team}</div>
             <div className={`text-5xl font-bold mt-1 ${hWon ? "text-earl-400" : "text-gray-400"}`}>
-              {(isFinal || badge.label === "LIVE") && game.home_score != null ? game.home_score : "-"}
+              {(isFinal || isLive) && game.home_score != null ? game.home_score : "-"}
             </div>
           </div>
         </div>
-        <div className="text-sm text-gray-500 mt-4">{game.venue ? `${game.date} - ${game.venue}` : game.date}</div>
+        <div className="text-sm text-gray-500 mt-4">
+          {game.venue && <span>{game.venue}</span>}
+        </div>
       </div>
       <div className="border border-white/10 rounded-xl overflow-hidden">
         <div className="bg-white/5 px-4 py-2 text-sm font-semibold text-earl-400">Team Stats</div>
@@ -288,24 +311,54 @@ export default function GameDetailPage() {
         },
   );
 
-  // NFL data fetching
+  // NFL data fetching (re-fetched on an interval while the game is live)
+  // so the scoreboard auto-updates during a game — the same "live" feel as
+  // MLB, but it polls our own /box-score endpoint (which reads the DB that
+  // the nfl/live-refresh task keeps synced from ESPN), not ESPN directly.
   useEffect(() => {
     if (!gameId || !isNfl) { if (!isNfl) return; }
     const gid = parseInt(gameId);
-    Promise.all([
-      fetch(`/api/games/${gid}/box-score`).then(r => r.json()).catch(() => null),
-      fetch(`/api/handicapping/predictions/${gid}`).then(r => r.json()).catch(() => null),
-      fetch(`/api/games/${gid}`).then(r => r.json()).catch(() => null),
-    ]).then(([box, pred, game]) => {
-      if (box?.game) setNflBoxScore(box as NFLBoxScore);
-      if (pred?.game_id) setPrediction(pred as GamePrediction);
-      // Always get the line from the game API (or fallback from predictions endpoint)
-      const line = game?.spread != null ? { spread: game.spread, over_under: game.over_under } :
-                   pred?.line?.spread != null ? pred.line : null;
-      if (line) setGameLine(line);
-      if (!box?.game && !pred?.game_id && !game) setError("Game not found");
-      setLoading(false);
-    }).catch(() => setLoading(false));
+
+    const fetchNfl = (): Promise<string> => {
+      return Promise.all([
+        fetch(`/api/games/${gid}/box-score`).then(r => r.json()).catch(() => null),
+        fetch(`/api/handicapping/predictions/${gid}`).then(r => r.json()).catch(() => null),
+        fetch(`/api/games/${gid}`).then(r => r.json()).catch(() => null),
+      ]).then(([box, pred, game]) => {
+        if (box?.game) setNflBoxScore(box as NFLBoxScore);
+        if (pred?.game_id) setPrediction(pred as GamePrediction);
+        // Always get the line from the game API (or fallback from predictions endpoint)
+        const line = game?.spread != null ? { spread: game.spread, over_under: game.over_under } :
+                     pred?.line?.spread != null ? pred.line : null;
+        if (line) setGameLine(line);
+        if (!box?.game && !pred?.game_id && !game) setError("Game not found");
+        setLoading(false);
+        return box?.game?.status ?? "";
+      }).catch(() => { setLoading(false); return ""; });
+    };
+
+    const status = fetchNfl();
+    // Keep polling the box-score while the game is in progress. Stop once
+    // it goes final (or if it was never live) to avoid pointless requests.
+    let timer: ReturnType<typeof setInterval> | null = null;
+    status.then((s: string) => {
+      const sl = (s || "").toLowerCase();
+      if (sl === "in_progress" || sl === "live") {
+        timer = setInterval(() => {
+          fetch(`/api/games/${gid}/box-score`).then(r => r.json()).then((box) => {
+            if (box?.game) {
+              setNflBoxScore(box as NFLBoxScore);
+              const st = (box.game.status || "").toLowerCase();
+              if (st === "final" || st === "scheduled") {
+                if (timer) { clearInterval(timer); timer = null; }
+              }
+            }
+          }).catch(() => null);
+        }, 30000); // refresh every 30s while live
+      }
+    });
+
+    return () => { if (timer) clearInterval(timer); };
   }, [gameId, isNfl]);
 
   // NBA data fetching
@@ -372,10 +425,28 @@ export default function GameDetailPage() {
   }) as unknown as GamePrediction : null);
 
   const nflGameStatus = nflBoxScore?.game?.status?.toLowerCase() || "";
+  const isNflLive = nflGameStatus === "in_progress";
   const isNflFinal = nflGameStatus === "final";
-  const nflBadge = isNflFinal
-    ? { label: "FINAL", cls: "text-green-400" }
-    : { label: nflGameStatus?.toUpperCase() || "SCHEDULED", cls: "text-earl-400" };
+  function nflBadgeLabel(s?: string) {
+    switch (s?.toLowerCase()) {
+      case "in_progress": return "LIVE";
+      case "final": return "FINAL";
+      default: return (s || "SCHEDULED").toUpperCase();
+    }
+  }
+  function nflBadgeCls(s?: string) {
+    switch (s?.toLowerCase()) {
+      case "in_progress": return "text-red-400 animate-pulse";
+      case "final": return "text-green-400";
+      default: return "text-earl-400";
+    }
+  }
+  const nflBadge = { label: nflBadgeLabel(nflBoxScore?.game?.status), cls: nflBadgeCls(nflBoxScore?.game?.status) };
+  function nflQuarter(n?: number | null) {
+    if (n == null) return "";
+    return ["", "1st", "2nd", "3rd", "4th", "OT", "2OT", "3OT"][n] || `${n}Q`;
+  }
+  function nflFmtDate(iso?: string | null) { if (!iso) return ""; return new Date(iso).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric", timeZone: "America/New_York" }); }
   const hWon = isNflFinal && (nflBoxScore?.game?.home_score ?? 0) > (nflBoxScore?.game?.away_score ?? 0);
   const aWon = isNflFinal && (nflBoxScore?.game?.away_score ?? 0) > (nflBoxScore?.game?.home_score ?? 0);
 
@@ -385,7 +456,13 @@ export default function GameDetailPage() {
       {nflBoxScore && (
         <div className="border border-white/10 rounded-xl p-6 bg-gradient-to-r from-white/5 to-white/0 text-center">
           <span className={`text-sm font-bold ${nflBadge.cls}`}>{nflBadge.label}</span>
-          {nflBoxScore.game.week && <span className="text-sm text-gray-500 ml-3">Week {nflBoxScore.game.week}</span>}
+          {isNflLive && nflBoxScore.game.quarter != null && (
+            <span className="text-sm font-semibold text-white ml-3">
+              {nflQuarter(nflBoxScore.game.quarter)}
+              {nflBoxScore.game.clock && <span className="text-gray-400 ml-1">· {nflBoxScore.game.clock}</span>}
+            </span>
+          )}
+          {nflBoxScore.game.date && <span className="text-xs text-gray-500 ml-3">{nflFmtDate(nflBoxScore.game.date)}</span>}
           <div className="flex items-center justify-center gap-8 md:gap-16 mt-4">
             <div className="flex flex-col items-center gap-1">
               <div className={`w-12 h-12 rounded-full bg-white/10 flex items-center justify-center text-xl font-bold ${aWon ? "opacity-100" : "opacity-60"}`}>{nflBoxScore.game.away_team?.slice(0, 3).toUpperCase()}</div>
@@ -401,6 +478,7 @@ export default function GameDetailPage() {
               </span>
             </div>
           </div>
+          {nflBoxScore.game.venue && <div className="text-sm text-gray-500 mt-4">{nflBoxScore.game.venue}</div>}
         </div>
       )}
 

@@ -62,6 +62,10 @@ class NFLGameWriteup(Base):
     generated_by = Column(String(100), nullable=True)  # model name
     total_tokens = Column(Integer, nullable=True)
 
+    # SEO meta (LLM-generated for <head>)
+    seo_description = Column(Text, nullable=True)
+    seo_keywords = Column(Text, nullable=True)
+
     # Timestamps
     published_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(

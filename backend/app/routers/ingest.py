@@ -8,7 +8,7 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
-from app.ingestion.espn import ingest_espn_schedule
+from app.ingestion.espn import ingest_espn_schedule, update_live_nfl_games
 from app.ingestion.nflverse import ingest_nflverse_stats
 from app.ingestion.match_players import match_nflverse_ids
 from app.ingestion.articles import scrape_rss_feeds
@@ -29,6 +29,18 @@ async def ingest_schedule(
 ):
     result = await ingest_espn_schedule(db, season_year=season, seasontype=season_type)
     return {"status": "ok", "source": "espn", **result}
+
+
+@router.post("/ingest/nfl/live-refresh")
+async def ingest_live_refresh(db: AsyncSession = Depends(get_db)):
+    """Sync live NFL game statuses/scores from ESPN for games in progress.
+
+    Self-skipping: if no NFL game is live or about to start, this returns
+    immediately without calling ESPN (near-zero cost when there's no football).
+    Intended to run every few minutes during the NFL season.
+    """
+    result = await update_live_nfl_games(db)
+    return {"status": "ok", "endpoint": "nfl/live-refresh", **result}
 
 
 @router.post("/ingest/match-players")

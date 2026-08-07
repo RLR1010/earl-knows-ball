@@ -29,6 +29,8 @@ interface Article {
   word_max?: number | null;
   word_count?: number | null;
   slug?: string | null;
+  seo_description?: string | null;
+  seo_keywords?: string | null;
 }
 
 interface ArticleDetail extends Article {
@@ -84,6 +86,8 @@ export default function AdminOriginalArticles() {
   const [saving, setSaving] = useState(false);
   const [editMarkdown, setEditMarkdown] = useState(false);
   const [editInstructions, setEditInstructions] = useState("");
+  const [editSeoDesc, setEditSeoDesc] = useState("");
+  const [editSeoKeywords, setEditSeoKeywords] = useState("");
   const [includeResearch, setIncludeResearch] = useState(true);
   const [reediting, setReediting] = useState(false);
 
@@ -231,6 +235,8 @@ export default function AdminOriginalArticles() {
     setEditTitle(a.title);
     setEditContent(a.content);
     setEditAuthor(a.author || "Earl");
+    setEditSeoDesc(a.seo_description || "");
+    setEditSeoKeywords(a.seo_keywords || "");
     setEditMarkdown(false);
     setEditInstructions("");
   };
@@ -294,6 +300,8 @@ export default function AdminOriginalArticles() {
           content: editContent,
           author: editAuthor.trim() || "Earl",
           summary: null, // re-derive on backend
+          seo_description: editSeoDesc.trim() || null,
+          seo_keywords: editSeoKeywords.trim() || null,
         }),
       });
       if (!res.ok) {
@@ -684,6 +692,34 @@ export default function AdminOriginalArticles() {
                           value={editAuthor}
                           onChange={(e) => setEditAuthor(e.target.value)}
                           placeholder="Earl"
+                        />
+                      </div>
+                      <div className="mb-2 p-3 rounded-md border border-white/10 bg-black/25">
+                        <div className="flex items-center justify-between mb-1.5">
+                          <label className="text-xs font-medium text-gray-200">SEO (meta description & keywords)</label>
+                          <button
+                            onClick={() => {
+                              // Trigger a fresh LLM regenerate on next save by clearing fields.
+                              setEditSeoDesc("");
+                              setEditSeoKeywords("");
+                            }}
+                            className="text-xs text-blue-400 hover:text-blue-300 underline"
+                          >
+                            Regenerate on save
+                          </button>
+                        </div>
+                        <textarea
+                          className="w-full bg-black/40 border border-white/10 rounded-md p-2 mb-2 text-xs focus:outline-none focus:border-blue-500 resize-y"
+                          rows={2}
+                          value={editSeoDesc}
+                          onChange={(e) => setEditSeoDesc(e.target.value)}
+                          placeholder="Meta description (140-160 chars)…"
+                        />
+                        <input
+                          className="w-full bg-black/40 border border-white/10 rounded-md p-2 text-xs focus:outline-none focus:border-blue-500"
+                          value={editSeoKeywords}
+                          onChange={(e) => setEditSeoKeywords(e.target.value)}
+                          placeholder="keyword1, keyword2, keyword3…"
                         />
                       </div>
                       <div className="mb-2 rounded-md border border-white/10 bg-black/25">

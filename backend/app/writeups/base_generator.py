@@ -322,6 +322,13 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
             "is_historical": is_historical,
         }
 
+        # ---- 3b. Generate SEO meta (description + keywords) ----
+        seo = await self._generate_seo(
+            title or "", (public_content or "") + "\n" + (premium_content or "")
+        )
+        parsed["seo_description"] = (seo.get("seo_description") or "").strip()[:500] or None
+        parsed["seo_keywords"] = (seo.get("seo_keywords") or "").strip()[:500] or None
+
         # ---- 4. Quality checks ----
         qc_results = self.run_quality_checks(parsed, research)
         parsed["qc_results"] = qc_results
@@ -500,6 +507,85 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
         else:
             logger.error("DeepSeek API call failed after %d attempts: %s", max_attempts, last_error)
         return None
+
+    # ── SEO Meta Generation ────────────────────────────────
+
+    SEO_PROMPT = (
+        "You are an SEO specialist for Earl Knows Ball, a premium sports handicapping "
+        "site. Given a sports betting article's title and content, produce a compelling "
+        "meta description and a keyword list.\n"
+        "Rules:\n"
+        "- Meta description: 140-160 chars, 1-2 punchy sentences that summarize and "
+        "  entice clicks. Plain text, no quotes, no trailing period if it exceeds the "
+        "  limit. Betting-focused.\n"
+        "- Keywords: a comma-separated list of 5-8 lowercase SEO phrases a bettor would "
+        "  search, e.g. 'mlb betting picks, padres vs dodgers, over under odds, "
+        "  sportsbook analysis'. No spaces after commas, no trailing comma.\n"
+        "- Return ONLY JSON: {\"seo_description\": \"...\", \"seo_keywords\": "
+        "\"...\"}. No markdown fences, no commentary."
+    )
+
+    async def _generate_seo(self, title: str, content: str) -> dict[str, str]:
+        """Return {seo_description, seo_keywords} via a lightweight DeepSeek call."""
+        if not settings.deepseek_api_key:
+            return {}
+        client = AsyncOpenAI(
+            api_key=settings.deepseek_api_key,
+            base_url=f"{settings.deepseek_base_url}/v1",
+            timeout=self.TIMEOUT,
+        )
+        body = (content or "")[:4000]
+        try:
+            resp = await client.chat.completions.create(
+                model=self.MODEL,
+                messages=[
+                    {"role": "system", "content": self.SEO_PROMPT},
+                    {"role": "user", "content": f"TITLE:\n{title}\n\nBODY (truncated):\n{body}"},
+                ],
+                temperature=0.3,
+                max_tokens=500,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("SEO generation failed for %r: %s", title, e)
+            return {}
+        raw = resp.choices[0].message.content or ""
+        data = self._extract_seo_json(raw)
+        return {
+            "seo_description": (data.get("seo_description") or "").strip()[:500],
+            "seo_keywords": (data.get("seo_keywords") or "").strip()[:500],
+        }
+
+    @staticmethod
+    def _extract_seo_json(raw: str) -> dict:
+        """Best-effort parse of the LLM's SEO JSON (handles markdown fences)."""
+        import json
+        import re as _re
+
+        if not raw:
+            return {}
+        fenced = _re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw, _re.DOTALL)
+        if fenced:
+            raw = fenced.group(1)
+        try:
+            data = json.loads(raw)
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            pass
+        start = raw.find("{")
+        if start != -1:
+            depth = 0
+            for i in range(start, len(raw)):
+                if raw[i] == "{":
+                    depth += 1
+                elif raw[i] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        try:
+                            return json.loads(raw[start : i + 1])
+                        except Exception:
+                            break
+        return {}
 
     # ── Prompt Building ─────────────────────────────────────
 
@@ -743,11 +829,16 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
         title = lines[0].strip().strip("#").strip() if lines else ""
         content = lines[1].strip() if len(lines) > 1 else ""
 
+        # Generate SEO meta (description + keywords) for <head>.
+        seo = await self._generate_seo(title or "", content or "")
+
         return {
             "title": title,
             "public_content": content,
             "research_brief": research,
             "is_historical": is_historical,
+            "seo_description": (seo.get("seo_description") or "").strip()[:500] or None,
+            "seo_keywords": (seo.get("seo_keywords") or "").strip()[:500] or None,
         }
 
     # ── Quality Checks ──────────────────────────────────────

@@ -279,7 +279,7 @@ async def list_mlb_writeups(
     rows = await db.execute(
         text(f"""
             SELECT
-                w.id, w.game_id, w.title, w.status, w.version,
+                w.id, w.game_id, w.slug, w.title, w.status, w.version,
                 w.is_historical, w.generated_by,
                 w.published_at, w.created_at, w.updated_at,
                 g.date AS game_date,
@@ -300,6 +300,7 @@ async def list_mlb_writeups(
         {
             "id": r.id,
             "game_id": r.game_id,
+            "slug": r.slug,
             "title": r.title,
             "status": r.status,
             "version": r.version,
@@ -318,20 +319,21 @@ async def list_mlb_writeups(
 #  Get / preview a write-up
 # ──────────────────────────────────────────────
 
-@router.get("/mlb/{writeup_id}")
+@router.get("/mlb/{identifier}")
 async def get_mlb_writeup(
-    writeup_id: int,
+    identifier: str,
     tier: str = Query("premium"),  # "public" or "premium"
     db: AsyncSession = Depends(get_db),
 ):
-    """Get a single write-up by ID.
+    """Get a single write-up by numeric ID or SEO slug.
 
     *tier* controls which content version is returned.
     """
+    is_id = identifier.isdigit()
     row = await db.execute(
         text("""
             SELECT
-                w.id, w.game_id, w.title,
+                w.id, w.game_id, w.title, w.slug,
                 w.public_content, w.premium_content,
                 w.status, w.version, w.is_historical,
                 w.generated_by, w.published_at, w.created_at,
@@ -344,18 +346,35 @@ async def get_mlb_writeup(
             JOIN mlb.games g ON g.id = w.game_id
             JOIN mlb.teams ht ON ht.id = g.home_team_id
             JOIN mlb.teams at ON at.id = g.away_team_id
-            WHERE w.id = :wid
+            WHERE w.id = :key
+        """ if is_id else """
+            SELECT
+                w.id, w.game_id, w.title, w.slug,
+                w.public_content, w.premium_content,
+                w.status, w.version, w.is_historical,
+                w.generated_by, w.published_at, w.created_at,
+                w.quality_checks,
+                w.research_brief,
+                g.date AS game_date,
+                ht.abbreviation AS home_team,
+                at.abbreviation AS away_team
+            FROM mlb.game_writeups w
+            JOIN mlb.games g ON g.id = w.game_id
+            JOIN mlb.teams ht ON ht.id = g.home_team_id
+            JOIN mlb.teams at ON at.id = g.away_team_id
+            WHERE w.slug = :key
         """),
-        {"wid": writeup_id},
+        {"key": int(identifier) if is_id else identifier},
     )
     r = row.mappings().one_or_none()
     if r is None:
-        raise HTTPException(status_code=404, detail=f"Write-up {writeup_id} not found")
+        raise HTTPException(status_code=404, detail=f"Write-up {identifier} not found")
 
     content = r["premium_content"] if tier == "premium" else r["public_content"]
 
     return {
         "id": r["id"],
+        "slug": r["slug"],
         "game_id": r["game_id"],
         "title": r["title"],
         "content": content,
@@ -659,7 +678,7 @@ async def list_nfl_writeups(
     where_clause = " AND ".join(where) if where else "TRUE"
     offset = (page - 1) * per_page
     rows = await db.execute(
-        text(f"""SELECT w.id, w.game_id, w.title, w.status, w.version,
+        text(f"""SELECT w.id, w.game_id, w.slug, w.title, w.status, w.version,
                  w.is_historical, w.published_at, w.created_at,
                  g.week, g.date,
                  ht.abbreviation AS home, at.abbreviation AS away
@@ -675,6 +694,7 @@ async def list_nfl_writeups(
     items = [
         {
             "writeup_id": r["id"], "game_id": r["game_id"],
+            "slug": r["slug"],
             "title": r["title"], "status": r["status"],
             "version": r["version"], "is_historical": r["is_historical"],
             "published_at": r["published_at"].isoformat() if r["published_at"] else None,
@@ -687,18 +707,19 @@ async def list_nfl_writeups(
     return {"items": items, "page": page, "per_page": per_page}
 
 
-@router.get("/nfl/{writeup_id}")
+@router.get("/nfl/{identifier}")
 async def get_nfl_writeup(
-    writeup_id: int,
+    identifier: str,
     tier: str = Query("premium"),  # "public" or "premium"
     db: AsyncSession = Depends(get_db),
 ):
-    """Get a specific NFL writeup by ID.
+    """Get a specific NFL writeup by numeric ID or SEO slug.
 
     *tier* controls which content version is returned in the ``content`` field.
     """
+    is_id = identifier.isdigit()
     row = await db.execute(
-        text("""SELECT w.id, w.game_id, w.title, w.public_content, w.premium_content,
+        text("""SELECT w.id, w.game_id, w.title, w.slug, w.public_content, w.premium_content,
                  w.status, w.version, w.is_historical,
                  w.research_brief, w.quality_checks,
                  w.published_at, w.created_at,
@@ -708,17 +729,27 @@ async def get_nfl_writeup(
           JOIN nfl.games g ON w.game_id = g.id
           JOIN nfl.teams ht ON g.home_team_id = ht.id
           JOIN nfl.teams at ON g.away_team_id = at.id
-          WHERE w.id = :wid"""),
-        {"wid": writeup_id},
+          WHERE w.id = :key""" if is_id else """SELECT w.id, w.game_id, w.title, w.slug, w.public_content, w.premium_content,
+                 w.status, w.version, w.is_historical,
+                 w.research_brief, w.quality_checks,
+                 w.published_at, w.created_at,
+                 g.week, g.date,
+                 ht.abbreviation AS home, at.abbreviation AS away
+          FROM nfl.game_writeups w
+          JOIN nfl.games g ON w.game_id = g.id
+          JOIN nfl.teams ht ON g.home_team_id = ht.id
+          JOIN nfl.teams at ON g.away_team_id = at.id
+          WHERE w.slug = :key"""),
+        {"key": int(identifier) if is_id else identifier},
     )
     r = row.mappings().one_or_none()
     if r is None:
-        raise HTTPException(status_code=404, detail="Writeup not found")
+        raise HTTPException(status_code=404, detail=f"Write-up {identifier} not found")
     rb = r.get("research_brief")
     qc = r.get("quality_checks")
     content = r["premium_content"] if tier == "premium" else r["public_content"]
     return {
-        "id": r["id"], "game_id": r["game_id"],
+        "id": r["id"], "slug": r["slug"], "game_id": r["game_id"],
         "title": r["title"],
         "content": content,
         "public_content": r["public_content"],
@@ -1007,7 +1038,8 @@ async def list_nba_writeups(
             SELECT w.id, w.game_id, w.title, w.status, w.version,
                    w.created_at, w.updated_at, w.published_at,
                    g.date, ht.name AS home, ht.abbreviation AS home_abbr,
-                   at.name AS away, at.abbreviation AS away_abbr
+                   at.name AS away, at.abbreviation AS away_abbr,
+                   w.slug
             FROM nba.game_writeups w
             JOIN nba.games g ON w.game_id = g.id
             JOIN nba.teams ht ON g.home_team_id = ht.id
@@ -1034,21 +1066,23 @@ async def list_nba_writeups(
             "home_abbr": r[10],
             "away_team": r[11],
             "away_abbr": r[12],
+            "slug": r[13],
         }
         for r in rows
     ]
 
 
-@router.get("/nba/{writeup_id}")
+@router.get("/nba/{identifier}")
 async def get_nba_writeup(
-    writeup_id: int,
+    identifier: str,
     tier: str = Query("premium"),  # "public" or "premium"
     db: AsyncSession = Depends(get_db),
 ):
-    """Get a specific NBA write-up by ID. Matches MLB pattern for frontend compatibility."""
+    """Get a specific NBA write-up by numeric ID or SEO slug. Matches MLB pattern for frontend compatibility."""
+    is_id = identifier.isdigit()
     result = await db.execute(
         text("""
-            SELECT w.id, w.game_id, w.title, w.public_content, w.premium_content,
+            SELECT w.id, w.game_id, w.title, w.slug, w.public_content, w.premium_content,
                    w.status, w.version, w.is_historical, w.generated_by,
                    w.total_tokens, w.published_at, w.created_at, w.updated_at,
                    w.research_brief, w.quality_checks,
@@ -1058,37 +1092,50 @@ async def get_nba_writeup(
             JOIN nba.games g ON w.game_id = g.id
             JOIN nba.teams ht ON g.home_team_id = ht.id
             JOIN nba.teams at ON g.away_team_id = at.id
-            WHERE w.id = :wid
+            WHERE w.id = :key
+        """ if is_id else """
+            SELECT w.id, w.game_id, w.title, w.slug, w.public_content, w.premium_content,
+                   w.status, w.version, w.is_historical, w.generated_by,
+                   w.total_tokens, w.published_at, w.created_at, w.updated_at,
+                   w.research_brief, w.quality_checks,
+                   g.date, ht.name AS home, ht.abbreviation AS home_abbr,
+                   at.name AS away, at.abbreviation AS away_abbr
+            FROM nba.game_writeups w
+            JOIN nba.games g ON w.game_id = g.id
+            JOIN nba.teams ht ON g.home_team_id = ht.id
+            JOIN nba.teams at ON g.away_team_id = at.id
+            WHERE w.slug = :key
         """),
-        {"wid": writeup_id},
+        {"key": int(identifier) if is_id else identifier},
     )
     row = result.fetchone()
     if not row:
-        raise HTTPException(status_code=404, detail="Write-up not found")
+        raise HTTPException(status_code=404, detail=f"Write-up {identifier} not found")
 
-    content = row[4] if tier == "premium" else row[3]
+    content = row[5] if tier == "premium" else row[4]
 
     return {
         "id": row[0],
+        "slug": row[3],
         "game_id": row[1],
         "title": row[2],
         "content": content,
-        "matchup": f"{row[18]} @ {row[16]}",
-        "status": row[5],
-        "version": row[6],
-        "is_historical": row[7],
-        "generated_by": row[8],
-        "total_tokens": row[9],
-        "published_at": str(row[10]) if row[10] else "",
-        "created_at": str(row[11]) if row[11] else "",
-        "updated_at": str(row[12]) if row[12] else "",
-        "research_brief": json.loads(row[13]) if isinstance(row[13], str) else row[13],
-        "quality_checks": json.loads(row[14]) if isinstance(row[14], str) else row[14],
-        "game_date": str(row[15])[:10] if row[15] else "",
-        "home_team": row[16],
-        "home_abbr": row[17],
-        "away_team": row[18],
-        "away_abbr": row[19],
+        "matchup": f"{row[19]} @ {row[17]}",
+        "status": row[6],
+        "version": row[7],
+        "is_historical": row[8],
+        "generated_by": row[9],
+        "total_tokens": row[10],
+        "published_at": str(row[11]) if row[11] else "",
+        "created_at": str(row[12]) if row[12] else "",
+        "updated_at": str(row[13]) if row[13] else "",
+        "research_brief": json.loads(row[14]) if isinstance(row[14], str) else row[14],
+        "quality_checks": json.loads(row[15]) if isinstance(row[15], str) else row[15],
+        "game_date": str(row[16])[:10] if row[16] else "",
+        "home_team": row[17],
+        "home_abbr": row[18],
+        "away_team": row[19],
+        "away_abbr": row[20],
     }
 
 
