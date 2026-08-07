@@ -9,6 +9,7 @@ import time
 
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from typing import Any, Optional
 
 from json_repair import repair_json
@@ -982,12 +983,50 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
 
     def _build_messages(self, research: dict[str, Any]) -> str:
         """Build the user prompt from the research data."""
+        # Pull game identity fields, preferring the nested game_summary shape,
+        # falling back to legacy top-level keys when present.
+        gs = research.get("game_summary") or {}
+        home_obj = gs.get("home_team") or {}
+        away_obj = gs.get("away_team") or {}
+        venue_obj = gs.get("venue") or {}
+        home_name = (
+            home_obj.get("name")
+            if isinstance(home_obj, dict)
+            else research.get("home_team_name")
+        ) or research.get("home_team_name") or "?"
+        away_name = (
+            away_obj.get("name")
+            if isinstance(away_obj, dict)
+            else research.get("away_team_name")
+        ) or research.get("away_team_name") or "?"
+        venue_name = (
+            venue_obj.get("name")
+            if isinstance(venue_obj, dict)
+            else research.get("venue_name")
+        ) or research.get("venue_name") or "?"
+
+        # Game date/day must be rendered in US Eastern so the LLM never has to
+        # guess the day. game_summary.date is already tz-aware ET when present;
+        # normalize any input to America/New_York and print an explicit weekday.
+        raw_date = gs.get("date") or research.get("game_date")
+        date_label = "?"
+        if raw_date:
+            try:
+                dt = raw_date if isinstance(raw_date, datetime) else datetime.fromisoformat(str(raw_date))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=ZoneInfo("America/New_York"))
+                else:
+                    dt = dt.astimezone(ZoneInfo("America/New_York"))
+                date_label = dt.strftime("%A, %B %d, %Y at %I:%M %p ET")
+            except Exception:
+                date_label = str(raw_date)
+
         # Start building the research overview
         lines = [
             "=== RESEARCH DATA ===",
-            f"Game: {research.get('home_team_name', '?')} vs {research.get('away_team_name', '?')}",
-            f"Date: {research.get('game_date', '?')}",
-            f"Venue: {research.get('venue_name', '?')}",
+            f"Game: {home_name} vs {away_name}",
+            f"Date: {date_label}",
+            f"Venue: {venue_name}",
             "",
             "--- HANDICAP INFO ---",
         ]
@@ -1007,13 +1046,13 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
                 lines.append(f"  {key}: {value}")
 
         if home_stats := research.get("home_stats"):
-            lines.append(f"\n--- {research.get('home_team_name', 'Home')} STATS ---")
+            lines.append(f"\n--- {home_name} STATS ---")
             if isinstance(home_stats, dict):
                 for key, value in home_stats.items():
                     lines.append(f"  {key}: {value}")
 
         if away_stats := research.get("away_stats"):
-            lines.append(f"\n--- {research.get('away_team_name', 'Away')} STATS ---")
+            lines.append(f"\n--- {away_name} STATS ---")
             if isinstance(away_stats, dict):
                 for key, value in away_stats.items():
                     lines.append(f"  {key}: {value}")
@@ -1316,8 +1355,13 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
         })
 
         # Check 4: mentions both teams
-        home_team = (research.get("home_team_name") or "").lower()
-        away_team = (research.get("away_team_name") or "").lower()
+        gs = research.get("game_summary") or {}
+        _ht = gs.get("home_team") or {}
+        _at = gs.get("away_team") or {}
+        home_team = (_ht.get("name") if isinstance(_ht, dict) else None) or research.get("home_team_name") or ""
+        away_team = (_at.get("name") if isinstance(_at, dict) else None) or research.get("away_team_name") or ""
+        home_team = str(home_team).lower()
+        away_team = str(away_team).lower()
         combined = (public_content + " " + premium_content).lower()
 
         if home_team and away_team:
