@@ -838,12 +838,14 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
             )
 
         accuracy_log: list = []
+        # 2 attempts: retry once on DeepSeek's transient empty responses so a
+        # fresh writeup still gets a real accuracy check (quality is a priority).
         raw = await self._call_deepseek(
             self.ACCURACY_SYSTEM_PROMPT,
             user_prompt,
             max_tokens=1800,
             reasoning=None,
-            max_attempts=1,
+            max_attempts=2,
             usage_log=accuracy_log,
         )
         tokens = sum((item.get("total_tokens") or 0) for item in accuracy_log)
