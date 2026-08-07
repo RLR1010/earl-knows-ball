@@ -838,13 +838,17 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
             )
 
         accuracy_log: list = []
-        # 2 attempts: retry once on DeepSeek's transient empty responses so a
-        # fresh writeup still gets a real accuracy check (quality is a priority).
+        # 2 attempts: retry once on transient empty responses so a fresh writeup
+        # still gets a real accuracy check (quality is a priority). reasoning
+        # MUST be "disabled" (the only value that sends thinking.disabled here):
+        # otherwise DeepSeek's (default or enabled) thinking eats the
+        # max_tokens=1800 budget and returns empty content. This is a JSON-only
+        # fact-check, so it does not need reasoning.
         raw = await self._call_deepseek(
             self.ACCURACY_SYSTEM_PROMPT,
             user_prompt,
             max_tokens=1800,
-            reasoning=None,
+            reasoning="disabled",
             max_attempts=2,
             usage_log=accuracy_log,
         )
