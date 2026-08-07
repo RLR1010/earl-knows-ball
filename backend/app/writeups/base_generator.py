@@ -35,7 +35,7 @@ class BaseWriteupGenerator(ABC):
     # DeepSeek model to use
     MODEL = "deepseek-v4-flash"
     TEMPERATURE = 0.5  # moderate creativity for sports writing
-    MAX_TOKENS = 16384  # enough for public + premium (4k-6k words total)
+    MAX_TOKENS = 24576  # fallback when a call omits max_tokens; PUBLIC=24576, PREMIUM=32768 (4k-6k words total)
     TIMEOUT = 120.0  # generous for longer generation
     # Retry policy for DeepSeek calls. Empty responses are a known DeepSeek
     # behavior when thinking mode burns the whole max_tokens budget on
@@ -285,7 +285,7 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
         public_system = self.public_system_prompt(is_historical)
         public_prompt = self._build_messages(stripped) + "\n\n" + self.SEO_OUTPUT_INSTRUCTION
 
-        raw_public = await self._call_deepseek(public_system, public_prompt, max_tokens=16384, reasoning=reasoning, usage_log=usage_log)
+        raw_public = await self._call_deepseek(public_system, public_prompt, max_tokens=24576, reasoning=reasoning, usage_log=usage_log)
         if raw_public is None:
             return {"error": "DeepSeek API call failed for public section"}
 
