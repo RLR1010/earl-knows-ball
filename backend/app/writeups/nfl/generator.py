@@ -62,6 +62,8 @@ Output format (preferred): Return valid JSON with these keys:
   - "content": The full premium article content formatted in markdown
 
 If you cannot return JSON, write the article starting with `## Title` on line 1, then the markdown body.
+
+Length: 1100-1500 words. Be detailed and comprehensive.
 {tense_note}"""
 
     def public_system_prompt(self, is_historical: bool = False) -> str:
@@ -89,6 +91,8 @@ FORMATTING: This renders as a web article via markdown. Use `##` for the title o
 | C.J. Stroud | 66.3 | 4871 | 32 | 13 |
 
 Keep it article-like — no blockquotes, no emoji, no chat-style formatting.
+
+Length: 800-1000 words.
 {tense_note}"""
 
     async def generate(

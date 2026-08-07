@@ -1199,8 +1199,8 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
         """Generate a public-only write-up (no picks, no premium section).
 
         This is a separate, lighter LLM call meant for the public-facing
-        endpoint. The 1200-2000 word target avoids overwhelming casual readers
-        and the stripped research keeps proprietary data out of the prompt.
+        endpoint. Length: 800-1000 words — same as the public section of a full
+        writeup. The stripped research keeps proprietary data out of the prompt.
         """
         system = self.public_system_prompt(is_historical)
         user_prompt = self._build_public_messages(research) + "\n\n" + self.SEO_OUTPUT_INSTRUCTION

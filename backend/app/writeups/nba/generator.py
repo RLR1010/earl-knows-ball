@@ -118,7 +118,9 @@ FORMATTING: Start with the article TITLE on its own line (use `##` as a heading)
 |--------|-----|-----|-----|-----|
 | Luka Dončić | 34.5 | 9.2 | 8.7 | 48.1 |
 
-Bullet lists work for key points in moderation. Keep it article-like — no blockquotes, no emoji, no chat-style formatting."""
+Bullet lists work for key points in moderation. Keep it article-like — no blockquotes, no emoji, no chat-style formatting.
+
+Length: 1100-1500 words. Be detailed and comprehensive."""
 
     def public_system_prompt(self, is_historical: bool = False) -> str:
         tense = (
@@ -142,7 +144,7 @@ Write a preview covering:
 IMPORTANT RULES:
 - NEVER include betting picks, ATS advice, or over/under recommendations.
 - Do mention betting lines factually ("Lakers are 4.5-point favorites") but don't advise on them.
-- Keep it to 300-450 words.
+- Keep it to 800-1000 words.
 - Be informative and entertaining. No hype or clichés.
 
 FORMATTING: Use `##` for the title on line 1. Use `##` section headers to organize the analysis. Use `**` for emphasis sparingly. For tables, use proper pipe-and-dash markdown syntax with a separator row:

@@ -201,6 +201,6 @@ class MLBWriteupGenerator(BaseWriteupGenerator):
 
         The caller is responsible for passing a stripped research brief
         (from get_public_research_brief). Makes a separate shorter LLM call
-        with a 1200-2000 word target.
+        with an 800-1000 word target.
         """
         return await super().generate_public(game_id, research, is_historical)
