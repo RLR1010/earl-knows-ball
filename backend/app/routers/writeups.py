@@ -338,6 +338,7 @@ async def get_mlb_writeup(
                 w.status, w.version, w.is_historical,
                 w.generated_by, w.published_at, w.created_at,
                 w.quality_checks,
+                w.total_tokens, w.accuracy_check, w.accuracy_check_tokens,
                 w.research_brief,
                 g.date AS game_date,
                 ht.abbreviation AS home_team,
@@ -354,6 +355,7 @@ async def get_mlb_writeup(
                 w.status, w.version, w.is_historical,
                 w.generated_by, w.published_at, w.created_at,
                 w.quality_checks,
+                w.total_tokens, w.accuracy_check, w.accuracy_check_tokens,
                 w.research_brief,
                 g.date AS game_date,
                 ht.abbreviation AS home_team,
@@ -387,6 +389,9 @@ async def get_mlb_writeup(
         "created_at": r["created_at"].isoformat() if r["created_at"] else None,
         "game_date": r["game_date"].isoformat() if r["game_date"] else None,
         "quality_checks": r["quality_checks"],
+        "total_tokens": r["total_tokens"],
+        "accuracy_check": r["accuracy_check"],
+        "accuracy_check_tokens": r["accuracy_check_tokens"],
         "research_brief": r["research_brief"],
     }
 
@@ -722,6 +727,7 @@ async def get_nfl_writeup(
         text("""SELECT w.id, w.game_id, w.title, w.slug, w.public_content, w.premium_content,
                  w.status, w.version, w.is_historical,
                  w.research_brief, w.quality_checks,
+                 w.total_tokens, w.accuracy_check, w.accuracy_check_tokens,
                  w.published_at, w.created_at,
                  g.week, g.date,
                  ht.abbreviation AS home, at.abbreviation AS away
@@ -732,6 +738,7 @@ async def get_nfl_writeup(
           WHERE w.id = :key""" if is_id else """SELECT w.id, w.game_id, w.title, w.slug, w.public_content, w.premium_content,
                  w.status, w.version, w.is_historical,
                  w.research_brief, w.quality_checks,
+                 w.total_tokens, w.accuracy_check, w.accuracy_check_tokens,
                  w.published_at, w.created_at,
                  g.week, g.date,
                  ht.abbreviation AS home, at.abbreviation AS away
@@ -758,6 +765,9 @@ async def get_nfl_writeup(
         "version": r["version"], "is_historical": r["is_historical"],
         "research_brief": json.loads(rb) if isinstance(rb, str) else rb,
         "quality_checks": json.loads(qc) if isinstance(qc, str) else qc,
+        "total_tokens": r["total_tokens"],
+        "accuracy_check": json.loads(r.get("accuracy_check")) if isinstance(r.get("accuracy_check"), str) else r.get("accuracy_check"),
+        "accuracy_check_tokens": r["accuracy_check_tokens"],
         "week": r["week"], "matchup": f"{r['away']} @ {r['home']}",
         "game_date": r["date"].isoformat() if r["date"] else None,
         "published_at": r["published_at"].isoformat() if r["published_at"] else None,
@@ -1087,7 +1097,8 @@ async def get_nba_writeup(
                    w.total_tokens, w.published_at, w.created_at, w.updated_at,
                    w.research_brief, w.quality_checks,
                    g.date, ht.name AS home, ht.abbreviation AS home_abbr,
-                   at.name AS away, at.abbreviation AS away_abbr
+                   at.name AS away, at.abbreviation AS away_abbr,
+                   w.accuracy_check, w.accuracy_check_tokens
             FROM nba.game_writeups w
             JOIN nba.games g ON w.game_id = g.id
             JOIN nba.teams ht ON g.home_team_id = ht.id
@@ -1099,7 +1110,8 @@ async def get_nba_writeup(
                    w.total_tokens, w.published_at, w.created_at, w.updated_at,
                    w.research_brief, w.quality_checks,
                    g.date, ht.name AS home, ht.abbreviation AS home_abbr,
-                   at.name AS away, at.abbreviation AS away_abbr
+                   at.name AS away, at.abbreviation AS away_abbr,
+                   w.accuracy_check, w.accuracy_check_tokens
             FROM nba.game_writeups w
             JOIN nba.games g ON w.game_id = g.id
             JOIN nba.teams ht ON g.home_team_id = ht.id
@@ -1131,6 +1143,8 @@ async def get_nba_writeup(
         "updated_at": str(row[13]) if row[13] else "",
         "research_brief": json.loads(row[14]) if isinstance(row[14], str) else row[14],
         "quality_checks": json.loads(row[15]) if isinstance(row[15], str) else row[15],
+        "accuracy_check": json.loads(row[21]) if isinstance(row[21], str) else row[21],
+        "accuracy_check_tokens": row[22],
         "game_date": str(row[16])[:10] if row[16] else "",
         "home_team": row[17],
         "home_abbr": row[18],

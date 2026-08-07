@@ -26,12 +26,83 @@ interface Writeup {
   premium_content: string;
   quality_checks: any;
   research_brief: any;
+  total_tokens: number | null;
+  accuracy_check: any;
+  accuracy_check_tokens: number | null;
 }
 
 interface QCResult {
   check: string;
   passed: boolean;
   detail: string;
+}
+
+/* Renders the stored accuracy-check result for a write-up. */
+function AccuracyCheckView({ data }: { data: any }) {
+  if (!data || typeof data !== "object" || Object.keys(data).length === 0) {
+    return (
+      <div className="text-xs text-gray-500">
+        No accuracy check result stored yet.
+      </div>
+    );
+  }
+  const passed = data.passed;
+  const skipped = !!data.skipped;
+  const findings = Array.isArray(data.findings) ? data.findings : [];
+  let badge: {
+    label: string;
+    cls: string;
+  };
+  if (skipped) {
+    badge = { label: "Skipped (no response)", cls: "bg-yellow-500/15 text-yellow-400" };
+  } else if (passed) {
+    badge = { label: "Passed", cls: "bg-green-500/15 text-green-400" };
+  } else {
+    badge = { label: "Failed", cls: "bg-red-500/15 text-red-400" };
+  }
+  return (
+    <div className="space-y-2 text-sm">
+      <div className="flex items-center gap-3">
+        <span
+          className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${badge.cls}`}
+        >
+          {badge.label}
+        </span>
+        {typeof data.tokens === "number" && (
+          <span className="text-xs text-gray-500">
+            {data.tokens.toLocaleString()} tokens
+          </span>
+        )}
+      </div>
+
+      {data.error && (
+        <div className="text-xs text-red-400/80">{data.error}</div>
+      )}
+
+      {findings.length > 0 ? (
+        <ul className="space-y-1 list-disc list-inside">
+          {findings.map((f: any, i: number) => (
+            <li key={i} className="text-xs text-gray-400">
+              {typeof f === "string" ? f : JSON.stringify(f)}
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <div className="text-xs text-gray-500">
+          {skipped ? "DeepSeek returned no response, so no findings were evaluated." : "No findings."}
+        </div>
+      )}
+
+      {data.reviewed && (
+        <div className="text-xs text-gray-500">Marked as reviewed manually.</div>
+      )}
+      {data.retries_used != null && (
+        <div className="text-xs text-gray-500">
+          Retries used: {data.retries_used}
+        </div>
+      )}
+    </div>
+  );
 }
 
 /* ─────────────────────────────────────────────
@@ -78,6 +149,9 @@ export default function ContentEditor() {
   const [showQc, setShowQc] = useState(false);
   const [showResearch, setShowResearch] = useState(false);
   const [researchBrief, setResearchBrief] = useState<any>(null);
+  const [totalTokens, setTotalTokens] = useState<number | null>(null);
+  const [accuracyCheck, setAccuracyCheck] = useState<any>(null);
+  const [accuracyCheckTokens, setAccuracyCheckTokens] = useState<number | null>(null);
 
   // ── Fetch write-up ────────────────────────────
 
@@ -104,6 +178,9 @@ export default function ContentEditor() {
       if (data.research_brief) {
         setResearchBrief(data.research_brief);
       }
+      if (data.total_tokens != null) setTotalTokens(data.total_tokens);
+      if (data.accuracy_check != null) setAccuracyCheck(data.accuracy_check);
+      if (data.accuracy_check_tokens != null) setAccuracyCheckTokens(data.accuracy_check_tokens);
 
       // We need both versions — fetch with tier=public as well
       const pubRes = await fetch(`/api/writeups/${sport}/${writeupId}?tier=public`, {
@@ -427,6 +504,35 @@ export default function ContentEditor() {
                 </div>
               ))
             )}
+          </div>
+        </div>
+      )}
+
+      {/* ── Tokens & Accuracy Check ────────────────── */}
+      {(totalTokens != null || accuracyCheckTokens != null || accuracyCheck != null) && (
+        <div className="mt-6 bg-white/[0.03] border border-amber-500/20 rounded-xl p-4">
+          <h3 className="text-sm font-medium text-gray-400 mb-3">
+            Tokens & Accuracy Check
+          </h3>
+          <div className="space-y-3">
+            {(totalTokens != null || accuracyCheckTokens != null) && (
+              <div className="flex gap-6 text-sm">
+                {totalTokens != null && (
+                  <div>
+                    <span className="text-gray-500">Total tokens: </span>
+                    <span className="text-gray-200 font-medium">{totalTokens.toLocaleString()}</span>
+                  </div>
+                )}
+                {accuracyCheckTokens != null && (
+                  <div>
+                    <span className="text-gray-500">Accuracy check tokens: </span>
+                    <span className="text-gray-200 font-medium">{accuracyCheckTokens.toLocaleString()}</span>
+                  </div>
+                )}
+              </div>
+            )}
+
+            <AccuracyCheckView data={accuracyCheck} />
           </div>
         </div>
       )}
