@@ -401,18 +401,15 @@ export default function AdminContent() {
   const handleGenerate = async (gameId: number) => {
     setGenerating(gameId);
     try {
-      // Call backend directly (bypass proxy) to avoid the 30s proxy timeout.
-      // Generation can take 5-8 min when DeepSeek retries (thinking-mode
-      // empty responses are a known failure mode), so give it 10 minutes.
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 600_000);
-      // is_historical is now auto-detected from game status on the backend
-      const res = await fetch(`/writeups/${sport}/generate/${gameId}`, {
+      // Use the /api/writeups path so Caddy proxies DIRECTLY to the backend
+      // (port 8001), bypassing the Next.js rewrite proxy (which has a ~30-60s
+      // timeout and can abort long generations ~3-5min, killing the fetch while
+      // the backend keeps running and still saves the write-up -> false
+      // "Generation failed: Failed to fetch" alert).
+      const res = await fetch(`/api/writeups/${sport}/generate/${gameId}`, {
         method: "POST",
         headers: { Authorization: `Bearer ${token()}`, "Content-Type": "application/json" },
-        signal: controller.signal,
       });
-      clearTimeout(timeout);
 
       if (!res.ok) {
         const errText = await res.text();
