@@ -355,6 +355,7 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
             parsed.get("public_content", ""),
             parsed.get("premium_content", ""),
             research,
+            research_prefix=self._build_messages(research),
             usage_log=usage_log,
         )
         retries_used = 0
@@ -381,6 +382,7 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
                     parsed.get("public_content", ""),
                     parsed.get("premium_content", ""),
                     research,
+                    research_prefix=self._build_messages(research),
                     usage_log=usage_log,
                 )
 
@@ -784,6 +786,7 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
         premium_content: str,
         research: dict[str, Any],
         *,
+        research_prefix: str = "",
         usage_log: Optional[list] = None,
     ) -> dict[str, Any]:
         """Final fact-check of the assembled article against the research brief.
@@ -810,15 +813,29 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
                 "tokens": 0,
             }
 
-        research_summary = self._build_messages(research)[:12000]
-        user_prompt = (
-            "=== RESEARCH DATA ===\n"
-            f"{research_summary}\n\n"
-            "=== ARTICLE TO VERIFY ===\n"
-            f"{article_text[:28000]}\n\n"
-            "Verify the article against the research and return the JSON result. "
-            "Remember the PUBLIC section must contain no betting predictions."
-        )
+        # Exact research prefix for DeepSeek input-cache hits. research_prefix
+        # already starts with "=== RESEARCH DATA ==="; passing it verbatim makes
+        # the accuracy prompt's leading bytes identical to the main generation
+        # call's research prompt, so DeepSeek serves those input tokens from
+        # cache (huge discount + faster).
+        if research_prefix:
+            user_prompt = (
+                f"{research_prefix[:12000]}\n\n"
+                "=== ARTICLE TO VERIFY ===\n"
+                f"{article_text[:28000]}\n\n"
+                "Verify the article against the research and return the JSON "
+                "result. The PUBLIC section must contain no betting predictions."
+            )
+        else:
+            research_block = self._build_messages(research)[:12000]
+            user_prompt = (
+                "=== RESEARCH DATA ===\n"
+                f"{research_block}\n\n"
+                "=== ARTICLE TO VERIFY ===\n"
+                f"{article_text[:28000]}\n\n"
+                "Verify the article against the research and return the JSON "
+                "result. The PUBLIC section must contain no betting predictions."
+            )
 
         accuracy_log: list = []
         raw = await self._call_deepseek(
@@ -1211,7 +1228,8 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
         # Final accuracy verification: facts traceable to research + NO betting
         # predictions in public content. Bounded fix-loop (1 retry max).
         accuracy_check = await self._verify_accuracy(
-            content or "", "", research, usage_log=usage_log
+            content or "", "", research, usage_log=usage_log,
+            research_prefix=self._build_public_messages(research),
         )
         retries_used = 0
         if accuracy_check.get("findings") and not accuracy_check.get("skipped"):
@@ -1229,7 +1247,8 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
                 title = corrected["title"]
             # Re-run checks on the corrected content.
             accuracy_check = await self._verify_accuracy(
-                content or "", "", research, usage_log=usage_log
+                content or "", "", research, usage_log=usage_log,
+                research_prefix=self._build_public_messages(research),
             )
         accuracy_check["retries_used"] = retries_used
 
