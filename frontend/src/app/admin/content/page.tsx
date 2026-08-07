@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams, usePathname } from "next/navigation";
 import { useSeo } from "@/components/Seo";
 
 const SPORTS = ["mlb", "nfl", "nba"] as const;
@@ -237,8 +237,20 @@ function GameCard({
 export default function AdminContent() {
   useSeo({ title: "Content — Admin — Earl Knows Ball" });
   const router = useRouter();
-  const [sport, setSport] = useState<Sport>("mlb");
-  const [daysOffset, setDaysOffset] = useState(0);
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  // URL is the source of truth: sport + day offset are encoded as query params.
+  // This lets us leave the listing (e.g. open a writeup) and return to the exact
+  // same sport tab + day position.
+  const urlSport = searchParams.get("sport");
+  const urlDays = searchParams.get("days");
+  const [sport, setSport] = useState<Sport>(
+    (SPORTS as readonly string[]).includes(urlSport ?? "") ? (urlSport as Sport) : "mlb"
+  );
+  const [daysOffset, setDaysOffset] = useState(() => {
+    const d = Number(urlDays);
+    return Number.isFinite(d) ? d : 0;
+  });
   const [games, setGames] = useState<Game[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -328,9 +340,26 @@ export default function AdminContent() {
     }
   }, [daysOffset, sport]);
 
-  // ── On mount / sport change: snap to nearest game ──
+  // ── Keep URL in sync with sport + day offset (replace, not push) ──
 
   useEffect(() => {
+    const params = new URLSearchParams();
+    params.set("sport", sport);
+    if (daysOffset !== 0) {
+      params.set("days", String(daysOffset));
+    }
+    const next = `${pathname}?${params.toString()}`;
+    if (next !== window.location.pathname + window.location.search) {
+      router.replace(next);
+    }
+  }, [sport, daysOffset, pathname, router]);
+
+  // ── On mount (fresh visit, no sport/days param): snap to nearest game ──
+
+  useEffect(() => {
+    // If a sport/day was provided in the URL (returning to a saved position),
+    // honor it exactly instead of snapping to the nearest game.
+    if (searchParams.has("days") || searchParams.has("sport")) return;
     if (sport === "nfl" || sport === "nba") {
       // Find the next upcoming game and snap to it
       const today = new Date().toLocaleDateString("en-CA");
@@ -389,7 +418,14 @@ export default function AdminContent() {
         const errText = await res.text();
         throw new Error(errText);
       }
-      await fetchGames();
+      // Refresh the list AFTER generation succeeds. Keep this outside the
+      // generation try/catch so a refresh error is NOT mislabeled as a
+      // generation failure (writeup is already saved by this point).
+      try {
+        await fetchGames();
+      } catch (refreshErr: any) {
+        console.error("Writeup generated but list refresh failed:", refreshErr);
+      }
     } catch (e: any) {
       if (e.name === "AbortError") {
         console.error("Generate timeout:", e);
@@ -408,7 +444,7 @@ export default function AdminContent() {
   };
 
   const handleEdit = (writeupId: number) => {
-    router.push(`/admin/content/${writeupId}?sport=${sport}`);
+    router.push(`/admin/content/${writeupId}?sport=${sport}&days=${daysOffset}`);
   };
 
   const handleGenerateAll = async () => {
