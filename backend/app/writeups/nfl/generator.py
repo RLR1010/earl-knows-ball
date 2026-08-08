@@ -170,6 +170,9 @@ Length: 800-1000 words.
         accuracy_data = NFLWriteupGenerator._convert_for_json(
             writeup.get("accuracy_check") or None
         )
+        rejection_data = NFLWriteupGenerator._convert_for_json(
+            writeup.get("rejection_history") or []
+        )
 
         existing_row = await db.execute(
             text("SELECT id, version FROM nfl.game_writeups WHERE game_id = :gid"),
@@ -188,6 +191,7 @@ Length: 800-1000 words.
                 writeup_obj.quality_checks = qc_data
                 writeup_obj.accuracy_check = accuracy_data
                 writeup_obj.accuracy_check_tokens = writeup.get("accuracy_check_tokens")
+                writeup_obj.rejection_history = rejection_data
                 writeup_obj.status = status
                 writeup_obj.published_at = writeup_obj.published_at or datetime.now()
                 writeup_obj.is_historical = is_hist
@@ -207,6 +211,7 @@ Length: 800-1000 words.
                 quality_checks=qc_data,
                 accuracy_check=accuracy_data,
                 accuracy_check_tokens=writeup.get("accuracy_check_tokens"),
+                rejection_history=rejection_data,
                 status=status,
                 published_at=datetime.now(),
                 is_historical=is_hist,

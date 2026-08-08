@@ -47,23 +47,31 @@ PROP_DISPLAY = {
 async def _load_props(db: AsyncSession, sport: str) -> dict:
     team_rows = (
         await db.execute(_sa_text(f"""
-            SELECT DISTINCT ON (t.id)
-              t.name AS team_name, t.abbreviation,
-              p.win_total, p.win_total_over_odds, p.win_total_under_odds,
-              p.championship_odds, p.make_playoffs_odds, p.miss_playoffs_odds
-            FROM {sport}.team_props p
-            JOIN {sport}.teams t ON t.id = p.team_id
-            WHERE p.season_year = (SELECT max(season_year) FROM {sport}.team_props)
-              AND (p.championship_odds IS NOT NULL
-                   OR p.win_total IS NOT NULL
-                   OR p.make_playoffs_odds IS NOT NULL)
+            SELECT * FROM (
+              SELECT DISTINCT ON (t.id)
+                t.name AS team_name, t.abbreviation,
+                p.win_total, p.win_total_over_odds, p.win_total_under_odds,
+                p.championship_odds, p.make_playoffs_odds, p.miss_playoffs_odds
+              FROM {sport}.team_props p
+              JOIN {sport}.teams t ON t.id = p.team_id
+              WHERE p.season_year = (SELECT max(season_year) FROM {sport}.team_props)
+                AND (p.championship_odds IS NOT NULL
+                     OR p.win_total IS NOT NULL
+                     OR p.make_playoffs_odds IS NOT NULL)
+              ORDER BY
+                t.id,
+                CASE WHEN lower(p.bookmaker)='betmgm' THEN 0
+                     WHEN lower(p.bookmaker)='draftkings' THEN 1
+                     WHEN lower(p.bookmaker)='fanduel' THEN 2
+                     ELSE 3 END,
+                p.scraped_at DESC
+            ) teams
+            -- Most likely to win first: ascending American odds puts the
+            -- biggest favorite (most negative) at top; NULLs sort last.
             ORDER BY
-              t.id,
-              CASE WHEN lower(p.bookmaker)='betmgm' THEN 0
-                   WHEN lower(p.bookmaker)='draftkings' THEN 1
-                   WHEN lower(p.bookmaker)='fanduel' THEN 2
-                   ELSE 3 END,
-              p.scraped_at DESC
+              CASE WHEN championship_odds IS NULL THEN 1 ELSE 0 END,
+              championship_odds ASC NULLS LAST,
+              team_name ASC
         """))
     ).fetchall()
 

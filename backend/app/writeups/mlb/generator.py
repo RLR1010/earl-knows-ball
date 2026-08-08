@@ -73,6 +73,9 @@ class MLBWriteupGenerator(BaseWriteupGenerator):
         accuracy_json = json.dumps(
             writeup.get("accuracy_check"), default=str
         ) if writeup.get("accuracy_check") else None
+        rejection_json = json.dumps(
+            writeup.get("rejection_history") or [], default=str
+        ) if (writeup.get("rejection_history") or []) else None
 
         status = self._derive_status(qc_results)
         is_hist = writeup.get("is_historical", False)
@@ -114,6 +117,7 @@ class MLBWriteupGenerator(BaseWriteupGenerator):
                         total_tokens = :tokens,
                         accuracy_check = CAST(:acc AS jsonb),
                         accuracy_check_tokens = :acc_tokens,
+                        rejection_history = CAST(:rej AS jsonb),
                         seo_description = :seo_desc,
                         seo_keywords = :seo_kw,
                         slug = :slug,
@@ -137,6 +141,7 @@ class MLBWriteupGenerator(BaseWriteupGenerator):
                     "tokens": writeup.get("total_tokens"),
                     "acc": accuracy_json,
                     "acc_tokens": writeup.get("accuracy_check_tokens"),
+                    "rej": rejection_json,
                     "seo_desc": writeup.get("seo_description"),
                     "seo_kw": writeup.get("seo_keywords"),
                     "slug": writeup.get("slug"),
@@ -152,6 +157,7 @@ class MLBWriteupGenerator(BaseWriteupGenerator):
                          is_historical, historical_game_date,
                          generated_by, total_tokens,
                          accuracy_check, accuracy_check_tokens,
+                         rejection_history,
                          seo_description, seo_keywords, slug, published_at)
                     VALUES
                         (:gid, :title, :pub, :prem,
@@ -159,6 +165,7 @@ class MLBWriteupGenerator(BaseWriteupGenerator):
                          :is_hist, :hist_date,
                          :gen_by, :tokens,
                          CAST(:acc AS jsonb), :acc_tokens,
+                         CAST(:rej AS jsonb),
                          :seo_desc, :seo_kw, :slug, NOW())
                     RETURNING id
                 """),
@@ -177,6 +184,7 @@ class MLBWriteupGenerator(BaseWriteupGenerator):
                     "tokens": writeup.get("total_tokens"),
                     "acc": accuracy_json,
                     "acc_tokens": writeup.get("accuracy_check_tokens"),
+                    "rej": rejection_json,
                     "seo_desc": writeup.get("seo_description"),
                     "seo_kw": writeup.get("seo_keywords"),
                     "slug": writeup.get("slug"),

@@ -123,7 +123,10 @@ class ToolChatEngine:
         messages: list[dict],
         max_turns: int = 15,
         reasoning: str | None = None,
-    ) -> tuple[str, int]:
+        timeout: float = 45.0,
+        return_full_messages: bool = False,
+        research_only: bool = False,
+    ) -> tuple[str, int] | tuple[str, int, list[dict]]:
         """Run the tool-calling research loop and return DeepSeek's final answer.
 
         Args:
@@ -132,9 +135,24 @@ class ToolChatEngine:
             max_turns: Maximum tool-calling rounds before forcing a final answer.
             reasoning: Optional reasoning_effort override ("minimal", "low",
                 "medium", "high"). If None, uses the engine default.
+            timeout: Per-DeepSeek-call timeout in seconds. Interactive chat uses
+                45s; heavy workloads (e.g. original-article generation) pass a
+                larger value so long tool-calling rounds don't abort.
+            return_full_messages: If True, also return the complete conversation
+                message list (including all tool results) as a third element, so
+                callers can build a deterministic research brief for other
+                requests (e.g. accuracy checks with cache-shared prefixes).
+            research_only: If True, run the tool loop to gather research but do
+                NOT force a final article-writing turn. The returned answer is a
+                short research digest; the full tool messages (via
+                return_full_messages) are what callers should build the research
+                brief from. Used by the two-phase original-article flow so the
+                actual writing happens in a separate, deterministic-prefixed
+                call that shares the research brief with the accuracy check.
 
         Returns:
-            Tuple of (final answer text, total tokens used).
+            Tuple of (final answer text, total tokens used) or, when
+            return_full_messages is True, (answer, tokens, messages).
         """
         original_answer = ""
         total_tokens = 0
@@ -150,7 +168,7 @@ class ToolChatEngine:
             client = AsyncOpenAI(
                 api_key=settings.deepseek_api_key,
                 base_url=f"{settings.deepseek_base_url.rstrip('/')}/v1",
-                timeout=45.0,
+                timeout=timeout,
             )
 
             # First call with tools available
@@ -230,11 +248,33 @@ class ToolChatEngine:
                     total_tokens += response.usage.total_tokens
                 assistant_msg = response.choices[0].message
 
+            if research_only:
+                # Two-phase original-article flow: we only wanted the research.
+                # Don't treat the model's content as the article; the caller runs a
+                # separate deterministic write call from the research brief. Return
+                # a compact digest plus the full tool messages.
+                answer = (
+                    assistant_msg.content or ""
+                    or "Research gathered. `return_full_messages` contains the tool trace."
+                )
+                logger.info("research_and_answer(research_only) total tokens used: %d", total_tokens)
+                if return_full_messages:
+                    return answer, total_tokens, messages
+                return answer, total_tokens
+
             original_answer = assistant_msg.content or ""
             logger.info("research_and_answer total tokens used: %d", total_tokens)
+            if return_full_messages:
+                return original_answer, total_tokens, messages
             return original_answer, total_tokens
         except Exception as e:
             logger.warning("research_and_answer error: %s", e)
+            if return_full_messages:
+                return (
+                    f"I was researching your question but hit a snag. Here's what I know so far:\n\n{original_answer}",
+                    total_tokens,
+                    messages,
+                )
             return f"I was researching your question but hit a snag. Here's what I know so far:\n\n{original_answer}", total_tokens
 
 

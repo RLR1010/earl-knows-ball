@@ -338,48 +338,18 @@ export default function TeamDetailPage() {
     keywords: `${sport}, ${sportLabel}, ${teamName}, team, schedule, odds, depth chart, stats, Earl Knows Ball`,
   });
 
-  // NBA schedule day-by-day state
-  const [nbaDate, setNbaDate] = useState(() => {
-    const d = new Date();
-    const offset = d.getTimezoneOffset();
-    const local = new Date(d.getTime() - offset * 60_000);
-    return local.toISOString().slice(0, 10);
-  });
-
-  const MLB_MONTHS = ["March","April","May","June","July","August","September","October"];
-  function currentMlbMonthIndex(): number {
-    const now = new Date();
-    const m = now.getMonth() + 1; // 1-12
-    if (m >= 3 && m <= 10) return m - 3; // Mar=0, Apr=1, ..., Oct=7
-    return 0; // Default March if offseason
-  }
-  const [mlbMonthIdx, setMlbMonthIdx] = useState(currentMlbMonthIndex());
   const [depthChart, setDepthChart] = useState<DepthChartEntry[]>([]);
-  const [autoSearchDone, setAutoSearchDone] = useState(false);
-  const [isSearchingNearest, setIsSearchingNearest] = useState(false);
   const [depthLoading, setDepthLoading] = useState(false);
   const [tab, setTab] = useState<Tab>("schedule");
-  const [seasonYear, setSeasonYear] = useState(2026);
-  const [error, setError] = useState("");
-
-  // Smart navigation: find nearest date with games for this team
-  const goTeamDay = useCallback(async (direction: string) => {
-    try {
-      const res = await fetch(`/api/nba/games/nearest-date?year=${seasonYear}&date=${nbaDate}&direction=${direction}&team_abbr=${abbrUpper}`);
-      const data = await res.json();
-      if (data.date) {
-        setNbaDate(data.date);
-        if (data.year && data.year !== seasonYear) {
-          setSeasonYear(data.year);
-        }
-      }
-    } catch {
-      // fallback to simple +1/-1
-      const d = new Date(nbaDate);
-      d.setDate(d.getDate() + (direction === "forward" ? 1 : -1));
-      setNbaDate(d.toISOString().slice(0, 10));
+  const [seasonYear, setSeasonYear] = useState(() => {
+    // MLB follows calendar year; NBA season is labeled by its starting year (Oct-Dec = year N, Jan-Jun = year N-1)
+    if (sport === "nba") {
+      const now = new Date();
+      return now.getMonth() + 1 >= 10 ? now.getFullYear() : now.getFullYear() - 1;
     }
-  }, [seasonYear, nbaDate, abbrUpper]);
+    return 2026;
+  });
+  const [error, setError] = useState("");
   const [availableYears, setAvailableYears] = useState<number[]>([]);
 
 
@@ -389,13 +359,20 @@ export default function TeamDetailPage() {
       const mlbYears = [2026,2025,2024,2023,2022,2021,2020,2019,2018,2017,2016,2015,2014,2013,2012,2011,2010,2009,2008,2007,2006];
       setAvailableYears(mlbYears);
       if (!mlbYears.includes(seasonYear)) setSeasonYear(2026);
+    } else if (sport === "nba") {
+      const nbaYears = [2026,2025,2024,2023,2022,2021,2020,2019,2018,2017,2016,2015,2014,2013,2012,2011,2010,2009,2008,2007,2006];
+      setAvailableYears(nbaYears);
+      if (!nbaYears.includes(seasonYear)) {
+        const now = new Date();
+        setSeasonYear(now.getMonth() + 1 >= 10 ? now.getFullYear() : now.getFullYear() - 1);
+      }
     } else {
       api.seasons.list().then((years) => {
         setAvailableYears(years);
         if (years.length > 0 && !years.includes(seasonYear)) setSeasonYear(years[0]);
       }).catch(() => {});
     }
-  }, [isMLB]);
+  }, [isMLB, sport]);
 
   // Fetch team data
   useEffect(() => {
@@ -405,7 +382,7 @@ export default function TeamDetailPage() {
     api.teams.getByAbbr(abbrUpper).then(setTeam).catch(() => setError("Team not found in database.")).finally(() => setLoading(false));
   }, [abbr]);
 
-  // Fetch games on season or date change
+  // Fetch games on season change
   useEffect(() => {
     if (isMLB) {
       // MLB doesn't use the team DB model — it fetches via abbreviation directly
@@ -415,12 +392,20 @@ export default function TeamDetailPage() {
         .then(setGames)
         .catch(() => setGames([]))
         .finally(() => setGamesLoading(false));
+    } else if (sport === "nba") {
+      // NBA: fetch full season via abbreviation (monthly grid, MLB-style)
+      setGamesLoading(true);
+      fetch(`/api/nba/games?year=${seasonYear}&team_abbr=${abbrUpper}`)
+        .then(r => r.json())
+        .then(setGames)
+        .catch(() => setGames([]))
+        .finally(() => setGamesLoading(false));
     } else {
       if (!team) return;
       setGamesLoading(true);
       api.games.list({ season_year: seasonYear, team_id: team.id }).then(setGames).catch(() => setGames([])).finally(() => setGamesLoading(false));
     }
-  }, [team, seasonYear, nbaDate, isMLB, sport, abbrUpper]);
+  }, [team, seasonYear, isMLB, sport, abbrUpper]);
 
   // Fetch depth chart on tab switch
   useEffect(() => {
@@ -491,31 +476,22 @@ export default function TeamDetailPage() {
       {/* Schedule Tab */}
       {tab === "schedule" && (
         <div className="space-y-4">
-          {sport !== "nba" && (
-            <div className="flex items-center gap-3">
-              <label className="text-sm text-gray-400 font-medium">Season:</label>
-              <select value={seasonYear} onChange={e => setSeasonYear(Number(e.target.value))}
-                className="px-3 py-1.5 rounded-lg bg-white/10 border border-white/20 text-sm font-semibold text-white focus:outline-none focus:border-earl-500 cursor-pointer appearance-none"
-                style={{
-                  backgroundImage: `url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%236b7280' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e")`,
-                  backgroundPosition: "right 0.5rem center", backgroundRepeat: "no-repeat", backgroundSize: "1.25rem", paddingRight: "2rem",
-                }}>
-                {availableYears.length === 0 && <option value={seasonYear} className="bg-gray-900">{seasonYear}</option>}
-                {availableYears.map(yr => <option key={yr} value={yr} className="bg-gray-900">{yr} Season</option>)}
-              </select>
-            </div>
-          )}
+          <div className="flex items-center gap-3">
+            <label className="text-sm text-gray-400 font-medium">Season:</label>
+            <select value={seasonYear} onChange={e => setSeasonYear(Number(e.target.value))}
+              className="px-3 py-1.5 rounded-lg bg-white/10 border border-white/20 text-sm font-semibold text-white focus:outline-none focus:border-earl-500 cursor-pointer appearance-none"
+              style={{
+                backgroundImage: `url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%236b7280' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e")`,
+                backgroundPosition: "right 0.5rem center", backgroundRepeat: "no-repeat", backgroundSize: "1.25rem", paddingRight: "2rem",
+              }}>
+              {availableYears.length === 0 && <option value={seasonYear} className="bg-gray-900">{seasonYear}</option>}
+              {availableYears.map(yr => <option key={yr} value={yr} className="bg-gray-900">{yr} Season</option>)}
+            </select>
+          </div>
           {gamesLoading ? (
             <div className="text-center py-16 text-gray-500">Loading games...</div>
-          ) : sport === "nba" ? (
-            <NBATeamSchedule
-              sport={sport}
-              abbrUpper={abbrUpper}
-              formatGameDate={formatGameDate}
-              formatGameTime={formatGameTime}
-            />
           ) : (
-            <NFLMLBTeamSchedule games={games} sport={sport} abbrUpper={abbrUpper} seasonYear={seasonYear} formatGameDate={formatGameDate} formatGameTime={formatGameTime} isMLB={isMLB} />
+            <NFLMLBTeamSchedule games={games} sport={sport} abbrUpper={abbrUpper} seasonYear={seasonYear} formatGameDate={formatGameDate} formatGameTime={formatGameTime} isMLB={isMLB} isNBA={sport === "nba"} />
           )}
         </div>
       )}
@@ -1401,38 +1377,49 @@ interface NFLMLBTeamScheduleProps {
   formatGameDate: (d: string) => string;
   formatGameTime: (d: string) => string;
   isMLB: boolean;
+  isNBA?: boolean;
 }
 
-function NFLMLBTeamSchedule({ games, sport, abbrUpper, seasonYear, formatGameDate, formatGameTime, isMLB }: NFLMLBTeamScheduleProps) {
-  const MLB_MONTHS = ["March","April","May","June","July","August","September","October"];
-  const [mlbMonthIdx, setMlbMonthIdx] = useState(() => {
+function MLBMonthsFor(isMLB: boolean, isNBA: boolean): string[] {
+  if (isMLB) return ["March","April","May","June","July","August","September","October"];
+  if (isNBA) return ["October","November","December","January","February","March","April","May","June"];
+  return [];
+}
+
+function NFLMLBTeamSchedule({ games, sport, abbrUpper, seasonYear, formatGameDate, formatGameTime, isMLB, isNBA }: NFLMLBTeamScheduleProps) {
+  const months = MLBMonthsFor(!!isMLB, !!isNBA);
+  const [monthIdx, setMonthIdx] = useState(() => {
+    const monthList = MLBMonthsFor(!!isMLB, !!isNBA);
     const now = new Date();
     const m = now.getMonth() + 1;
-    if (m >= 3 && m <= 10) return m - 3;
-    return 0;
+    const idx = monthList.findIndex(name => name.toLowerCase() === now.toLocaleString("en-US", { month: "long" }).toLowerCase());
+    return idx >= 0 ? idx : 0;
   });
 
-  if (isMLB) {
-    const filterMonth = mlbMonthIdx + 3;
-    const monthGames = games.filter((g: any) => {
-      const d = new Date(g.date);
-      return d.getUTCMonth() + 1 === filterMonth;
-    });
+  if (isMLB || isNBA) {
+    // Resolve the calendar month (1-12) from the displayed month name — the months
+    // arrays are NOT zero-indexed from January (MLB starts at March, NBA at October).
+    const filterMonth = new Date(Date.parse(months[monthIdx] + " 1, 2000")).getMonth() + 1;
+    // Games are stored in UTC but displayed in America/New_York (matches formatGameDate/Time below),
+    // so resolve each game's month in ET to keep cards under the same month the user sees.
+    const etMonthOf = (iso: string) =>
+      Number(new Intl.DateTimeFormat("en-US", { month: "numeric", timeZone: "America/New_York" }).format(new Date(iso)));
+    const monthGames = games.filter((g: any) => etMonthOf(g.date) === filterMonth);
 
     return (
       <div className="space-y-4">
         <div className="flex items-center gap-2">
-          <button onClick={() => setMlbMonthIdx(i => Math.max(0, i - 1))} disabled={mlbMonthIdx === 0}
+          <button onClick={() => setMonthIdx(i => Math.max(0, i - 1))} disabled={monthIdx === 0}
             className="px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-xs text-gray-300 hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed transition"
-          >← {MLB_MONTHS[mlbMonthIdx - 1] || ""}</button>
-          <span className="text-sm font-semibold text-white px-4">{MLB_MONTHS[mlbMonthIdx]}</span>
-          <button onClick={() => setMlbMonthIdx(i => Math.min(MLB_MONTHS.length - 1, i + 1))} disabled={mlbMonthIdx === MLB_MONTHS.length - 1}
+          >← {months[monthIdx - 1] || ""}</button>
+          <span className="text-sm font-semibold text-white px-4">{months[monthIdx]}</span>
+          <button onClick={() => setMonthIdx(i => Math.min(months.length - 1, i + 1))} disabled={monthIdx === months.length - 1}
             className="px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-xs text-gray-300 hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed transition"
-          >{MLB_MONTHS[mlbMonthIdx + 1] || ""} →</button>
+          >{months[monthIdx + 1] || ""} →</button>
         </div>
 
         {monthGames.length === 0 ? (
-          <div className="text-center py-8 text-gray-500">No games in {MLB_MONTHS[mlbMonthIdx]}.</div>
+          <div className="text-center py-8 text-gray-500">No games in {months[monthIdx]}.</div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
             {monthGames.map((g: any) => {
@@ -1452,7 +1439,7 @@ function NFLMLBTeamSchedule({ games, sport, abbrUpper, seasonYear, formatGameDat
 
                   {/* Opponent */}
                   <div className="flex items-center justify-center gap-2 mt-2">
-                    <img src={getTeamLogoUrl(opponent, "mlb") || undefined} alt={opponent} width={24} height={24} className="object-contain shrink-0" style={{ filter: "brightness(1.1)" }} />
+                    <img src={getTeamLogoUrl(opponent, sport) || undefined} alt={opponent} width={24} height={24} className="object-contain shrink-0" style={{ filter: "brightness(1.1)" }} />
                     <span className="text-sm font-semibold text-gray-200">{opponent}</span>
                   </div>
 

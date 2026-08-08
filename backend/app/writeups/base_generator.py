@@ -283,8 +283,16 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
         for key in ("betting_lines", "predictions", "model_predictions", "shap_digest", "home_splits", "away_splits"):
             stripped.pop(key, None)
 
-        public_system = self.public_system_prompt(is_historical)
-        public_prompt = self._build_messages(stripped) + "\n\n" + self.SEO_OUTPUT_INSTRUCTION
+        public_system = self.SHARED_SYSTEM
+        # Shared system + STRIPPED research prefix, then the public write task.
+        # Byte-identical prefix with the public accuracy lane -> cache hit, and
+        # the public writeup never sees our picks (stripped data + no-bets rules).
+        public_prompt = (
+            self._build_messages(stripped) + "\n\n"
+            "=== WRITE THE PUBLIC GAME PREVIEW ===\n"
+            + self.public_system_prompt(is_historical)
+            + "\n\n" + self.SEO_OUTPUT_INSTRUCTION
+        )
 
         raw_public = await self._call_deepseek(public_system, public_prompt, max_tokens=24576, reasoning=reasoning, usage_log=usage_log)
         if raw_public is None:
@@ -299,8 +307,14 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
         seo_keywords = seo_from_public.get("seo_keywords")
 
         # ---- 2B. Premium call — full research with picks ----
-        premium_system = self.premium_system_prompt(is_historical)
-        premium_prompt = self._build_messages(research)
+        premium_system = self.SHARED_SYSTEM
+        # Shared system + FULL research prefix, then the premium write task.
+        # Byte-identical prefix with the premium accuracy lane -> cache hit.
+        premium_prompt = (
+            self._build_messages(research) + "\n\n"
+            "=== WRITE THE PREMIUM ANALYSIS ===\n"
+            + self.premium_system_prompt(is_historical)
+        )
 
         # NOTE: deepseek-v4-flash is a reasoning model — it spends a large
         # chunk of max_tokens on reasoning_content even without the thinking
@@ -359,9 +373,26 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
             research_prefix=self._build_messages(research),
             usage_log=usage_log,
         )
+        # Correction loop: up to MAX_CORRECTION_PASSES attempts to fix
+        # accuracy findings, re-verifying after each pass. If we can't get it
+        # clean, we keep the best-effort corrected version and let the
+        # ``accuracy_check`` tell the listing that an inaccuracy remains — we
+        # do NOT try to programmatically strip claims (unverified edits are
+        # riskier than a visible flag).
         retries_used = 0
+        max_passes = getattr(self, "MAX_CORRECTION_PASSES", 2)
         has_findings = bool(accuracy_check.get("findings")) and not accuracy_check.get("skipped")
-        if has_findings:
+        rejection_history = list(parsed.get("rejection_history") or [])
+        while has_findings and retries_used < max_passes:
+            # Snapshot the failing draft + the accuracy findings that caught it,
+            # BEFORE overwriting with the corrected version.
+            rejection_history.append({
+                "attempt": retries_used + 1,
+                "timestamp": datetime.utcnow().isoformat() + "Z",
+                "accuracy_check": accuracy_check,
+                "public_content": parsed.get("public_content", ""),
+                "premium_content": parsed.get("premium_content", ""),
+            })
             corrected = await self._correct_article(
                 parsed.get("public_content", ""),
                 parsed.get("premium_content", ""),
@@ -369,27 +400,33 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
                 accuracy_check.get("findings") or [],
                 usage_log=usage_log,
             )
-            retries_used = 1
-            if corrected:
-                if corrected.get("public_content"):
-                    parsed["public_content"] = corrected["public_content"]
-                if corrected.get("premium_content"):
-                    parsed["premium_content"] = corrected["premium_content"]
-                parsed["title"] = corrected.get("title") or parsed.get("title")
-                # Re-run QC + accuracy on the corrected article.
-                qc_results = self.run_quality_checks(parsed, research)
-                parsed["qc_results"] = qc_results
-                accuracy_check = await self._verify_accuracy(
-                    parsed.get("public_content", ""),
-                    parsed.get("premium_content", ""),
-                    research,
-                    research_prefix=self._build_messages(research),
-                    usage_log=usage_log,
-                )
+            retries_used += 1
+            if not corrected:
+                break
+            if corrected.get("public_content"):
+                parsed["public_content"] = corrected["public_content"]
+            if corrected.get("premium_content"):
+                parsed["premium_content"] = corrected["premium_content"]
+            parsed["title"] = corrected.get("title") or parsed.get("title")
+            # Re-run QC + accuracy on the corrected article.
+            qc_results = self.run_quality_checks(parsed, research)
+            parsed["qc_results"] = qc_results
+            accuracy_check = await self._verify_accuracy(
+                parsed.get("public_content", ""),
+                parsed.get("premium_content", ""),
+                research,
+                research_prefix=self._build_messages(research),
+                usage_log=usage_log,
+            )
+            has_findings = bool(accuracy_check.get("findings")) and not accuracy_check.get("skipped")
 
         accuracy_check["retries_used"] = retries_used
+        # Surface any remaining inaccuracies so the admin listing can flag it.
+        accuracy_check["has_inaccuracy"] = has_findings
+        accuracy_check["accuracy_pass"] = not has_findings
         parsed["accuracy_check"] = accuracy_check
         parsed["accuracy_check_tokens"] = accuracy_check.get("tokens") or 0
+        parsed["rejection_history"] = rejection_history
 
         # ---- Slug (deterministic: YYYY-MM-DD-<title>) ----
         gd = None
@@ -685,6 +722,29 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
 
     # ── Accuracy Verification ───────────────────────────────
 
+    # Shared system message used VERBATIM by ALL four DeepSeek calls that feed
+    # an article's research: the public write, the premium write, and the two
+    # per-lane accuracy checks. DeepSeek's input cache requires byte-identity
+    # from position 0 INCLUDING the system message, so every call must start
+    # with this exact block followed by the research prefix for the research
+    # tokens to come from cache. Task-specific instructions (write vs verify;
+    # public vs premium) live in the USER message tail AFTER the research, never
+    # in the system block.
+    #
+    # NOTE: PUBLIC and PREMIUM are two SEALED lanes. The public lane is fed
+    # stripped research (no picks/bets); the premium lane gets the full research
+    # with picks. This block itself carries no picks, so it's safe to share.
+    SHARED_SYSTEM = (
+        "You are helping produce editorial game previews for Earl Knows Ball, "
+        "a sports handicapping site. You write and fact-check NFL, NBA, and MLB "
+        "game previews.\n\n"
+        "Each request embeds the research data (teams, stats, standings, lines, "
+        "injuries, context, and—where applicable—picks) directly in the prompt "
+        "after this system message. Ground every claim you produce or verify in "
+        "that research; never invent facts, numbers, or names. Follow the specific "
+        "task instructions in the request below the research data."
+    )
+
     ACCURACY_SYSTEM_PROMPT = (
         "You are the final fact-checker for sports preview articles. "
         "Your ONLY job is to verify the article against the research data "
@@ -781,6 +841,77 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
             keep.append(ln)
         return ("\n".join(keep).strip(), {"seo_description": desc or "", "seo_keywords": kw or ""})
 
+    async def _verify_lane(
+        self,
+        *,
+        label: str,
+        content: str,
+        research_prefix: str,
+        task_rule: str,
+        max_tokens: int = 50000,
+        usage_log: Optional[list] = None,
+    ) -> dict[str, Any]:
+        """Run ONE per-lane fact-check call against a shared cache prefix.
+
+        system is always SHARED_SYSTEM; the user prompt starts with
+        research_prefix (byte-identical to the lane's write call) so DeepSeek
+        serves the research tokens from input cache. task_rule holds the
+        lane-specific verification instructions in the user tail (after the
+        article). Returns {"passed", "findings", "raw", "tokens", "skipped", "error"}.
+        """
+        if not (content or "").strip():
+            return {
+                "skipped": True,
+                "passed": False,
+                "findings": [],
+                "error": f"No {label} article content to verify.",
+                "raw": "",
+                "tokens": 0,
+            }
+
+        user_prompt = (
+            f"{research_prefix}\n\n"
+            "=== ARTICLE TO VERIFY ===\n"
+            f"{(content or '')[:28000]}\n\n"
+            f"{task_rule}"
+        )
+
+        lane_log: list = []
+        raw = await self._call_deepseek(
+            self.SHARED_SYSTEM,
+            user_prompt,
+            max_tokens=max_tokens,
+            reasoning="minimal",
+            max_attempts=2,
+            usage_log=lane_log,
+        )
+        tokens = sum((item.get("total_tokens") or 0) for item in lane_log)
+        if usage_log is not None:
+            usage_log.extend(lane_log)
+
+        if not raw:
+            return {
+                "skipped": True,
+                "passed": False,
+                "findings": [],
+                "error": f"{label.capitalize()} accuracy check returned no response.",
+                "raw": "",
+                "tokens": tokens,
+            }
+
+        data = self._extract_seo_json(raw) or {}
+        findings = data.get("findings") or []
+        if not isinstance(findings, list):
+            findings = []
+        return {
+            "passed": bool(data.get("passed")),
+            "findings": findings,
+            "raw": raw,
+            "tokens": tokens,
+            "skipped": False,
+            "error": None,
+        }
+
     async def _verify_accuracy(
         self,
         public_content: str,
@@ -790,95 +921,75 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
         research_prefix: str = "",
         usage_log: Optional[list] = None,
     ) -> dict[str, Any]:
-        """Final fact-check of the assembled article against the research brief.
+        """Final fact-check of the assembled article, SPLIT into two sealed lanes.
 
-        Returns a dict like:
-            {"passed": bool, "findings": [...], "raw": str, "tokens": int}
+        PUBLIC and PREMIUM are verified in SEPARATE DeepSeek calls against
+        SEPARATE research:
 
-        The check verifies every fact/stat/name is traceable to research and
-        that the PUBLIC section contains NO betting predictions. Premium picks
-        are allowed and not flagged.
+          - PUBLIC lane  -> STRIPPED research (no picks/bets); enforces the
+            no-betting-predictions rule so the public piece never sees our picks.
+          - PREMIUM lane -> FULL research (with picks); fact-checks only, because
+            betting language is allowed/expected in premium.
+
+        Each lane's research prefix is byte-identical to the matching write call
+        so DeepSeek serves the research from input cache. Returns a dict like
+        {"passed": bool, "findings": [...], "raw": str, "tokens": int, "skipped": bool}.
         """
-        article_blocks = []
-        article_blocks.append("[PUBLIC]\n" + (public_content or "").strip())
-        article_blocks.append("[PREMIUM]\n" + (premium_content or "").strip())
-        article_text = "\n\n".join(a for a in article_blocks if a.strip())
+        stripped = self._strip_betting(research)
+        # Full lane prefix: prefer the caller's (already-built) full research
+        # prefix so the premium accuracy call shares the premium write call's
+        # exact bytes; fall back to rebuilding it deterministically.
+        full_prefix = research_prefix if research_prefix else self._build_messages(research)
+        # Public lane prefix is ALWAYS built from STRIPPED research. Never reuse
+        # the passed prefix here — in the full flow that prefix is the FULL
+        # research (with picks), which must not reach the public accuracy lane.
+        stripped_prefix = self._build_messages(stripped)
 
-        if not article_text.strip():
-            return {
-                "skipped": True,
-                "passed": False,
-                "findings": [],
-                "error": "No article content to verify.",
-                "raw": "",
-                "tokens": 0,
-            }
-
-        # Exact research prefix for DeepSeek input-cache hits. research_prefix
-        # already starts with "=== RESEARCH DATA ==="; passing it verbatim makes
-        # the accuracy prompt's leading bytes identical to the main generation
-        # call's research prompt, so DeepSeek serves those input tokens from
-        # cache (huge discount + faster).
-        if research_prefix:
-            user_prompt = (
-                f"{research_prefix[:12000]}\n\n"
-                "=== ARTICLE TO VERIFY ===\n"
-                f"{article_text[:28000]}\n\n"
-                "Verify the article against the research and return the JSON "
-                "result. The PUBLIC section must contain no betting predictions."
-            )
-        else:
-            research_block = self._build_messages(research)[:12000]
-            user_prompt = (
-                "=== RESEARCH DATA ===\n"
-                f"{research_block}\n\n"
-                "=== ARTICLE TO VERIFY ===\n"
-                f"{article_text[:28000]}\n\n"
-                "Verify the article against the research and return the JSON "
-                "result. The PUBLIC section must contain no betting predictions."
-            )
-
-        accuracy_log: list = []
-        # 2 attempts: retry once on transient errors so a fresh writeup still
-        # gets a real accuracy check (quality is a priority). Use minimal
-        # reasoning (helps spot subtle inconsistencies) but give it enough room:
-        # a too-small max_tokens made DeepSeek spend the whole budget on hidden
-        # thinking and return empty content, so the budget is raised for now to
-        # 50000 (generous) to rule out token-capping as the cause of missing /
-        # truncated accuracy JSON. Input stays cached; only output burns.
-        raw = await self._call_deepseek(
-            self.ACCURACY_SYSTEM_PROMPT,
-            user_prompt,
-            max_tokens=50000,
-            reasoning="minimal",
-            max_attempts=2,
-            usage_log=accuracy_log,
+        pub_rule = (
+            "Verify the PUBLIC article against the research. It must contain NO "
+            "betting predictions (no spread/ATS pick, moneyline, over/under pick, "
+            "score prediction, or [bet on X] guidance). Flag every factual claim "
+            "not traceable to the research, every contradiction, and every betting "
+            "prediction. Return ONLY a JSON object: {\"passed\": true|false, "
+            "\"findings\": [{\"type\": \"fact-not-in-research\" | \"contradicts-research\" | "
+            "\"betting-prediction-in-public\", \"claim\": \"...\", \"section\": \"public\", "
+            "\"detail\": \"...\"}]}."
         )
-        tokens = sum((item.get("total_tokens") or 0) for item in accuracy_log)
+        prem_rule = (
+            "Verify the PREMIUM article against the research. It MAY contain picks "
+            "and betting advice — that is allowed and should NOT be flagged. Only "
+            "flag factual claims not traceable to the research or that contradict it. "
+            "Return ONLY a JSON object: {\"passed\": true|false, \"findings\": [{\"type\": "
+            "\"fact-not-in-research\" | \"contradicts-research\", \"claim\": \"...\", "
+            "\"section\": \"premium\", \"detail\": \"...\"}]}."
+        )
 
-        if usage_log is not None:
-            usage_log.extend(accuracy_log)
+        pub_res = await self._verify_lane(
+            label="public",
+            content=public_content,
+            research_prefix=stripped_prefix,
+            task_rule=pub_rule,
+            usage_log=usage_log,
+        )
+        prem_res = await self._verify_lane(
+            label="premium",
+            content=premium_content,
+            research_prefix=full_prefix,
+            task_rule=prem_rule,
+            usage_log=usage_log,
+        )
 
-        if not raw:
-            return {
-                "skipped": True,
-                "passed": False,
-                "findings": [],
-                "error": "Accuracy check returned no response.",
-                "raw": "",
-                "tokens": tokens,
-            }
-
-        data = self._extract_seo_json(raw) or {}
-        passed = bool(data.get("passed"))
-        findings = data.get("findings") or []
-        if not isinstance(findings, list):
-            findings = []
+        findings = (pub_res.get("findings") or []) + (prem_res.get("findings") or [])
+        skipped = bool(pub_res.get("skipped") and prem_res.get("skipped"))
+        raw = "[PUBLIC]\n" + (pub_res.get("raw") or "") + "\n\n[PREMIUM]\n" + (prem_res.get("raw") or "")
+        tokens = (pub_res.get("tokens") or 0) + (prem_res.get("tokens") or 0)
         return {
-            "passed": passed,
+            "passed": bool(pub_res.get("passed")) and bool(prem_res.get("passed")),
             "findings": findings,
             "raw": raw,
             "tokens": tokens,
+            "skipped": skipped,
+            "error": ("Accuracy check returned no response." if skipped else None),
         }
 
     def _render_full_article(self, parsed: dict[str, Any]) -> str:
@@ -894,8 +1005,16 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
         "You are a careful sports editor making minimal corrections to a "
         "preview article. You only fix the EXACT problems listed below. "
         "Do not rewrite, embellish, or change anything else. Do not invent "
-        "new facts or numbers — only remove/soften claims that do not match "
-        "the research."
+        "new facts or numbers.\n\n"
+        "RULES BY FINDING TYPE:\n"
+        "- type 'fact-not-in-research': the claim cannot be traced to the "
+        "  research. DELETE the claim (the whole sentence is best). Do NOT "
+        "  keep, rephrase, or soften it — a fact that isn't in the research "
+        "  cannot be made true by rewording. Remove it outright.\n"
+        "- type 'contradicts-research': the claim directly conflicts with the "
+        "  research. REWRITE it to match the research exactly.\n"
+        "- type 'betting-prediction-in-public': REMOVE the pick/odds/prediction "
+        "  from the public section (move to premium only if appropriate)."
     )
 
     async def _correct_article(
@@ -980,6 +1099,26 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
         return f"{date_part}-{base}" if date_part else base
 
     # ── Prompt Building ─────────────────────────────────────
+
+    def _strip_betting(self, research: dict[str, Any]) -> dict[str, Any]:
+        """Return a copy of the research with all betting/pick keys removed.
+
+        Used to build the PUBLIC writeup lane: the public article (and its
+        accuracy check) must never see our picks/odds/predictions/model output.
+        Premium keeps the full research.
+        """
+        stripped = dict(research)
+        for key in (
+            "betting_lines",
+            "bets",
+            "predictions",
+            "model_predictions",
+            "shap_digest",
+            "home_splits",
+            "away_splits",
+        ):
+            stripped.pop(key, None)
+        return stripped
 
     def _build_messages(self, research: dict[str, Any]) -> str:
         """Build the user prompt from the research data."""
@@ -1248,8 +1387,14 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
         endpoint. Length: 800-1000 words — same as the public section of a full
         writeup. The stripped research keeps proprietary data out of the prompt.
         """
-        system = self.public_system_prompt(is_historical)
-        user_prompt = self._build_public_messages(research) + "\n\n" + self.SEO_OUTPUT_INSTRUCTION
+        system = self.SHARED_SYSTEM
+        # Shared system + stripped research prefix, then the public write task.
+        user_prompt = (
+            self._build_public_messages(research) + "\n\n"
+            "=== WRITE THE PUBLIC GAME PREVIEW ===\n"
+            + self.public_system_prompt(is_historical)
+            + "\n\n" + self.SEO_OUTPUT_INSTRUCTION
+        )
 
         raw = await self._call_deepseek(system, user_prompt)
         if raw is None:
@@ -1271,14 +1416,26 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
             seo_kw = (_seo.get("seo_keywords") or "").strip()[:500]
         seo = {"seo_description": seo_desc, "seo_keywords": seo_kw}
 
-        # Final accuracy verification: facts traceable to research + NO betting
-        # predictions in public content. Bounded fix-loop (1 retry max).
+        # ---- Final accuracy verification ----
+        # Correction loop: up to MAX_CORRECTION_PASSES attempts, re-verifying
+        # after each. If it won't come clean, keep best-effort content and let
+        # accuracy_check surface the remaining inaccuracy to the listing.
         accuracy_check = await self._verify_accuracy(
             content or "", "", research, usage_log=usage_log,
             research_prefix=self._build_public_messages(research),
         )
         retries_used = 0
-        if accuracy_check.get("findings") and not accuracy_check.get("skipped"):
+        max_passes = getattr(self, "MAX_CORRECTION_PASSES", 2)
+        has_findings = bool(accuracy_check.get("findings")) and not accuracy_check.get("skipped")
+        _rej_hist = []
+        while has_findings and retries_used < max_passes:
+            _rej_hist.append({
+                "attempt": retries_used + 1,
+                "timestamp": datetime.utcnow().isoformat() + "Z",
+                "accuracy_check": accuracy_check,
+                "public_content": content or "",
+                "premium_content": "",
+            })
             corrected = await self._correct_article(
                 content or "",
                 "",
@@ -1286,7 +1443,9 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
                 accuracy_check.get("findings") or [],
                 usage_log=usage_log,
             )
-            retries_used = 1
+            retries_used += 1
+            if not corrected:
+                break
             if corrected.get("public_content"):
                 content = corrected["public_content"]
             if corrected.get("title"):
@@ -1296,7 +1455,11 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
                 content or "", "", research, usage_log=usage_log,
                 research_prefix=self._build_public_messages(research),
             )
+            has_findings = bool(accuracy_check.get("findings")) and not accuracy_check.get("skipped")
         accuracy_check["retries_used"] = retries_used
+        accuracy_check["has_inaccuracy"] = has_findings
+        accuracy_check["accuracy_pass"] = not has_findings
+        rejection_history = _rej_hist
 
         gd = None
         try:
@@ -1313,6 +1476,7 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
             "seo_keywords": (seo.get("seo_keywords") or "").strip()[:500] or None,
             "accuracy_check": accuracy_check,
             "accuracy_check_tokens": accuracy_check.get("tokens") or 0,
+            "rejection_history": rejection_history or [],
         }
 
     # ── Quality Checks ──────────────────────────────────────

@@ -105,6 +105,102 @@ function AccuracyCheckView({ data }: { data: any }) {
   );
 }
 
+interface RejectedDraft {
+  attempt?: number;
+  timestamp?: string;
+  accuracy_check?: any;
+  public_content?: string;
+  premium_content?: string;
+}
+
+function DraftMiniView({ label, content }: { label: string; content?: string }) {
+  const [open, setOpen] = useState(false);
+  const txt = content || "(empty)";
+  const preview = txt.length > 400 ? txt.slice(0, 400) + "…" : txt;
+  return (
+    <div className="text-xs">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="inline-flex items-center gap-1 text-blue-400 hover:text-blue-300"
+      >
+        {open ? "▾" : "▸"} {label}
+      </button>
+      {open && (
+        <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap rounded bg-black/40 border border-gray-700 p-2 text-[11px] leading-snug text-gray-300">
+          {txt}
+        </pre>
+      )}
+    </div>
+  );
+}
+
+function RejectedDraftsView({ drafts }: { drafts: RejectedDraft[] }) {
+  if (!drafts || drafts.length === 0) {
+    return (
+      <div className="text-xs text-gray-500">No rejected drafts recorded.</div>
+    );
+  }
+  return (
+    <div className="space-y-3">
+      {drafts.map((d, idx) => {
+        const findings = Array.isArray(d.accuracy_check?.findings)
+          ? d.accuracy_check.findings
+          : [];
+        const passed = d.accuracy_check?.passed;
+        return (
+          <div
+            key={idx}
+            className="rounded border border-red-500/25 bg-red-500/5 p-3 space-y-2"
+          >
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              <span className="font-medium text-red-400">
+                Attempt {d.attempt ?? idx + 1}
+              </span>
+              {d.timestamp && (
+                <span className="text-gray-500">
+                  {new Date(d.timestamp).toLocaleString()}
+                </span>
+              )}
+              <span
+                className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${
+                  passed
+                    ? "bg-green-500/15 text-green-400"
+                    : "bg-red-500/15 text-red-400"
+                }`}
+              >
+                accuracy {passed ? "passed" : "failed"}
+              </span>
+              {typeof d.accuracy_check?.tokens === "number" && (
+                <span className="text-gray-500">
+                  {(d.accuracy_check.tokens as number).toLocaleString()} tokens
+                </span>
+              )}
+            </div>
+
+            {findings.length > 0 ? (
+              <ul className="list-disc list-inside space-y-1 text-xs text-gray-300">
+                {findings.map((f: any, i: number) => (
+                  <li key={i}>
+                    {typeof f === "string" ? f : JSON.stringify(f)}
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <div className="text-xs text-gray-500">No detailed findings.</div>
+            )}
+
+            <div className="grid grid-cols-1 gap-2">
+              <DraftMiniView label="Public draft" content={d.public_content} />
+              <DraftMiniView label="Premium draft" content={d.premium_content} />
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 /* ─────────────────────────────────────────────
    Helpers
    ───────────────────────────────────────────── */
@@ -136,6 +232,12 @@ export default function ContentEditor() {
   const searchParams = useSearchParams();
   const writeupId = params.id as string;
   const sport = searchParams.get("sport") || "mlb";
+  const days = searchParams.get("days");
+  // Return to the content listing at the same sport tab + day offset we left from.
+  const backToContent =
+    "/admin/content?sport=" +
+    sport +
+    (days && Number.isFinite(Number(days)) ? `&days=${days}` : "");
 
   const [writeup, setWriteup] = useState<Writeup | null>(null);
   const [publicContent, setPublicContent] = useState("");
@@ -152,6 +254,7 @@ export default function ContentEditor() {
   const [totalTokens, setTotalTokens] = useState<number | null>(null);
   const [accuracyCheck, setAccuracyCheck] = useState<any>(null);
   const [accuracyCheckTokens, setAccuracyCheckTokens] = useState<number | null>(null);
+  const [rejectionHistory, setRejectionHistory] = useState<RejectedDraft[]>([]);
 
   // ── Fetch write-up ────────────────────────────
 
@@ -181,6 +284,8 @@ export default function ContentEditor() {
       if (data.total_tokens != null) setTotalTokens(data.total_tokens);
       if (data.accuracy_check != null) setAccuracyCheck(data.accuracy_check);
       if (data.accuracy_check_tokens != null) setAccuracyCheckTokens(data.accuracy_check_tokens);
+      if (Array.isArray(data.rejection_history)) setRejectionHistory(data.rejection_history);
+      else setRejectionHistory([]);
 
       // We need both versions — fetch with tier=public as well
       const pubRes = await fetch(`/api/writeups/${sport}/${writeupId}?tier=public`, {
@@ -306,7 +411,7 @@ export default function ContentEditor() {
         <div className="text-red-400 text-lg mb-2">Failed to load</div>
         <div className="text-gray-500 text-sm">{error || "Not found"}</div>
         <button
-          onClick={() => router.back()}
+          onClick={() => router.push(backToContent)}
           className="mt-4 px-4 py-2 text-sm rounded-lg bg-white/[0.03] border border-white/10 text-gray-400 hover:text-white transition"
         >
           ← Back
@@ -326,7 +431,7 @@ export default function ContentEditor() {
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-3 mb-2">
             <button
-              onClick={() => router.push("/admin/content")}
+              onClick={() => router.push(backToContent)}
               className="text-gray-500 hover:text-white transition"
             >
               ← Content
@@ -534,6 +639,22 @@ export default function ContentEditor() {
 
             <AccuracyCheckView data={accuracyCheck} />
           </div>
+        </div>
+      )}
+
+      {/* ── Rejected drafts (accuracy-failed history) ── */}
+      {rejectionHistory.length > 0 && (
+        <div className="mt-6 bg-white/[0.03] border border-red-500/25 rounded-xl p-4">
+          <h3 className="text-sm font-medium text-gray-400 mb-3">
+            Rejected Drafts
+            <span className="ml-2 text-xs text-red-400">
+              ({rejectionHistory.length})
+            </span>
+            <span className="ml-2 text-xs text-gray-500 font-normal">
+              — drafts flagged by the accuracy check before correction
+            </span>
+          </h3>
+          <RejectedDraftsView drafts={rejectionHistory} />
         </div>
       )}
 

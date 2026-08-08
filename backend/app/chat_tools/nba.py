@@ -560,9 +560,14 @@ async def _get_player_stats(db: AsyncSession, args: dict) -> dict:
     if not player:
         return {"error": f"Player not found: {player_name}"}
 
+    try:
+        season_id = await _resolve_season_id(db, year)
+    except ValueError as e:
+        return {"error": str(e)}
+
     stmt = select(NBAPlayerSeasonStats).where(
         NBAPlayerSeasonStats.player_id == player.id,
-        NBAPlayerSeasonStats.season_year == year,
+        NBAPlayerSeasonStats.season_id == season_id,
     )
     r = await db.execute(stmt)
     stats = r.scalar_one_or_none()
@@ -574,18 +579,18 @@ async def _get_player_stats(db: AsyncSession, args: dict) -> dict:
         "position": player.position,
         "season_year": year,
         "games_played": stats.games_played,
-        "minutes_per_game": stats.minutes_per_game,
+        "minutes_per_game": round(stats.minutes_played / stats.games_played, 1) if stats.games_played else 0.0,
         "points_per_game": stats.points_per_game,
         "rebounds_per_game": stats.rebounds_per_game,
         "assists_per_game": stats.assists_per_game,
-        "steals_per_game": stats.steals_per_game,
-        "blocks_per_game": stats.blocks_per_game,
-        "turnovers_per_game": stats.turnovers_per_game,
-        "fg_pct": stats.fg_pct,
-        "three_pct": stats.three_pct,
-        "ft_pct": stats.ft_pct,
-        "usage_rate": stats.usage_rate,
-        "per": stats.per,
+        "steals_per_game": round(stats.steals / stats.games_played, 1) if stats.games_played else 0.0,
+        "blocks_per_game": round(stats.blocks / stats.games_played, 1) if stats.games_played else 0.0,
+        "turnovers_per_game": round(stats.turnovers / stats.games_played, 1) if stats.games_played else 0.0,
+        "fg_pct": stats.field_goal_pct,
+        "three_pct": stats.three_point_pct,
+        "ft_pct": stats.free_throw_pct,
+        "usage_rate": stats.usage_pct,
+        "per": stats.efficiency,
     }
 
 
@@ -631,17 +636,17 @@ async def _get_player_game_logs(db: AsyncSession, args: dict) -> dict:
             "venue": row.venue,
             "minutes": row.minutes,
             "points": row.points,
-            "rebounds": row.rebounds,
+            "rebounds": row.rebounds_total,
             "assists": row.assists,
             "steals": row.steals,
             "blocks": row.blocks,
             "turnovers": row.turnovers,
-            "fg_made": row.fg_made,
-            "fg_att": row.fg_att,
-            "three_made": row.three_made,
-            "three_att": row.three_att,
-            "ft_made": row.ft_made,
-            "ft_att": row.ft_att,
+            "fg_made": row.field_goals_made,
+            "fg_att": row.field_goals_attempted,
+            "three_made": row.three_pointers_made,
+            "three_att": row.three_pointers_attempted,
+            "ft_made": row.free_throws_made,
+            "ft_att": row.free_throws_attempted,
         })
     return {"player": player.name, "season_year": year, "game_logs": games}
 

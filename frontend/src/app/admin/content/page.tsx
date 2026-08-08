@@ -23,6 +23,7 @@ interface Game {
   writeup_title: string | null;
   writeup_status: string | null;
   writeup_version: number | null;
+  writeup_has_inaccuracy?: boolean;
 }
 
 function weekLabel(game: Pick<Game, "season_type" | "week">): string | null {
@@ -185,7 +186,17 @@ function GameCard({
         </div>
         <div className="ml-3 flex-shrink-0">
           {game.writeup_status ? (
-            <StatusBadge status={game.writeup_status} />
+            <>
+              <StatusBadge status={game.writeup_status} />
+              {game.writeup_has_inaccuracy && (
+                <span
+                  title="Accuracy check flagged claims that couldn't be resolved. Needs human review."
+                  className="mt-1 inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-amber-500/20 text-amber-400 border border-amber-500/30"
+                >
+                  ⚠ Inaccurate
+                </span>
+              )}
+            </>
           ) : (
             <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-500/20 text-gray-400 border border-gray-500/30">
               Missing
@@ -324,6 +335,7 @@ export default function AdminContent() {
         writeup_title: g.writeup_title || null,
         writeup_status: g.writeup_status || null,
         writeup_version: g.writeup_version || null,
+        writeup_has_inaccuracy: !!g.writeup_has_inaccuracy,
       }));
 
       setGames(gameList);

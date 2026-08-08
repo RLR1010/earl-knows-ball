@@ -48,6 +48,10 @@ class NFLGameWriteup(Base):
     accuracy_check = Column(JSON, nullable=True)
     accuracy_check_tokens = Column(Integer, nullable=True)
 
+    # Audit trail of drafts rejected by the accuracy check.
+    # JSON array of {attempt, timestamp, accuracy_check, public_content, premium_content}
+    rejection_history = Column(JSON, nullable=True)
+
     # Status lifecycle: draft → review → published → archived
     STATUS_CHOICES = ("draft", "review", "published", "archived")
     status = Column(String(20), nullable=False, default="draft", index=True)

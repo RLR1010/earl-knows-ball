@@ -32,9 +32,14 @@ const nextConfig = {
   httpAgentOptions: {
     keepAlive: true,
   },
-  // Increase proxy timeout for long-running requests (e.g., MLB chat tool calls)
+  // Increase proxy timeout for long-running requests (e.g., MLB chat tool calls,
+  // and writeup generation which can run 7+ minutes once the 2-pass accuracy
+  // correction loop is involved). Was 180_000 (3 min) which aborted long
+  // generations with "socket hang up" / ECONNRESET on the browser -> false
+  // "Generation failed" alert even though the backend kept going and saved the
+  // write-up. 1800s covers even the slowest generation comfortably.
   experimental: {
-    proxyTimeout: 180_000, // 3 minutes
+    proxyTimeout: 1800_000, // 30 minutes
   },
 };
 

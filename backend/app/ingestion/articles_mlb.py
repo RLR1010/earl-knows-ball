@@ -291,6 +291,11 @@ async def scrape_rss_feeds_mlb(
             except Exception as e:
                 logger.error(f"  {source_name}: error - {e}")
                 stats["feeds_with_errors"] += 1
+                # Roll back so a failed source can't poison the session for the rest of the batch
+                try:
+                    await db.rollback()
+                except Exception:
+                    pass
                 continue
 
     return stats

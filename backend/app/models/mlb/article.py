@@ -1,7 +1,7 @@
 """
 MLB Article model — stores full-text articles scraped from SB Nation MLB blogs.
 """
-from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean, JSON
+from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean
 from app.database import Base
 from datetime import datetime, timezone
 
@@ -26,7 +26,4 @@ class MLBArticle(Base):
     source_name = Column(String(100), nullable=True)
     source_type = Column(String(20), default="original")
     metadata_json = Column(Text, nullable=True)
-    tokens_used = Column(Integer, nullable=True)
-    accuracy_check = Column(JSON, nullable=True)
-    accuracy_check_tokens = Column(Integer, nullable=True)
     embedded_at = Column(DateTime(timezone=True), nullable=True)

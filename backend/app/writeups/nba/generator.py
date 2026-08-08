@@ -278,6 +278,9 @@ Bullet lists work for key points. Keep it article-like — no blockquotes, no em
         accuracy_json = json.dumps(
             writeup.get("accuracy_check"), default=str
         ) if writeup.get("accuracy_check") else None
+        rejection_json = json.dumps(
+            writeup.get("rejection_history") or [], default=str
+        ) if (writeup.get("rejection_history") or []) else None
 
         status = self._derive_status(qc_results)
         is_hist = writeup.get("is_historical", False)
@@ -317,6 +320,7 @@ Bullet lists work for key points. Keep it article-like — no blockquotes, no em
                         total_tokens = :tt,
                         accuracy_check = CAST(:acc AS jsonb),
                         accuracy_check_tokens = :acc_tokens,
+                        rejection_history = CAST(:rej AS jsonb),
                         seo_description = :sd,
                         seo_keywords = :sk,
                         slug = :slug,
@@ -354,6 +358,7 @@ Bullet lists work for key points. Keep it article-like — no blockquotes, no em
                      status, version, is_historical, historical_game_date,
                      research_brief, quality_checks, generated_by, total_tokens,
                      accuracy_check, accuracy_check_tokens,
+                     rejection_history,
                      seo_description, seo_keywords, slug,
                      published_at, created_at, updated_at)
                 VALUES
@@ -361,6 +366,7 @@ Bullet lists work for key points. Keep it article-like — no blockquotes, no em
                      :status, :ver, :hist, :hgd,
                      CAST(:rb AS jsonb), CAST(:qc AS jsonb), :gb, :tt,
                      CAST(:acc AS jsonb), :acc_tokens,
+                     CAST(:rej AS jsonb),
                      :sd, :sk, :slug, NOW(), NOW(), NOW())
                 RETURNING id
             """),
@@ -379,6 +385,7 @@ Bullet lists work for key points. Keep it article-like — no blockquotes, no em
                 "tt": writeup.get("total_tokens") or 0,
                 "acc": accuracy_json,
                 "acc_tokens": writeup.get("accuracy_check_tokens"),
+                "rej": rejection_json,
                 "sd": writeup.get("seo_description"),
                 "sk": writeup.get("seo_keywords"),
                 "slug": writeup.get("slug"),

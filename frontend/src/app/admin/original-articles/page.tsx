@@ -31,6 +31,11 @@ interface Article {
   slug?: string | null;
   seo_description?: string | null;
   seo_keywords?: string | null;
+  has_inaccuracy?: boolean;
+  accuracy_check?: any;
+  accuracy_check_tokens?: number | null;
+  rejection_history?: any[];
+  visibility?: string;
 }
 
 interface ArticleDetail extends Article {
@@ -66,6 +71,7 @@ export default function AdminOriginalArticles() {
   const [instructions, setInstructions] = useState("");
   const [author, setAuthor] = useState("Earl");
   const [reasoning, setReasoning] = useState("medium");
+  const [visibility, setVisibility] = useState("public");
   const [wordRange, setWordRange] = useState<[number, number]>([400, 700]);
   const [draftId, setDraftId] = useState<number | null>(null);
   const [draft, setDraft] = useState<{
@@ -75,11 +81,15 @@ export default function AdminOriginalArticles() {
     tokens?: number;
     prompt?: unknown[];
     research?: unknown[];
+    accuracy_check?: any | null;
+    rejection_history?: any[];
   } | null>(null);
   const [generating, setGenerating] = useState(false);
 
   // --- edit article state ---
   const [editing, setEditing] = useState<Article | null>(null);
+  const [editRejectionHistory, setEditRejectionHistory] = useState<any[]>([]);
+  const [editAccuracyCheck, setEditAccuracyCheck] = useState<any>(null);
   const [editTitle, setEditTitle] = useState("");
   const [editContent, setEditContent] = useState("");
   const [editAuthor, setEditAuthor] = useState("Earl");
@@ -88,8 +98,10 @@ export default function AdminOriginalArticles() {
   const [editInstructions, setEditInstructions] = useState("");
   const [editSeoDesc, setEditSeoDesc] = useState("");
   const [editSeoKeywords, setEditSeoKeywords] = useState("");
+  const [editVisibility, setEditVisibility] = useState("public");
   const [includeResearch, setIncludeResearch] = useState(true);
   const [reediting, setReediting] = useState(false);
+  const [regenerating, setRegenerating] = useState(false);
 
   // --- research panel state ---
   const [openResearchId, setOpenResearchId] = useState<number | null>(null);
@@ -132,7 +144,7 @@ export default function AdminOriginalArticles() {
       const res = await fetch(`/api/original-articles/${sport}/generate`, {
         method: "POST",
         headers: authHeaders(),
-        body: JSON.stringify({ instructions, reasoning, word_count: wordRange }),
+        body: JSON.stringify({ instructions, reasoning, word_count: wordRange, visibility }),
       });
       if (!res.ok) {
         let detail = `HTTP ${res.status}`;
@@ -151,6 +163,8 @@ export default function AdminOriginalArticles() {
         tokens: data.tokens,
         prompt: data.prompt,
         research: data.research,
+        accuracy_check: data.accuracy_check ?? null,
+        rejection_history: Array.isArray(data.rejection_history) ? data.rejection_history : [],
       });
       await fetchArticles(); // draft now visible in Edit tab
     } catch (e: any) {
@@ -177,6 +191,7 @@ export default function AdminOriginalArticles() {
             content: draft.content,
             author: author.trim() || "Earl",
             status: "published",
+            visibility,
           }),
         });
         if (!res.ok) {
@@ -202,6 +217,7 @@ export default function AdminOriginalArticles() {
           research: draft.research,
           author: author.trim() || "Earl",
           tokens_used: draft.tokens ?? null,
+          visibility,
         }),
       });
       if (!res.ok) {
@@ -230,15 +246,32 @@ export default function AdminOriginalArticles() {
   //  Edit Articles
   // ───────────────────────────
 
-  const startEdit = (a: Article) => {
+  const startEdit = async (a: Article) => {
     setEditing(a);
     setEditTitle(a.title);
     setEditContent(a.content);
     setEditAuthor(a.author || "Earl");
     setEditSeoDesc(a.seo_description || "");
     setEditSeoKeywords(a.seo_keywords || "");
+    setEditVisibility(a.visibility || "public");
     setEditMarkdown(false);
     setEditInstructions("");
+    // Fetch full detail (incl. accuracy_check + rejection_history) for audit view.
+    setEditRejectionHistory([]);
+    setEditAccuracyCheck(null);
+    try {
+      const res = await fetch(
+        `/api/admin/original-articles/${a.sport}/${a.id}`,
+        { headers: authHeaders() }
+      );
+      if (res.ok) {
+        const d = await res.json();
+        const art = d.article || d;
+        setEditRejectionHistory(Array.isArray(art.rejection_history) ? art.rejection_history : []);
+        setEditAccuracyCheck(art.accuracy_check ?? null);
+        if (art.visibility) setEditVisibility(art.visibility);
+      }
+    } catch {}
   };
 
   const cancelEdit = () => {
@@ -284,6 +317,40 @@ export default function AdminOriginalArticles() {
     }
   };
 
+  const handleRegenTitle = async () => {
+    if (!editing) return;
+    setRegenerating(true);
+    const prev = editTitle;
+    try {
+      const res = await fetch(
+        `/api/admin/original-articles/${editing.sport}/${editing.id}/regenerate-title`,
+        {
+          method: "POST",
+          headers: authHeaders(),
+          body: JSON.stringify({
+            include_research: includeResearch,
+            extra: editInstructions.trim(), // reuse any guidance written in the AI box
+          }),
+        }
+      );
+      if (!res.ok) {
+        let detail = `HTTP ${res.status}`;
+        try {
+          const e = await res.json();
+          detail = e.detail || detail;
+        } catch {}
+        throw new Error(detail);
+      }
+      const data = await res.json();
+      setEditTitle(data.title || prev);
+      alert("✅ New title ready. Review it, then hit Save to persist.");
+    } catch (e: any) {
+      alert(`Title regeneration failed: ${e.message}`);
+    } finally {
+      setRegenerating(false);
+    }
+  };
+
   const handleSaveEdit = async () => {
     if (!editing) return;
     if (!editTitle.trim() || !editContent.trim()) {
@@ -302,6 +369,7 @@ export default function AdminOriginalArticles() {
           summary: null, // re-derive on backend
           seo_description: editSeoDesc.trim() || null,
           seo_keywords: editSeoKeywords.trim() || null,
+          visibility: editVisibility,
         }),
       });
       if (!res.ok) {
@@ -477,6 +545,17 @@ export default function AdminOriginalArticles() {
                 </select>
               </div>
               <div className="flex items-center gap-2">
+                <label className="text-xs text-gray-400 shrink-0">Visibility</label>
+                <select
+                  className="bg-black/40 border border-white/10 rounded-md p-2 text-sm focus:outline-none focus:border-blue-500"
+                  value={visibility}
+                  onChange={(e) => setVisibility(e.target.value)}
+                >
+                  <option value="public">Public (FREE — no betting advice)</option>
+                  <option value="premium">Premium (members — betting advice OK)</option>
+                </select>
+              </div>
+              <div className="flex items-center gap-2">
                 <label className="text-xs text-gray-400 shrink-0">Length</label>
                 <select
                   className="bg-black/40 border border-white/10 rounded-md p-2 text-sm focus:outline-none focus:border-blue-500"
@@ -528,6 +607,27 @@ export default function AdminOriginalArticles() {
                   {typeof draft.tokens === "number" && (
                     <span className="text-xs text-gray-500">{draft.tokens.toLocaleString()} tokens</span>
                   )}
+                  {draft.accuracy_check && (
+                    <span
+                      className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border ${
+                        draft.accuracy_check.passed
+                          ? "bg-green-500/10 text-green-400 border-green-500/30"
+                          : "bg-red-500/10 text-red-400 border-red-500/30"
+                      }`}
+                      title="Accuracy check result"
+                    >
+                      {draft.accuracy_check.passed ? "✓ Accurate" : "✗ Inaccurate"}
+                      {typeof draft.accuracy_check.retries_used === "number" &&
+                        draft.accuracy_check.retries_used > 0 && (
+                          <span className="ml-1 opacity-70">({draft.accuracy_check.retries_used} fix)</span>
+                        )}
+                    </span>
+                  )}
+                  {Array.isArray(draft.rejection_history) && draft.rejection_history.length > 0 && (
+                    <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-amber-500/10 text-amber-400 border border-amber-500/30">
+                      ⚠ {draft.rejection_history.length} rejected
+                    </span>
+                  )}
                   <button
                     onClick={() => handlePublish()}
                     disabled={saving}
@@ -563,6 +663,29 @@ export default function AdminOriginalArticles() {
                       <div className="flex items-center gap-2">
                         <span className="text-sm font-medium text-white truncate">{a.title}</span>
                         {statusBadge(a.status)}
+                        {(a.visibility === "premium" ? (
+                          <span
+                            title="Premium article (members only) — may include Earl's picks and betting advice."
+                            className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-purple-500/20 text-purple-300 border border-purple-500/30"
+                          >
+                            ★ Premium
+                          </span>
+                        ) : (
+                          <span
+                            title="Public article (free) — no betting advice allowed."
+                            className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-gray-600/30 text-gray-300 border border-gray-600/40"
+                          >
+                            Public
+                          </span>
+                        ))}
+                        {a.has_inaccuracy && (
+                          <span
+                            title="Accuracy check flagged claims that couldn't be resolved. Needs human review."
+                            className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-amber-500/20 text-amber-400 border border-amber-500/30"
+                          >
+                            ⚠ Inaccurate
+                          </span>
+                        )}
                       </div>
                       <div className="text-xs text-gray-500 mt-0.5">
                         {a.author && (
@@ -677,6 +800,14 @@ export default function AdminOriginalArticles() {
                           >
                             {saving ? "Saving…" : "Save"}
                           </button>
+                          <button
+                            onClick={handleRegenTitle}
+                            disabled={regenerating}
+                            title="Generate a new headline from the article content."
+                            className="px-3 py-1.5 rounded-md bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-xs font-medium"
+                          >
+                            {regenerating ? "Writing…" : "✦ Regenerate Title"}
+                          </button>
                         </div>
                       </div>
                       <input
@@ -693,6 +824,17 @@ export default function AdminOriginalArticles() {
                           onChange={(e) => setEditAuthor(e.target.value)}
                           placeholder="Earl"
                         />
+                      </div>
+                      <div className="flex items-center gap-2 mb-2">
+                        <label className="text-xs text-gray-400 shrink-0">Visibility</label>
+                        <select
+                          className="flex-1 bg-black/40 border border-white/10 rounded-md p-2 text-sm focus:outline-none focus:border-blue-500"
+                          value={editVisibility}
+                          onChange={(e) => setEditVisibility(e.target.value)}
+                        >
+                          <option value="public">Public (FREE — no betting advice)</option>
+                          <option value="premium">Premium (members — betting advice OK)</option>
+                        </select>
                       </div>
                       <div className="mb-2 p-3 rounded-md border border-white/10 bg-black/25">
                         <div className="flex items-center justify-between mb-1.5">
@@ -754,6 +896,86 @@ export default function AdminOriginalArticles() {
                         onChange={(e) => setEditContent(e.target.value)}
                         placeholder="Article content (markdown)"
                       />
+                      {/* ── Accuracy + Rejected Drafts (audit) ── */}
+                      {
+                        (editAccuracyCheck || editRejectionHistory.length > 0) && (
+                          <div className="mt-3 rounded-md border border-white/10 bg-black/25 p-3 space-y-3">
+                            {editAccuracyCheck && (
+                              <div>
+                                <div className="flex items-center gap-2 text-xs mb-1.5">
+                                  <span className="font-medium text-gray-300">Accuracy check</span>
+                                  <span
+                                    className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${
+                                      editAccuracyCheck.passed
+                                        ? "bg-green-500/15 text-green-400"
+                                        : "bg-red-500/15 text-red-400"
+                                    }`}
+                                  >
+                                    {editAccuracyCheck.passed ? "passed" : "failed"}
+                                  </span>
+                                  {typeof editAccuracyCheck.retries_used === "number" && (
+                                    <span className="text-gray-500">retries: {editAccuracyCheck.retries_used}</span>
+                                  )}
+                                </div>
+                                {Array.isArray(editAccuracyCheck.findings) &&
+                                  editAccuracyCheck.findings.length > 0 && (
+                                    <ul className="list-disc list-inside space-y-0.5 text-xs text-gray-400">
+                                      {editAccuracyCheck.findings.map((f: any, i: number) => (
+                                        <li key={i}>{typeof f === "string" ? f : JSON.stringify(f)}</li>
+                                      ))}
+                                    </ul>
+                                  )}
+                              </div>
+                            )}
+                            {editRejectionHistory.length > 0 && (
+                              <div>
+                                <div className="flex items-center gap-2 text-xs mb-1.5">
+                                  <span className="font-medium text-gray-300">Rejected drafts</span>
+                                  <span className="px-2 py-0.5 rounded bg-amber-500/15 text-amber-400 text-xs font-medium">
+                                    {editRejectionHistory.length}
+                                  </span>
+                                </div>
+                                {editRejectionHistory.map((d: any, idx: number) => {
+                                  const findings = Array.isArray(d.accuracy_check?.findings)
+                                    ? d.accuracy_check.findings
+                                    : [];
+                                  const passed = d.accuracy_check?.passed;
+                                  return (
+                                    <div key={idx} className="rounded border border-red-500/25 bg-red-500/5 p-2 mb-2 space-y-1.5">
+                                      <div className="flex flex-wrap items-center gap-2 text-xs">
+                                        <span className="font-medium text-red-400">Attempt {d.attempt ?? idx + 1}</span>
+                                        {d.timestamp && <span className="text-gray-500">{new Date(d.timestamp).toLocaleString()}</span>}
+                                        <span
+                                          className={`px-1.5 py-0.5 rounded text-[11px] font-medium ${
+                                            passed ? "bg-green-500/15 text-green-400" : "bg-red-500/15 text-red-400"
+                                          }`}
+                                        >
+                                          {passed ? "passed" : "failed"}
+                                        </span>
+                                      </div>
+                                      {findings.length > 0 && (
+                                        <ul className="list-disc list-inside space-y-0.5 text-[11px] text-gray-400">
+                                          {findings.map((f: any, i: number) => (
+                                            <li key={i}>{typeof f === "string" ? f : JSON.stringify(f)}</li>
+                                          ))}
+                                        </ul>
+                                      )}
+                                      {d.content && (
+                                        <details className="text-[11px]">
+                                          <summary className="text-blue-400 cursor-pointer">View rejected draft</summary>
+                                          <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap rounded bg-black/40 border border-gray-700 p-2 text-[11px] text-gray-300">
+                                            {d.content}
+                                          </pre>
+                                        </details>
+                                      )}
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            )}
+                          </div>
+                        )
+                      }
                     </div>
                   )}
                 </li>

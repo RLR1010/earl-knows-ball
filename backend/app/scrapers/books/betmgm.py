@@ -323,7 +323,7 @@ def _fixtures_url(accessid: str, sport_id: int) -> str:
         f"&lang=en-us&country=US&userCountry=US&subdivision=US-Texas"
         f"&fixtureTypes=Standard&state=Latest&offerMapping=All"
         f"&offerCategories=AllOffers&fixtureCategories=All"
-        f"&statisticsModes=Pitchers,SeasonStandings&take=100&sortBy=Tags"
+        f"&statisticsModes=Pitchers,SeasonStandings&take=1000&sortBy=Tags"
         f"&sportIds={sport_id}&includeMarkets=true"
     )
 
