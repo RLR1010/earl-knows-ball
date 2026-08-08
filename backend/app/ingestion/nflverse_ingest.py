@@ -468,9 +468,9 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 
     from sqlalchemy import create_engine
+    from app.db_urls import PSYCOPG2_DATABASE_URL
 
-    engine = from app.db_urls import PSYCOPG2_DATABASE_URL
-create_engine(PSYCOPG2_DATABASE_URL.replace(":5432", ""))
+    engine = create_engine(PSYCOPG2_DATABASE_URL.replace(":5432", ""))
 
     years = [int(a) for a in sys.argv[1:]] if len(sys.argv) > 1 else AVAILABLE_YEARS
 

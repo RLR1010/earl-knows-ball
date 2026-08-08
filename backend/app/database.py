@@ -21,10 +21,13 @@ async_engine = create_async_engine(
 
 async_session = async_sessionmaker(async_engine, expire_on_commit=False)
 
-# Sync engine for scheduler and other non-async operations
-# Must use the same search_path (quoted properly for psycopg2)
+# Sync engine for scheduler and other non-async operations.
+# IMPORTANT: psycopg2 breaks if the options value uses single quotes around the
+# list (FATAL: invalid value for parameter "search_path": "'nfl,"). Use the
+# unquoted comma-separated form. Consumers schema-qualify their tables, but set
+# a search_path covering all sports so unqualified refs resolve too.
 sync_url = database_url.replace("+asyncpg", "+psycopg2")
-sync_options = "-c search_path='nfl, public'"
+sync_options = "-c search_path=nfl,nba,mlb,public"
 engine = create_engine(
     sync_url,
     pool_pre_ping=True,
@@ -35,7 +38,7 @@ engine = create_engine(
 )
 
 Session = async_session
-SessionLocal = sessionmaker()
+SessionLocal = sessionmaker(bind=engine)
 Base = declarative_base()
 
 async def get_db():

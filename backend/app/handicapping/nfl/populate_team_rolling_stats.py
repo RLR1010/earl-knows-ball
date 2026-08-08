@@ -683,7 +683,8 @@ SELECT
 FROM rolling r
 LEFT JOIN season_cumul sc ON r.game_id = sc.game_id AND r.team_abbr = sc.team_abbr
 LEFT JOIN streaks st     ON r.game_id = st.game_id   AND r.team_abbr = st.team_abbr
-LEFT JOIN season_ranks sr ON r.game_id = sr.game_id AND r.team_abbr = sr.team_abbr;
+LEFT JOIN season_ranks sr ON r.game_id = sr.game_id AND r.team_abbr = sr.team_abbr
+WHERE r.game_type = :game_type;
 """
 
 

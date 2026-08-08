@@ -7,8 +7,10 @@ import asyncio
 import httpx
 from datetime import datetime, timedelta
 from sqlalchemy import select, text
-from app.database import AsyncSessionLocal
+from app.database import async_session
 from app.models.nba import NBASeason, NBATeam, NBAGame
+from app.models.nba.game import NBAGameStatus
+from app.ingestion.nba_stats import NBA_TEAMS, season_str
 
 Season = NBASeason
 Team = NBATeam
@@ -30,7 +32,7 @@ async def fetch_espn_games(date_str: str, client: httpx.AsyncClient) -> list:
 
 async def ensure_team(abbr: str, session, client: httpx.AsyncClient) -> int:
     """Get or create a team by abbreviation. Returns team id."""
-    abbr = abbr.upper()
+    abbr = abbr.upper()[:4]  # nba.teams.abbreviation is VARCHAR(4)
     result = await session.execute(
         select(Team).where(Team.abbreviation == abbr)
     )
@@ -46,16 +48,23 @@ async def ensure_team(abbr: str, session, client: httpx.AsyncClient) -> int:
         data = resp.json()
         team_data = data.get("team", {})
         name = team_data.get("displayName", abbr)
-        location = team_data.get("location", "")
         logo = (team_data.get("logos") or [{}])[0].get("href", "")
     except Exception:
         name = abbr
-        location = ""
         logo = ""
 
+    # Conference / division are NOT reliably present on the single-team ESPN
+    # endpoint; take them from the authoritative NBA_TEAMS list (all 30 teams).
+    # Match by name (ESPN abbreviations like NY/GS vs NBA_TEAMS NYK/GSW differ).
+    _tup = next((t for t in NBA_TEAMS if t[2].lower() == str(name).lower()), None)
+    # Event/all-star/summer-stub teams (e.g. "MEL") aren't in NBA_TEAMS — give
+    # non-null placeholders so the NOT NULL constraint is satisfied.
+    conf = (_tup[3] if _tup else "")
+    div = (_tup[4] if _tup else "")
+
     new_team = Team(
-        abbreviation=abbr, name=name, location=location,
-        logo_url=logo
+        abbreviation=abbr, name=name,
+        conference=conf, division=div, logo_url=logo,
     )
     session.add(new_team)
     await session.flush()
@@ -85,7 +94,7 @@ async def ingest_nba_games(seasons: list[int] | None = None):
                  Defaults to the full historical backfill (2016-17 .. 2024-25).
     """
     async with httpx.AsyncClient() as client:
-        async with AsyncSessionLocal() as session:
+        async with async_session() as session:
             loaded = 0
             skipped = 0
 
@@ -139,8 +148,8 @@ async def ingest_nba_games(seasons: list[int] | None = None):
                                 competitors[1]
                             )
 
-                            away_abbr = away_team["team"]["abbreviation"]
-                            home_abbr = home_team["team"]["abbreviation"]
+                            away_abbr = (away_team["team"].get("abbreviation") or away_team["team"].get("shortDisplayName") or away_team["team"]["id"])
+                            home_abbr = (home_team["team"].get("abbreviation") or home_team["team"].get("shortDisplayName") or home_team["team"]["id"])
 
                             away_id = await ensure_team(away_abbr, session, client)
                             home_id = await ensure_team(home_abbr, session, client)
@@ -167,19 +176,33 @@ async def ingest_nba_games(seasons: list[int] | None = None):
                             venue = venue_info.get("fullName", "") if venue_info else ""
                             neutral = comp.get("neutralSite", False)
 
+                            # Status: ESPN uses freeform strings ("STATUS_SCHEDULED",
+                            # "STATUS_IN_PROGRESS", "STATUS_FINAL", ...) → map to enum.
+                            _raw_status = (comp.get("status", {})
+                                            .get("type", {})
+                                            .get("name", "STATUS_SCHEDULED") or "STATUS_SCHEDULED")
+                            _st = _raw_status.upper()
+                            if "FINAL" in _st:
+                                game_status = NBAGameStatus.FINAL
+                            elif "POSTPON" in _st:
+                                game_status = NBAGameStatus.POSTPONED
+                            elif "CANCEL" in _st:
+                                game_status = NBAGameStatus.CANCELLED
+                            elif "IN_PROGRESS" in _st or "LIVE" in _st:
+                                game_status = NBAGameStatus.IN_PROGRESS
+                            else:
+                                game_status = NBAGameStatus.SCHEDULED
+
                             game = Game(
                                 id=game_id,
                                 season_id=season_id,
-                                season_year=season_year,
-                                week=None,
                                 home_team_id=home_id,
                                 away_team_id=away_id,
                                 home_score=home_score,
                                 away_score=away_score,
                                 date=game_dt,
                                 venue=venue,
-                                neutral_site=neutral,
-                                status=comp.get("status", {}).get("type", {}).get("name", "STATUS_UNKNOWN"),
+                                status=game_status,
                             )
                             session.add(game)
                             loaded += 1
