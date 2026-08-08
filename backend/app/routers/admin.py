@@ -3196,6 +3196,26 @@ async def trigger_task(name: str, admin: User = Depends(get_admin_user)):
     return {"status": "triggered", "task": name}
 
 
+@router.patch("/tasks/{name}/enabled")
+async def set_task_enabled(name: str, body: dict, admin: User = Depends(get_admin_user), db: AsyncSession = Depends(get_db)):
+    """Enable or disable a task by name. Reloads the scheduler job immediately."""
+    enabled = bool(body.get("enabled"))
+    result = await db.execute(
+        text("UPDATE task_config SET enabled = :enabled WHERE name = :name"),
+        {"enabled": enabled, "name": name},
+    )
+    await db.commit()
+    if result.rowcount == 0:
+        raise HTTPException(status_code=404, detail=f"Task not found: {name}")
+
+    from app.task_scheduler import _scheduler, load_tasks, _update_next_runs
+    if _scheduler is None:
+        raise HTTPException(status_code=503, detail="Scheduler not running")
+    await load_tasks(_scheduler)
+    _update_next_runs()
+    return {"status": "ok", "name": name, "enabled": enabled}
+
+
 @router.post("/tasks/refresh")
 async def refresh_tasks(admin: User = Depends(get_admin_user)):
     """Reload tasks from DB into scheduler."""

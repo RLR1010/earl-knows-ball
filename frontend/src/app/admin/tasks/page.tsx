@@ -94,6 +94,7 @@ export default function TasksPage() {
   const [runs, setRuns] = useState<TaskRun[]>([]);
   const [runsLoading, setRunsLoading] = useState(false);
   const [triggering, setTriggering] = useState<string | null>(null);
+  const [toggling, setToggling] = useState<string | null>(null);
 
   const fetchTasks = useCallback(async () => {
     try {
@@ -152,6 +153,29 @@ export default function TasksPage() {
     }
   };
 
+  const handleToggle = async (name: string, enabled: boolean) => {
+    setToggling(name);
+    try {
+      const res = await fetch(`/api/admin/tasks/${name}/enabled`, {
+        method: "PATCH",
+        headers: {
+          Authorization: `Bearer ${token()}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ enabled }),
+      });
+      if (!res.ok) {
+        const detail = await res.text();
+        throw new Error(`HTTP ${res.status}: ${detail}`);
+      }
+      await fetchTasks();
+    } catch (e: any) {
+      alert(`Failed to toggle task: ${e.message}`);
+    } finally {
+      setToggling(null);
+    }
+  };
+
   return (
     <div className="space-y-8">
       {/* Header */}
@@ -191,13 +215,14 @@ export default function TasksPage() {
                   <th className="text-right py-3 px-4 text-gray-400 font-medium">Last Run</th>
                   <th className="text-right py-3 px-4 text-gray-400 font-medium">Duration</th>
                   <th className="text-right py-3 px-4 text-gray-400 font-medium">Next Run</th>
+                  <th className="text-center py-3 px-4 text-gray-400 font-medium">Enabled</th>
                   <th className="text-right py-3 px-4 text-gray-400 font-medium">Action</th>
                 </tr>
               </thead>
               <tbody>
                 {tasks.length === 0 && (
                   <tr>
-                    <td colSpan={7} className="py-8 text-center text-gray-500">
+                    <td colSpan={8} className="py-8 text-center text-gray-500">
                       No tasks configured
                     </td>
                   </tr>
@@ -228,8 +253,21 @@ export default function TasksPage() {
                     <td className="py-3 px-4 text-right">
                       <Duration ms={task.last_duration} />
                     </td>
-                    <td className="py-3 px-4 text-right text-gray-300">
+                    <td className="py-3 px-4 text-right">
                       {task.next_run || "—"}
+                    </td>
+                    <td className="py-3 px-4 text-center">
+                      <button
+                        onClick={(e) => { e.stopPropagation(); handleToggle(task.name, !task.enabled); }}
+                        disabled={toggling === task.name}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition disabled:opacity-50 ${
+                          task.enabled
+                            ? "bg-green-600/20 hover:bg-green-600/30 text-green-400 border-green-600/30"
+                            : "bg-white/5 hover:bg-white/10 text-gray-400 border-white/10"
+                        }`}
+                      >
+                        {toggling === task.name ? "..." : task.enabled ? "● On" : "○ Off"}
+                      </button>
                     </td>
                     <td className="py-3 px-4 text-right">
                       <button
