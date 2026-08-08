@@ -1,0 +1,142 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# Earl Knows Ball — Production Caddyfile (REFERENCE COPY)
+#
+# This file is the authoritative, version-controlled copy of the Caddy
+# routing config deployed at /etc/caddy/Caddyfile on earlknowsball.com.
+# Keep this in sync with the live file and with the split described below.
+#
+# ⚠️ Routes are split across TWO backend servers (B1 architecture):
+#   * 8001 = API server      -> EARL_ROLE=api     (user-facing: auth, articles,
+#            subscriptions, users, chat, games, players, props, stats, teams,
+#            token_usage, v1)  — NO scheduler.
+#   * 8002 = COMPUTE server  -> EARL_ROLE=compute (mlb_stats, nba_stats, admin,
+#            writeups, original_articles, ingest + the task scheduler).
+#   * 3000 = Next.js frontend (page routes + /_next assets).
+#
+# ── TWO-MACHINE PRODUCTION ─────────────────────────────────────────────────
+# To run api + compute on two separate machines, replace the 8001/8002
+# upstreams below with each machine's IP/port, e.g.:
+#     reverse_proxy 10.0.0.10:8001   (api machine)
+#     reverse_proxy 10.0.0.11:8002   (compute machine)
+# Also set, on the frontend host, EARL_API_URL / EARL_COMPUTE_URL (see
+# frontend/src/lib/backend-url.ts) so Next.js-side preview/SSR calls agree.
+# The ROUTING TABLE below is what actually matters — don't touch it when
+# swapping hosts.
+#
+# Keep in sync with: frontend/src/lib/backend-url.ts and
+#                     frontend/next.config.js rewrites.
+# ═══════════════════════════════════════════════════════════════════════════
+
+earlknowsball.com, www.earlknowsball.com {
+	# Next.js static assets — full path to frontend
+	handle /_next/* {
+		reverse_proxy localhost:3000
+	}
+
+	# ────────────── API routes ──────────────
+
+	# Auth routes — backend has prefix="/auth", strip /api  (API)
+	route /api/auth/* {
+		uri strip_prefix /api
+		reverse_proxy localhost:8001
+	}
+
+	# Admin — backend has prefix="/api/admin", pass full path  (COMPUTE)
+	handle /api/admin/* {
+		reverse_proxy localhost:8002
+	}
+
+	# Articles — backend has prefix="/api/articles", pass full path  (API)
+	handle /api/articles/* {
+		reverse_proxy localhost:8001
+	}
+
+	# Subscriptions — backend has prefix="/api/subscriptions", pass full path  (API)
+	handle /api/subscriptions/* {
+		reverse_proxy localhost:8001
+	}
+
+	# Writeups — backend has prefix="/writeups", strip only /api  (COMPUTE)
+	route /api/writeups/* {
+		uri strip_prefix /api
+		reverse_proxy localhost:8002
+	}
+
+	# MLB — strip /api prefix and proxy  (COMPUTE)
+	handle /api/mlb/* {
+		uri strip_prefix /api
+		reverse_proxy localhost:8002
+	}
+
+	# NBA — backend at root, strip /api  (COMPUTE)
+	handle /api/nba/* {
+		uri strip_prefix /api
+		reverse_proxy localhost:8002
+	}
+
+	# Users (token usage) — backend has prefix="/api/users", pass full path  (API)
+	handle /api/users/* {
+		reverse_proxy localhost:8001
+	}
+
+	# General API — backend has routes at root, strip /api  (API)
+	# Chat — backend has routes at root, strip /api. SSE must flush
+	# immediately so live "Researching..." status updates stream to the
+	# browser instead of being buffered until the whole answer is done.
+	route /api/chat/* {
+		uri strip_prefix /api
+		reverse_proxy localhost:8001 {
+			flush_interval -1
+		}
+	}
+	route /api/* {
+		uri strip_prefix /api
+		reverse_proxy localhost:8001
+	}
+
+	# ────────────── Frontend page routes ──────────────
+
+	# Auth pages — Next.js rewrites these to backend
+	handle /auth/* {
+		reverse_proxy localhost:3000
+	}
+
+	# Admin pages — Frontend
+	handle /admin/* {
+		reverse_proxy localhost:3000
+	}
+
+	# Chat
+	handle /chat/* {
+		reverse_proxy localhost:3000
+	}
+
+	# Writeups
+	handle /writeups/* {
+		reverse_proxy localhost:3000
+	}
+
+	# Everything else → frontend
+	handle {
+		reverse_proxy localhost:3000
+	}
+
+	# Security headers
+	header {
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+	}
+}
+
+# ── comic.com (static site) — unrelated legacy host, do not touch ──
+comic.com, www.comic.com {
+	root * /var/www/comic.com/public_html
+	file_server
+
+	tls internal
+
+	header {
+		X-Content-Type-Options "nosniff"
+	}
+}
