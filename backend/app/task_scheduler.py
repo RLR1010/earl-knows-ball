@@ -43,7 +43,7 @@ _scheduler: AsyncIOScheduler | None = None
 
 # ── Task Executor ───────────────────────────────────────────────────
 
-async def _execute_api_call(config: dict) -> dict:
+async def _execute_api_call(config: dict, task_name: str = "") -> dict:
     """Call the API via HTTP (same host, port 8001)."""
     url = config["url"]
     method = config.get("method", "POST").upper()
@@ -60,23 +60,58 @@ async def _execute_api_call(config: dict) -> dict:
         return resp.json()
 
 
-async def _execute_subprocess(config: dict) -> dict:
-    """Run a shell command and capture output."""
+async def _execute_subprocess(config: dict, task_name: str = "") -> dict:
+    """Run a shell command, relaying output to the backend journal in real time.
+
+    Previously this captured stdout/stderr via PIPE and only surfaced it in the
+    final response dict — so subprocess jobs (lines/picks, writeups) produced no
+    visible logs under ``journalctl --user -u earl-backend.service -f``.
+
+    Now each stdout line is forwarded to the ``task_scheduler`` logger as it
+    arrives (which the backend service emits to journald), tagged with the task
+    name, so scheduled job progress shows up live in the same journal stream as
+    the API. A short tail of output is still kept for the response dict.
+    """
     import asyncio.subprocess
     cmd = config["command"]
     proc = await asyncio.create_subprocess_shell(
         cmd,
         stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
     )
-    stdout, stderr = await asyncio.wait_for(
-        proc.communicate(), timeout=config.get("timeout", 600)
-    )
-    if proc.returncode != 0:
-        raise RuntimeError(
-            f"Subprocess failed (rc={proc.returncode}): {stderr.decode()[:2000]}"
+
+    tag = task_name or "subprocess"
+    stdout_tail: list[str] = []
+
+    async def _relay() -> None:
+        assert proc.stdout is not None
+        while True:
+            line = await proc.stdout.readline()
+            if not line:
+                break
+            text_line = line.decode(errors="replace").rstrip("\n")
+            if text_line:
+                logger.info("[%s] %s", tag, text_line)
+                stdout_tail.append(text_line)
+                if len(stdout_tail) > 50:
+                    stdout_tail.pop(0)
+
+    try:
+        relay_task = asyncio.create_task(_relay())
+        returncode = await asyncio.wait_for(
+            proc.wait(), timeout=config.get("timeout", 600)
         )
-    return {"stdout": stdout.decode()[:5000], "returncode": proc.returncode}
+        await relay_task
+    except asyncio.TimeoutError:
+        proc.kill()
+        await asyncio.sleep(0.2)
+        raise RuntimeError(f"Subprocess timed out after {config.get('timeout', 600)}s")
+
+    if returncode != 0:
+        raise RuntimeError(
+            f"Subprocess failed (rc={returncode})"
+        )
+    return {"stdout": "\n".join(stdout_tail)[-5000:], "returncode": returncode}
 
 
 EXECUTORS = {
@@ -140,7 +175,7 @@ async def wrapped_job(task_name: str):
             executor = EXECUTORS.get(task_type)
             if not executor:
                 raise ValueError(f"Unknown task_type: {task_type}")
-            result = await executor(config)
+            result = await executor(config, task_name)
             elapsed_ms = int((time.monotonic() - start) * 1000)
             details = result
 
