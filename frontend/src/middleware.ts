@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { backendUrl } from "@/lib/backend-url";
 
 // Sport list mirroring the backend's valid sports.
 const SPORTS = new Set(["mlb", "nfl", "nba"]);
@@ -19,7 +20,7 @@ export async function middleware(req: NextRequest) {
   if (m) {
     const [, sport, id] = m;
     try {
-      const res = await fetch(`http://localhost:8001/original-articles/${sport}/${id}`, {
+      const res = await fetch(backendUrl(`/original-articles/${sport}/${id}`), {
         headers: { authorization: req.headers.get("authorization") || "" },
         next: { revalidate: 0 },
       });
@@ -43,7 +44,7 @@ export async function middleware(req: NextRequest) {
   if (m) {
     const [, sport, id] = m;
     try {
-      const res = await fetch(`http://localhost:8001/writeups/${sport}/${id}?tier=public`, {
+      const res = await fetch(backendUrl(`/writeups/${sport}/${id}?tier=public`), {
         next: { revalidate: 0 },
       });
       if (res.ok) {

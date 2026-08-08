@@ -135,13 +135,15 @@ if EARL_ROLE in ("all", "api"):
         _include(r.router)
     # v1 re-exposes the mobile-facing subset under /api/v1.
     _include(v1.v1_router)
-    _include(token_usage.admin_router)
 
 if EARL_ROLE in ("all", "compute"):
     for r in _COMPUTE_FACING:
         _include(r.router)
     # original articles has a separate admin router under /api/admin.
     _include(original_articles.admin_router)
+    # token-usage admin routers live under /api/admin too -> keep all of
+    # /api/admin/* on compute (B1 split) so routing is unambiguous.
+    _include(token_usage.admin_router)
 
 
 @app.get("/")

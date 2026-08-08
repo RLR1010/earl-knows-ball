@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { COMPUTE_URL } from "@/lib/backend-url";
 
 interface PublicArticle {
   id: number;
@@ -20,7 +21,7 @@ interface PublicArticle {
 const VALID_SPORTS = ["nfl", "nba", "mlb"];
 
 const BACKEND_BASE =
-  process.env.BACKEND_URL || process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8001";
+  process.env.BACKEND_URL || process.env.NEXT_PUBLIC_BACKEND_URL || COMPUTE_URL;
 
 async function fetchArticle(sport: string, slug: string): Promise<PublicArticle | null> {
   try {

@@ -6,8 +6,12 @@
 #   EARL_ROLE=all     -> everything + scheduler (dev box)
 cd "$(dirname "$0")"
 export EARL_ROLE="${EARL_ROLE:-all}"
+export EARL_PORT="${EARL_PORT:-8001}"
+export EARL_WORKERS="${EARL_WORKERS:-8}"
 VIRTUAL_ENV_DIR="$(dirname "$0")/../venv"
 if [ -f "$VIRTUAL_ENV_DIR/bin/activate" ]; then
     source "$VIRTUAL_ENV_DIR/bin/activate"
 fi
-PYTHONPATH="$PWD" exec granian --interface asgi --http 1 app.main:app --host 0.0.0.0 --port 8001 --workers 8 --backlog 4096
+# EARL_PORT/EARL_WORKERS are configurable so the same script drives both the
+# api (EARL_ROLE=api) and compute (EARL_ROLE=compute) granian servers.
+PYTHONPATH="$PWD" exec granian --interface asgi --http 1 app.main:app --host 0.0.0.0 --port "$EARL_PORT" --workers "$EARL_WORKERS" --backlog 4096
