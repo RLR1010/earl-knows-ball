@@ -84,17 +84,43 @@ async def _execute_subprocess(config: dict, task_name: str = "") -> dict:
     stdout_tail: list[str] = []
 
     async def _relay() -> None:
+        # Read the stream in raw chunks and split on newlines ourselves, instead of
+        # using readline()/readuntil(). readline() raises
+        #   ValueError: Separator is found, but chunk is longer than limit
+        # when a single output line exceeds the asyncio StreamReader limit (64KB),
+        # crashing the relay and marking the task failed even though the real work
+        # completed (e.g. big dict/JSON dumps from lines+picks). Chunked reading is
+        # immune to line size.
+        import asyncio.subprocess
         assert proc.stdout is not None
+        buf = bytearray()
         while True:
-            line = await proc.stdout.readline()
-            if not line:
+            try:
+                chunk = await proc.stdout.read(65536)
+            except (ValueError, asyncio.LimitOverrunError):
+                # Should not happen with read(), but be defensive: drain a chunk.
+                chunk = await proc.stdout.read(65536)
+            if not chunk:
                 break
-            text_line = line.decode(errors="replace").rstrip("\n")
+            buf += chunk
+            while True:
+                nl = buf.find(b"\n")
+                if nl < 0:
+                    break
+                raw = bytes(buf[:nl])
+                del buf[: nl + 1]
+                text_line = raw.decode(errors="replace").rstrip("\r")
+                if text_line:
+                    logger.info("[%s] %s", tag, text_line)
+                    stdout_tail.append(text_line)
+                    if len(stdout_tail) > 50:
+                        stdout_tail.pop(0)
+        # Flush any trailing partial line without a newline.
+        if buf:
+            text_line = bytes(buf).decode(errors="replace")
             if text_line:
                 logger.info("[%s] %s", tag, text_line)
                 stdout_tail.append(text_line)
-                if len(stdout_tail) > 50:
-                    stdout_tail.pop(0)
 
     try:
         relay_task = asyncio.create_task(_relay())

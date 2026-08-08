@@ -8,9 +8,10 @@ Eastern, cron "0 8 * * *", tz America/New_York).
 "Today's games" = the current **ET calendar day** (6:00a–~2:00a next day local
 for night games), which is why the window is computed in America/New_York and
 converted to the UTC-stored timestamps. For each such game that has no
-write-up yet, the generator endpoint is called (mirrors the frontend
-admin/content "Generate Day" behavior, which regenerates only games with no
-write-up at all).
+write-up yet, the generator is called DIRECTLY in this subprocess (mirrors the
+frontend admin/content "Generate Day" behavior, which regenerates only games
+with no write-up at all). No API round-trip: write-up generation runs entirely
+off the granian worker loop.
 
 Usage:
     cd <repo>/backend && PYTHONPATH=$PWD/backend <repo>/venv/bin/python app/scripts/run_mlb_writeups_daily.py
@@ -26,7 +27,6 @@ import sys
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-import httpx
 from sqlalchemy import text
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
@@ -42,7 +42,6 @@ logging.basicConfig(
 logger = logging.getLogger("mlb_writeups_daily")
 
 EASTERN = ZoneInfo("America/New_York")
-API_BASE = os.environ.get("EARL_API_BASE", "http://localhost:8001")
 REASONING = os.environ.get("EARL_WRITEUP_REASONING", "minimal")
 
 def et_day_window() -> tuple[datetime, datetime]:
@@ -83,11 +82,24 @@ async def list_todays_games() -> list[dict]:
 
 
 async def generate_writeup(game_id: int) -> dict:
-    url = f"{API_BASE}/writeups/mlb/generate/{game_id}?reasoning={REASONING}"
-    async with httpx.AsyncClient(timeout=600) as client:
-        resp = await client.post(url)
-        resp.raise_for_status()
-        return resp.json()
+    # Generate DIRECTLY in this subprocess rather than POSTing back into the
+    # granian API. Writeup generation is heavy (multiple DeepSeek calls +
+    # research + QC, minutes per game) and previously ran on a granian worker
+    # event loop, blocking the API for all other traffic for the ~1-2h daily
+    # generation window. Same pattern as lines-and-picks / stats-refresh.
+    from app.writeups.mlb.generator import MLBWriteupGenerator
+
+    async with async_session() as db:
+        gen = MLBWriteupGenerator()
+        writeup, qc_results = await gen.generate(
+            db,
+            game_id=game_id,
+            is_historical=False,
+            reasoning=REASONING,
+        )
+        # qc_results is already a JSON-safe list[dict]
+        return {"writeup": writeup, "qc": qc_results}
+
 
 
 async def run() -> int:
