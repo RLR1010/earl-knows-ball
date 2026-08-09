@@ -701,7 +701,7 @@ export default function NBAGameTabs({ gameId, prediction }: NBAGameTabsProps) {
 
       {/* Betting Lines Card */}
       {data.betting_lines && data.betting_lines.closing_spread != null && (
-        <div className="rounded-xl py-2">
+        <div className="rounded-xl p-4 border border-white/10">
           <div className="text-xs text-gray-500 uppercase tracking-wider mb-3">Betting Lines</div>
           <div className="grid grid-cols-1 md:grid-cols-3 divide-y md:divide-y-0 md:divide-x divide-white/10">
             <div className="text-center py-3 md:px-3">

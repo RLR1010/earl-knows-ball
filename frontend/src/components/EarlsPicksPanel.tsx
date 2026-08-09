@@ -43,38 +43,32 @@ type EarlsPicksPanelProps = {
 function ScoreLine({
   heading,
   score,
-  accentClass,
 }: {
   heading: string;
   score: PredictedScore;
-  accentClass: string;
 }) {
   return (
-    <div className="text-center">
-      <div
-        className={`inline-flex flex-col sm:flex-row sm:items-center gap-x-3 gap-y-1 border rounded-lg px-4 py-2 bg-white/5 ${accentClass}`}
-      >
-        <span className="text-xs uppercase tracking-wider text-gray-500">{heading}</span>
-        <div className="text-lg font-bold tracking-tight flex items-center gap-1.5">
-          <span className="text-gray-300">{score.awayLabel}</span>
-          <span className="text-white"> {score.awayScore}</span>
-          <span className="text-gray-600">@</span>
-          <span className="text-white">{score.homeScore} </span>
-          <span className="text-gray-300">{score.homeLabel}</span>
-        </div>
-        {(score.total != null || score.margin != null) && (
-          <span className="text-xs text-gray-500">
-            {score.total != null && <>Total: {score.total}</>}
-            {score.margin != null && (
-              <>
-                {score.total != null && " · "}
-                Margin: {score.margin >= 0 ? "+" : ""}
-                {score.margin}
-              </>
-            )}
-          </span>
-        )}
+    <div className="text-center flex flex-col sm:flex-row sm:items-center sm:justify-center gap-x-3 gap-y-0.5">
+      <span className="text-xs uppercase tracking-wider text-gray-500">{heading}</span>
+      <div className="text-lg font-bold tracking-tight flex items-center gap-1.5">
+        <span className="text-gray-300">{score.awayLabel}</span>
+        <span className="text-white"> {score.awayScore}</span>
+        <span className="text-gray-600">@</span>
+        <span className="text-white">{score.homeScore} </span>
+        <span className="text-gray-300">{score.homeLabel}</span>
       </div>
+      {(score.total != null || score.margin != null) && (
+        <span className="text-xs text-gray-500">
+          {score.total != null && <>Total: {score.total}</>}
+          {score.margin != null && (
+            <>
+              {score.total != null && " · "}
+              Margin: {score.margin >= 0 ? "+" : ""}
+              {score.margin}
+            </>
+          )}
+        </span>
+      )}
     </div>
   );
 }
@@ -142,10 +136,8 @@ export default function EarlsPicksPanel({
           </span>
         </div>
 
-        {predicted && <ScoreLine heading="Predicted" score={predicted} accentClass="border-white/10" />}
-        {isFinal && actual && (
-          <ScoreLine heading="Actual" score={actual} accentClass="border-green-500/20 bg-green-500/5" />
-        )}
+        {predicted && <ScoreLine heading="Predicted" score={predicted} />}
+        {isFinal && actual && <ScoreLine heading="Actual" score={actual} />}
 
         <div className="grid grid-cols-1 md:grid-cols-3 divide-y md:divide-y-0 md:divide-x divide-white/10">
           {items.map((item) => (
