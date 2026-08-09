@@ -57,12 +57,12 @@ function ScoreLine({
       </div>
       {(score.total != null || score.margin != null) && (
         <span className="text-xs text-gray-500">
-          {score.total != null && <>Total: {score.total}</>}
+          {score.total != null && <>Total: {Number.isInteger(score.total) ? score.total : score.total.toFixed(1)}</>}
           {score.margin != null && (
             <>
               {score.total != null && " · "}
               Margin: {score.margin >= 0 ? "+" : ""}
-              {score.margin}
+              {score.margin.toFixed(1)}
             </>
           )}
         </span>
