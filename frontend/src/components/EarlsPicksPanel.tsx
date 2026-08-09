@@ -124,18 +124,18 @@ export default function EarlsPicksPanel({
   title = "Earl's Picks",
 }: EarlsPicksPanelProps) {
   return (
-    <PremiumGate>
-      <div className="mt-4 pt-4 border-t border-white/10 space-y-4">
-        <div className="flex items-center gap-2">
-          <span className="w-1 h-4 rounded-full bg-gradient-to-b from-earl-400 to-amber-500" />
-          <h3 className="text-sm font-semibold tracking-tight text-gray-100 uppercase inline-flex items-center gap-1.5">
-            {title}
-          </h3>
-          <span className="text-[10px] font-medium text-amber-400/90 bg-amber-500/10 border border-amber-500/30 rounded-full px-2 py-0.5">
-            Premium
-          </span>
-        </div>
+    <div className="mt-4 pt-4 border-t border-white/10 space-y-4">
+      <div className="flex items-center gap-2">
+        <span className="w-1 h-4 rounded-full bg-gradient-to-b from-earl-400 to-amber-500" />
+        <h3 className="text-sm font-semibold tracking-tight text-gray-100 uppercase inline-flex items-center gap-1.5">
+          {title}
+        </h3>
+        <span className="text-[10px] font-medium text-amber-400/90 bg-amber-500/10 border border-amber-500/30 rounded-full px-2 py-0.5">
+          Premium
+        </span>
+      </div>
 
+      <PremiumGate title={title}>
         {predicted && <ScoreLine heading="Predicted" score={predicted} />}
         {isFinal && actual && <ScoreLine heading="Actual" score={actual} />}
 
@@ -144,7 +144,7 @@ export default function EarlsPicksPanel({
             <PickItemCard key={item.label} item={item} />
           ))}
         </div>
-      </div>
-    </PremiumGate>
+      </PremiumGate>
+    </div>
   );
 }

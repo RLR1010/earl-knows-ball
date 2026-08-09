@@ -29,31 +29,26 @@ export default function PremiumGate({ children, title, message }: PremiumGatePro
   if (!user || !isPremium) {
     return (
       <>
-        <div className="flex items-center justify-center py-16 px-6">
-          <div className="w-full max-w-sm bg-white/5 rounded-2xl p-8 border border-white/10 text-center">
-            <h2 className="text-lg font-bold text-gray-100 mb-2">
-              {title || "Premium Content"}
-            </h2>
-            <div className="w-10 h-0.5 bg-earl-600 mx-auto my-3 rounded-full" />
-            <p className="text-gray-300 text-sm mb-6">
-              {message || (
-                user
-                  ? "Upgrade to Premium to access Earl's Picks, Detailed Analysis, and Detailed Stats."
-                  : "Sign in and upgrade to Premium to access Earl's Picks, Detailed Analysis, and Detailed Stats."
-              )}
-            </p>
-
+        <div className="py-4">
+          <p className="text-gray-400 text-sm">
+            {message || (
+              user
+                ? "Upgrade to Premium to access Earl's Picks."
+                : "Sign in and upgrade to Premium to access Earl's Picks."
+            )}
+          </p>
+          <div className="mt-3">
             {user ? (
               <a
                 href="/pricing"
-                className="inline-block w-full py-3 rounded-xl bg-earl-600 text-white font-semibold hover:bg-earl-500 transition"
+                className="inline-block py-2.5 px-4 rounded-lg bg-earl-600 text-white text-sm font-semibold hover:bg-earl-500 transition"
               >
                 Upgrade to Premium
               </a>
             ) : (
               <button
                 onClick={() => setLoginModalOpen(true)}
-                className="w-full py-3 rounded-xl bg-earl-600 text-white font-semibold hover:bg-earl-500 transition"
+                className="py-2.5 px-4 rounded-lg bg-earl-600 text-white text-sm font-semibold hover:bg-earl-500 transition"
               >
                 Sign In to Get Started
               </button>
