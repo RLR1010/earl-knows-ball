@@ -177,19 +177,6 @@ export default function MLBGameTabs({ gameId, game, formatOdds, boxscore, linesc
 
     return (
       <div className="space-y-6">
-        {/* Score header */}
-        <div className="flex items-center justify-between px-4 py-2 bg-white/5 rounded-lg">
-          <div className="flex-1 text-right">
-            <div className="text-lg font-bold text-white">{awayTeamName}</div>
-            <div className="text-3xl font-bold text-gray-300">{awayRuns}</div>
-          </div>
-          <div className="px-6 text-gray-500 font-bold text-lg">-</div>
-          <div className="flex-1">
-            <div className="text-lg font-bold text-white">{homeTeamName}</div>
-            <div className="text-3xl font-bold text-gray-300">{homeRuns}</div>
-          </div>
-        </div>
-
         {/* Inning-by-inning linescore */}
         {linescore?.innings && linescore.innings.length > 0 && (
           <div className="overflow-x-auto border border-white/10 rounded-xl p-2">
