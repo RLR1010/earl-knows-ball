@@ -166,6 +166,13 @@ Length: 800-1000 words.
                     pass
 
         research_data = NFLWriteupGenerator._convert_for_json(writeup.get("research_brief") or None)
+        # Persist the per-call usage log through the research_brief JSONB column
+        # (it was previously computed in generate() but never written to the DB).
+        if research_data is not None and isinstance(research_data, dict):
+            if writeup.get("usage_log") is not None:
+                research_data["_usage_log"] = writeup["usage_log"]
+            if writeup.get("total_tokens") is not None:
+                research_data["_total_tokens"] = writeup["total_tokens"]
         qc_data = NFLWriteupGenerator._convert_for_json(qc_results or writeup.get("quality_checks") or None)
         accuracy_data = NFLWriteupGenerator._convert_for_json(
             writeup.get("accuracy_check") or None

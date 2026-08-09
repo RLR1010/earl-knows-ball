@@ -78,6 +78,7 @@ app.add_middleware(
 # ── All Routes ─────────────────────────────────────────────────────
 
 from app.routers import (
+    article_ideas,
     auth,
     articles,
     chat,
@@ -98,6 +99,7 @@ from app.routers import (
     admin,
     writeups,
     original_articles,
+    auto_generation,
     token_usage,
     v1,
 )
@@ -141,6 +143,10 @@ if EARL_ROLE in ("all", "compute"):
         _include(r.router)
     # original articles has a separate admin router under /api/admin.
     _include(original_articles.admin_router)
+    # article ideas (brainstorm + prompt builder + CRUD) is admin-only -> compute.
+    _include(article_ideas.admin_router)
+    # auto-generation continuous article template configs are admin-only -> compute.
+    _include(auto_generation.admin_router)
     # token-usage admin routers live under /api/admin too -> keep all of
     # /api/admin/* on compute (B1 split) so routing is unambiguous.
     _include(token_usage.admin_router)

@@ -357,11 +357,12 @@ def _extract_seo_json(raw: str) -> dict:
     return {}
 
 
-async def _generate_seo(title: str, summary: str, content: str) -> dict[str, str]:
+async def _generate_seo(title: str, summary: str, content: str, usage_log: list[dict[str, Any]] | None = None) -> dict[str, str]:
     """Return {seo_description, seo_keywords} using the DeepSeek LLM.
 
     DeepSeek intermittently returns empty/unparseable output, so we retry up to
     MAX_SEO_ATTEMPTS (default 3) attempts when the extracted result is empty.
+    SEO is a tiny extraction call — thinking is DISABLED to avoid hidden CoT.
     """
     if not settings.deepseek_api_key:
         return {}
@@ -386,8 +387,36 @@ async def _generate_seo(title: str, summary: str, content: str) -> dict[str, str
                 ],
                 temperature=0.3,
                 max_tokens=600,
+                # SEO is a tiny extraction — no chain-of-thought needed.
+                extra_body={"thinking": {"type": "disabled"}},
             )
             raw = resp.choices[0].message.content or ""
+            if usage_log is not None and resp.usage is not None:
+                usage = resp.usage
+                ptd = getattr(usage, "prompt_tokens_details", None) or {}
+                cache_hit = getattr(usage, "prompt_cache_hit_tokens", None)
+                cache_miss = getattr(usage, "prompt_cache_miss_tokens", None)
+                if cache_hit is None and isinstance(ptd, dict):
+                    cache_hit = ptd.get("cached_tokens") or ptd.get("prompt_cache_hit_tokens")
+                if cache_miss is None and isinstance(ptd, dict):
+                    cache_miss = ptd.get("prompt_cache_miss_tokens")
+                usage_log.append({
+                    "call": "seo",
+                    "reasoning": "disabled",
+                    "prompt_tokens": getattr(usage, "prompt_tokens", 0) or 0,
+                    "prompt_cache_hit_tokens": int(cache_hit or 0),
+                    "prompt_cache_miss_tokens": int(cache_miss or 0),
+                    "completion_tokens": getattr(usage, "completion_tokens", 0) or 0,
+                    "reasoning_tokens": (
+                        getattr(
+                            getattr(usage, "completion_tokens_details", None),
+                            "reasoning_tokens",
+                            0,
+                        )
+                        or 0
+                    ),
+                    "total_tokens": getattr(usage, "total_tokens", 0) or 0,
+                })
         except Exception as e:  # noqa: BLE001
             logger.warning(
                 "SEO generation failed for %r (attempt %d/%d): %s",
@@ -490,7 +519,9 @@ def _accuracy_task_tail(visibility: str) -> str:
             "     conflicts with the research.\n"
             "Only flag claims the article treats as true facts. Do not flag general "
             "prose or reasonable color. Do not flag facts that ARE present in the "
-            "research.\n\n"
+            "research. When uncertain whether a claim is supported, PREFER PASSING: "
+            "never emit a finding for a claim you determine is actually supported, "
+            "and flag only genuinely unsupported or wrong hard facts.\n\n"
             "This is a PREMIUM article for paying members. It MAY reference Earl's "
             "picks on games and give betting advice and opinions. Therefore betting "
             "picks, predictions, and recommendations are ALLOWED and are NOT a finding. "
@@ -516,7 +547,9 @@ def _accuracy_task_tail(visibility: str) -> str:
         "     conflicts with the research.\n"
         "Only flag claims the article treats as true facts. Do not flag general "
         "prose or reasonable color. Do not flag facts that ARE present in the "
-        "research.\n\n"
+        "research. When uncertain whether a claim is supported, PREFER PASSING: "
+        "never emit a finding for a claim you determine is actually supported, "
+        "and flag only genuinely unsupported or wrong hard facts.\n\n"
         "NO-PREDICTIONS RULE:\n"
         "This is an editorial article that goes on the public site. It must NOT "
         "make any betting prediction, pick, or recommendation. Verify the article "
@@ -542,9 +575,12 @@ def _correction_task_tail(visibility: str) -> str:
         "You are a careful sports editor making minimal corrections to an editorial "
         "article. You only fix the EXACT problems listed below. Do not rewrite, "
         "embellish, or change anything else. Do not invent new facts, numbers, "
-        "names, or teams. Output ONLY the corrected article as a JSON object with "
-        "the same keys you were given (e.g. {\"title\": \"...\", \"summary\": "
-        "\"...\", \"content\": \"...\"}), no markdown.\n\n"
+        "names, or teams. Return the EXACT SAME article with ONLY the listed fixes "
+        "applied — keep every sentence you don't need to change exactly as-is, same "
+        "wording, same structure, same length and voice. Only touch the specific "
+        "claims called out by the findings. Output the corrected article as a JSON "
+        "object with the same keys you were given (e.g. {\"title\": \"...\", "
+        "\"summary\": \"...\", \"content\": \"...\"}), no markdown.\n\n"
         "RULES BY FINDING TYPE:\n"
         "- 'fact-not-in-research': the claim cannot be traced to the research. "
         "  DELETE the claim (the whole sentence is best). Do NOT keep, rephrase, "
@@ -604,6 +640,7 @@ async def _write_original_article(
     visibility: str = "public",
     reasoning: str | None = None,
     word_count: tuple | None = None,
+    usage_log: list[dict[str, Any]] | None = None,
 ) -> tuple[str, str, int]:
     """Write an original article using the deterministic research brief.
 
@@ -611,7 +648,8 @@ async def _write_original_article(
     accuracy check reuses, so DeepSeek serves all the research tokens from its
     input cache (matching bytes after the system message) on the accuracy call.
 
-    Returns (title, content, tokens_used).
+    Returns (title, content, tokens_used). When usage_log is provided, appends
+    a per-call entry (with cache hit/miss token split) so cost can be audited.
     """
     if not settings.deepseek_api_key:
         return f"{sport.upper()} Original Article", "", 0
@@ -661,6 +699,33 @@ async def _write_original_article(
     raw = resp.choices[0].message.content or ""
     tokens = resp.usage.total_tokens if resp.usage else 0
 
+    if usage_log is not None and resp.usage is not None:
+        usage = resp.usage
+        ptd = getattr(usage, "prompt_tokens_details", None) or {}
+        cache_hit = getattr(usage, "prompt_cache_hit_tokens", None)
+        cache_miss = getattr(usage, "prompt_cache_miss_tokens", None)
+        if cache_hit is None and isinstance(ptd, dict):
+            cache_hit = ptd.get("cached_tokens") or ptd.get("prompt_cache_hit_tokens")
+        if cache_miss is None and isinstance(ptd, dict):
+            cache_miss = ptd.get("prompt_cache_miss_tokens")
+        usage_log.append({
+            "call": "write",
+            "reasoning": reasoning or "low",
+            "prompt_tokens": getattr(usage, "prompt_tokens", 0) or 0,
+            "prompt_cache_hit_tokens": int(cache_hit or 0),
+            "prompt_cache_miss_tokens": int(cache_miss or 0),
+            "completion_tokens": getattr(usage, "completion_tokens", 0) or 0,
+            "reasoning_tokens": (
+                getattr(
+                    getattr(usage, "completion_tokens_details", None),
+                    "reasoning_tokens",
+                    0,
+                )
+                or 0
+            ),
+            "total_tokens": getattr(usage, "total_tokens", 0) or 0,
+        })
+
     title = ""
     m = re.search(r"^#\s+(.+)$", raw, flags=re.MULTILINE)
     if m:
@@ -671,7 +736,12 @@ async def _write_original_article(
 
 
 async def _verify_original_accuracy(
-    title: str, content: str, research_trace: list, visibility: str = "public", research_brief: str | None = None
+    title: str,
+    content: str,
+    research_trace: list,
+    visibility: str = "public",
+    research_brief: str | None = None,
+    usage_log: list[dict[str, Any]] | None = None,
 ) -> tuple[dict, int]:
     """Post-draft fact-check of an original article against its research trace.
 
@@ -721,9 +791,40 @@ async def _verify_original_accuracy(
             ],
             temperature=0.0,
             max_tokens=1600,
+            response_format={"type": "json_object"},
+            # Match the writeups generator: the accuracy check reasons lightly
+            # so it can actually trace claims to the research (incl. the
+            # enrichment section), instead of running hidden CoT at default.
+            extra_body={"thinking": {"type": "enabled"}, "reasoning_effort": "minimal"},
         )
         raw = resp.choices[0].message.content or ""
         tokens = resp.usage.total_tokens if resp.usage else 0
+        if usage_log is not None and resp.usage is not None:
+            usage = resp.usage
+            ptd = getattr(usage, "prompt_tokens_details", None) or {}
+            cache_hit = getattr(usage, "prompt_cache_hit_tokens", None)
+            cache_miss = getattr(usage, "prompt_cache_miss_tokens", None)
+            if cache_hit is None and isinstance(ptd, dict):
+                cache_hit = ptd.get("cached_tokens") or ptd.get("prompt_cache_hit_tokens")
+            if cache_miss is None and isinstance(ptd, dict):
+                cache_miss = ptd.get("prompt_cache_miss_tokens")
+            usage_log.append({
+                "call": f"accuracy_{visibility}",
+                "reasoning": "minimal",
+                "prompt_tokens": getattr(usage, "prompt_tokens", 0) or 0,
+                "prompt_cache_hit_tokens": int(cache_hit or 0),
+                "prompt_cache_miss_tokens": int(cache_miss or 0),
+                "completion_tokens": getattr(usage, "completion_tokens", 0) or 0,
+                "reasoning_tokens": (
+                    getattr(
+                        getattr(usage, "completion_tokens_details", None),
+                        "reasoning_tokens",
+                        0,
+                    )
+                    or 0
+                ),
+                "total_tokens": getattr(usage, "total_tokens", 0) or 0,
+            })
     except Exception as e:  # noqa: BLE001
         logger.warning("Original-article accuracy check failed: %s", e)
         return ({"passed": False, "error": str(e)[:300]}, 0)
@@ -734,28 +835,21 @@ async def _verify_original_accuracy(
     passed = bool(data.get("passed"))
     findings = data.get("findings")
     if not isinstance(findings, list):
-        # Fallback: run a lightweight local no-predictions test if parse failed.
-        # This fallback only flags betting/prediction language for PUBLIC
-        # articles. Premium articles are allowed to discuss and recommend bets.
-        artifacts = [
-            "spread", "against the spread", "ats ", "moneyline", "over/under",
-            "over under", "pick:", "pick: ", "bet ", "to cover", "projected score",
-            "final score", "win outright", "fade ", "tail "
-        ]
+        # The LLM is the sole accuracy/betting judge — there is deliberately NO
+        # local Python fallback. If the model did not return a proper "findings"
+        # array, that is a real parsing/contract bug worth surfacing, not
+        # something to paper over with eager substring heuristics. Fail loudly so
+        # it gets fixed at the source.
         findings = []
-        if (visibility or "public").lower() != "premium":
-            lowered = (title + " " + (content or "")).lower()
-            for art in artifacts:
-                if art.strip() in lowered:
-                    findings.append(
-                        {
-                            "type": "prediction",
-                            "claim": "",
-                            "section": "body",
-                            "detail": f"Possible betting/prediction language detected: \"{art}\"",
-                        }
-                    )
-        passed = len(findings) == 0 and bool(data.get("passed", True))
+        if not passed or not data:
+            logger.warning(
+                "Original-article accuracy: LLM did not return a valid findings "
+                "array (got %r, passed=%s). Treated as not-passed so the draft is "
+                "not published on an unverified accuracy result.",
+                type(data.get("findings")).__name__ if data else None,
+                passed,
+            )
+            passed = False
     return (
         {"passed": passed, "findings": findings, "raw": raw, "tokens": tokens},
         tokens,
@@ -808,13 +902,18 @@ async def _correct_original_article(
     findings: list,
     visibility: str = "public",
     research_brief: str | None = None,
-) -> dict | None:
+    usage_log: list[dict[str, Any]] | None = None,
+) -> tuple[dict | None, int]:
     """Ask the LLM to fix the flagged accuracy findings in a draft article.
 
-    Returns {"title", "summary", "content"} or None on failure.
+    Thinking is DISABLED here (corrections don't need chain-of-thought — they
+    just apply the listed fixes in place), matching the writeups generator.
+
+    Returns ({"title", "summary", "content"}, tokens_used) or (None, 0) on
+    failure.
     """
     if not settings.deepseek_api_key:
-        return None
+        return None, 0
     client = AsyncOpenAI(
         api_key=settings.deepseek_api_key,
         base_url=f"{settings.deepseek_base_url.rstrip('/')}/v1",
@@ -843,29 +942,58 @@ async def _correct_original_article(
                     f"{_correction_task_tail(visibility)}\n\n"
                     "=== PROBLEMS TO FIX ===\n"
                     f"{findings_text}\n\n"
-                    "=== CURRENT ARTICLE (correct this) ===\n"
+                    "=== CURRENT ARTICLE (correct this, do not rewrite) ===\n"
                     f"{article_json}",
                 },
             ],
             temperature=0.0,
             max_tokens=6000,
+            # Corrections apply the listed fixes in place — no chain-of-thought.
+            extra_body={"thinking": {"type": "disabled"}},
         )
         raw = resp.choices[0].message.content or ""
+        tokens = resp.usage.total_tokens if resp.usage else 0
+        if usage_log is not None and resp.usage is not None:
+            usage = resp.usage
+            ptd = getattr(usage, "prompt_tokens_details", None) or {}
+            cache_hit = getattr(usage, "prompt_cache_hit_tokens", None)
+            cache_miss = getattr(usage, "prompt_cache_miss_tokens", None)
+            if cache_hit is None and isinstance(ptd, dict):
+                cache_hit = ptd.get("cached_tokens") or ptd.get("prompt_cache_hit_tokens")
+            if cache_miss is None and isinstance(ptd, dict):
+                cache_miss = ptd.get("prompt_cache_miss_tokens")
+            usage_log.append({
+                "call": "correction",
+                "reasoning": "disabled",
+                "prompt_tokens": getattr(usage, "prompt_tokens", 0) or 0,
+                "prompt_cache_hit_tokens": int(cache_hit or 0),
+                "prompt_cache_miss_tokens": int(cache_miss or 0),
+                "completion_tokens": getattr(usage, "completion_tokens", 0) or 0,
+                "reasoning_tokens": (
+                    getattr(
+                        getattr(usage, "completion_tokens_details", None),
+                        "reasoning_tokens",
+                        0,
+                    )
+                    or 0
+                ),
+                "total_tokens": getattr(usage, "total_tokens", 0) or 0,
+            })
     except Exception as e:  # noqa: BLE001
         logger.warning("Original-article correction failed: %s", e)
-        return None
+        return None, 0
 
     data = _extract_seo_json(raw)
     if not isinstance(data, dict):
-        return None
+        return None, tokens
     corrected_title = (str(data.get("title") or "").strip()) or title
     corrected_summary = (str(data.get("summary") or "").strip()) or summary
     corrected_content = str(data.get("content") or "").strip() or content
-    return {
+    return ({
         "title": corrected_title,
         "summary": corrected_summary,
         "content": corrected_content,
-    }
+    }, tokens)
 
 
 # ──────────────────────────────────────────────
@@ -909,6 +1037,10 @@ async def generate_original_article(
         {"role": "user", "content": req.instructions},
     ]
 
+    # Per-call token & cost breakdown across research / write / accuracy /
+    # correction phases (persisted to usage_json for the admin cost display).
+    usage_log: list[dict[str, Any]] = []
+
     try:
         # Phase A: research-only tool loop. Returns (digest, tokens, full_messages).
         _digest, research_tokens, full_messages = await engine.research_and_answer(
@@ -917,6 +1049,14 @@ async def generate_original_article(
             return_full_messages=True, research_only=True,
         )
         tokens = research_tokens
+        # Research is a multi-tool loop (no single prompt/completion split);
+        # record the aggregate for the cost breakdown so every phase is visible.
+        usage_log.append({
+            "call": "research",
+            "reasoning": reasoning or "low",
+            "total_tokens": int(research_tokens or 0),
+            "note": "aggregate of multi-turn research loop (no per-call split)",
+        })
     except Exception as e:  # noqa: BLE001
         logger.exception("Original-article research failed for %s", sport)
         raise HTTPException(status_code=500, detail=f"Article research failed: {e}")
@@ -932,7 +1072,7 @@ async def generate_original_article(
         # Phase B: single write call whose user message starts with the brief.
         title, answer, write_tokens = await _write_original_article(
             sport, engine, req.instructions, research_brief,
-            req.visibility, reasoning, req.word_count,
+            req.visibility, reasoning, req.word_count, usage_log=usage_log,
         )
         tokens += write_tokens
     except Exception as e:  # noqa: BLE001
@@ -963,7 +1103,7 @@ async def generate_original_article(
     # above; the same brief is reused for accuracy + every correction call so
     # DeepSeek serves the research from input cache.)
     accuracy_check, accuracy_tokens = await _verify_original_accuracy(
-        title, answer, research_trace, req.visibility, research_brief=research_brief
+        title, answer, research_trace, req.visibility, research_brief=research_brief, usage_log=usage_log
     )
     rejection_history = []
     retries_used = 0
@@ -979,9 +1119,10 @@ async def generate_original_article(
             "content": answer,
             "summary": summary,
         })
-        corrected = await _correct_original_article(
-            title, answer, summary, research_trace, accuracy_check.get("findings") or [], req.visibility, research_brief
+        corrected, corrected_tokens = await _correct_original_article(
+            title, answer, summary, research_trace, accuracy_check.get("findings") or [], req.visibility, research_brief, usage_log=usage_log
         )
+        tokens += corrected_tokens
         retries_used += 1
         if not corrected:
             break
@@ -989,7 +1130,7 @@ async def generate_original_article(
         answer = corrected["content"]
         summary = corrected["summary"]
         accuracy_check, accuracy_tokens = await _verify_original_accuracy(
-            title, answer, research_trace, req.visibility, research_brief=research_brief
+            title, answer, research_trace, req.visibility, research_brief=research_brief, usage_log=usage_log
         )
         has_findings = bool(accuracy_check.get("findings")) and not accuracy_check.get("skipped")
     accuracy_check["retries_used"] = retries_used
@@ -999,7 +1140,7 @@ async def generate_original_article(
     # Build SEO meta for the final (post-correction) article and persist it now,
     # so every generated article has seo_description/seo_keywords saved (not just
     # after a later publish). _generate_seo retries up to MAX_SEO_ATTEMPTS.
-    seo_meta = await _generate_seo(title, summary, answer)
+    seo_meta = await _generate_seo(title, summary, answer, usage_log=usage_log)
 
     insert = await db.execute(
         text(
@@ -1009,14 +1150,14 @@ async def generate_original_article(
                  created_at, updated_at, prompt_json, research_json, author, tokens_used,
                  reasoning, word_min, word_max, word_count, teams,
                  accuracy_check, accuracy_check_tokens, rejection_history, visibility,
-                 seo_description, seo_keywords)
+                 seo_description, seo_keywords, usage_json)
             VALUES
                 (:sport, :title, :summary, :content, :instructions, 'draft', :slug,
                  :now, :now, CAST(:prompt AS jsonb), CAST(:research AS jsonb),
                  :author, :tokens_used, :reasoning, :word_lo, :word_hi, :word_count,
                  CAST(:teams AS jsonb),
                  CAST(:accuracy AS jsonb), :accuracy_tokens, CAST(:rej AS jsonb), :visibility,
-                 :seo_description, :seo_keywords)
+                 :seo_description, :seo_keywords, CAST(:usage AS jsonb))
             RETURNING id, sport, title, summary, content, instructions, status, slug,
                       created_at, author, tokens_used, visibility,
                       seo_description, seo_keywords
@@ -1045,6 +1186,7 @@ async def generate_original_article(
             "visibility": (req.visibility or "public").lower(),
             "seo_description": (seo_meta.get("seo_description") or "")[:500],
             "seo_keywords": (seo_meta.get("seo_keywords") or "")[:500],
+            "usage": json.dumps(usage_log or []),
         },
     )
     draft_row = insert.mappings().first()
@@ -1536,7 +1678,7 @@ async def admin_get_original_article(
                    published_at, created_at, updated_at, prompt_json, research_json,
                    author, tokens_used, reasoning, word_min, word_max, word_count,
                    seo_description, seo_keywords, visibility,
-                   accuracy_check, accuracy_check_tokens, rejection_history
+                   accuracy_check, accuracy_check_tokens, rejection_history, usage_json
             FROM public.original_articles
             WHERE id = :aid AND sport = :sport
             """
@@ -1549,6 +1691,7 @@ async def admin_get_original_article(
     data = dict(row)
     data["accuracy_check"] = _original_normalize_json(data.get("accuracy_check"))
     data["rejection_history"] = _original_normalize_json(data.get("rejection_history")) or []
+    data["usage_log"] = _original_normalize_json(data.get("usage_json")) or []
     return {"article": data}
 
 

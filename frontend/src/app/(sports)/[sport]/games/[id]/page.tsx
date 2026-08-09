@@ -6,6 +6,7 @@ import { useSeo } from "@/components/Seo";
 import NBAGameTabs from "@/components/NBAGameTabs";
 import MLBGameTabs from "@/components/MLBGameTabs";
 import NFLGameTabs, { BettingLinesCard } from "@/components/NFLGameTabs";
+import EarlsPicksPanel from "@/components/EarlsPicksPanel";
 
 
 // ── Shared Types ─────────────────────────────────────────────
@@ -498,6 +499,8 @@ export default function GameDetailPage() {
             over_under={over_under}
             homeML={homeML}
             awayML={awayML}
+            prediction={predForTabs}
+            isFinal={isNflFinal}
           />
         );
       })()}
@@ -618,10 +621,10 @@ function MLBClassicPage({ gameId, backHref }: { gameId: string | undefined; back
 
       {/* Betting Lines - shown whenever available */}
       {betting_lines?.length > 0 && (
-        <div className="border border-white/10 rounded-xl p-4 bg-white/5">
+        <div className="rounded-xl py-2">
           <div className="text-xs text-gray-500 uppercase tracking-wider mb-3">Betting Lines</div>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <div className="text-center p-3 rounded-lg bg-white/[0.03]">
+          <div className="grid grid-cols-1 md:grid-cols-3 divide-y md:divide-y-0 md:divide-x divide-white/10">
+            <div className="text-center py-3 md:px-3">
               <div className="text-[10px] text-gray-500 uppercase">Run Line</div>
               <div className="text-sm mt-1">
                 {betting_lines[0]?.spread != null ? (
@@ -635,11 +638,11 @@ function MLBClassicPage({ gameId, backHref }: { gameId: string | undefined; back
                 ) : "-"}
               </div>
             </div>
-            <div className="text-center p-3 rounded-lg bg-white/[0.03]">
+            <div className="text-center py-3 md:px-3">
               <div className="text-[10px] text-gray-500 uppercase">Moneyline</div>
               <div className="text-sm mt-1"><span className="text-earl-400">{game.away_team}</span> {formatOdds(betting_lines[0]?.away_moneyline)}<span className="text-gray-600 mx-2">|</span><span className="text-gray-400">{game.home_team}</span> {formatOdds(betting_lines[0]?.home_moneyline)}</div>
             </div>
-            <div className="text-center p-3 rounded-lg bg-white/[0.03]">
+            <div className="text-center py-3 md:px-3">
               <div className="text-[10px] text-gray-500 uppercase">Over/Under</div>
               <div className="text-sm mt-1 font-semibold">
                 {betting_lines[0]?.over_under != null ? (
@@ -652,6 +655,66 @@ function MLBClassicPage({ gameId, backHref }: { gameId: string | undefined; back
               </div>
             </div>
           </div>
+
+          {pick_card && (
+            <EarlsPicksPanel
+              title="Earl's Picks"
+              isFinal={!!(game.home_score != null && game.away_score != null)}
+              predicted={
+                pick_card.predictions?.home_runs != null
+                  ? {
+                      awayLabel: game.away_team,
+                      homeLabel: game.home_team,
+                      awayScore: pick_card.predictions.away_runs,
+                      homeScore: pick_card.predictions.home_runs,
+                      total: pick_card.predictions.total,
+                      margin: pick_card.predictions.margin,
+                    }
+                  : null
+              }
+              actual={
+                pick_card.actual?.home_runs != null && game.home_score != null
+                  ? {
+                      awayLabel: game.away_team,
+                      homeLabel: game.home_team,
+                      awayScore: pick_card.actual.away_runs,
+                      homeScore: pick_card.actual.home_runs,
+                      total: pick_card.actual.total,
+                      margin: pick_card.actual.margin,
+                    }
+                  : null
+              }
+              items={[
+                {
+                  label: "Run Line",
+                  pick: pick_card.picks?.run_line && pick_card.picks.run_line !== "-" ? pick_card.picks.run_line.toUpperCase() : "—",
+                  ev: pick_card.expected_value?.rl ?? null,
+                  line: pick_card.lines?.run_line != null ? `Run Line ${pick_card.lines.run_line}` : null,
+                  result: pick_card.results?.run_line || null,
+                  pickColor: "text-amber-400",
+                },
+                {
+                  label: "Over/Under",
+                  pick: pick_card.picks?.over_under && pick_card.picks.over_under !== "-" ? pick_card.picks.over_under.toUpperCase() : "—",
+                  ev: pick_card.expected_value?.ou ?? null,
+                  line: pick_card.lines?.over_under != null ? `O/U ${pick_card.lines.over_under}` : null,
+                  result: pick_card.results?.over_under || null,
+                  pickColor: "text-yellow-400",
+                },
+                {
+                  label: "Moneyline",
+                  pick: pick_card.picks?.moneyline && pick_card.picks.moneyline !== "-" ? pick_card.picks.moneyline.toUpperCase() : "—",
+                  ev: pick_card.expected_value?.ml ?? null,
+                  line:
+                    pick_card.lines?.home_moneyline != null
+                      ? `ML ${formatOdds(pick_card.lines.away_moneyline)} | ${formatOdds(pick_card.lines.home_moneyline)}`
+                      : null,
+                  result: pick_card.results?.moneyline || null,
+                  pickColor: "text-cyan-400",
+                },
+              ]}
+            />
+          )}
         </div>
       )}
 
@@ -693,7 +756,6 @@ function MLBClassicPage({ gameId, backHref }: { gameId: string | undefined; back
         {/* Under-lineups game tabs: Box Score, Game Summary, Earl's Picks, Detailed Analysis, Detailed Stats */}
         <MLBGameTabs
           gameId={game.id}
-          pickCard={pick_card}
           game={game}
           formatOdds={formatOdds}
           boxscore={boxscore}

@@ -56,7 +56,7 @@ const DEFAULT_INSTRUCTIONS: Record<Sport, string> = {
   mlb: "Write an original MLB article previewing this week's slate of games. Cover pitching matchups, hot/cold lineups, injuries, and betting angles (run line/OU). Use research to back up your points.",
 };
 
-type Tab = "create" | "edit";
+type Tab = "create" | "edit" | "ideas";
 
 export default function AdminOriginalArticles() {
   useSeo({ title: "Original Articles — Admin — Earl Knows Ball" });
@@ -90,10 +90,12 @@ export default function AdminOriginalArticles() {
   const [editing, setEditing] = useState<Article | null>(null);
   const [editRejectionHistory, setEditRejectionHistory] = useState<any[]>([]);
   const [editAccuracyCheck, setEditAccuracyCheck] = useState<any>(null);
+  const [editUsageLog, setEditUsageLog] = useState<any[]>([]);
   const [editTitle, setEditTitle] = useState("");
   const [editContent, setEditContent] = useState("");
   const [editAuthor, setEditAuthor] = useState("Earl");
   const [saving, setSaving] = useState(false);
+  const [autoSaving, setAutoSaving] = useState(false);
   const [editMarkdown, setEditMarkdown] = useState(false);
   const [editInstructions, setEditInstructions] = useState("");
   const [editSeoDesc, setEditSeoDesc] = useState("");
@@ -269,6 +271,7 @@ export default function AdminOriginalArticles() {
         const art = d.article || d;
         setEditRejectionHistory(Array.isArray(art.rejection_history) ? art.rejection_history : []);
         setEditAccuracyCheck(art.accuracy_check ?? null);
+        setEditUsageLog(Array.isArray(art.usage_log) ? art.usage_log : []);
         if (art.visibility) setEditVisibility(art.visibility);
       }
     } catch {}
@@ -390,6 +393,40 @@ export default function AdminOriginalArticles() {
     }
   };
 
+  /** Save the currently-edited article as a continuously-generated template. */
+  const handleSaveAsContinuous = async () => {
+    if (!editing) return;
+    if (!editTitle.trim()) {
+      alert("Give the article a title before saving as a continuous template.");
+      return;
+    }
+    setAutoSaving(true);
+    try {
+      const res = await fetch(`/api/admin/auto-generation/from-article`, {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify({
+          sport: editing.sport,
+          article_id: editing.id,
+          title: editTitle.trim(),
+          description: editSeoDesc.trim() || null,
+          instructions: editInstructions.trim() || null,
+          cadence: "daily",
+          scope_type: "sport",
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.detail || `HTTP ${res.status}`);
+      alert(`✅ Saved as a continuous template (id ${data?.id}).
+
+Manage it under Admin → Auto Generation.`);
+    } catch (e: any) {
+      alert(`Could not save as continuous template: ${e.message}`);
+    } finally {
+      setAutoSaving(false);
+    }
+  };
+
   const handleToggleStatus = async (a: Article) => {
     const next = a.status === "published" ? "draft" : "published";
     if (!confirm(`Move "${a.title.slice(0, 60)}..." to ${next === "published" ? "published" : "draft"}?`))
@@ -497,10 +534,11 @@ export default function AdminOriginalArticles() {
         </p>
       </div>
 
-      {/* Top-level tabs: Create Article / Edit Articles */}
+      {/* Top-level tabs: Create Article / Edit Articles / Article Ideas */}
       <div className="flex gap-1 mb-6 bg-white/[0.03] border border-white/10 rounded-lg p-1 w-fit">
         {tabButton("create", "Create Article")}
         {tabButton("edit", "Edit Articles")}
+        {tabButton("ideas", "Article Ideas")}
       </div>
 
       {/* Sport tabs (shared) */}
@@ -645,7 +683,7 @@ export default function AdminOriginalArticles() {
             </div>
           )}
         </>
-      ) : (
+      ) : tab === "edit" ? (
         /* ── Edit Articles ── */
         <div>
           {loading ? (
@@ -799,6 +837,14 @@ export default function AdminOriginalArticles() {
                             className="px-3 py-1.5 rounded-md bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-sm font-medium"
                           >
                             {saving ? "Saving…" : "Save"}
+                          </button>
+                          <button
+                            onClick={handleSaveAsContinuous}
+                            disabled={autoSaving}
+                            title="Save this article as a continuously-generated template (shows up on the Auto Generation page)."
+                            className="px-3 py-1.5 rounded-md bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-xs font-medium"
+                          >
+                            {autoSaving ? "Adding…" : "♻ Save as Continuous"}
                           </button>
                           <button
                             onClick={handleRegenTitle}
@@ -976,6 +1022,93 @@ export default function AdminOriginalArticles() {
                           </div>
                         )
                       }
+                      {/* ── Usage Log (per-call token & cost breakdown) ── */}
+                      {editUsageLog.length > 0 && (
+                        <div className="mt-3 rounded-md border border-white/10 bg-black/25 p-3">
+                          <div className="text-xs font-medium text-gray-300 mb-2">
+                            Usage Log — cost breakdown
+                          </div>
+                          <div className="space-y-1.5">
+                            {editUsageLog.map((c: any, i: number) => {
+                              let label = String(c.call || "").replace(
+                                /_/g,
+                                " "
+                              );
+                              const reasoning =
+                                c.reasoning === "disabled"
+                                  ? "thinking off"
+                                  : `reasoning ${c.reasoning || "default"}`;
+                              const comp = Number(c.completion_tokens || 0);
+                              const reas = Number(c.reasoning_tokens || 0);
+                              const outTok = comp + reas;
+                              const outCost = (outTok / 1_000_000) * 0.28;
+                              const hit = Number(c.prompt_cache_hit_tokens || 0);
+                              const miss = Number(c.prompt_cache_miss_tokens || 0);
+                              const inCost =
+                                (hit / 1_000_000) * 0.0028 +
+                                (miss / 1_000_000) * 0.14;
+                              const total = outCost + inCost;
+                              return (
+                                <div
+                                  key={i}
+                                  className="rounded-md border border-white/10 bg-black/30 px-2.5 py-2 text-[11px]"
+                                >
+                                  <div className="flex items-center justify-between flex-wrap gap-1">
+                                    <span className="font-medium capitalize text-gray-200">
+                                      {label}
+                                    </span>
+                                    <span className="text-gray-500">{reasoning}</span>
+                                  </div>
+                                  <div className="mt-1 grid grid-cols-2 sm:grid-cols-4 gap-x-4 gap-y-0.5 text-gray-400">
+                                    <span title="Cached input tokens">
+                                      cached {hit.toLocaleString()}
+                                    </span>
+                                    <span title="Uncached input tokens">
+                                      input {miss.toLocaleString()}
+                                    </span>
+                                    <span title="Output tokens">
+                                      output {outTok.toLocaleString()}
+                                    </span>
+                                    <span className="text-gray-200 font-medium">
+                                      ${total.toFixed(4)}
+                                    </span>
+                                  </div>
+                                  {c.total_tokens !== undefined && (
+                                    <div className="mt-0.5 text-gray-500">
+                                      total {Number(c.total_tokens).toLocaleString()}{" "}
+                                      tokens
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                          <div className="mt-2 pt-2 border-t border-white/10 flex justify-end">
+                            <span className="text-xs font-medium text-gray-200">
+                              Estimated total: $
+                              {editUsageLog
+                                .reduce((sum, c: any) => {
+                                  const comp = Number(c.completion_tokens || 0);
+                                  const reas = Number(c.reasoning_tokens || 0);
+                                  const outTok = comp + reas;
+                                  const hit = Number(
+                                    c.prompt_cache_hit_tokens || 0
+                                  );
+                                  const miss = Number(
+                                    c.prompt_cache_miss_tokens || 0
+                                  );
+                                  return (
+                                    sum +
+                                    (outTok / 1_000_000) * 0.28 +
+                                    (hit / 1_000_000) * 0.0028 +
+                                    (miss / 1_000_000) * 0.14
+                                  );
+                                }, 0)
+                                .toFixed(4)}
+                            </span>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   )}
                 </li>
@@ -983,6 +1116,457 @@ export default function AdminOriginalArticles() {
             </ul>
           )}
         </div>
+      ) : (
+        <ArticleIdeasPanel
+          sport={sport}
+          onUsePrompt={(prompt, ideaSport) => {
+            if (SPORT_LABEL[ideaSport as Sport]) setSport(ideaSport as Sport);
+            setInstructions(prompt);
+            setTab("create");
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+interface IdeaItemType {
+  id: number;
+  sport: Sport;
+  title: string;
+  description: string | null;
+  prompt: string | null;
+  team_id: number | null;
+  team_abbr: string | null;
+  team_name: string | null;
+  status: "active" | "used" | "archived";
+  used_at: string | null;
+  used_article_id: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+function ArticleIdeasPanel({
+  sport,
+  onUsePrompt,
+}: {
+  sport: Sport;
+  onUsePrompt: (prompt: string, ideaSport: string) => void;
+}) {
+  const [instructions, setInstructions] = useState("");
+  const [generating, setGenerating] = useState(false);
+  const [quickMode, setQuickMode] = useState(false);
+  const [storing, setStoring] = useState(false);
+  const [ideas, setIdeas] = useState<IdeaItemType[]>([]);
+  const [loadingIdeas, setLoadingIdeas] = useState(false);
+  const [draftIdeas, setDraftIdeas] = useState<
+    Array<{
+      title: string;
+      description: string | null;
+      team_id: number | null;
+      team_abbr: string | null;
+      team_name: string | null;
+    }>
+  >([]);
+  const [draftMsg, setDraftMsg] = useState<string | null>(null);
+  const [generated, setGenerated] = useState(false);
+  const [buildingId, setBuildingId] = useState<number | null>(null);
+  const [builtPrompt, setBuiltPrompt] = useState<{ id: number; prompt: string } | null>(null);
+  const [teams, setTeams] = useState<{ id: number; abbr: string; name: string }[]>([]);
+
+  // Reload stored ideas + teams whenever the sport changes.
+  useEffect(() => {
+    let cancelled = false;
+    setIdeas([]);
+    setDraftIdeas([]);
+    setGenerated(false);
+    setBuiltPrompt(null);
+    const load = async () => {
+      setLoadingIdeas(true);
+      try {
+        const [res, tRes] = await Promise.all([
+          fetch(`/api/admin/article-ideas/${sport}`, { headers: authHeaders() }),
+          fetch(`/api/admin/article-ideas/${sport}/teams`, { headers: authHeaders() }),
+        ]);
+        if (!res.ok) throw new Error((await res.json()).detail || "Failed to load ideas");
+        const data = await res.json();
+        if (!cancelled) setIdeas(data);
+        if (tRes.ok && !cancelled) setTeams(await tRes.json());
+      } catch (e: any) {
+        if (!cancelled) alert(`Could not load article ideas: ${e.message}`);
+      } finally {
+        if (!cancelled) setLoadingIdeas(false);
+      }
+    };
+    load();
+    return () => {
+      cancelled = true;
+    };
+  }, [sport]);
+
+  const generate = async () => {
+    setGenerating(true);
+    setDraftMsg(null);
+    setGenerated(false);
+    setBuiltPrompt(null);
+    try {
+      const res = await fetch(`/api/admin/article-ideas/${sport}/generate`, {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify({ instructions, count: 8, quick: quickMode }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Generation failed");
+      setDraftIdeas(data.ideas || []);
+      setGenerated(true);
+      if (!(data.ideas || []).length) setDraftMsg("LLM returned no ideas — try different instructions.");
+    } catch (e: any) {
+      alert(`Generation failed: ${e.message}`);
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  const storeAll = async () => {
+    if (!draftIdeas.length) return;
+    setStoring(true);
+    setDraftMsg(null);
+    try {
+      const res = await fetch(`/api/admin/article-ideas/${sport}/store`, {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify({ ideas: draftIdeas }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Store failed");
+      setDraftIdeas([]);
+      setGenerated(false);
+      setDraftMsg(`Stored ${data.count} idea${data.count === 1 ? "" : "s"}.`);
+      setIdeas(await (await fetch(`/api/admin/article-ideas/${sport}`, { headers: authHeaders() })).json());
+    } catch (e: any) {
+      alert(`Store failed: ${e.message}`);
+    } finally {
+      setStoring(false);
+    }
+  };
+
+  const storeOne = async (idea: (typeof draftIdeas)[number]) => {
+    setStoring(true);
+    setDraftMsg(null);
+    try {
+      const res = await fetch(`/api/admin/article-ideas/${sport}/store`, {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify({ ideas: [idea] }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Store failed");
+      setDraftIdeas((prev) => prev.filter((d) => d !== idea));
+      if (!draftIdeas.length) setGenerated(false);
+      setDraftMsg(`Saved.`);
+      setIdeas(await (await fetch(`/api/admin/article-ideas/${sport}`, { headers: authHeaders() })).json());
+    } catch (e: any) {
+      alert(`Save failed: ${e.message}`);
+    } finally {
+      setStoring(false);
+    }
+  };
+
+  const buildPrompt = async (ideaId: number) => {
+    setBuildingId(ideaId);
+    setBuiltPrompt(null);
+    try {
+      const res = await fetch(`/api/admin/article-ideas/${sport}/build-prompt`, {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify({ idea_id: ideaId }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Prompt build failed");
+      setBuiltPrompt({ id: ideaId, prompt: data.prompt });
+    } catch (e: any) {
+      alert(`Prompt build failed: ${e.message}`);
+    } finally {
+      setBuildingId(null);
+    }
+  };
+
+  // Compose a ready-to-use Create Article instruction from an idea.
+  // Uses the saved LLM prompt when present; otherwise renders a brief
+  // from the idea's title + description so the box is always populated.
+  const sendToCreate = (idea: IdeaItemType) => {
+    const brief = idea.prompt
+      ? idea.prompt
+      : [
+          `Write an article about: ${idea.title}${idea.team_name ? ` (${idea.team_name})` : ""}`,
+          idea.description || "",
+        ]
+          .filter(Boolean)
+          .join("\n\n");
+    onUsePrompt(brief, idea.sport);
+  };
+
+  const setIdeaStatus = async (idea: IdeaItemType, status: "active" | "used" | "archived") => {
+    try {
+      const res = await fetch(`/api/admin/article-ideas/${sport}/${idea.id}`, {
+        method: "PATCH",
+        headers: authHeaders(),
+        body: JSON.stringify({ status }),
+      });
+      if (!res.ok) throw new Error((await res.json()).detail || "Update failed");
+      setIdeas((prev) => prev.map((i) => (i.id === idea.id ? { ...i, status, used_at: status === "used" ? new Date().toISOString() : status === "active" ? null : i.used_at } : i)));
+    } catch (e: any) {
+      alert(`Update failed: ${e.message}`);
+    }
+  };
+
+  const deleteIdea = async (idea: IdeaItemType) => {
+    if (!confirm(`Delete idea?\n\n${idea.title}`)) return;
+    try {
+      const res = await fetch(`/api/admin/article-ideas/${sport}/${idea.id}`, {
+        method: "DELETE",
+        headers: authHeaders(),
+      });
+      if (!res.ok) throw new Error((await res.json()).detail || "Delete failed");
+      setIdeas((prev) => prev.filter((i) => i.id !== idea.id));
+    } catch (e: any) {
+      alert(`Delete failed: ${e.message}`);
+    }
+  };
+
+  const statusPill = (status: string, usedAt: string | null) => {
+    if (status === "used")
+      return (
+        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-green-500/20 text-green-300 border border-green-500/30">
+          ✓ Used{usedAt ? ` ${new Date(usedAt).toLocaleDateString()}` : ""}
+        </span>
+      );
+    if (status === "archived")
+      return (
+        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-gray-500/20 text-gray-400 border border-gray-500/30">
+          Archived
+        </span>
+      );
+    return (
+      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-blue-500/20 text-blue-300 border border-blue-500/30">
+        Active
+      </span>
+    );
+  };
+
+  const renderIdea = (idea: IdeaItemType) => (
+    <li
+      key={idea.id}
+      className={`px-4 py-3 border border-white/10 rounded-lg bg-white/[0.02] ${
+        idea.status === "archived" ? "opacity-60" : ""
+      }`}
+    >
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-sm font-medium text-white">{idea.title}</span>
+            {idea.team_name && (
+              <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
+                🏷 {idea.team_name}
+              </span>
+            )}
+            {statusPill(idea.status, idea.used_at)}
+          </div>
+          {idea.description && <p className="text-sm text-gray-400 mt-1">{idea.description}</p>}
+          {idea.prompt && (
+            <details className="mt-2">
+              <summary className="text-xs text-gray-500 cursor-pointer hover:text-gray-300">
+                View saved prompt ({idea.prompt.length} chars)
+              </summary>
+              <pre className="mt-2 text-xs text-gray-300 whitespace-pre-wrap bg-black/25 border border-white/10 rounded-md p-3">
+                {idea.prompt}
+              </pre>
+            </details>
+          )}
+          {builtPrompt && builtPrompt.id === idea.id && (
+            <div className="mt-2 border border-emerald-500/30 bg-emerald-500/5 rounded-md p-3">
+              <div className="flex items-center justify-between mb-2 gap-2">
+                <span className="text-xs font-medium text-emerald-300">Generated prompt ready</span>
+                <button
+                  onClick={() => onUsePrompt(builtPrompt.prompt, sport)}
+                  className="text-xs px-2 py-1 rounded-md bg-emerald-600 hover:bg-emerald-500 text-white font-medium"
+                >
+                  Use in Create Article →
+                </button>
+              </div>
+              <pre className="text-xs text-gray-200 whitespace-pre-wrap">{builtPrompt.prompt}</pre>
+            </div>
+          )}
+        </div>
+        <div className="flex flex-col gap-1 shrink-0">
+          <button
+            onClick={() => sendToCreate(idea)}
+            className="text-xs px-2 py-1 rounded-md border border-emerald-500/40 bg-emerald-600/20 hover:bg-emerald-600/40 text-emerald-300 font-medium"
+          >
+            To Create Article →
+          </button>
+          <button
+            onClick={() => buildPrompt(idea.id)}
+            disabled={buildingId === idea.id}
+            className="text-xs px-2 py-1 rounded-md bg-blue-600 hover:bg-blue-500 text-white font-medium disabled:opacity-50"
+          >
+            {buildingId === idea.id ? "Building…" : "Build prompt"}
+          </button>
+          {idea.status !== "used" && (
+            <button
+              onClick={() => setIdeaStatus(idea, "used")}
+              className="text-xs px-2 py-1 rounded-md bg-green-600 hover:bg-green-500 text-white font-medium"
+            >
+              Mark used
+            </button>
+          )}
+          {idea.status === "archived" ? (
+            <button
+              onClick={() => setIdeaStatus(idea, "active")}
+              className="text-xs px-2 py-1 rounded-md bg-gray-600 hover:bg-gray-500 text-white"
+            >
+              Restore
+            </button>
+          ) : (
+            <button
+              onClick={() => setIdeaStatus(idea, "archived")}
+              className="text-xs px-2 py-1 rounded-md bg-gray-700 hover:bg-gray-600 text-gray-200"
+            >
+              Archive
+            </button>
+          )}
+          <button
+            onClick={() => deleteIdea(idea)}
+            className="text-xs px-2 py-1 rounded-md bg-red-900/40 hover:bg-red-800/60 text-red-300 border border-red-500/20"
+          >
+            Delete
+          </button>
+        </div>
+      </div>
+    </li>
+  );
+
+  return (
+    <div>
+      {/* Brainstorm box */}
+      <div className="border border-white/10 rounded-lg p-4 mb-4 bg-white/[0.02]">
+        <h2 className="text-sm font-semibold text-gray-200 mb-1">
+          Brainstorm article ideas — {SPORT_LABEL[sport]}
+        </h2>
+        <p className="text-xs text-gray-500 mb-3">
+          Ask the LLM to come up with article ideas. It first researches our news database,
+          standings, stats, and injuries, then proposes grounded ideas. Add your own guidance
+          (teams, angles, players, storylines), then generate and store the ones you like.
+        </p>
+        <textarea
+          value={instructions}
+          onChange={(e) => setInstructions(e.target.value)}
+          placeholder={`e.g. Focus on ${
+            teams.length ? (teams[0]?.name ?? "our local team") : "our local team"
+          } losing skid, pitching matchups, and a contrarian betting angle this week…`}
+          rows={3}
+          className="w-full rounded-md bg-black/30 border border-white/10 text-sm text-white placeholder-gray-600 px-3 py-2 focus:outline-none focus:ring-1 focus:ring-blue-500"
+        />
+        <button
+          onClick={generate}
+          disabled={generating}
+          className="mt-2 text-sm px-3 py-2 rounded-md bg-blue-600 hover:bg-blue-500 text-white font-medium disabled:opacity-50"
+        >
+          {generating
+            ? (quickMode ? "Thinking…" : "Researching…")
+            : "Generate ideas"}
+        </button>
+        <label className="mt-2 ml-2 inline-flex items-center gap-2 text-xs text-gray-400 cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={quickMode}
+            onChange={(e) => setQuickMode(e.target.checked)}
+            className="accent-blue-500"
+          />
+          Quick mode (faster, no research tools)
+        </label>
+        {draftMsg && <div className="mt-2 text-xs text-gray-400">{draftMsg}</div>}
+      </div>
+
+      {/* Draft (generated, not yet stored) ideas */}
+      {draftIdeas.length > 0 && (
+        <div className="border border-yellow-500/30 bg-yellow-500/5 rounded-lg p-4 mb-4">
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="text-sm font-semibold text-yellow-200">Generated preview ({draftIdeas.length})</h3>
+            <button
+              onClick={storeAll}
+              disabled={storing}
+              className="text-xs px-3 py-1.5 rounded-md bg-yellow-600 hover:bg-yellow-500 text-white font-medium disabled:opacity-50"
+            >
+              {storing ? "Storing…" : `Store all ${draftIdeas.length}`}
+            </button>
+          </div>
+          <ul className="space-y-2">
+            {draftIdeas.map((idea, i) => (
+              <li key={i} className="px-3 py-2 bg-black/20 border border-white/10 rounded-md">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="text-sm font-medium text-white">
+                      {idea.title}
+                      {idea.team_name && (
+                        <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded-full text-xs bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
+                          🏷 {idea.team_name}
+                        </span>
+                      )}
+                    </div>
+                    {idea.description && <p className="text-xs text-gray-400 mt-1">{idea.description}</p>}
+                  </div>
+                  <div className="flex flex-col gap-1 shrink-0">
+                    <button
+                      onClick={() => storeOne(idea)}
+                      disabled={storing}
+                      className="text-xs px-2 py-1 rounded-md bg-yellow-600 hover:bg-yellow-500 text-white font-medium disabled:opacity-50"
+                    >
+                      {storing ? "…" : "Save"}
+                    </button>
+                    <button
+                      onClick={() =>
+                        onUsePrompt(
+                          [
+                            `Write an article about: ${idea.title}${idea.team_name ? ` (${idea.team_name})` : ""}`,
+                            idea.description || "",
+                          ]
+                            .filter(Boolean)
+                            .join("\n\n"),
+                          sport
+                        )
+                      }
+                      className="text-xs px-2 py-1 rounded-md border border-emerald-500/40 bg-emerald-600/20 hover:bg-emerald-600/40 text-emerald-300 font-medium"
+                    >
+                      To Create Article →
+                    </button>
+                  </div>
+                </div>
+              </li>
+            ))}
+          </ul>
+          <button
+            onClick={() => {
+              setDraftIdeas([]);
+              setGenerated(false);
+            }}
+            className="mt-2 text-xs text-gray-400 hover:text-gray-200"
+          >
+            Discard preview
+          </button>
+        </div>
+      )}
+
+      {/* Stored ideas */}
+      <h3 className="text-sm font-semibold text-gray-300 mb-2">Stored ideas — {SPORT_LABEL[sport]}</h3>
+      {loadingIdeas ? (
+        <div className="text-sm text-gray-500">Loading…</div>
+      ) : ideas.length === 0 ? (
+        <div className="text-sm text-gray-500 bg-white/[0.03] border border-white/10 rounded-lg p-4">
+          No article ideas stored for {SPORT_LABEL[sport]} yet.{generated ? "" : " Generate some above."}
+        </div>
+      ) : (
+        <ul className="space-y-2">{ideas.map(renderIdea)}</ul>
       )}
     </div>
   );

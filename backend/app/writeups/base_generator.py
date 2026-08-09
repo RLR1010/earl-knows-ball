@@ -294,7 +294,7 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
             + "\n\n" + self.SEO_OUTPUT_INSTRUCTION
         )
 
-        raw_public = await self._call_deepseek(public_system, public_prompt, max_tokens=24576, reasoning=reasoning, usage_log=usage_log)
+        raw_public = await self._call_deepseek(public_system, public_prompt, max_tokens=24576, reasoning=reasoning, usage_log=usage_log, call="public_write")
         if raw_public is None:
             return {"error": "DeepSeek API call failed for public section"}
 
@@ -321,7 +321,7 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
         # flag (observed ~7k tokens of reasoning on a 26k-char research brief).
         # Budgets below 16k caused empty premium content (finish=length with
         # all tokens consumed by reasoning). 32768 gives ample headroom.
-        raw_premium = await self._call_deepseek(premium_system, premium_prompt, max_tokens=32768, reasoning=reasoning, usage_log=usage_log)
+        raw_premium = await self._call_deepseek(premium_system, premium_prompt, max_tokens=32768, reasoning=reasoning, usage_log=usage_log, call="premium_write")
         if raw_premium is None:
             logger.warning("premium LLM call failed for game %s — using fallback", game_id)
             premium_content = "Premium content unavailable — API call failed."
@@ -501,7 +501,7 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
         content = lines[1].strip() if len(lines) > 1 else cleaned
         return {"title": title, "content": content}
 
-    async def _call_deepseek(self, system: str, user_prompt: str, *, max_tokens: int | None = None, reasoning: str | None = None, usage_log: list[dict[str, Any]] | None = None, max_attempts: int | None = None) -> str | None:
+    async def _call_deepseek(self, system: str, user_prompt: str, *, max_tokens: int | None = None, reasoning: str | None = None, usage_log: list[dict[str, Any]] | None = None, max_attempts: int | None = None, call: str = "generate") -> str | None:
         """Call DeepSeek via OpenAI SDK and return the raw response content.
 
         Retries with backoff on API errors and empty responses. A known
@@ -559,11 +559,25 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
             content = response.choices[0].message.content
             if usage_log is not None:
                 usage = response.usage
+                # DeepSeek exposes cache hit/miss tokens on the usage object
+                # (top-level or nested under prompt_tokens_details). Read both.
+                ptd = getattr(usage, "prompt_tokens_details", None) or {}
+                cache_hit = getattr(usage, "prompt_cache_hit_tokens", None)
+                cache_miss = getattr(usage, "prompt_cache_miss_tokens", None)
+                if cache_hit is None and isinstance(ptd, dict):
+                    cache_hit = ptd.get("cached_tokens") or ptd.get("prompt_cache_hit_tokens")
+                if cache_miss is None and isinstance(ptd, dict):
+                    cache_miss = ptd.get("prompt_cache_miss_tokens") or ptd.get("prompt_tokens", 0)
                 usage_log.append({
-                    "attempt": len(usage_log) + 1,
+                    "call": call,
+                    "attempt": len(
+                        [e for e in usage_log if e.get("call") == call]
+                    ) + 1,
                     "reasoning": use_reasoning,
                     "elapsed_s": elapsed_s,
                     "prompt_tokens": getattr(usage, "prompt_tokens", 0) or 0,
+                    "prompt_cache_hit_tokens": int(cache_hit or 0),
+                    "prompt_cache_miss_tokens": int(cache_miss or 0),
                     "completion_tokens": getattr(usage, "completion_tokens", 0) or 0,
                     "reasoning_tokens": (
                         getattr(
@@ -660,9 +674,10 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
             self.SEO_PROMPT,
             user_prompt,
             max_tokens=500,
-            reasoning=None,
+            reasoning="disabled",
             max_attempts=1,
             usage_log=usage_log,
+            call="seo",
         )
         data = self._extract_seo_json(raw or "") if raw else {}
         seo_description = (data.get("seo_description") or "").strip()[:500]
@@ -884,6 +899,7 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
             reasoning="minimal",
             max_attempts=2,
             usage_log=lane_log,
+            call=f"accuracy_{label}",
         )
         tokens = sum((item.get("total_tokens") or 0) for item in lane_log)
         if usage_log is not None:
@@ -946,22 +962,60 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
         stripped_prefix = self._build_messages(stripped)
 
         pub_rule = (
-            "Verify the PUBLIC article against the research. It must contain NO "
-            "betting predictions (no spread/ATS pick, moneyline, over/under pick, "
-            "score prediction, or [bet on X] guidance). Flag every factual claim "
-            "not traceable to the research, every contradiction, and every betting "
-            "prediction. Return ONLY a JSON object: {\"passed\": true|false, "
-            "\"findings\": [{\"type\": \"fact-not-in-research\" | \"contradicts-research\" | "
-            "\"betting-prediction-in-public\", \"claim\": \"...\", \"section\": \"public\", "
-            "\"detail\": \"...\"}]}."
+            "Verify the PUBLIC article against the research. The research includes a "
+            "'--- RECENT ARTICLES CONTEXT ---' section — that is authoritative "
+            "research data, NOT lower-priority noise, so facts stated there ARE "
+            "traceable (do not flag them as not-in-research).\n"
+            "The article MUST contain NO betting predictions (no spread/ATS pick, "
+            "moneyline, over/under pick, score prediction, or [bet on X] guidance).\n"
+            "Flag a CLAIM ONLY when it meets one of these conditions:\n"
+            "  1. contradicts-research: directly conflicts with the research (a number, "
+            "     record, date, or fact stated differently). If the research supports it, "
+            "     do NOT flag it — never flag a claim you yourself determine is supported.\n"
+            "  2. fact-not-in-research: the claim is presented as a hard, specific fact "
+            "     (a number, record, stat, date, trade, promotion, or result) that is not "
+            "     in the research AT ALL. Do NOT flag reasonable characterization, "
+            "     subjective editorial color ('nearly unbeatable', 'solid control', "
+            "     'legitimate stopper', 'impressive'), season-goal prose, reasonable "
+            "     inference from research numbers (if research says park factor 102, "
+            "     calling it 'slightly hitter-friendly' is supported, not a problem), or a "
+            "     fact that the research supports (even via the RECENT ARTICLES CONTEXT "
+            "     section).\n"
+            "  3. betting-prediction-in-public: any pick/odds/prediction appears.\n"
+            "IMPORTANT: only genuinely unsupported hard facts warrant a finding. An "
+            "article filled with subjective color is normal and should pass. Prefer "
+            "passing when in doubt unless a specific hard fact is unsupported or wrong.\n"
+            "Return ONLY a JSON object: {\"passed\": true|false, \"findings\": "
+            "[{\"type\": \"fact-not-in-research\" | \"contradicts-research\" | "
+            "\"betting-prediction-in-public\", \"claim\": \"...\", \"section\": "
+            "\"public\", \"detail\": \"...\"}]}. Set passed=false ONLY if there is at "
+            "least one genuine finding."
         )
         prem_rule = (
-            "Verify the PREMIUM article against the research. It MAY contain picks "
-            "and betting advice — that is allowed and should NOT be flagged. Only "
-            "flag factual claims not traceable to the research or that contradict it. "
-            "Return ONLY a JSON object: {\"passed\": true|false, \"findings\": [{\"type\": "
-            "\"fact-not-in-research\" | \"contradicts-research\", \"claim\": \"...\", "
-            "\"section\": \"premium\", \"detail\": \"...\"}]}."
+            "Verify the PREMIUM article against the research. The research includes a "
+            "'--- RECENT ARTICLES CONTEXT ---' section — that is authoritative "
+            "research data, NOT lower-priority noise, so facts stated there (trades, "
+            "promotions, injuries, records) ARE traceable. The article MAY contain picks "
+            "and betting advice — that is allowed and should NOT be flagged.\n"
+            "Flag a CLAIM ONLY when it meets one of these conditions:\n"
+            "  1. contradicts-research: directly conflicts with the research (a number, "
+            "     record, date, or fact stated differently). If the research supports it — "
+            "     including via RECENT ARTICLES CONTEXT — do NOT flag it. Never flag a "
+            "     claim you yourself determine is supported.\n"
+            "  2. fact-not-in-research: the claim is presented as a hard, specific fact "
+            "     (a number, record, stat, date, trade, promotion, injury, or result) that "
+            "     is not in the research AT ALL. Do NOT flag reasonable characterization, "
+            "     subjective editorial color ('legitimate stopper', 'impressive', "
+            "     'nearly unbeatable', 'solid'), season-goal prose, or reasonable inference "
+            "     from research numbers. Do NOT flag a fact that the research supports via "
+            "     the RECENT ARTICLES CONTEXT section.\n"
+            "IMPORTANT: only genuinely unsupported hard facts warrant a finding. An "
+            "article full of subjective color and picks should pass. Prefer passing when "
+            "in doubt unless a specific hard fact is unsupported or contradicts research.\n"
+            "Return ONLY a JSON object: {\"passed\": true|false, \"findings\": "
+            "[{\"type\": \"fact-not-in-research\" | \"contradicts-research\", "
+            "\"claim\": \"...\", \"section\": \"premium\", \"detail\": "
+            "\"...\"}]}. Set passed=false ONLY if there is at least one genuine finding."
         )
 
         pub_res = await self._verify_lane(
@@ -1001,22 +1055,6 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
             parts.append(parsed["premium_content"])
         return "\n\n".join(parts)
 
-    CORRECT_SYSTEM_PROMPT = (
-        "You are a careful sports editor making minimal corrections to a "
-        "preview article. You only fix the EXACT problems listed below. "
-        "Do not rewrite, embellish, or change anything else. Do not invent "
-        "new facts or numbers.\n\n"
-        "RULES BY FINDING TYPE:\n"
-        "- type 'fact-not-in-research': the claim cannot be traced to the "
-        "  research. DELETE the claim (the whole sentence is best). Do NOT "
-        "  keep, rephrase, or soften it — a fact that isn't in the research "
-        "  cannot be made true by rewording. Remove it outright.\n"
-        "- type 'contradicts-research': the claim directly conflicts with the "
-        "  research. REWRITE it to match the research exactly.\n"
-        "- type 'betting-prediction-in-public': REMOVE the pick/odds/prediction "
-        "  from the public section (move to premium only if appropriate)."
-    )
-
     async def _correct_article(
         self,
         public_content: str,
@@ -1034,17 +1072,40 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
         correction call fails).
         """
         findings_text = json.dumps(findings, ensure_ascii=False, indent=2)
-        research_summary = self._summary_of_research(research)[:12000]
+        # Shared research prefix = byte-identical to premium_write / accuracy_premium
+        # lanes. Because the system prompt is also SHARED_SYSTEM (identical to those
+        # lanes), the (system + research) prefix hits DeepSeek's input cache instead
+        # of re-billing the research tokens at full price.
+        research_prefix = self._build_messages(research)
         user_prompt = (
-            "=== RESEARCH DATA ===\n"
-            f"{research_summary}\n\n"
+            f"{research_prefix}\n\n"
+            "=== CORRECTION TASK ===\n"
+            "You are a careful sports editor making minimal corrections to a "
+            "preview article. You only fix the EXACT problems listed in the "
+            "findings below. Do not rewrite, embellish, or change anything else. "
+            "Do not invent new facts or numbers.\n\n"
+            "RULES BY FINDING TYPE:\n"
+            "- type 'fact-not-in-research': the claim cannot be traced to the "
+            "  research. DELETE the claim (the whole sentence is best). Do NOT "
+            "  keep, rephrase, or soften it — a fact that isn't in the research "
+            "  cannot be made true by rewording. Remove it outright.\n"
+            "- type 'contradicts-research': the claim directly conflicts with the "
+            "  research. REWRITE it to match the research exactly.\n"
+            "- type 'prediction-in-public' / 'betting-prediction-in-public': REMOVE "
+            "  the pick/odds/prediction from the public section (move to premium "
+            "  only if appropriate).\n\n"
+            "Return the EXACT SAME article with ONLY the listed fixes applied. "
+            "Do NOT rewrite, restructure, expand, reorder, or re-emphasize it. "
+            "Keep every sentence you don't need to change exactly as-is — same "
+            "wording, same flow, same everything. Only touch the specific claims "
+            "called out by the findings. Preserve the article's length and voice.\n\n"
             "=== ACCURACY FINDINGS TO FIX ===\n"
             f"{findings_text}\n\n"
             "=== CURRENT PUBLIC SECTION ===\n"
             f"{(public_content or '').strip()}\n\n"
             "=== CURRENT PREMIUM SECTION ===\n"
             f"{(premium_content or '').strip()}\n\n"
-            "Return the FULL corrected article ONLY, in this exact format:\n"
+            "Return ONLY the corrected article in this exact format:\n"
             "TITLE: <title>\n\n"
             "[PUBLIC]\n<corrected public content — must contain NO betting "
             "predictions or picks>\n\n[PREMIUM]\n<corrected premium content — "
@@ -1052,11 +1113,12 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
         )
 
         raw = await self._call_deepseek(
-            self.CORRECT_SYSTEM_PROMPT,
+            self.SHARED_SYSTEM,
             user_prompt,
             max_tokens=40000,
-            reasoning="minimal",
+            reasoning="disabled",
             usage_log=usage_log,
+            call="correction",
         )
         if not raw:
             return {}
@@ -1396,7 +1458,7 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
             + "\n\n" + self.SEO_OUTPUT_INSTRUCTION
         )
 
-        raw = await self._call_deepseek(system, user_prompt)
+        raw = await self._call_deepseek(system, user_prompt, call="public_write")
         if raw is None:
             return {"error": "DeepSeek API call failed — check logs"}
 

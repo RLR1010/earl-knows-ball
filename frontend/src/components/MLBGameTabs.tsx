@@ -10,14 +10,13 @@ import { useAuth } from "../lib/auth-context";
 
 interface MLBGameTabsProps {
   gameId: number;
-  pickCard: any;
   game: any;
   formatOdds: (v: any) => string;
   boxscore?: any;
   linescore?: any;
 }
 
-export default function MLBGameTabs({ gameId, pickCard, game, formatOdds, boxscore, linescore }: MLBGameTabsProps) {
+export default function MLBGameTabs({ gameId, game, formatOdds, boxscore, linescore }: MLBGameTabsProps) {
   const { user } = useAuth();
   const [activeTab, setActiveTab] = useState<string>("boxscore");
   const [writeup, setWriteup] = useState<any>(null);
@@ -101,7 +100,6 @@ export default function MLBGameTabs({ gameId, pickCard, game, formatOdds, boxsco
   const tabs = [
     { key: "boxscore", label: "Box Score", enabled: hasBoxscore },
     { key: "summary", label: "Game Preview", enabled: true },
-    { key: "picks", label: "Earl's Picks", enabled: true },
     { key: "analysis", label: "Detailed Analysis", enabled: true },
     { key: "stats", label: "Detailed Stats", enabled: true },
     { key: "propBets", label: "Prop Bets", enabled: hasProps },
@@ -133,7 +131,6 @@ export default function MLBGameTabs({ gameId, pickCard, game, formatOdds, boxsco
       <div className="p-4">
         {activeTab === "boxscore" && renderBoxScore()}
         {activeTab === "summary" && renderGameSummary()}
-        {activeTab === "picks" && <PremiumGate>{renderEarlsPicks()}</PremiumGate>}
         {activeTab === "analysis" && <PremiumGate>{renderDetailedAnalysis()}</PremiumGate>}
         {activeTab === "stats" && <PremiumGate>{renderDetailedStats()}</PremiumGate>}
         {activeTab === "propBets" && renderPropBets()}
@@ -776,175 +773,6 @@ export default function MLBGameTabs({ gameId, pickCard, game, formatOdds, boxsco
       </div>
     );
   }
-  function renderEarlsPicks() {
-    const isFinal = !!(game.home_score != null && game.away_score != null);
-
-    if (!pickCard) {
-      return (
-        <div className="text-center py-12">
-          <div className="text-gray-500 text-sm">No picks available for this game yet</div>
-          <div className="text-gray-600 text-xs mt-2">Picks are generated closer to game time</div>
-        </div>
-      );
-    }
-
-    return (
-      <div className="space-y-4">
-        {/* Predicted score */}
-        {pickCard.predictions?.home_runs != null && (
-          <div className="text-center mb-4">
-            <div className="inline-block border border-white/10 rounded-lg px-6 py-2 bg-white/5">
-              <span className="text-xs text-gray-500">Predicted</span>
-              <div className="text-lg font-bold tracking-tight">
-                <span className="text-gray-300">{game.away_team}</span>
-                <span className="text-white mx-2">{pickCard.predictions.away_runs}</span>
-                <span className="text-gray-600">@</span>
-                <span className="text-white mx-2">{pickCard.predictions.home_runs}</span>
-                <span className="text-gray-300">{game.home_team}</span>
-              </div>
-              <div className="text-xs text-gray-500 mt-1">
-                Total: {pickCard.predictions.total} | Margin: {pickCard.predictions.margin >= 0 ? "+" : ""}{pickCard.predictions.margin}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Actual score for completed games */}
-        {isFinal && pickCard.actual?.home_runs != null && (
-          <div className="text-center mb-4">
-            <div className="inline-block border border-green-500/20 rounded-lg px-6 py-2 bg-green-500/5">
-              <span className="text-xs text-gray-500">Actual</span>
-              <div className="text-lg font-bold tracking-tight">
-                <span className="text-gray-300">{game.away_team}</span>
-                <span className="text-white mx-2">{pickCard.actual.away_runs}</span>
-                <span className="text-gray-600">@</span>
-                <span className="text-white mx-2">{pickCard.actual.home_runs}</span>
-                <span className="text-gray-300">{game.home_team}</span>
-              </div>
-              <div className="text-xs text-gray-500 mt-1">
-                Total: {pickCard.actual.total} | Margin: {pickCard.actual.margin >= 0 ? "+" : ""}{pickCard.actual.margin}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Three pick cards: ATS, OU, Moneyline */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-          {/* ATS / Run Line */}
-          <div className="rounded-lg p-3 border border-amber-500/40 bg-amber-500/10">
-            <div className="text-[10px] text-gray-500 uppercase">Run Line</div>
-            {isFinal && pickCard.results?.run_line ? (
-              <>
-                <div className={`text-lg font-bold mt-1 ${pickCard.results.run_line === "Win" ? "text-green-400" : "text-red-400"}`}>
-                  {pickCard.results.run_line}
-                </div>
-                <div className="flex items-center gap-2 mt-1">
-                  {pickCard.expected_value?.rl != null && (
-                    <span className={`text-[10px] font-semibold mt-1 ${pickCard.expected_value.rl >= 0 ? "text-green-400" : "text-red-400"}`}>
-                      EV: {pickCard.expected_value.rl >= 0 ? "+" : ""}{pickCard.expected_value.rl.toFixed(1)}¢
-                    </span>
-                  )}
-                  Pick: {pickCard.picks?.run_line || "-"}
-                </div>
-              </>
-            ) : isFinal && pickCard.results?.run_line === "Push" ? (
-              <div className="text-sm font-bold mt-1 text-gray-400">Push</div>
-            ) : pickCard.picks?.run_line && pickCard.picks.run_line !== "-" ? (
-              <>
-                <div className="text-lg font-bold mt-1 text-amber-400">{pickCard.picks.run_line.toUpperCase()}</div>
-                {pickCard.expected_value?.rl != null && (
-                  <span className={`text-[10px] font-semibold mt-1 ${pickCard.expected_value.rl >= 0 ? "text-green-400" : "text-red-400"}`}>
-                    EV: {pickCard.expected_value.rl >= 0 ? "+" : ""}{pickCard.expected_value.rl.toFixed(1)}¢
-                  </span>
-                )}
-                <div className="text-xs text-gray-500 mt-1">
-                  {pickCard.lines?.run_line != null && `Run Line ${pickCard.lines.run_line}`}
-                </div>
-              </>
-            ) : (
-              <div className="text-xs text-gray-400 mt-1">No RL data</div>
-            )}
-          </div>
-
-          {/* Over/Under */}
-          <div className="rounded-lg p-3 border border-yellow-500/40 bg-yellow-500/10">
-            <div className="text-[10px] text-gray-500 uppercase">Over/Under</div>
-            {isFinal && pickCard.results?.over_under ? (
-              <>
-                <div className={`text-lg font-bold mt-1 ${pickCard.results.over_under === "Win" ? "text-green-400" : "text-red-400"}`}>
-                  {pickCard.results.over_under}
-                </div>
-                <div className="flex items-center gap-2 mt-1">
-                  {pickCard.expected_value?.ou != null && (
-                    <span className={`text-[10px] font-semibold mt-1 ${pickCard.expected_value.ou >= 0 ? "text-green-400" : "text-red-400"}`}>
-                      EV: {pickCard.expected_value.ou >= 0 ? "+" : ""}{pickCard.expected_value.ou.toFixed(1)}¢
-                    </span>
-                  )}
-                  Pick: {pickCard.picks?.over_under || "-"}
-                </div>
-              </>
-            ) : isFinal && pickCard.results?.over_under === "Push" ? (
-              <div className="text-sm font-bold mt-1 text-gray-400">Push</div>
-            ) : pickCard.picks?.over_under && pickCard.picks.over_under !== "-" ? (
-              <>
-                <div className="text-lg font-bold mt-1 text-yellow-400">{pickCard.picks.over_under.toUpperCase()}</div>
-                {pickCard.expected_value?.ou != null && (
-                  <span className={`text-[10px] font-semibold mt-1 ${pickCard.expected_value.ou >= 0 ? "text-green-400" : "text-red-400"}`}>
-                    EV: {pickCard.expected_value.ou >= 0 ? "+" : ""}{pickCard.expected_value.ou.toFixed(1)}¢
-                  </span>
-                )}
-                <div className="text-xs text-gray-500 mt-1">
-                  {pickCard.lines?.over_under != null && `O/U ${pickCard.lines.over_under}`}
-                </div>
-              </>
-            ) : (
-              <div className="text-xs text-gray-400 mt-1">No OU data</div>
-            )}
-          </div>
-
-          {/* Moneyline */}
-          <div className="rounded-lg p-3 border border-cyan-500/40 bg-cyan-500/10">
-            <div className="text-[10px] text-gray-500 uppercase">Moneyline</div>
-            {isFinal && pickCard.results?.moneyline ? (
-              <>
-                <div className={`text-lg font-bold mt-1 ${pickCard.results.moneyline === "Win" ? "text-green-400" : "text-red-400"}`}>
-                  {pickCard.results.moneyline}
-                </div>
-                <div className="flex items-center gap-2 mt-1">
-                  {pickCard.expected_value?.ml != null && (
-                    <span className={`text-[10px] font-semibold mt-1 ${pickCard.expected_value.ml >= 0 ? "text-green-400" : "text-red-400"}`}>
-                      EV: {pickCard.expected_value.ml >= 0 ? "+" : ""}{pickCard.expected_value.ml.toFixed(1)}¢
-                    </span>
-                  )}
-                  Pick: {pickCard.picks?.moneyline === "home" ? game.home_team : pickCard.picks?.moneyline === "away" ? game.away_team : pickCard.picks?.moneyline || "-"}
-                </div>
-              </>
-            ) : pickCard.picks?.moneyline && pickCard.picks.moneyline !== "-" ? (
-              <>
-                <div className="text-lg font-bold mt-1 text-cyan-400">
-                  {pickCard.picks.moneyline === "home" ? game.home_team :
-                   pickCard.picks.moneyline === "away" ? game.away_team : pickCard.picks.moneyline}
-                </div>
-                {pickCard.expected_value?.ml != null && (
-                  <span className={`text-[10px] font-semibold mt-1 ${pickCard.expected_value.ml >= 0 ? "text-green-400" : "text-red-400"}`}>
-                    EV: {pickCard.expected_value.ml >= 0 ? "+" : ""}{pickCard.expected_value.ml.toFixed(1)}¢
-                  </span>
-                )}
-                <div className="text-xs text-gray-500 mt-1">
-                  {pickCard.lines?.home_moneyline != null && pickCard.lines.away_moneyline != null && (
-                    <>{game.away_team} {formatOdds(pickCard.lines.away_moneyline)} | {game.home_team} {formatOdds(pickCard.lines.home_moneyline)}</>
-                  )}
-                </div>
-              </>
-            ) : (
-              <div className="text-xs text-gray-400 mt-1">No ML data</div>
-            )}
-          </div>
-        </div>
-      </div>
-    );
-  }
-
   function renderPropBets() {
     return <PropBetsTab sport="mlb" gameId={gameId} />;
   }

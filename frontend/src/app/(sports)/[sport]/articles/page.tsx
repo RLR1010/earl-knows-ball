@@ -28,6 +28,7 @@ interface GamePreview {
   matchup: string;
   away_abbr: string | null;
   home_abbr: string | null;
+  summary: string | null;
 }
 
 const SPORT_NAME: Record<string, string> = { nfl: "NFL", nba: "NBA", mlb: "MLB" };
@@ -135,6 +136,7 @@ function normalizeGamePreviews(data: unknown): GamePreview[] {
         matchup,
         away_abbr: abbrs.away,
         home_abbr: abbrs.home,
+        summary: (typeof w.summary === "string" && w.summary.trim()) ? w.summary.trim() : null,
       };
     })
     .filter((x): x is GamePreview => x !== null && Boolean(x.matchup));
@@ -416,14 +418,20 @@ export default function SportArticlesPage({ params }: { params: Promise<{ sport:
                       </div>
 
                       {/* Preview info */}
-                      <div className="min-w-0">
-                        <div className="text-sm font-semibold text-earl-400 mb-1">{p.matchup}</div>
-                        <div className="text-lg font-semibold group-hover:text-earl-400 transition">
+                      <div className="min-w-0 flex-1">
+                        <div className="text-sm font-semibold text-earl-400">{p.matchup}</div>
+                        <div className="text-xs text-gray-500 mt-0.5">
+                          {formatGameTs(p.game_date) || formatDate(p.published_at) || "Recently"}
+                          <span className="text-gray-600"> · by Earl</span>
+                        </div>
+                        <div className="text-lg font-semibold mt-1.5 group-hover:text-earl-400 transition">
                           {p.title}
                         </div>
-                        <div className="text-sm text-gray-500 mt-1">
-                          {formatGameTs(p.game_date) || formatDate(p.published_at) || "Recently"}
-                        </div>
+                        {p.summary && (
+                          <p className="text-sm text-gray-400 mt-1.5 line-clamp-2 leading-relaxed">
+                            {p.summary}
+                          </p>
+                        )}
                       </div>
                     </div>
                   </Link>

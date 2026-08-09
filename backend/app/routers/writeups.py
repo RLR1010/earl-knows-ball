@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import json
+import html
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
@@ -17,6 +19,18 @@ from app.writeups.nba.generator import NBAGameWriteupGenerator
 
 logger = logging.getLogger("writeups")
 router = APIRouter(prefix="/writeups", tags=["writeups"])
+
+
+def _make_excerpt(content: Any, length: int = 240) -> str:
+    """Return a plain-text excerpt from HTML writeup content, truncated cleanly."""
+    if not content:
+        return ""
+    text = re.sub(r"<[^>]+>", " ", str(content))
+    text = html.unescape(text)
+    text = re.sub(r"\s+", " ", text).strip()
+    if len(text) <= length:
+        return text
+    return text[:length].rstrip() + "…"
 
 
 def _acc_to_inaccuracy(v: Any) -> bool:
@@ -307,6 +321,7 @@ async def list_mlb_writeups(
                 w.id, w.game_id, w.slug, w.title, w.status, w.version,
                 w.is_historical, w.generated_by,
                 w.published_at, w.created_at, w.updated_at,
+                w.public_content AS content,
                 g.date AS game_date,
                 ht.abbreviation AS home_team,
                 at.abbreviation AS away_team
@@ -335,6 +350,7 @@ async def list_mlb_writeups(
             "created_at": r.created_at.isoformat() if r.created_at else None,
             "game_date": r.game_date.isoformat() if r.game_date else None,
             "matchup": f"{r.away_team} @ {r.home_team}",
+            "summary": _make_excerpt(r.content),
         }
         for r in rows.mappings()
     ]
@@ -715,6 +731,7 @@ async def list_nfl_writeups(
     rows = await db.execute(
         text(f"""SELECT w.id, w.game_id, w.slug, w.title, w.status, w.version,
                  w.is_historical, w.published_at, w.created_at,
+                 w.public_content AS content,
                  g.week, g.date,
                  ht.abbreviation AS home, at.abbreviation AS away
           FROM nfl.game_writeups w
@@ -736,6 +753,7 @@ async def list_nfl_writeups(
             "created_at": r["created_at"].isoformat() if r["created_at"] else None,
             "week": r["week"], "matchup": f"{r['away']} @ {r['home']}",
             "date": r["date"].isoformat() if r["date"] else None,
+            "summary": _make_excerpt(r["content"]),
         }
         for r in rows.mappings()
     ]
@@ -1084,7 +1102,7 @@ async def list_nba_writeups(
                    w.created_at, w.updated_at, w.published_at,
                    g.date, ht.name AS home, ht.abbreviation AS home_abbr,
                    at.name AS away, at.abbreviation AS away_abbr,
-                   w.slug
+                   w.slug, w.public_content AS content
             FROM nba.game_writeups w
             JOIN nba.games g ON w.game_id = g.id
             JOIN nba.teams ht ON g.home_team_id = ht.id
@@ -1112,6 +1130,7 @@ async def list_nba_writeups(
             "away_team": r[11],
             "away_abbr": r[12],
             "slug": r[13],
+            "summary": _make_excerpt(r[14]),
         }
         for r in rows
     ]

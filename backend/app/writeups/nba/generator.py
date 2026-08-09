@@ -269,9 +269,14 @@ Bullet lists work for key points. Keep it article-like — no blockquotes, no em
         if db is None:
             raise RuntimeError("No database session available for store()")
 
+        research_brief = dict(writeup.get("research_brief") or {})
+        if writeup.get("usage_log") is not None:
+            research_brief["_usage_log"] = writeup["usage_log"]
+        if writeup.get("total_tokens") is not None:
+            research_brief["_total_tokens"] = writeup["total_tokens"]
         research_brief_json = json.dumps(
-            writeup.get("research_brief"), default=str
-        ) if writeup.get("research_brief") else None
+            research_brief, default=str
+        ) if research_brief else None
         qc_json = json.dumps(
             qc_results or writeup.get("quality_checks"), default=str
         ) if (qc_results or writeup.get("quality_checks")) else None

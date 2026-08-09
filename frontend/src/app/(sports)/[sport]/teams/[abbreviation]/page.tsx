@@ -179,12 +179,23 @@ function formatGameTime(iso: string) {
   }) + " ET";
 }
 
+function formatDate(value: string | null): string {
+  if (!value) return "";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleDateString(undefined, {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  });
+}
+
 function formatYards(yds: number): string {
   if (yds >= 1000) return (yds / 1000).toFixed(1) + "k";
   return yds.toFixed(0);
 }
 
-type Tab = "schedule" | "depth-chart" | "news" | "roster";
+type Tab = "schedule" | "articles" | "depth-chart" | "news" | "roster";
 
 function StatusBadge({ status }: { status: string }) {
   const colors: Record<string, string> = {
@@ -317,6 +328,8 @@ function BoxScoreTable({ teamAbbr, players }: { teamAbbr: string; players: BoxSc
 // ── Page Component ───────────────────────────────────────────────────
 export default function TeamDetailPage() {
   const routeParams = useParams<{ sport: string; abbreviation: string }>();
+  const searchParams = useSearchParams();
+  const router = useRouter();
   const sport = routeParams?.sport || "nfl";
   const abbr = routeParams?.abbreviation?.toLowerCase() || "";
   const abbrUpper = abbr.toUpperCase();
@@ -340,7 +353,20 @@ export default function TeamDetailPage() {
 
   const [depthChart, setDepthChart] = useState<DepthChartEntry[]>([]);
   const [depthLoading, setDepthLoading] = useState(false);
-  const [tab, setTab] = useState<Tab>("schedule");
+  const VALID_TABS: Tab[] = ["schedule", "articles", "depth-chart", "news", "roster"];
+  const initTabParam = searchParams.get("tab") as Tab;
+  const [tab, setTab] = useState<Tab>(VALID_TABS.includes(initTabParam) ? initTabParam : "schedule");
+
+  // Keep the active tab in the URL so it's shareable / bookmarkable.
+  useEffect(() => {
+    const params = new URLSearchParams(searchParams.toString());
+    if (tab === "schedule") {
+      params.delete("tab");
+    } else {
+      params.set("tab", tab);
+    }
+    router.replace(`/${sport}/teams/${abbrUpper}${params.size > 0 ? `?${params.toString()}` : ""}`, { scroll: false });
+  }, [tab, sport, abbrUpper]);
   const [seasonYear, setSeasonYear] = useState(() => {
     // MLB follows calendar year; NBA season is labeled by its starting year (Oct-Dec = year N, Jan-Jun = year N-1)
     if (sport === "nba") {
@@ -464,6 +490,7 @@ export default function TeamDetailPage() {
       {/* Tab Bar */}
       <div className="flex gap-1 border-b border-white/10">
         <button onClick={() => setTab("schedule")} className={`px-5 py-3 text-sm font-semibold transition rounded-t-lg ${tab === "schedule" ? "text-earl-400 border-b-2 border-earl-400" : "text-gray-500 hover:text-gray-300"}`}>Schedule</button>
+        <button onClick={() => setTab("articles")} className={`px-5 py-3 text-sm font-semibold transition rounded-t-lg ${tab === "articles" ? "text-earl-400 border-b-2 border-earl-400" : "text-gray-500 hover:text-gray-300"}`}>Articles</button>
         {sport === "nfl" && (
           <button onClick={() => setTab("depth-chart")} className={`px-5 py-3 text-sm font-semibold transition rounded-t-lg ${tab === "depth-chart" ? "text-earl-400 border-b-2 border-earl-400" : "text-gray-500 hover:text-gray-300"}`}>Depth Chart</button>
         )}
@@ -493,6 +520,12 @@ export default function TeamDetailPage() {
           ) : (
             <NFLMLBTeamSchedule games={games} sport={sport} abbrUpper={abbrUpper} seasonYear={seasonYear} formatGameDate={formatGameDate} formatGameTime={formatGameTime} isMLB={isMLB} isNBA={sport === "nba"} />
           )}
+        </div>
+      )}
+      {/* Articles Tab */}
+      {tab === "articles" && (
+        <div className="space-y-4">
+          <TeamArticles sport={sport} abbreviation={abbrUpper} teamName={meta.name} />
         </div>
       )}
       {/* Depth Chart Tab (NFL only) */}
@@ -1673,6 +1706,154 @@ function TeamNews({ sport, abbreviation }: TeamNewsProps) {
               </div>
             </a>
           ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+interface TeamContentItem {
+  type: "writeup" | "article";
+  game_id?: number;
+  id?: number;
+  title?: string;
+  slug?: string;
+  summary?: string;
+  author?: string;
+  link?: string;
+  published_at?: string;
+  game_date?: string;
+  home_abbr?: string;
+  away_abbr?: string;
+  matchup?: string;
+  teams?: string[];
+}
+
+function TeamArticles({ sport, abbreviation, teamName }: {
+  sport: string;
+  abbreviation: string;
+  teamName: string;
+}) {
+  const [items, setItems] = useState<TeamContentItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [total, setTotal] = useState(0);
+  const [pages, setPages] = useState(1);
+  const searchParams = useSearchParams();
+  const router = useRouter();
+  const pageParam = searchParams.get("page");
+  const currentPage = Math.max(1, parseInt(pageParam || "1", 10) || 1);
+  const PER_PAGE = 10;
+
+  useEffect(() => {
+    const fetchContent = async () => {
+      setLoading(true);
+      setError(null);
+      try {
+        const res = await fetch(`/api/articles/team-content/${sport}/${abbreviation}?page=${currentPage}&per_page=${PER_PAGE}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        setItems(data.items || []);
+        setTotal(data.total || 0);
+        setPages(data.pages || 1);
+      } catch (e: any) {
+        setError(e.message);
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchContent();
+  }, [sport, abbreviation, currentPage]);
+
+  const goToPage = (p: number) => {
+    const params = new URLSearchParams(searchParams.toString());
+    if (p <= 1) params.delete("page");
+    else params.set("page", String(p));
+    params.set("tab", "articles");
+    router.replace(`/${sport}/teams/${abbreviation.toUpperCase()}${params.size > 0 ? `?${params.toString()}` : ""}`, { scroll: false });
+  };
+
+  return (
+    <div className="space-y-2">
+
+      {loading ? (
+        <div className="text-center py-16 text-gray-500 border border-white/10 rounded-lg">
+          Loading…
+        </div>
+      ) : error ? (
+        <div className="text-center py-16 text-gray-500 border border-white/10 rounded-lg">
+          Couldn't load team articles — {error}
+        </div>
+      ) : items.length === 0 ? (
+        <div className="text-center py-16 text-gray-500 border border-white/10 rounded-lg">
+          No writeups or articles for {teamName} yet.
+        </div>
+      ) : (
+        <ul className="divide-y divide-white/10 border border-white/10 rounded-lg bg-white/[0.02]">
+          {items.map((item) => {
+            const isWriteup = item.type === "writeup";
+            const logos = (isWriteup
+              ? [item.home_abbr, item.away_abbr]
+              : item.teams || []).filter((x): x is string => Boolean(x));
+            const displayDate = item.published_at;
+            const author = item.author || "Earl";
+            return (
+              <li key={isWriteup ? `w-${item.game_id}` : `a-${item.id}`}>
+                <Link
+                  href={item.link || "#"}
+                  className="block px-5 py-4 hover:bg-white/[0.04] transition group"
+                >
+                  {/* Team logos — horizontal row above the content, left to right */}
+                  {logos.length > 0 && (
+                    <div className="flex items-center gap-1.5 mb-2">
+                      {logos.slice(0, 4).map((abbr) => (
+                        <img
+                          key={abbr}
+                          src={getTeamLogoUrl(abbr, sport) || ""}
+                          alt={abbr}
+                          loading="lazy"
+                          className="h-7 w-7 object-contain"
+                        />
+                      ))}
+                    </div>
+                  )}
+                  <div className="text-sm text-gray-500 mb-1">
+                    {displayDate ? formatDate(displayDate) : "Recent"}
+                    <span> · by {author}</span>
+                  </div>
+                  <div className="text-lg font-semibold group-hover:text-earl-400 transition">
+                    {item.title}
+                  </div>
+                  {item.summary && (
+                    <p className="text-sm text-gray-400 mt-1 line-clamp-2">{item.summary}</p>
+                  )}
+                </Link>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+
+      {/* Pagination */}
+      {!loading && !error && pages > 1 && (
+        <div className="flex items-center justify-between pt-2">
+          <button
+            onClick={() => goToPage(currentPage - 1)}
+            disabled={currentPage <= 1}
+            className="px-4 py-2 text-sm font-medium rounded-lg bg-white/[0.04] border border-white/10 text-gray-300 hover:bg-white/[0.08] transition disabled:opacity-30 disabled:cursor-not-allowed"
+          >
+            ← Prev
+          </button>
+          <div className="text-sm text-gray-500">
+            Page {currentPage} of {pages}
+          </div>
+          <button
+            onClick={() => goToPage(currentPage + 1)}
+            disabled={currentPage >= pages}
+            className="px-4 py-2 text-sm font-medium rounded-lg bg-white/[0.04] border border-white/10 text-gray-300 hover:bg-white/[0.08] transition disabled:opacity-30 disabled:cursor-not-allowed"
+          >
+            Next →
+          </button>
         </div>
       )}
     </div>

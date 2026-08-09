@@ -222,6 +222,153 @@ const STATUS_LABELS: Record<string, string> = {
 };
 
 /* ─────────────────────────────────────────────
+   Usage Log (per-call token & cost breakdown)
+   ─────────────────────────────────────────────
+   DeepSeek V4 Flash pricing (per 1M tokens USD).
+   Update these if the model or price changes.
+*/
+const DEEPSEEK_PRICES = {
+  inputCacheHit: 0.0028, // cached input
+  inputCacheMiss: 0.14, // uncached input
+  output: 0.28, // completion / output
+};
+
+function fmtTokens(n: number | null | undefined): string {
+  return n ? n.toLocaleString() : "0";
+}
+
+function fmtUSD(cents: number): string {
+  if (cents >= 100) return "$" + (cents / 100).toFixed(2);
+  return (cents / 100).toFixed(2) + "¢";
+}
+
+function UsageLogView({ log }: { log: any[] | null | undefined }) {
+  const [open, setOpen] = useState(false);
+  const calls = Array.isArray(log) ? log : [];
+
+  const totals = calls.reduce(
+    (acc, e) => {
+      acc.prompt += e.prompt_tokens || 0;
+      acc.hit += e.prompt_cache_hit_tokens || 0;
+      acc.miss += e.prompt_cache_miss_tokens || 0;
+      acc.completion += e.completion_tokens || 0;
+      acc.reasoning += e.reasoning_tokens || 0;
+      acc.total += e.total_tokens || 0;
+      return acc;
+    },
+    { prompt: 0, hit: 0, miss: 0, completion: 0, reasoning: 0, total: 0 }
+  );
+
+  const costUSD =
+    (totals.hit * DEEPSEEK_PRICES.inputCacheHit +
+      totals.miss * DEEPSEEK_PRICES.inputCacheMiss +
+      totals.completion * DEEPSEEK_PRICES.output) /
+    1_000_000;
+
+  const CALL_LABELS: Record<string, string> = {
+    public_write: "Public writeup",
+    premium_write: "Premium writeup",
+    accuracy_public: "Accuracy check (public)",
+    accuracy_premium: "Accuracy check (premium)",
+    correction: "Correction rewrite",
+    seo: "SEO meta",
+    generate: "Generate",
+  };
+
+  return (
+    <div className="mt-6 bg-white/[0.03] border border-blue-500/20 rounded-xl p-4">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="w-full flex items-center justify-between text-left"
+      >
+        <h3 className="text-sm font-medium text-gray-400">
+          Usage Log
+          <span className="ml-2 text-xs text-gray-500 font-normal">
+            ({calls.length} call{calls.length === 1 ? "" : "s"})
+          </span>
+        </h3>
+        <span className="text-xs font-mono text-emerald-400">
+          ~{fmtUSD(costUSD * 100)} est
+        </span>
+      </button>
+
+      <p className="mt-1 text-xs text-gray-500">
+        Total tokens: {fmtTokens(totals.total)} · cached input:{" "}
+        {fmtTokens(totals.hit)} · uncached input: {fmtTokens(totals.miss)} ·
+        output: {fmtTokens(totals.completion)} · reasoning:{" "}
+        {fmtTokens(totals.reasoning)}
+      </p>
+
+      {open && (
+        <div className="mt-3 overflow-x-auto">
+          {calls.length === 0 ? (
+            <p className="text-xs text-gray-500">
+              No per-call usage recorded. This run predates the usage-log
+              capture (or it wasn't persisted).
+            </p>
+          ) : (
+            <table className="w-full text-xs text-gray-300">
+              <thead>
+                <tr className="text-left text-gray-500 uppercase tracking-wider border-b border-white/10">
+                  <th className="py-1.5 pr-3">Call</th>
+                  <th className="py-1.5 pr-3">#</th>
+                  <th className="py-1.5 pr-3">Cached in</th>
+                  <th className="py-1.5 pr-3">Miss in</th>
+                  <th className="py-1.5 pr-3">Output</th>
+                  <th className="py-1.5 pr-3">Reasoning</th>
+                  <th className="py-1.5 pr-3">Total</th>
+                  <th className="py-1.5">Est cost</th>
+                </tr>
+              </thead>
+              <tbody>
+                {calls.map((e: any, i: number) => {
+                  const c =
+                    (e.prompt_cache_hit_tokens || 0) *
+                      DEEPSEEK_PRICES.inputCacheHit +
+                    (e.prompt_cache_miss_tokens || 0) *
+                      DEEPSEEK_PRICES.inputCacheMiss +
+                    (e.completion_tokens || 0) * DEEPSEEK_PRICES.output;
+                  return (
+                    <tr
+                      key={i}
+                      className="border-b border-white/5 align-top"
+                    >
+                      <td className="py-1.5 pr-3 whitespace-nowrap">
+                        {CALL_LABELS[e.call] || e.call || "—"}
+                      </td>
+                      <td className="py-1.5 pr-3">{e.attempt ?? ""}</td>
+                      <td className="py-1.5 pr-3 font-mono">
+                        {fmtTokens(e.prompt_cache_hit_tokens)}
+                      </td>
+                      <td className="py-1.5 pr-3 font-mono">
+                        {fmtTokens(e.prompt_cache_miss_tokens)}
+                      </td>
+                      <td className="py-1.5 pr-3 font-mono">
+                        {fmtTokens(e.completion_tokens)}
+                      </td>
+                      <td className="py-1.5 pr-3 font-mono">
+                        {fmtTokens(e.reasoning_tokens)}
+                      </td>
+                      <td className="py-1.5 pr-3 font-mono">
+                        {fmtTokens(e.total_tokens)}
+                      </td>
+                      <td className="py-1.5 font-mono text-emerald-400/80">
+                        {fmtUSD(c)}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────────
    Component
    ───────────────────────────────────────────── */
 
@@ -255,6 +402,7 @@ export default function ContentEditor() {
   const [accuracyCheck, setAccuracyCheck] = useState<any>(null);
   const [accuracyCheckTokens, setAccuracyCheckTokens] = useState<number | null>(null);
   const [rejectionHistory, setRejectionHistory] = useState<RejectedDraft[]>([]);
+  const [usageLog, setUsageLog] = useState<any[]>([]);
 
   // ── Fetch write-up ────────────────────────────
 
@@ -280,6 +428,9 @@ export default function ContentEditor() {
       }
       if (data.research_brief) {
         setResearchBrief(data.research_brief);
+        // Per-call usage log is nested inside the persisted research_brief
+        const usage = (data.research_brief as any)?._usage_log;
+        setUsageLog(Array.isArray(usage) ? usage : []);
       }
       if (data.total_tokens != null) setTotalTokens(data.total_tokens);
       if (data.accuracy_check != null) setAccuracyCheck(data.accuracy_check);
@@ -636,6 +787,8 @@ export default function ContentEditor() {
                 )}
               </div>
             )}
+
+            <UsageLogView log={usageLog} />
 
             <AccuracyCheckView data={accuracyCheck} />
           </div>

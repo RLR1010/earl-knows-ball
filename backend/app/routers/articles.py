@@ -2,6 +2,7 @@
 Public endpoints for team-specific news aggregation.
 """
 import html
+import json
 import re
 from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy import select, desc, or_, text
@@ -188,4 +189,144 @@ async def get_team_news(
             }
             for a in team_articles
         ],
+    }
+
+
+# ── Team Content Endpoint (writeups + original articles) ─────────
+
+_SUPPORTED_CONTENT_SPORTS = {"mlb", "nfl", "nba"}
+
+
+# Reused by team-content to produce the "beginning of the writeup" excerpt.
+def _make_excerpt(content: str, length: int = 240) -> str:
+    if not content:
+        return ""
+    text_ = re.sub(r"<[^>]+>", " ", str(content))
+    text_ = html.unescape(text_)
+    text_ = re.sub(r"\s+", " ", text_).strip()
+    if len(text_) <= length:
+        return text_
+    return text_[:length].rstrip() + "…"
+
+
+@router.get("/team-content/{sport}/{abbreviation}")
+async def get_team_content(
+    sport: str,
+    abbreviation: str,
+    page: int = Query(1, ge=1, description="Page number (1-indexed)"),
+    per_page: int = Query(20, ge=1, le=100, description="Items per page"),
+    limit: int = Query(100, ge=1, le=500, description="Max writeups+articles to return (backward-compat overall cap)"),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Get all public writeups for games a team is in, plus any original
+    articles (`public.original_articles`) that list the team in their
+    `teams` JSONB column. Returns a page-able combined list sorted by
+    date desc (newest first).
+    """
+    if sport not in _SUPPORTED_CONTENT_SPORTS:
+        raise HTTPException(status_code=404, detail=f"Unknown sport: {sport}")
+
+    abbr = abbreviation.upper()
+
+    # 1) Public writeups for games this team is home or away in
+    writeups_sql = text(f"""
+        SELECT
+            w.game_id AS game_id,
+            w.title AS title,
+            w.slug AS slug,
+            w.published_at AS published_at,
+            w.public_content AS content,
+            g.date AS game_date,
+            ht.abbreviation AS home_abbr,
+            at.abbreviation AS away_abbr
+        FROM {sport}.game_writeups w
+        JOIN {sport}.games g ON g.id = w.game_id
+        JOIN {sport}.teams ht ON ht.id = g.home_team_id
+        JOIN {sport}.teams at ON at.id = g.away_team_id
+        WHERE (ht.abbreviation = :abbr OR at.abbreviation = :abbr)
+          AND w.status = 'published'
+          AND w.published_at IS NOT NULL
+        ORDER BY g.date DESC
+    """)
+    result = await db.execute(writeups_sql, {"abbr": abbr})
+    writeup_rows = result.fetchall()
+
+    writeups = []
+    for r in writeup_rows:
+        writeups.append({
+            "type": "writeup",
+            "game_id": r.game_id,
+            "title": html.unescape(r.title) if r.title else r.title,
+            "slug": r.slug,
+            "summary": _make_excerpt(r.content),
+            "link": f"/{sport}/articles/previews/{r.slug or r.game_id}",
+            "published_at": r.published_at.isoformat() if r.published_at else None,
+            "game_date": r.game_date.isoformat() if r.game_date else None,
+            "home_abbr": r.home_abbr,
+            "away_abbr": r.away_abbr,
+            "matchup": f"{r.away_abbr} @ {r.home_abbr}" if r.away_abbr and r.home_abbr else None,
+            "author": "Earl",
+        })
+
+    # 2) Original articles in public.original_articles that list this team
+    articles_sql = text("""
+        SELECT
+            id, title, summary, slug, author, teams, published_at
+        FROM public.original_articles
+        WHERE sport = :sport
+          AND status = 'published'
+          AND published_at IS NOT NULL
+          AND teams @> CAST(:abbr_json AS jsonb)
+        ORDER BY published_at DESC
+    """)
+    result = await db.execute(articles_sql, {
+        "sport": sport,
+        "abbr_json": json.dumps([abbr]),
+    })
+    article_rows = result.fetchall()
+
+    articles = []
+    for r in article_rows:
+        articles.append({
+            "type": "article",
+            "id": r.id,
+            "title": html.unescape(r.title) if r.title else r.title,
+            "summary": html.unescape(r.summary) if r.summary else r.summary,
+            "slug": r.slug,
+            "link": f"/{sport}/articles/{r.slug or r.id}",
+            "published_at": r.published_at.isoformat() if r.published_at else None,
+            "author": r.author or "Earl",
+            "teams": r.teams if isinstance(r.teams, list) else [],
+        })
+
+    combined = writeups + articles
+    combined.sort(
+        key=lambda x: x.get("game_date") or x.get("published_at") or "",
+        reverse=True,
+    )
+    combined.sort(
+        key=lambda x: x.get("game_date") or x.get("published_at") or "",
+        reverse=True,
+    )
+
+    total = len(combined)
+    combined = combined[:limit]
+    total_capped = len(combined)
+
+    pages = max(1, (total_capped + per_page - 1) // per_page)
+    page = min(page, pages)
+    offset = (page - 1) * per_page
+    page_items = combined[offset:offset + per_page]
+
+    return {
+        "sport": sport,
+        "team": abbr,
+        "total": total_capped,
+        "page": page,
+        "per_page": per_page,
+        "pages": pages,
+        "writeups": writeups,
+        "articles": articles,
+        "items": page_items,
     }

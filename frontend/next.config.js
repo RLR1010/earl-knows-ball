@@ -39,6 +39,7 @@ const RULES = [
   { src: "/api/admin/:path*", dst: "/api/admin/:path*", keepApi: true, compute: true },
   { src: "/api/mlb/:path*", dst: "/mlb/:path*", keepApi: false, compute: true },
   { src: "/api/nba/:path*", dst: "/nba/:path*", keepApi: false, compute: true },
+  { src: "/api/original-articles/:path*", dst: "/original-articles/:path*", keepApi: false, compute: true },
   { src: "/writeups/:path*", dst: "/writeups/:path*", keepApi: false, compute: true },
   { src: "/api/writeups/:path*", dst: "/writeups/:path*", keepApi: false, compute: true },
 ];

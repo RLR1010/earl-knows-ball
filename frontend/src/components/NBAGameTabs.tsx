@@ -7,6 +7,7 @@ import remarkGfm from "remark-gfm";
 import PremiumGate from "./PremiumGate";
 import ShapBreakdown from "./ShapBreakdown";
 import PropBetsTab from "./PropBetsTab";
+import EarlsPicksPanel from "./EarlsPicksPanel";
 import { useAuth } from "../lib/auth-context";
 
 interface NBABoxScoreData {
@@ -242,7 +243,6 @@ export default function NBAGameTabs({ gameId, prediction }: NBAGameTabsProps) {
   const tabs = [
     { key: "boxscore", label: "Box Score", enabled: hasBoxscore },
     { key: "summary", label: "Game Preview", enabled: true },
-    { key: "picks", label: "Earl's Picks", enabled: true },
     { key: "analysis", label: "Detailed Analysis", enabled: true },
     { key: "stats", label: "Detailed Stats", enabled: true },
     { key: "propBets", label: "Prop Bets", enabled: hasProps },
@@ -346,28 +346,6 @@ export default function NBAGameTabs({ gameId, prediction }: NBAGameTabsProps) {
     );
   };
 
-  const renderPicks = () => {
-    if (!prediction || prediction.detail) {
-      return (
-        <div className="text-center py-16 text-gray-500">
-          <div className="text-4xl mb-3">🎯</div>
-          <p className="text-lg font-medium text-gray-400 mb-2">Earl's Picks</p>
-          <p className="text-sm">No prediction data available yet.</p>
-        </div>
-      );
-    }
-    const homeTeam = prediction.home_team || h?.team || "HOME";
-    const awayTeam = prediction.away_team || a?.team || "AWAY";
-    const isFinal = prediction.actual?.home_score != null;
-    return (
-      <NBAPickCard
-        pred={prediction}
-        homeTeam={homeTeam}
-        awayTeam={awayTeam}
-        isFinal={isFinal}
-      />
-    );
-  };
 
   const renderAnalysis = () => {
     if (loadingWriteup) {
@@ -723,10 +701,10 @@ export default function NBAGameTabs({ gameId, prediction }: NBAGameTabsProps) {
 
       {/* Betting Lines Card */}
       {data.betting_lines && data.betting_lines.closing_spread != null && (
-        <div className="border border-white/10 rounded-xl p-4 bg-white/5">
+        <div className="rounded-xl py-2">
           <div className="text-xs text-gray-500 uppercase tracking-wider mb-3">Betting Lines</div>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <div className="text-center p-3 rounded-lg bg-white/[0.03]">
+          <div className="grid grid-cols-1 md:grid-cols-3 divide-y md:divide-y-0 md:divide-x divide-white/10">
+            <div className="text-center py-3 md:px-3">
               <div className="text-[10px] text-gray-500 uppercase">Spread</div>
               <div className="text-sm mt-1">
                 {data.betting_lines.closing_spread != null ? (
@@ -740,7 +718,7 @@ export default function NBAGameTabs({ gameId, prediction }: NBAGameTabsProps) {
                 ) : "-"}
               </div>
             </div>
-            <div className="text-center p-3 rounded-lg bg-white/[0.03]">
+            <div className="text-center py-3 md:px-3">
               <div className="text-[10px] text-gray-500 uppercase">Moneyline</div>
               <div className="text-sm mt-1">
                 <span className="text-gray-400">{data.away.team}</span> {formatOdds(data.betting_lines.closing_away_ml)}
@@ -748,7 +726,7 @@ export default function NBAGameTabs({ gameId, prediction }: NBAGameTabsProps) {
                 <span className="text-earl-400">{data.home.team}</span> {formatOdds(data.betting_lines.closing_home_ml)}
               </div>
             </div>
-            <div className="text-center p-3 rounded-lg bg-white/[0.03]">
+            <div className="text-center py-3 md:px-3">
               <div className="text-[10px] text-gray-500 uppercase">Over / Under</div>
               <div className="text-sm mt-1">
                 {data.betting_lines.closing_ou != null ? (
@@ -762,6 +740,73 @@ export default function NBAGameTabs({ gameId, prediction }: NBAGameTabsProps) {
               </div>
             </div>
           </div>
+
+          {prediction && !prediction.detail && (
+            <EarlsPicksPanel
+              title="Earl's Picks"
+              isFinal={!!(prediction.actual?.home_score != null || prediction.actual?.away_score != null)}
+              predicted={
+                prediction.predicted?.away_score != null && prediction.predicted?.home_score != null
+                  ? {
+                      awayLabel: data.away.team || "Away",
+                      homeLabel: data.home.team || "Home",
+                      awayScore: Math.round(prediction.predicted.away_score),
+                      homeScore: Math.round(prediction.predicted.home_score),
+                      total:
+                        prediction.predicted.total ||
+                        Math.round(prediction.predicted.away_score + prediction.predicted.home_score),
+                      margin:
+                        prediction.predicted.margin ||
+                        Math.round((prediction.predicted.away_score - prediction.predicted.home_score) * 10) / 10,
+                    }
+                  : null
+              }
+              actual={
+                prediction.actual?.home_score != null && prediction.actual?.away_score != null
+                  ? {
+                      awayLabel: data.away.team || "Away",
+                      homeLabel: data.home.team || "Home",
+                      awayScore: prediction.actual.away_score,
+                      homeScore: prediction.actual.home_score,
+                      total:
+                        prediction.actual.total != null
+                          ? prediction.actual.total
+                          : prediction.actual.away_score + prediction.actual.home_score,
+                      margin:
+                        prediction.actual.margin != null
+                          ? prediction.actual.margin
+                          : prediction.actual.away_score - prediction.actual.home_score,
+                    }
+                  : null
+              }
+              items={[
+                {
+                  label: "Spread",
+                  pick: prediction.predicted?.ats || "—",
+                  ev: prediction.expected_value?.ats ?? null,
+                  line: prediction.line?.spread != null ? `Spread ${prediction.line.spread >= 0 ? "+" : ""}${prediction.line.spread}` : null,
+                  result: prediction.results?.ats || null,
+                  pickColor: "text-earl-400",
+                },
+                {
+                  label: "Over/Under",
+                  pick: prediction.predicted?.ou ? `${prediction.predicted.ou} ${prediction.line?.over_under ?? ""}`.trim() : "—",
+                  ev: prediction.expected_value?.ou ?? null,
+                  line: prediction.line?.over_under != null ? `O/U ${prediction.line.over_under}` : null,
+                  result: prediction.results?.ou || null,
+                  pickColor: "text-yellow-400",
+                },
+                {
+                  label: "Moneyline",
+                  pick: prediction.predicted?.ml || "—",
+                  ev: prediction.expected_value?.ml ?? null,
+                  line: null,
+                  result: prediction.results?.ml || null,
+                  pickColor: "text-cyan-400",
+                },
+              ]}
+            />
+          )}
         </div>
       )}
 
@@ -770,7 +815,7 @@ export default function NBAGameTabs({ gameId, prediction }: NBAGameTabsProps) {
         <div className="bg-white/5 border border-white/10 rounded-xl overflow-hidden">
           {/* Tab bar */}
           <div className="flex border-b border-white/10 overflow-x-auto">
-            {tabs.filter(t => !(data.game_type === "ALLSTAR" && t.key === "picks")).map((tab) => (
+            {tabs.map((tab) => (
               <button
                 key={tab.key}
                 onClick={() => setActiveTab(tab.key)}
@@ -789,178 +834,12 @@ export default function NBAGameTabs({ gameId, prediction }: NBAGameTabsProps) {
           <div className="p-4">
             {activeTab === "boxscore" && renderBoxScore()}
             {activeTab === "summary" && renderGamePreview()}
-            {activeTab === "picks" && <PremiumGate>{renderPicks()}</PremiumGate>}
             {activeTab === "analysis" && <PremiumGate>{renderAnalysis()}</PremiumGate>}
             {activeTab === "stats" && <PremiumGate><DetailedStatsTab gameId={gameId} /></PremiumGate>}
             {activeTab === "propBets" && <PropBetsTab sport="nba" gameId={gameId} />}
           </div>
         </div>
       )}
-    </div>
-  );
-}
-
-/* ---------- NBAPickCard Component ---------- */
-
-function NBAPickCard({ pred, homeTeam, awayTeam, isFinal }: { pred: any; homeTeam: string; awayTeam: string; isFinal: boolean }) {
-  if (!pred) return null;
-
-  const gameIsFinal = isFinal || (pred.actual?.home_score != null && pred.actual?.away_score != null);
-
-  const mapResult = (r?: string | null) => {
-    if (!r || r === "N/A") return null;
-    if (r === "W") return "Win";
-    if (r === "L") return "Loss";
-    if (r === "P") return "Push";
-    return r;
-  };
-
-  const renderPickCard = ({
-    type,
-    label,
-    pickText,
-    evValue,
-    result,
-    lineText,
-    borderColor,
-    bgColor,
-  }: {
-    type: string;
-    label: string;
-    pickText: string | undefined | null;
-    evValue: number | undefined | null;
-    result: string | undefined | null;
-    lineText: string | undefined | null;
-    borderColor: string;
-    bgColor: string;
-  }) => {
-    const showPick = pickText && pickText !== "N/A";
-    const isWin = result === "W" || result === "Win";
-    const isLoss = result === "L" || result === "Loss";
-    const isPush = result === "P" || result === "Push";
-
-    return (
-      <div className={`rounded-lg p-3 border ${borderColor} ${bgColor}`}>
-        <div className="text-[10px] text-gray-500 uppercase">{label}</div>
-        {gameIsFinal && result && result !== "N/A" ? (
-          isPush ? (
-            <div className="text-sm font-bold mt-1 text-gray-400">Push</div>
-          ) : (
-            <>
-              <div className={`text-lg font-bold mt-1 ${isWin ? "text-green-400" : "text-red-400"}`}>
-                {isWin ? "Win" : "Loss"}
-              </div>
-              <div className="flex items-center gap-2 mt-1">
-                {evValue != null && (
-                  <span className={`text-[10px] font-semibold ${evValue >= 0 ? "text-green-400" : "text-red-400"}`}>
-                    EV: {evValue >= 0 ? "+" : ""}{evValue.toFixed(1)}¢
-                  </span>
-                )}
-                <span className="text-gray-400">Pick: {pickText}</span>
-              </div>
-            </>
-          )
-        ) : showPick ? (
-          <>
-            <div className="text-lg font-bold mt-1 text-white">{pickText}</div>
-            {evValue != null && (
-              <span className={`text-[10px] font-semibold mt-1 inline-block ${evValue >= 0 ? "text-green-400" : "text-red-400"}`}>
-                EV: {evValue >= 0 ? "+" : ""}{evValue.toFixed(1)}¢
-              </span>
-            )}
-            <div className="text-xs text-gray-500 mt-1">{lineText || "-"}</div>
-          </>
-        ) : (
-          <div className="text-xs text-gray-400 mt-1">No {type} data</div>
-        )}
-      </div>
-    );
-  };
-
-  const predicted = pred.predicted || {};
-  const actual = pred.actual || {};
-  const ev = pred.expected_value || {};
-  const results = pred.results || {};
-  const lines = pred.line || {};
-
-  const presPredictedHome = predicted.home_score;
-  const presPredictedAway = predicted.away_score;
-  const predictedTotal = predicted.total || (presPredictedHome != null && presPredictedAway != null ? Math.round(presPredictedHome + presPredictedAway) : null);
-  const predictedMargin = predicted.margin || (presPredictedHome != null && presPredictedAway != null ? (presPredictedHome - presPredictedAway) : null);
-  const hasPrediction = presPredictedHome != null || presPredictedAway != null || predicted.ats || predicted.ou || predicted.ml;
-
-  if (!hasPrediction) {
-    return (
-      <div className="bg-white/5 rounded-lg p-6 text-center">
-        <div className="text-gray-500 text-sm">No predictions available for this game.</div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="space-y-4">
-
-      {/* Predicted Score */}
-      {presPredictedHome != null && presPredictedAway != null && (
-        <div className="text-center">
-          <div className="text-sm text-gray-500 mb-1">Predicted</div>
-          <div className="text-2xl font-bold tracking-tight">
-            <span className="text-gray-300">{awayTeam}</span>
-            <span className="text-white mx-2">{Math.round(presPredictedAway)}</span>
-            <span className="text-gray-600">@</span>
-            <span className="text-white mx-2">{Math.round(presPredictedHome)}</span>
-            <span className="text-gray-300">{homeTeam}</span>
-          </div>
-          <div className="text-sm text-gray-500 mt-1">
-            Total: {predictedTotal != null ? predictedTotal : "?"} | Margin: {predictedMargin != null ? (predictedMargin >= 0 ? "+" : "") + predictedMargin.toFixed(1) : "?"}
-          </div>
-        </div>
-      )}
-
-      {/* 3-card grid */}
-      <div className="grid grid-cols-3 gap-3">
-        {renderPickCard({
-          type: "Spread",
-          label: "Spread",
-          pickText: predicted.ats,
-          evValue: ev.ats,
-          result: mapResult(results.ats),
-          lineText: lines.spread != null ? `Spread ${lines.spread >= 0 ? "+" : ""}${lines.spread}` : null,
-          borderColor: "border-blue-500/40",
-          bgColor: "bg-blue-500/10",
-        })}
-        {renderPickCard({
-          type: "O/U",
-          label: "Over/Under",
-          pickText: predicted.ou ? `${predicted.ou} ${lines.over_under ?? ""}` : null,
-          evValue: ev.ou,
-          result: mapResult(results.ou),
-          lineText: lines.over_under != null ? `O/U ${lines.over_under}` : null,
-          borderColor: "border-yellow-500/40",
-          bgColor: "bg-yellow-500/10",
-        })}
-        {renderPickCard({
-          type: "ML",
-          label: "Moneyline",
-          pickText: predicted.ml,
-          evValue: ev.ml,
-          result: mapResult(results.ml),
-          lineText: null,
-          borderColor: "border-purple-500/40",
-          bgColor: "bg-purple-500/10",
-        })}
-      </div>
-    </div>
-  );
-}
-
-function ConfidenceBar({ score }: { score?: number | null }) {
-  if (score == null) return null;
-  const pct = Math.round(score * 100);
-  const color = score >= 0.7 ? "bg-green-500" : score >= 0.55 ? "bg-yellow-500" : "bg-gray-500";
-  return (
-    <div className="w-full h-1.5 bg-white/10 rounded-full mt-1 overflow-hidden">
-      <div className={`h-full rounded-full ${color} transition-all duration-300`} style={{ width: `${pct}%` }} />
     </div>
   );
 }
