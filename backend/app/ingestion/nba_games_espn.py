@@ -97,6 +97,7 @@ async def ingest_nba_games(seasons: list[int] | None = None):
         async with async_session() as session:
             loaded = 0
             skipped = 0
+            updated = 0
 
             year_list = seasons if seasons else list(range(2024, 2015, -1))
 
@@ -118,14 +119,13 @@ async def ingest_nba_games(seasons: list[int] | None = None):
 
                     if events:
                         for event in events:
-                            game_id = int(event["id"])
-                            # Check if already exists
+                            game_id = int(event["id"])  # ESPN game id (e.g. 4018xxxxxx)
+                            # Look up by nba_game_id (ESPN id) so we update the canonical
+                            # legacy row instead of creating a second copy with id=ESPN-id.
                             existing = await session.execute(
-                                select(Game).where(Game.id == game_id)
+                                select(Game).where(Game.nba_game_id == str(game_id))
                             )
-                            if existing.scalar_one_or_none():
-                                skipped += 1
-                                continue
+                            existing_game = existing.scalar_one_or_none()
 
                             comps = event.get("competitions", [])
                             if not comps:
@@ -193,34 +193,47 @@ async def ingest_nba_games(seasons: list[int] | None = None):
                             else:
                                 game_status = NBAGameStatus.SCHEDULED
 
-                            game = Game(
-                                id=game_id,
-                                season_id=season_id,
-                                home_team_id=home_id,
-                                away_team_id=away_id,
-                                home_score=home_score,
-                                away_score=away_score,
-                                date=game_dt,
-                                venue=venue,
-                                status=game_status,
-                            )
-                            session.add(game)
-                            loaded += 1
+                            if existing_game is not None:
+                                # Idempotent update of the canonical legacy row.
+                                existing_game.season_id = season_id
+                                existing_game.home_team_id = home_id
+                                existing_game.away_team_id = away_id
+                                existing_game.home_score = home_score
+                                existing_game.away_score = away_score
+                                existing_game.date = game_dt
+                                existing_game.venue = venue
+                                existing_game.status = game_status
+                                updated += 1
+                            else:
+                                # New game: let id auto-increment, store ESPN id in nba_game_id.
+                                game = Game(
+                                    nba_game_id=str(game_id),
+                                    season_id=season_id,
+                                    home_team_id=home_id,
+                                    away_team_id=away_id,
+                                    home_score=home_score,
+                                    away_score=away_score,
+                                    date=game_dt,
+                                    venue=venue,
+                                    status=game_status,
+                                )
+                                session.add(game)
+                                loaded += 1
 
                             # Flush every 25 games
-                            if loaded % 25 == 0:
+                            if (loaded + updated) % 25 == 0:
                                 await session.flush()
-                                print(f"  ... {loaded} loaded ({skipped} skipped)")
+                                print(f"  ... {loaded} loaded, {updated} updated ({skipped} skipped)")
 
                     current += timedelta(days=1)
 
                 # Flush remaining for this season
                 await session.flush()
-                print(f"Season {season_year-1}-{season_year}: {loaded} total loaded, {skipped} total skipped")
+                print(f"Season {season_year-1}-{season_year}: {loaded} loaded, {updated} updated, {skipped} skipped")
 
             await session.commit()
             print(f"\n{'='*50}")
-            print(f"ALL DONE: {loaded} games loaded, {skipped} skipped")
+            print(f"ALL DONE: {loaded} games loaded, {updated} updated, {skipped} skipped")
 
 
 if __name__ == "__main__":
