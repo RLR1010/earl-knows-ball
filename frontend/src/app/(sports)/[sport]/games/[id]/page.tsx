@@ -44,6 +44,7 @@ interface GamePrediction {
   predicted: { home_score: number; away_score: number; total: number; margin: number };
   actual: { home_score: number; away_score: number; total: number; margin: number };
   results: { ats: string; ou: string; ml: string };
+  expected_value?: { ats?: number | null; ou?: number | null; ml?: number | null };
   confidence?: { overall: number | null; ats: number | null; ou: number | null; ml: number | null };
   line?: { spread: number | null; over_under: number | null };
 }
@@ -121,7 +122,25 @@ function NFLPickCard({ pred }: { pred: GamePrediction }) {
   const results = pred?.results || {};
   const line = pred?.line;
   const conf = pred?.confidence;
+  const ev = pred?.expected_value || {};
   const noPrediction = !results.ats || results.ats === "N/A";
+  // A completed game is one where any pick has a Win/Loss/Push result.
+  const isCompleted = !!(results.ats || results.ou || results.ml);
+
+  // Normalize result casing + color: Win=green, Loss=red, Push=grey.
+  const resultColor = (r?: string | null) => {
+    const norm = r ? r.charAt(0).toUpperCase() + r.slice(1).toLowerCase() : null;
+    if (norm === "Win") return "text-green-400";
+    if (norm === "Loss") return "text-red-400";
+    return "text-gray-400"; // Push (or unknown)
+  };
+  const normalize = (r?: string | null) =>
+    r ? r.charAt(0).toUpperCase() + r.slice(1).toLowerCase() : "-";
+  // EV string: show cents with sign.
+  const evStr = (v?: number | null) =>
+    v == null ? null : (v >= 0 ? "EV: +" : "EV: ") + v.toFixed(1) + "¢";
+  const evColor = (v?: number | null) =>
+    v == null ? "text-gray-500" : v >= 0 ? "text-green-400" : "text-red-400";
   return (
     <div className="border border-white/10 rounded-xl p-4 bg-gradient-to-br from-earl-900/20 to-transparent mt-6">
       <div className="text-xs text-gray-500 uppercase tracking-wider mb-3">Earl's Prediction</div>
@@ -162,21 +181,51 @@ function NFLPickCard({ pred }: { pred: GamePrediction }) {
         <div className="grid grid-cols-3 gap-4">
           <div className="text-center p-3 rounded-lg bg-white/[0.03]">
             <div className="text-[10px] text-gray-500 uppercase">ATS</div>
-            <div className={`text-lg font-bold mt-1 ${results.ats === "Win" ? "text-green-400" : "text-red-400"}`}>{results.ats || "-"}</div>
-            <ConfidenceBar score={conf?.ats ?? conf?.overall} />
-            <div className="text-xs text-gray-400 mt-1">Pred: {predicted.home_score || "?"}-{predicted.away_score || "?"} | Act: {actual.home_score || "?"}-{actual.away_score || "?"}</div>
+            {isCompleted && results.ats ? (
+              <>
+                <div className={`text-lg font-bold mt-1 ${resultColor(results.ats)}`}>{normalize(results.ats)}</div>
+                {evStr(ev.ats) != null && (
+                  <div className={`text-xs font-semibold mt-1 ${evColor(ev.ats)}`}>{evStr(ev.ats)}</div>
+                )}
+              </>
+            ) : (
+              <>
+                <div className={`text-lg font-bold mt-1 ${resultColor(results.ats)}`}>{normalize(results.ats)}</div>
+                <ConfidenceBar score={conf?.ats ?? conf?.overall} />
+              </>
+            )}
           </div>
           <div className="text-center p-3 rounded-lg bg-white/[0.03]">
             <div className="text-[10px] text-gray-500 uppercase">O/U</div>
-            <div className={`text-lg font-bold mt-1 ${results.ou === "Win" ? "text-green-400" : "text-red-400"}`}>{results.ou || "-"}</div>
-            <ConfidenceBar score={conf?.ou ?? conf?.overall} />
-            <div className="text-xs text-gray-400 mt-1">Pred: {predicted.total || "?"} | Act: {actual.total || "?"}</div>
+            {isCompleted && results.ou ? (
+              <>
+                <div className={`text-lg font-bold mt-1 ${resultColor(results.ou)}`}>{normalize(results.ou)}</div>
+                {evStr(ev.ou) != null && (
+                  <div className={`text-xs font-semibold mt-1 ${evColor(ev.ou)}`}>{evStr(ev.ou)}</div>
+                )}
+              </>
+            ) : (
+              <>
+                <div className={`text-lg font-bold mt-1 ${resultColor(results.ou)}`}>{normalize(results.ou)}</div>
+                <ConfidenceBar score={conf?.ou ?? conf?.overall} />
+              </>
+            )}
           </div>
           <div className="text-center p-3 rounded-lg bg-white/[0.03]">
             <div className="text-[10px] text-gray-500 uppercase">ML</div>
-            <div className={`text-lg font-bold mt-1 ${results.ml === "Win" ? "text-green-400" : "text-red-400"}`}>{results.ml || "-"}</div>
-            <ConfidenceBar score={conf?.ml ?? conf?.overall} />
-            <div className="text-xs text-gray-400 mt-1">{pred?.away_team || ""} @ {pred?.home_team || ""}</div>
+            {isCompleted && results.ml ? (
+              <>
+                <div className={`text-lg font-bold mt-1 ${resultColor(results.ml)}`}>{normalize(results.ml)}</div>
+                {evStr(ev.ml) != null && (
+                  <div className={`text-xs font-semibold mt-1 ${evColor(ev.ml)}`}>{evStr(ev.ml)}</div>
+                )}
+              </>
+            ) : (
+              <>
+                <div className={`text-lg font-bold mt-1 ${resultColor(results.ml)}`}>{normalize(results.ml)}</div>
+                <ConfidenceBar score={conf?.ml ?? conf?.overall} />
+              </>
+            )}
           </div>
         </div>
       )}

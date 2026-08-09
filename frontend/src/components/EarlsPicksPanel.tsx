@@ -74,26 +74,34 @@ function ScoreLine({
 function PickItemCard({ item }: { item: EarlsPickItem }) {
   const pickColor = item.pickColor ?? "text-cyan-400";
   const hasLine = item.line != null || item.subpick != null;
+  const isFinal = item.result != null;
+  // Normalize result casing across sports (NBA ATS uses lowercase 'win'/'loss'/'push').
+  const resultNorm =
+    typeof item.result === "string"
+      ? item.result.charAt(0).toUpperCase() + item.result.slice(1).toLowerCase()
+      : item.result;
+  // Completed game: Win (green) / Loss (red) / Push (grey)
+  const resultColor =
+    resultNorm === "Win"
+      ? "text-green-400"
+      : resultNorm === "Loss"
+      ? "text-red-400"
+      : "text-gray-400"; // Push
 
   return (
     <div className="text-center py-3 md:px-3 flex flex-col">
       <div className="text-[10px] uppercase tracking-wider text-gray-500">{item.label}</div>
 
-      {item.result ? (
-        <div
-          className={`text-lg font-bold mt-2 ${
-            item.result === "Win" ? "text-green-400" : "text-red-400"
-          }`}
-        >
-          {item.result}
-        </div>
+      {isFinal ? (
+        <div className={`text-lg font-bold mt-2 ${resultColor}`}>{resultNorm}</div>
       ) : (
         <div className={`text-lg font-bold mt-2 ${pickColor} leading-snug break-words`}>
           {item.pick}
         </div>
       )}
 
-      {item.subpick && (
+      {/* For completed games only the result + EV show; the pick line is redundant. */}
+      {!isFinal && item.subpick && (
         <div className="text-sm font-semibold text-gray-200 mt-0.5">{item.subpick}</div>
       )}
 
@@ -107,7 +115,7 @@ function PickItemCard({ item }: { item: EarlsPickItem }) {
         </span>
       )}
 
-      {hasLine && (
+      {!isFinal && hasLine && (
         <div className="text-[11px] text-gray-500 mt-2 leading-snug">{item.line ?? item.subpick}</div>
       )}
     </div>
