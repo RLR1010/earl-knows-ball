@@ -361,7 +361,7 @@ export function BettingLinesCard({
     : [];
 
   return (
-    <div className="rounded-xl p-4 border border-white/10">
+    <div className="rounded-xl p-4 border border-white/10 bg-gradient-to-r from-white/5 to-white/0">
       <div className="text-xs text-gray-500 uppercase tracking-wider mb-3">Betting Lines</div>
       <div className="grid grid-cols-1 md:grid-cols-3 divide-y md:divide-y-0 md:divide-x divide-white/10">
         {/* Spread */}
