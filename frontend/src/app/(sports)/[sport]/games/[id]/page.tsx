@@ -34,6 +34,8 @@ interface NFLBoxScore {
   home_stats: BoxScoreStats | null;
   away_stats: BoxScoreStats | null;
   betting_lines?: Array<{ spread: number | null; over_under: number | null; home_team?: string; away_team?: string; home_ml?: number | null; away_ml?: number | null }> | null;
+  home_record?: { wins: number; losses: number } | null;
+  away_record?: { wins: number; losses: number } | null;
 }
 
 interface GamePrediction {
@@ -466,14 +468,20 @@ export default function GameDetailPage() {
           {nflBoxScore.game.date && <span className="text-xs text-gray-500 ml-3">{nflFmtDate(nflBoxScore.game.date)}</span>}
           <div className="flex items-center justify-center gap-8 md:gap-16 mt-4">
             <div className="flex flex-col items-center gap-1">
-              <div className={`w-12 h-12 rounded-full bg-white/10 flex items-center justify-center text-xl font-bold ${aWon ? "opacity-100" : "opacity-60"}`}>{nflBoxScore.game.away_team?.slice(0, 3).toUpperCase()}</div>
+              <div className={`text-2xl font-bold ${aWon ? "opacity-100 text-gray-300" : "opacity-60 text-gray-400"}`}>{nflBoxScore.game.away_team?.slice(0, 3).toUpperCase()}</div>
+              {nflBoxScore.away_record != null && (
+                <div className="text-xs text-gray-400">{nflBoxScore.away_record.wins}-{nflBoxScore.away_record.losses}</div>
+              )}
               <span className={`text-5xl font-bold mt-1 ${aWon ? "text-earl-400" : "text-gray-400"}`}>
                 {nflBoxScore.game.away_score != null ? nflBoxScore.game.away_score : "-"}
               </span>
             </div>
             <div className="text-4xl text-gray-600 font-black">@</div>
             <div className="flex flex-col items-center gap-1">
-              <div className={`w-12 h-12 rounded-full bg-white/10 flex items-center justify-center text-xl font-bold ${hWon ? "opacity-100" : "opacity-60"}`}>{nflBoxScore.game.home_team?.slice(0, 3).toUpperCase()}</div>
+              <div className={`text-2xl font-bold ${hWon ? "opacity-100 text-white" : "opacity-60 text-gray-400"}`}>{nflBoxScore.game.home_team?.slice(0, 3).toUpperCase()}</div>
+              {nflBoxScore.home_record != null && (
+                <div className="text-xs text-gray-400">{nflBoxScore.home_record.wins}-{nflBoxScore.home_record.losses}</div>
+              )}
               <span className={`text-5xl font-bold mt-1 ${hWon ? "text-earl-400" : "text-gray-400"}`}>
                 {nflBoxScore.game.home_score != null ? nflBoxScore.game.home_score : "-"}
               </span>

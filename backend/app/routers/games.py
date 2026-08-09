@@ -83,6 +83,40 @@ class BoxScoreOut(BaseModel):
     home_stats: BoxScoreStats
     away_stats: BoxScoreStats
     betting_lines: list[dict] | None = None
+    home_record: dict | None = None
+    away_record: dict | None = None
+
+
+async def _nfl_team_record_as_of(db, team_id, game_date, season_id):
+    """NFL wins-losses for a team in games BEFORE game_date (same season).
+    NFL game ids are uniformly 9-digit ESPN ids, so no id-bound dedup needed."""
+    if not team_id or not game_date:
+        return {"wins": 0, "losses": 0}
+    try:
+        row = (
+            await db.execute(
+                text(
+                    """
+                    SELECT
+                      COALESCE(SUM(CASE WHEN (home_team_id=:tid AND home_score>away_score)
+                                           OR (away_team_id=:tid AND away_score>home_score)
+                                      THEN 1 ELSE 0 END), 0) AS wins,
+                      COALESCE(SUM(CASE WHEN (home_team_id=:tid AND home_score<away_score)
+                                           OR (away_team_id=:tid AND away_score<home_score)
+                                      THEN 1 ELSE 0 END), 0) AS losses
+                    FROM nfl.games
+                    WHERE season_id = :sid
+                      AND (home_team_id=:tid OR away_team_id=:tid)
+                      AND date < :gdate
+                      AND home_score IS NOT NULL AND away_score IS NOT NULL
+                    """
+                )
+                .params(tid=team_id, sid=season_id, gdate=game_date)
+            )
+        ).one()
+        return {"wins": int(row.wins or 0), "losses": int(row.losses or 0)}
+    except Exception:
+        return {"wins": 0, "losses": 0}
 
 
 async def _game_to_out(game: Game, spread: float | None = None, over_under: float | None = None) -> GameOut:
@@ -372,11 +406,17 @@ async def get_game_box_score(game_id: int, db: AsyncSession = Depends(get_db)):
             "away_ml": away_ml,
         })
 
+    # Team records as of this game (wins-losses going into it).
+    home_record = await _nfl_team_record_as_of(db, game.home_team_id, game.date, game.season_id)
+    away_record = await _nfl_team_record_as_of(db, game.away_team_id, game.date, game.season_id)
+
     return BoxScoreOut(
         game=game_out,
         home_stats=home_stats,
         away_stats=away_stats,
-        betting_lines=betting_lines if betting_lines else None
+        betting_lines=betting_lines if betting_lines else None,
+        home_record=home_record,
+        away_record=away_record
     )
 
 

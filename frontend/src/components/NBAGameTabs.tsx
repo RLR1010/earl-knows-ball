@@ -82,6 +82,7 @@ interface NBATeamStats {
   free_throw_pct: number | null;
   rebounds: number | null;
   assists: number | null;
+  record?: { wins: number; losses: number } | null;
 }
 
 interface NBAGameTabsProps {
@@ -670,6 +671,11 @@ export default function NBAGameTabs({ gameId, prediction }: NBAGameTabsProps) {
           {/* Away team */}
           <div className="flex-1 text-center">
             <div className="text-2xl font-bold text-gray-300">{a.team || "???"}</div>
+            {a.record != null && (
+              <div className="text-xs text-gray-400 mt-0.5">
+                {a.record.wins}-{a.record.losses}
+              </div>
+            )}
             <div className="text-5xl font-black mt-2">{a.score ?? "-"}</div>
           </div>
 
@@ -687,6 +693,11 @@ export default function NBAGameTabs({ gameId, prediction }: NBAGameTabsProps) {
           {/* Home team */}
           <div className="flex-1 text-center">
             <div className="text-2xl font-bold text-white">{h.team || "???"}</div>
+            {h.record != null && (
+              <div className="text-xs text-gray-400 mt-0.5">
+                {h.record.wins}-{h.record.losses}
+              </div>
+            )}
             <div className="text-5xl font-black mt-2">{h.score ?? "-"}</div>
           </div>
         </div>

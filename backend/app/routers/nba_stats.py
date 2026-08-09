@@ -154,6 +154,37 @@ async def nba_players(
     return [dict(r) for r in result.mappings().all()]
 
 
+async def _team_record_as_of(db: AsyncSession, team_id: int, game_date, season_id: int):
+    """Return {'wins': w, 'losses': l} for a team in games played BEFORE game_date
+    (i.e. the record going into the game), within the given season.
+    The game being displayed is excluded by filtering on date < game_date."""
+    if not team_id or not game_date:
+        return {"wins": 0, "losses": 0}
+    row = (
+        await db.execute(
+            text(
+                """
+                SELECT
+                  COALESCE(SUM(CASE WHEN (home_team_id=:tid AND home_score>away_score)
+                                       OR (away_team_id=:tid AND away_score>home_score)
+                                  THEN 1 ELSE 0 END), 0) AS wins,
+                  COALESCE(SUM(CASE WHEN (home_team_id=:tid AND home_score<away_score)
+                                       OR (away_team_id=:tid AND away_score<home_score)
+                                  THEN 1 ELSE 0 END), 0) AS losses
+                FROM nba.games
+                WHERE id <= 1000000
+                  AND season_id = :sid
+                  AND (home_team_id=:tid OR away_team_id=:tid)
+                  AND date < :gdate
+                  AND home_score IS NOT NULL AND away_score IS NOT NULL
+                """
+            )
+            .params(tid=team_id, sid=season_id, gdate=game_date)
+        )
+    ).one()
+    return {"wins": int(row.wins or 0), "losses": int(row.losses or 0)}
+
+
 @router.get("/nba/games/{game_id}/boxscore")
 async def nba_game_boxscore(
     game_id: int,
@@ -291,6 +322,21 @@ async def nba_game_boxscore(
             }
     except Exception:
         pass
+
+    # Team records as of this game (wins-losses going into the game).
+    try:
+        season_id = game.season_id
+        home_record = await _team_record_as_of(
+            db, game.home_team_id, game.date, season_id
+        )
+        away_record = await _team_record_as_of(
+            db, game.away_team_id, game.date, season_id
+        )
+        home_stats["record"] = home_record
+        away_stats["record"] = away_record
+    except Exception:
+        home_stats["record"] = {"wins": 0, "losses": 0}
+        away_stats["record"] = {"wins": 0, "losses": 0}
 
     return {
         "game_id": game.id,
