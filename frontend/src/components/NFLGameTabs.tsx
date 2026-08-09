@@ -317,9 +317,9 @@ export function BettingLinesCard({
   if (spread == null && over_under == null && homeML == null && awayML == null) return null;
 
   const pred = prediction?.predicted;
-  const ev = prediction?.ev;
+  const ev = prediction?.expected_value;
   const results = prediction?.results;
-  const lines = prediction?.lines;
+  const lines = prediction?.line;
   const mapResult = (r?: string | null) => {
     if (!r || r === "N/A") return null;
     if (r === "W") return "Win";
@@ -331,10 +331,10 @@ export function BettingLinesCard({
     ? [
         {
           label: "Spread",
-          pick: pred?.spread || "—",
-          ev: ev?.spread ?? null,
+          pick: pred?.ats || "—",
+          ev: ev?.ats ?? null,
           line: lines?.spread != null ? `Spread ${lines.spread >= 0 ? "+" : ""}${lines.spread}` : null,
-          result: mapResult(results?.spread),
+          result: mapResult(results?.ats),
           pickColor: "text-earl-400",
         },
         {
