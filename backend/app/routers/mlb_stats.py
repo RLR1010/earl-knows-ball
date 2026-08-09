@@ -1232,6 +1232,10 @@ async def mlb_game_boxscore(
         g.home_pitcher_name,
         g.away_pitcher_name,
         g.venue,
+        g.home_wins,
+        g.home_losses,
+        g.away_wins,
+        g.away_losses,
         g.scheduled_innings,
         g.actual_innings,
         g.attendance,
@@ -1669,6 +1673,16 @@ async def mlb_game_boxscore(
         "pick_card": pick_card,
         "splits": split_data.to_dict() if split_data else None,
         "lineups": lineups,
+        "away_record": (
+            f"{game_dict['away_wins']}-{game_dict['away_losses']}"
+            if game_dict.get("away_wins") is not None
+            else None
+        ),
+        "home_record": (
+            f"{game_dict['home_wins']}-{game_dict['home_losses']}"
+            if game_dict.get("home_wins") is not None
+            else None
+        ),
     }
 
 

@@ -528,6 +528,8 @@ export default function GameDetailPage() {
 interface MLBBoxScoreResponse {
   game: any; boxscore: any; linescore: any;
   betting_lines: any[]; pick_card: any; splits: any;
+  away_record?: string | null;
+  home_record?: string | null;
   lineups: { home: {order:number;name:string;position:string;stats?:{avg?:string;era?:string;ops?:string}}[]; away: {order:number;name:string;position:string;stats?:{avg?:string;era?:string;ops?:string}}[] } | null;
 }
 
@@ -557,7 +559,7 @@ function MLBClassicPage({ gameId, backHref }: { gameId: string | undefined; back
   if (loading) return <div className="text-center py-12 text-gray-500">Loading...</div>;
   if (!data) return <div className="text-center py-12 text-gray-500">Game not found.</div>;
 
-  const { game, boxscore, linescore, betting_lines, pick_card, splits, lineups } = data;
+  const { game, boxscore, linescore, betting_lines, pick_card, splits, lineups, away_record, home_record } = data;
   const isUpcoming = game?.status?.toLowerCase() === "scheduled" || game?.status?.toLowerCase() === "pregame";
   const isLive = game?.status?.toLowerCase() === "in_progress";
   const isFinal = game?.status?.toLowerCase() === "final";
@@ -598,6 +600,9 @@ function MLBClassicPage({ gameId, backHref }: { gameId: string | undefined; back
         <div className="flex items-center justify-center gap-8 md:gap-16 mt-4">
           <div className="text-right">
             <div className="text-lg font-semibold text-gray-300">{game.away_team}</div>
+            {away_record && (
+              <div className="text-xs font-medium text-gray-500 mt-0.5">{away_record}</div>
+            )}
             <div className={`text-5xl font-bold mt-1 ${aWon ? "text-earl-400" : "text-gray-400"}`}>
               {game.away_score != null ? game.away_score : "-"}
             </div>
@@ -605,15 +610,18 @@ function MLBClassicPage({ gameId, backHref }: { gameId: string | undefined; back
           <div className="text-3xl text-gray-600 font-bold">@</div>
           <div className="text-left">
             <div className="text-lg font-semibold text-gray-300">{game.home_team}</div>
+            {home_record && (
+              <div className="text-xs font-medium text-gray-500 mt-0.5">{home_record}</div>
+            )}
             <div className={`text-5xl font-bold mt-1 ${hWon ? "text-earl-400" : "text-gray-400"}`}>
               {game.home_score != null ? game.home_score : "-"}
             </div>
           </div>
         </div>
         <div className="text-sm text-gray-500 mt-3">
-          {game.venue && <span>{game.venue} | </span>}
-          {game.attendance && <span>Att: {game.attendance.toLocaleString()} | </span>}
-          {game.duration_minutes && <span>{Math.floor(game.duration_minutes / 60)}:{String(game.duration_minutes % 60).padStart(2, "0")}</span>}
+          {game.venue && <span>{game.venue}</span>}
+          {game.attendance && <span> · Att: {game.attendance.toLocaleString()}</span>}
+          {game.duration_minutes && <span> · {Math.floor(game.duration_minutes / 60)}:{String(game.duration_minutes % 60).padStart(2, "0")}</span>}
         </div>
       </div>
 
