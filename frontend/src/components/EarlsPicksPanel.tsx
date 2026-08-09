@@ -50,7 +50,7 @@ function ScoreLine({
   return (
     <div className="text-center flex flex-col sm:flex-row sm:items-center sm:justify-center gap-x-3 gap-y-0.5">
       <span className="text-xs uppercase tracking-wider text-gray-500">{heading}</span>
-      <div className="text-lg font-bold tracking-tight flex items-center gap-1.5">
+      <div className="text-lg font-bold tracking-tight flex items-center justify-center gap-1.5">
         <span className="text-gray-300">{score.awayLabel}</span>
         <span className="text-white"> {score.awayScore}</span>
         <span className="text-gray-600">@</span>
