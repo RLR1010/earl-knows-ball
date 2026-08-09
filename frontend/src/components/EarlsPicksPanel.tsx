@@ -34,9 +34,7 @@ type PredictedScore = {
 
 type EarlsPicksPanelProps = {
   items: EarlsPickItem[];
-  isFinal: boolean;
   predicted?: PredictedScore | null;
-  actual?: PredictedScore | null;
   title?: string; // default "Earl's Picks"
 };
 
@@ -118,9 +116,7 @@ function PickItemCard({ item }: { item: EarlsPickItem }) {
 
 export default function EarlsPicksPanel({
   items,
-  isFinal,
   predicted,
-  actual,
   title = "Earl's Picks",
 }: EarlsPicksPanelProps) {
   return (
@@ -137,7 +133,6 @@ export default function EarlsPicksPanel({
 
       <PremiumGate title={title}>
         {predicted && <ScoreLine heading="Predicted" score={predicted} />}
-        {isFinal && actual && <ScoreLine heading="Actual" score={actual} />}
 
         <div className="grid grid-cols-1 md:grid-cols-3 divide-y md:divide-y-0 md:divide-x divide-white/10">
           {items.map((item) => (

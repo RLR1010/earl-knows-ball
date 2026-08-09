@@ -500,7 +500,6 @@ export default function GameDetailPage() {
             homeML={homeML}
             awayML={awayML}
             prediction={predForTabs}
-            isFinal={isNflFinal}
           />
         );
       })()}
@@ -667,7 +666,6 @@ function MLBClassicPage({ gameId, backHref }: { gameId: string | undefined; back
           {pick_card && (
             <EarlsPicksPanel
               title="Earl's Picks"
-              isFinal={!!(game.home_score != null && game.away_score != null)}
               predicted={
                 pick_card.predictions?.home_runs != null
                   ? {
@@ -677,18 +675,6 @@ function MLBClassicPage({ gameId, backHref }: { gameId: string | undefined; back
                       homeScore: pick_card.predictions.home_runs,
                       total: pick_card.predictions.total,
                       margin: pick_card.predictions.margin,
-                    }
-                  : null
-              }
-              actual={
-                pick_card.actual?.home_runs != null && game.home_score != null
-                  ? {
-                      awayLabel: game.away_team,
-                      homeLabel: game.home_team,
-                      awayScore: pick_card.actual.away_runs,
-                      homeScore: pick_card.actual.home_runs,
-                      total: pick_card.actual.total,
-                      margin: pick_card.actual.margin,
                     }
                   : null
               }

@@ -744,7 +744,6 @@ export default function NBAGameTabs({ gameId, prediction }: NBAGameTabsProps) {
           {prediction && !prediction.detail && (
             <EarlsPicksPanel
               title="Earl's Picks"
-              isFinal={!!(prediction.actual?.home_score != null || prediction.actual?.away_score != null)}
               predicted={
                 prediction.predicted?.away_score != null && prediction.predicted?.home_score != null
                   ? {
@@ -758,24 +757,6 @@ export default function NBAGameTabs({ gameId, prediction }: NBAGameTabsProps) {
                       margin:
                         prediction.predicted.margin ||
                         Math.round((prediction.predicted.away_score - prediction.predicted.home_score) * 10) / 10,
-                    }
-                  : null
-              }
-              actual={
-                prediction.actual?.home_score != null && prediction.actual?.away_score != null
-                  ? {
-                      awayLabel: data.away.team || "Away",
-                      homeLabel: data.home.team || "Home",
-                      awayScore: prediction.actual.away_score,
-                      homeScore: prediction.actual.home_score,
-                      total:
-                        prediction.actual.total != null
-                          ? prediction.actual.total
-                          : prediction.actual.away_score + prediction.actual.home_score,
-                      margin:
-                        prediction.actual.margin != null
-                          ? prediction.actual.margin
-                          : prediction.actual.away_score - prediction.actual.home_score,
                     }
                   : null
               }

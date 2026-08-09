@@ -301,7 +301,6 @@ export function BettingLinesCard({
   homeML,
   awayML,
   prediction,
-  isFinal,
 }: {
   homeTeam: string;
   awayTeam: string;
@@ -314,7 +313,6 @@ export function BettingLinesCard({
   homeML?: number | null;
   awayML?: number | null;
   prediction?: any;
-  isFinal?: boolean;
 }) {
   if (spread == null && over_under == null && homeML == null && awayML == null) return null;
 
@@ -322,8 +320,6 @@ export function BettingLinesCard({
   const ev = prediction?.ev;
   const results = prediction?.results;
   const lines = prediction?.lines;
-  const predIsFinal =
-    isFinal ?? !!(results && (results.spread === "W" || results.spread === "L" || results.spread === "P"));
   const mapResult = (r?: string | null) => {
     if (!r || r === "N/A") return null;
     if (r === "W") return "Win";
@@ -402,7 +398,6 @@ export function BettingLinesCard({
       {prediction && (
         <EarlsPicksPanel
           title="Earl's Picks"
-          isFinal={predIsFinal}
           predicted={
             pred && pred.away_score != null
               ? {
@@ -414,7 +409,6 @@ export function BettingLinesCard({
                 }
               : null
           }
-          actual={null}
           items={pickItems}
         />
       )}
