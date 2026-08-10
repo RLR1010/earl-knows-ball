@@ -114,6 +114,8 @@ _LEGACY_USER_FACING = [
     conversations,
     games,
     home,
+    mlb_stats,
+    nba_stats,
     players,
     props,
     results,
@@ -125,8 +127,6 @@ _LEGACY_USER_FACING = [
 
 _COMPUTE_FACING = [
     ingest,
-    mlb_stats,
-    nba_stats,
     admin,
     writeups,
     original_articles,
