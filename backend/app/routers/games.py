@@ -34,6 +34,17 @@ class GameOut(BaseModel):
     away_team_id: int | None = None
     spread: float | None = None          # from home team perspective (+ = home underdog, - = home favorite)
     over_under: float | None = None
+    home_moneyline: int | None = None
+    away_moneyline: int | None = None
+    pick_spread: str | None = None
+    pick_over_under: str | None = None
+    pick_moneyline: str | None = None
+    pick_ats_ev: float | None = None
+    pick_ou_ev: float | None = None
+    pick_ml_ev: float | None = None
+    result_spread: str | None = None
+    result_over_under: str | None = None
+    result_moneyline: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -119,7 +130,22 @@ async def _nfl_team_record_as_of(db, team_id, game_date, season_id):
         return {"wins": 0, "losses": 0}
 
 
-async def _game_to_out(game: Game, spread: float | None = None, over_under: float | None = None) -> GameOut:
+async def _game_to_out(
+    game: Game,
+    spread: float | None = None,
+    over_under: float | None = None,
+    home_moneyline: int | None = None,
+    away_moneyline: int | None = None,
+    pick_spread: str | None = None,
+    pick_over_under: str | None = None,
+    pick_moneyline: str | None = None,
+    pick_ats_ev: float | None = None,
+    pick_ou_ev: float | None = None,
+    pick_ml_ev: float | None = None,
+    result_spread: str | None = None,
+    result_over_under: str | None = None,
+    result_moneyline: str | None = None,
+) -> GameOut:
     return GameOut(
         id=game.id,
         week=game.week,
@@ -139,6 +165,17 @@ async def _game_to_out(game: Game, spread: float | None = None, over_under: floa
         away_team_id=game.away_team_id,
         spread=spread,
         over_under=over_under,
+        home_moneyline=home_moneyline,
+        away_moneyline=away_moneyline,
+        pick_spread=pick_spread,
+        pick_over_under=pick_over_under,
+        pick_moneyline=pick_moneyline,
+        pick_ats_ev=pick_ats_ev,
+        pick_ou_ev=pick_ou_ev,
+        pick_ml_ev=pick_ml_ev,
+        result_spread=result_spread,
+        result_over_under=result_over_under,
+        result_moneyline=result_moneyline,
     )
 
 
@@ -184,9 +221,20 @@ async def list_games(
     if games:
         game_ids = [g.id for g in games]
         sql = text("""
-            SELECT game_id, closing_spread, closing_ou
-            FROM nfl.betting_lines_consolidated
-            WHERE game_id = ANY(:game_ids)
+            SELECT blc.game_id, blc.closing_spread, blc.closing_ou,
+                   blc.closing_home_ml, blc.closing_away_ml,
+                   gp.spread_pick AS pick_spread,
+                   gp.ou_pick AS pick_over_under,
+                   gp.ml_pick AS pick_moneyline,
+                   gp.ats_ev AS pick_ats_ev,
+                   gp.ou_ev AS pick_ou_ev,
+                   gp.ml_ev AS pick_ml_ev,
+                   gp.ats_result AS result_spread,
+                   gp.ou_result AS result_over_under,
+                   gp.ml_result AS result_moneyline
+            FROM nfl.betting_lines_consolidated blc
+            LEFT JOIN nfl.game_predictions gp ON gp.game_id = blc.game_id
+            WHERE blc.game_id = ANY(:game_ids)
         """)
         line_result = await db.execute(sql, {"game_ids": game_ids})
         latest_lines = {}
@@ -194,12 +242,23 @@ async def list_games(
             latest_lines[row.game_id] = {
                 "spread": float(row.closing_spread) if row.closing_spread is not None else None,
                 "over_under": float(row.closing_ou) if row.closing_ou is not None else None,
+                "home_moneyline": row.closing_home_ml,
+                "away_moneyline": row.closing_away_ml,
+                "pick_spread": row.pick_spread,
+                "pick_over_under": row.pick_over_under,
+                "pick_moneyline": row.pick_moneyline,
+                "pick_ats_ev": row.pick_ats_ev,
+                "pick_ou_ev": row.pick_ou_ev,
+                "pick_ml_ev": row.pick_ml_ev,
+                "result_spread": row.result_spread,
+                "result_over_under": row.result_over_under,
+                "result_moneyline": row.result_moneyline,
             }
     else:
         latest_lines = {}
 
     return [
-        await _game_to_out(g, latest_lines.get(g.id, {}).get("spread"), latest_lines.get(g.id, {}).get("over_under"))
+        await _game_to_out(g, **latest_lines.get(g.id, {}))
         for g in games
     ]
 

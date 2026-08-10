@@ -976,7 +976,16 @@ async def mlb_games(
         gp.predicted_margin,
         gp.ml_result AS pred_ml_result,
         gp.run_line_result AS pred_rl_result,
-        gp.ou_result AS pred_ou_result
+        gp.ou_result AS pred_ou_result,
+        gp.run_line_pick AS pick_spread,
+        gp.ou_pick AS pick_over_under,
+        gp.ml_pick AS pick_moneyline,
+        gp.ats_ev AS pick_ats_ev,
+        gp.ou_ev AS pick_ou_ev,
+        gp.ml_ev AS pick_ml_ev,
+        gp.run_line_result AS result_spread,
+        gp.ou_result AS result_over_under,
+        gp.ml_result AS result_moneyline
     FROM mlb.games g
     JOIN mlb.teams ht ON ht.id = g.home_team_id
     JOIN mlb.teams at ON at.id = g.away_team_id

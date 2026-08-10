@@ -412,12 +412,32 @@ async def nba_games(
            g.status::text, g.venue, g.attendance,
            ht.abbreviation AS home_team, at.abbreviation AS away_team,
            blc.closing_spread AS spread, blc.closing_ou AS over_under,
-           blc.closing_home_ml AS home_moneyline, blc.closing_away_ml AS away_moneyline
+           blc.closing_home_ml AS home_moneyline, blc.closing_away_ml AS away_moneyline,
+           CASE WHEN gp.spread_pick IS NOT NULL
+                THEN (CASE WHEN psp.name = ht.name THEN ht.abbreviation
+                           WHEN psp.name = at.name THEN at.abbreviation
+                           ELSE COALESCE(psp.abbreviation, gp.spread_pick) END)
+                ELSE NULL END AS pick_spread,
+           gp.ou_pick AS pick_over_under,
+           CASE WHEN gp.ml_pick IS NOT NULL
+                THEN (CASE WHEN pml.name = ht.name THEN ht.abbreviation
+                           WHEN pml.name = at.name THEN at.abbreviation
+                           ELSE COALESCE(pml.abbreviation, gp.ml_pick) END)
+                ELSE NULL END AS pick_moneyline,
+           gp.ats_ev AS pick_ats_ev,
+           gp.ou_ev AS pick_ou_ev,
+           gp.ml_ev AS pick_ml_ev,
+           gp.ats_result AS result_spread,
+           gp.ou_result AS result_over_under,
+           gp.ml_result AS result_moneyline
     FROM nba.games g
     JOIN nba.teams ht ON ht.id = g.home_team_id
     JOIN nba.teams at ON at.id = g.away_team_id
     JOIN nba.seasons s ON s.id = g.season_id
     LEFT JOIN nba.betting_lines_consolidated blc ON blc.game_id = g.id
+    LEFT JOIN nba.game_predictions gp ON gp.game_id = g.id
+    LEFT JOIN nba.teams psp ON psp.id = CASE WHEN gp.spread_pick ~ '^[0-9]+$' THEN gp.spread_pick::bigint END
+    LEFT JOIN nba.teams pml ON pml.id = CASE WHEN gp.ml_pick ~ '^[0-9]+$' THEN gp.ml_pick::bigint END
     WHERE {where_clause}
     ORDER BY g.date ASC
     """

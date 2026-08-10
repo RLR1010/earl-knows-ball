@@ -1,9 +1,9 @@
-"""Home page router — upcoming games across all sports."""
+"""Home page router — upcoming games across all sports (or a single sport)."""
 
 import math
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,6 +16,7 @@ DECIMAL_FIELDS = [
     "opening_spread", "opening_total",
     "opening_home_moneyline", "opening_away_moneyline",
     "predicted_margin",
+    "pick_ats_ev", "pick_ou_ev", "pick_ml_ev",
 ]
 
 
@@ -31,26 +32,95 @@ def _fix_decimals(row: dict) -> dict:
     return row
 
 
-@router.get("/home/upcoming-games")
-async def upcoming_games(db: AsyncSession = Depends(get_db)):
-    """Return the next 6 scheduled games across MLB, NBA, and NFL, sorted by date ascending."""
-    now = datetime.now(timezone.utc)
-    results = []
+# Shared SELECT column names so all three sports return the SAME shape the
+# schedule-page shared card (ScheduleGameCard) expects: home_team/away_team are
+# abbreviations, and the rich pick_* / result_* fields drive the picks panel.
+def _pick_aliases(kind: str):
+    """Return SQL alias fragments mapping each sport's prediction columns to the
+    shared pick_* / result_* shape."""
+    if kind == "mlb":
+        return {
+            "pick_spread": "gp.run_line_pick AS pick_spread",
+            "pick_over_under": "gp.ou_pick AS pick_over_under",
+            "pick_moneyline": "gp.ml_pick AS pick_moneyline",
+            "pick_ats_ev": "gp.ats_ev AS pick_ats_ev",
+            "pick_ou_ev": "gp.ou_ev AS pick_ou_ev",
+            "pick_ml_ev": "gp.ml_ev AS pick_ml_ev",
+            "result_spread": "gp.run_line_result AS result_spread",
+            "result_over_under": "gp.ou_result AS result_over_under",
+            "result_moneyline": "gp.ml_result AS result_moneyline",
+        }
+    if kind == "nba":
+        # NBA resolves numeric team-id picks to abbreviations to match nba_stats.py
+        return {
+            "pick_spread": "CASE WHEN gp.spread_pick IS NOT NULL "
+            "THEN (CASE WHEN psp.name = ht.name THEN ht.abbreviation "
+            "WHEN psp.name = at.name THEN at.abbreviation "
+            "ELSE COALESCE(psp.abbreviation, gp.spread_pick) END) "
+            "ELSE NULL END AS pick_spread",
+            "pick_over_under": "gp.ou_pick AS pick_over_under",
+            "pick_moneyline": "CASE WHEN gp.ml_pick IS NOT NULL "
+            "THEN (CASE WHEN pml.name = ht.name THEN ht.abbreviation "
+            "WHEN pml.name = at.name THEN at.abbreviation "
+            "ELSE COALESCE(pml.abbreviation, gp.ml_pick) END) "
+            "ELSE NULL END AS pick_moneyline",
+            "pick_ats_ev": "gp.ats_ev AS pick_ats_ev",
+            "pick_ou_ev": "gp.ou_ev AS pick_ou_ev",
+            "pick_ml_ev": "gp.ml_ev AS pick_ml_ev",
+            "result_spread": "gp.ats_result AS result_spread",
+            "result_over_under": "gp.ou_result AS result_over_under",
+            "result_moneyline": "gp.ml_result AS result_moneyline",
+        }
+    # nfl uses raw spread_pick / ats_result (matches games.py)
+    return {
+        "pick_spread": "gp.spread_pick AS pick_spread",
+        "pick_over_under": "gp.ou_pick AS pick_over_under",
+        "pick_moneyline": "gp.ml_pick AS pick_moneyline",
+        "pick_ats_ev": "gp.ats_ev AS pick_ats_ev",
+        "pick_ou_ev": "gp.ou_ev AS pick_ou_ev",
+        "pick_ml_ev": "gp.ml_ev AS pick_ml_ev",
+        "result_spread": "gp.ats_result AS result_spread",
+        "result_over_under": "gp.ou_result AS result_over_under",
+        "result_moneyline": "gp.ml_result AS result_moneyline",
+    }
 
-    # ── MLB ──
-    sql_mlb = """
+
+def _build_sql(schema: str, kind: str):
+    """Build the per-sport SELECT. Shared columns are identical so downstream
+    consumers (site home + sport home pages) get one uniform shape."""
+    p = _pick_aliases(kind)
+    pitcher_cols = (
+        "g.home_pitcher_name AS home_pitcher_name,\n"
+        "        g.away_pitcher_name AS away_pitcher_name,"
+        if kind == "mlb"
+        else "NULL AS home_pitcher_name,\n        NULL AS away_pitcher_name,"
+    )
+    # external_id: only MLB/NBA have a *_game_id column on the games table.
+    external_id = (
+        f"g.{kind}_game_id AS external_id"
+        if kind in ("mlb", "nba")
+        else "NULL AS external_id"
+    )
+    joins = (
+        f"LEFT JOIN {schema}.teams psp ON psp.id = CASE WHEN gp.spread_pick ~ '^[0-9]+$' "
+        f"THEN gp.spread_pick::bigint END\n"
+        f"    LEFT JOIN {schema}.teams pml ON pml.id = CASE WHEN gp.ml_pick ~ '^[0-9]+$' "
+        f"THEN gp.ml_pick::bigint END"
+        if kind == "nba"
+        else ""
+    )
+    return f"""
     SELECT
-        'mlb' AS sport,
+        '{kind}'::text AS sport,
         g.id,
-        g.mlb_game_id AS external_id,
+        {external_id},
         g.date,
         g.status::text AS status,
-        ht.abbreviation AS home_team_name,
-        at.abbreviation AS away_team_name,
+        ht.abbreviation AS home_team,
+        at.abbreviation AS away_team,
         g.home_score,
         g.away_score,
-        g.home_pitcher_name,
-        g.away_pitcher_name,
+        {pitcher_cols}
         g.venue,
         c.closing_spread AS spread,
         c.closing_ou AS over_under,
@@ -61,108 +131,62 @@ async def upcoming_games(db: AsyncSession = Depends(get_db)):
         c.opening_home_ml AS opening_home_moneyline,
         c.opening_away_ml AS opening_away_moneyline,
         gp.predicted_margin,
-        gp.run_line_result AS pred_rl_result,
-        gp.ml_result AS pred_ml_result,
-        gp.ou_result AS pred_ou_result,
-        gp.run_line_pick AS pred_rl_pick
-    FROM mlb.games g
-    JOIN mlb.teams ht ON ht.id = g.home_team_id
-    JOIN mlb.teams at ON at.id = g.away_team_id
-    JOIN mlb.seasons s ON s.id = g.season_id
-    LEFT JOIN mlb.betting_lines_consolidated c ON c.game_id = g.id
-    LEFT JOIN mlb.game_predictions gp ON gp.game_id = g.id
+        {p['pick_spread']},
+        {p['pick_over_under']},
+        {p['pick_moneyline']},
+        {p['pick_ats_ev']},
+        {p['pick_ou_ev']},
+        {p['pick_ml_ev']},
+        {p['result_spread']},
+        {p['result_over_under']},
+        {p['result_moneyline']}
+    FROM {schema}.games g
+    JOIN {schema}.teams ht ON ht.id = g.home_team_id
+    JOIN {schema}.teams at ON at.id = g.away_team_id
+    LEFT JOIN {schema}.betting_lines_consolidated c ON c.game_id = g.id
+    LEFT JOIN {schema}.game_predictions gp ON gp.game_id = g.id
+    {joins}
     WHERE g.status::text = 'SCHEDULED'
       AND g.date > :now
     ORDER BY g.date ASC
-    LIMIT 12
+    LIMIT :limit
     """
-    rows = (await db.execute(text(sql_mlb), {"now": now})).mappings().all()
-    results.extend(_fix_decimals(dict(r)) for r in rows)
 
-    # ── NBA ──
-    sql_nba = """
-    SELECT
-        'nba' AS sport,
-        g.id,
-        g.nba_game_id AS external_id,
-        g.date,
-        g.status::text AS status,
-        ht.abbreviation AS home_team_name,
-        at.abbreviation AS away_team_name,
-        g.home_score,
-        g.away_score,
-        NULL AS home_pitcher_name,
-        NULL AS away_pitcher_name,
-        g.venue,
-        blc.closing_spread AS spread,
-        blc.closing_ou AS over_under,
-        blc.closing_home_ml AS home_moneyline,
-        blc.closing_away_ml AS away_moneyline,
-        blc.opening_spread,
-        blc.opening_ou AS opening_total,
-        blc.opening_home_ml AS opening_home_moneyline,
-        blc.opening_away_ml AS opening_away_moneyline,
-        gp.predicted_margin,
-        gp.ats_result AS pred_rl_result,
-        gp.ml_result AS pred_ml_result,
-        gp.ou_result AS pred_ou_result,
-        gp.spread_pick AS pred_rl_pick
-    FROM nba.games g
-    JOIN nba.teams ht ON ht.id = g.home_team_id
-    JOIN nba.teams at ON at.id = g.away_team_id
-    JOIN nba.seasons s ON s.id = g.season_id
-    LEFT JOIN nba.betting_lines_consolidated blc ON blc.game_id = g.id
-    LEFT JOIN nba.game_predictions gp ON gp.game_id = g.id
-    WHERE g.status::text = 'SCHEDULED'
-      AND g.date > :now
-    ORDER BY g.date ASC
-    LIMIT 12
+
+@router.get("/home/upcoming-games")
+async def upcoming_games(
+    sport: str = Query("all", description="Filter by sport: all, mlb, nba, nfl"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return the next 6 scheduled games, sorted by date ascending.
+
+    - sport=all (default): 6 games across MLB, NBA, and NFL combined (site home).
+    - sport=mlb|nba|nfl: 6 games from that sport only (sport home pages).
     """
-    rows = (await db.execute(text(sql_nba), {"now": now})).mappings().all()
-    results.extend(_fix_decimals(dict(r)) for r in rows)
+    sport = (sport or "all").lower()
+    if sport not in ("all", "mlb", "nba", "nfl"):
+        sport = "all"
 
-    # ── NFL ──
-    sql_nfl = """
-    SELECT
-        'nfl' AS sport,
-        g.id,
-        NULL AS external_id,
-        g.date,
-        g.status::text AS status,
-        ht.abbreviation AS home_team_name,
-        at.abbreviation AS away_team_name,
-        g.home_score,
-        g.away_score,
-        NULL AS home_pitcher_name,
-        NULL AS away_pitcher_name,
-        g.venue,
-        blc.closing_spread AS spread,
-        blc.closing_ou AS over_under,
-        NULL AS home_moneyline,
-        NULL AS away_moneyline,
-        NULL AS opening_spread,
-        NULL AS opening_total,
-        NULL AS opening_home_moneyline,
-        NULL AS opening_away_moneyline,
-        gp.predicted_margin,
-        gp.ats_result AS pred_rl_result,
-        gp.ml_result AS pred_ml_result,
-        gp.ou_result AS pred_ou_result,
-        gp.spread_pick AS pred_rl_pick
-    FROM nfl.games g
-    JOIN nfl.teams ht ON ht.id = g.home_team_id
-    JOIN nfl.teams at ON at.id = g.away_team_id
-    JOIN nfl.seasons s ON s.id = g.season_id
-    LEFT JOIN nfl.betting_lines_consolidated blc ON blc.game_id = g.id
-    LEFT JOIN nfl.game_predictions gp ON gp.game_id = g.id
-    WHERE g.status::text = 'SCHEDULED'
-      AND g.date > :now
-    ORDER BY g.date ASC
-    LIMIT 12
-    """
-    rows = (await db.execute(text(sql_nfl), {"now": now})).mappings().all()
-    results.extend(_fix_decimals(dict(r)) for r in rows)
+    now = datetime.now(timezone.utc)
+    results = []
 
-    # Sort all by date and take the next 6
+    specs = []
+    if sport in ("all", "mlb"):
+        specs.append(("mlb", "mlb"))
+    if sport in ("all", "nba"):
+        specs.append(("nba", "nba"))
+    if sport in ("all", "nfl"):
+        specs.append(("nfl", "nfl"))
+
+    # When 'all', pull 12/sport so the top-6 across sports stays balanced.
+    per_sport_limit = 12 if sport == "all" else 6
+
+    for schema, kind in specs:
+        sql = _build_sql(schema, kind)
+        rows = (
+            await db.execute(text(sql), {"now": now, "limit": per_sport_limit})
+        ).mappings().all()
+        results.extend(_fix_decimals(dict(r)) for r in rows)
+
     results.sort(key=lambda g: g["date"])
     return results[:6]
