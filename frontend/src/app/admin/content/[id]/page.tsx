@@ -395,6 +395,9 @@ export default function ContentEditor() {
   const [error, setError] = useState<string | null>(null);
   const [qcResults, setQcResults] = useState<QCResult[]>([]);
   const [activeTab, setActiveTab] = useState<"public" | "premium">("public");
+  const [propTitle, setPropTitle] = useState<string | null>(null);
+  const [propContent, setPropContent] = useState<string | null>(null);
+  const [showProps, setShowProps] = useState(false);
   const [showQc, setShowQc] = useState(false);
   const [showResearch, setShowResearch] = useState(false);
   const [researchBrief, setResearchBrief] = useState<any>(null);
@@ -433,6 +436,8 @@ export default function ContentEditor() {
         setUsageLog(Array.isArray(usage) ? usage : []);
       }
       if (data.total_tokens != null) setTotalTokens(data.total_tokens);
+      setPropTitle(data.prop_title || null);
+      setPropContent(data.prop_content || null);
       if (data.accuracy_check != null) setAccuracyCheck(data.accuracy_check);
       if (data.accuracy_check_tokens != null) setAccuracyCheckTokens(data.accuracy_check_tokens);
       if (Array.isArray(data.rejection_history)) setRejectionHistory(data.rejection_history);
@@ -700,6 +705,18 @@ export default function ContentEditor() {
         >
           Research Context
         </button>
+        {(propTitle || propContent) && (
+          <button
+            onClick={() => setShowProps(!showProps)}
+            className={`px-4 py-2 text-sm font-medium rounded-lg border transition ${
+              showProps
+                ? "bg-amber-600/20 text-amber-400 border-amber-600/30"
+                : "bg-white/[0.03] text-gray-400 border-white/10 hover:text-white"
+            }`}
+          >
+            ⚖ Prop Bets
+          </button>
+        )}
       </div>
 
       {/* ── Editor pane ─────────────────────────── */}
@@ -728,6 +745,28 @@ export default function ContentEditor() {
           </div>
         </div>
       </div>
+
+      {/* ── Prop Bets article ──────────────────── */}
+      {showProps && (
+        <div className="mt-6 bg-white/[0.03] border border-amber-600/20 rounded-xl overflow-hidden">
+          <div className="border-b border-amber-600/20 px-4 py-2 flex items-center justify-between">
+            <span className="text-sm font-medium text-amber-400">
+              ⚖ {propTitle || "Prop Bets"}
+            </span>
+            <span className="text-xs text-gray-500">
+              {(propContent || "").split(/\s+/).length + " words"} · premium
+            </span>
+          </div>
+          <div className="p-4">
+            <textarea
+              readOnly
+              value={propContent || ""}
+              className="w-full h-[40vh] p-4 text-sm text-gray-300 bg-transparent resize-none focus:outline-none font-mono leading-relaxed"
+              placeholder="No prop article generated for this game."
+            />
+          </div>
+        </div>
+      )}
 
       {/* ── Quality checks ──────────────────────── */}
       {showQc && (

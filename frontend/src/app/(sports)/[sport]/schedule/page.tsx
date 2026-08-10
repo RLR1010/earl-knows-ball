@@ -4,15 +4,18 @@ import * as React from "react";
 import { useParams, useSearchParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import Image from "next/image";
-import { api, Game, formatSpread, formatSpreadAway, formatOverUnder } from "@/lib/api";
+import { api, Game, formatOverUnder } from "@/lib/api";
 import { getTeamLogoUrl } from "@/lib/team_logos";
 import GameCalendar from "@/components/GameCalendar";
 import { useSeo } from "@/components/Seo";
+import EarlsPicksPanel, { type EarlsPickItem } from "@/components/EarlsPicksPanel";
 
 // Regular season (1-18) + playoffs (19-22). Preseason weeks are stored in a
 // distinct range (30-33) so they never collide with the regular season.
 const REGULAR_WEEKS = Array.from({ length: 22 }, (_, i) => i + 1);
 const PRESEASON_WEEKS = [30, 31, 32, 33]; // stored as 29 + preseason_week
+// One continuous week list: preseason comes first, then regular season + playoffs.
+const ALL_WEEKS = [...PRESEASON_WEEKS, ...REGULAR_WEEKS];
 
 const PRESEASON_LABELS: Record<number, string> = {
   30: "PS Week 1",
@@ -38,6 +41,54 @@ function todayStr(): string {
   return local.toISOString().slice(0, 10);
 }
 
+/** Resolve a moneyline pick ("home" / "away" / team abbr / numeric team id) to a display team. */
+function resolvePickTeam(pick: string | null | undefined, home: string | null | undefined, away: string | null | undefined): string | null {
+  if (!pick) return null;
+  const p = String(pick).trim();
+  if (p.toLowerCase() === "home") return home ?? null;
+  if (p.toLowerCase() === "away") return away ?? null;
+  return p;
+}
+
+/** Build the three premium pick items (Run Line / Over-Under / Moneyline) for a game. */
+function buildPickItems(o: {
+  spreadPick?: string | null; overUnder?: string | null; mlPick?: string | null;
+  atsEv?: number | null; ouEv?: number | null; mlEv?: number | null;
+  spreadResult?: string | null; ouResult?: string | null; mlResult?: string | null;
+  home?: string | null; away?: string | null;
+  spreadLabel: string;
+}): EarlsPickItem[] {
+  const spreadPick = o.spreadPick ? String(o.spreadPick) : undefined;
+  const ouPick = o.overUnder ? String(o.overUnder).toUpperCase() : undefined;
+  const mlPick = resolvePickTeam(o.mlPick, o.home, o.away) ?? undefined;
+  return [
+    { label: o.spreadLabel, pick: spreadPick ?? "—", ev: o.atsEv ?? null, result: o.spreadResult ?? null },
+    { label: "Over/Under", pick: ouPick ?? "—", ev: o.ouEv ?? null, result: o.ouResult ?? null },
+    { label: "Moneyline", pick: mlPick ?? "—", ev: o.mlEv ?? null, result: o.mlResult ?? null },
+  ];
+}
+
+/** True if the game has any premium pick data worth rendering. */
+function hasPicks(p: { spread?: string | null; ou?: string | null; ml?: string | null }): boolean {
+  return !!(p.spread || p.ou || p.ml);
+}
+
+/** Format a moneyline integer to American odds string (e.g. -132, +110). */
+function formatMoneyline(ml: number | null | undefined): string {
+  if (ml === null || ml === undefined) return "-";
+  const n = Math.round(ml);
+  return n > 0 ? `+${n}` : `${n}`;
+}
+
+/** Return "favorite team | line" or "Pick'em". spread is from the home team's perspective. */
+function favoredSpread(spread: number | null | undefined, home: string | null | undefined, away: string | null | undefined): string {
+  if (spread === null || spread === undefined) return "-";
+  if (Math.abs(spread) < 0.05) return "Pick'em";
+  const line = spread > 0 ? `-${spread}` : `+${Math.abs(spread)}`;
+  const team = spread < 0 ? (home ?? "?") : (away ?? "?");
+  return `${team} ${line}`;
+}
+
 interface NBAGame {
   id: number;
   nba_game_id: number | null;
@@ -54,6 +105,15 @@ interface NBAGame {
   over_under: number | null;
   home_moneyline: number | null;
   away_moneyline: number | null;
+  pick_spread: string | null;
+  pick_over_under: string | null;
+  pick_moneyline: string | null;
+  pick_ats_ev: number | null;
+  pick_ou_ev: number | null;
+  pick_ml_ev: number | null;
+  result_spread: string | null;
+  result_over_under: string | null;
+  result_moneyline: string | null;
 }
 
 interface MLBGame {
@@ -78,6 +138,17 @@ interface MLBGame {
   pred_ml_result: string | null;
   pred_rl_result: string | null;
   pred_ou_result: string | null;
+  home_moneyline: number | null;
+  away_moneyline: number | null;
+  pick_spread: string | null;
+  pick_over_under: string | null;
+  pick_moneyline: string | null;
+  pick_ats_ev: number | null;
+  pick_ou_ev: number | null;
+  pick_ml_ev: number | null;
+  result_spread: string | null;
+  result_over_under: string | null;
+  result_moneyline: string | null;
 }
 
 function formatTime(iso: string) {
@@ -87,28 +158,6 @@ function formatTime(iso: string) {
     minute: "2-digit",
     timeZone: "America/New_York",
   }) + " ET";
-}
-
-function predBadge(label: string, result: string | null): React.ReactNode {
-  if (!result) return null;
-  const resultLower = result.toLowerCase();
-  let cls: string;
-  let letter: string;
-  if (resultLower === "win") {
-    cls = "bg-green-900/40 text-green-400 border border-green-500/30";
-    letter = "W";
-  } else if (resultLower === "push") {
-    cls = "bg-gray-700/40 text-gray-400 border border-gray-600/30";
-    letter = "P";
-  } else {
-    cls = "bg-red-900/40 text-red-400 border border-red-500/30";
-    letter = "L";
-  }
-  return (
-    <span className={`inline-block px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${cls}`}>
-      {label} {letter}
-    </span>
-  );
 }
 
 function statusBadge(status: string): { label: string; cls: string } {
@@ -379,7 +428,7 @@ function NBASchedule({ sport }: { sport: string }) {
         {isCurrentYear && (
           <button
             onClick={() => { autoSearchRef.current = 'idle'; setSelectedDate(todayStr()); }}
-            className="px-3 py-1.5 rounded-lg bg-earl-600/20 border border-earl-500/30 text-xs text-earl-400 hover:bg-earl-600/30 transition"
+            className="hidden sm:block px-3 py-1.5 rounded-lg bg-earl-600/20 border border-earl-500/30 text-xs text-earl-400 hover:bg-earl-600/30 transition"
           >Today</button>
         )}
 
@@ -429,16 +478,45 @@ function NBASchedule({ sport }: { sport: string }) {
 
                 <div className="mt-1.5">
                   <span className={`text-[10px] font-bold uppercase tracking-wider ${badge.cls}`}>{badge.label}</span>
-                  {!isFinal && !isLive && <div className="text-xs text-gray-500 mt-1">{formatTime(g.date)}</div>}
+                  {!isFinal && !isLive ? (
+                    <div className="text-xs text-gray-500 mt-1">{formatTime(g.date)}</div>
+                  ) : (
+                    <div className="h-4 mt-1" aria-hidden="true" />
+                  )}
                 </div>
 
-                {/* Betting line row */}
-                {g.spread != null && g.over_under != null && (
-                  <div className="mt-2 pt-2 border-t border-white/10 text-xs">
-                    <span className="text-earl-300">{formatSpreadAway(g.spread, g.away_team || "")}</span>
-                    <span className="mx-2 text-gray-700">|</span>
-                    <span className="text-earl-400">{formatSpread(g.spread, g.home_team || "")}</span>
-                    {g.over_under != null && <><span className="mx-2 text-gray-700">|</span><span className="text-gray-400">{formatOverUnder(g.over_under)}</span></>}
+                {/* Betting lines: spread (favored/Pick'em), moneyline, over/under */}
+                {(g.spread != null || g.over_under != null) && (
+                  <div className="mt-3 pt-3 pb-1 border-t border-white/10 text-xs text-center">
+                    <div className="text-gray-400">
+                      <span className="text-earl-300">{favoredSpread(g.spread, g.home_team, g.away_team)}</span>
+                      <span className="mx-2 text-gray-700">|</span>
+                      <span>{formatMoneyline(g.home_moneyline)}/{formatMoneyline(g.away_moneyline)}</span>
+                      {g.over_under != null && <><span className="mx-2 text-gray-700">|</span><span className="text-gray-400">{formatOverUnder(g.over_under)}</span></>}
+                    </div>
+                  </div>
+                )}
+
+                {/* Premium picks (self-gated) */}
+                {hasPicks({ spread: g.pick_spread, ou: g.pick_over_under, ml: g.pick_moneyline }) && (
+                  <div className="mt-2">
+                    <EarlsPicksPanel
+                      compact
+                      items={buildPickItems({
+                        spreadPick: g.pick_spread,
+                        overUnder: g.pick_over_under,
+                        mlPick: g.pick_moneyline,
+                        atsEv: g.pick_ats_ev,
+                        ouEv: g.pick_ou_ev,
+                        mlEv: g.pick_ml_ev,
+spreadResult: g.result_spread,
+ouResult: g.result_over_under,
+mlResult: g.result_moneyline,
+                        home: g.home_team,
+                        away: g.away_team,
+                        spreadLabel: "Spread",
+                      })}
+                    />
                   </div>
                 )}
               </Link>
@@ -647,7 +725,7 @@ function MLBSchedule({ sport }: { sport: string }) {
 
         {isCurrentYear && (
           <button onClick={() => { autoSearchRef.current = 'idle'; setSelectedDate(todayStr()); }}
-            className="px-3 py-1.5 rounded-lg bg-earl-600/20 border border-earl-500/30 text-xs text-earl-400 hover:bg-earl-600/30 transition"
+            className="hidden sm:block px-3 py-1.5 rounded-lg bg-earl-600/20 border border-earl-500/30 text-xs text-earl-400 hover:bg-earl-600/30 transition"
           >Today</button>
         )}
 
@@ -701,29 +779,45 @@ function MLBSchedule({ sport }: { sport: string }) {
                   {isFinal && g.duration_minutes && (
                     <span className="ml-2 text-[10px] text-gray-600">{Math.floor(g.duration_minutes / 60)}:{String(g.duration_minutes % 60).padStart(2, "0")}</span>
                   )}
-                  {!isFinal && !isLive && <div className="text-xs text-gray-500 mt-1">{formatTime(g.date)}</div>}
+                  {!isFinal && !isLive ? (
+                    <div className="text-xs text-gray-500 mt-1">{formatTime(g.date)}</div>
+                  ) : (
+                    <div className="h-4 mt-1" aria-hidden="true" />
+                  )}
                 </div>
 
-                {/* Venue / day-night */}
-                {!isFinal && g.venue && <div className="text-[10px] text-gray-600 truncate mt-1 px-2">{g.venue}</div>}
-                {g.day_night && !isFinal && <div className="text-[10px] text-gray-600">{g.day_night}</div>}
-
-                {/* Betting line row */}
-                {g.spread != null && g.over_under != null && (
-                  <div className="mt-2 pt-2 border-t border-white/10 text-xs">
-                    <span className="text-earl-300">{formatSpreadAway(g.spread, g.away_team || "")}</span>
-                    <span className="mx-2 text-gray-700">|</span>
-                    <span className="text-earl-400">{formatSpread(g.spread, g.home_team || "")}</span>
-                    {g.over_under != null && <><span className="mx-2 text-gray-700">|</span><span className="text-gray-400">{formatOverUnder(g.over_under)}</span></>}
+                {/* Betting lines: spread (favored/Pick'em), moneyline, over/under */}
+                {(g.spread != null || g.over_under != null) && (
+                  <div className="mt-3 pt-3 pb-1 border-t border-white/10 text-xs text-center">
+                    <div className="text-gray-400">
+                      <span className="text-earl-300">{favoredSpread(g.spread, g.home_team, g.away_team)}</span>
+                      <span className="mx-2 text-gray-700">|</span>
+                      <span>{formatMoneyline(g.home_moneyline)}/{formatMoneyline(g.away_moneyline)}</span>
+                      {g.over_under != null && <><span className="mx-2 text-gray-700">|</span><span className="text-gray-400">{formatOverUnder(g.over_under)}</span></>}
+                    </div>
                   </div>
                 )}
 
-                {/* Prediction badges row */}
-                {(g.pred_rl_result != null || g.pred_ou_result != null || g.pred_ml_result != null) && (
-                  <div className="mt-1.5 flex flex-wrap items-center justify-center gap-1">
-                    {predBadge("RL", g.pred_rl_result)}
-                    {predBadge("OU", g.pred_ou_result)}
-                    {predBadge("ML", g.pred_ml_result)}
+                {/* Premium picks (self-gated) */}
+                {hasPicks({ spread: g.pick_spread, ou: g.pick_over_under, ml: g.pick_moneyline }) && (
+                  <div className="mt-2">
+                    <EarlsPicksPanel
+                      compact
+                      items={buildPickItems({
+                        spreadPick: g.pick_spread,
+                        overUnder: g.pick_over_under,
+                        mlPick: g.pick_moneyline,
+                        atsEv: g.pick_ats_ev,
+                        ouEv: g.pick_ou_ev,
+                        mlEv: g.pick_ml_ev,
+spreadResult: g.result_spread,
+ouResult: g.result_over_under,
+mlResult: g.result_moneyline,
+                        home: g.home_team,
+                        away: g.away_team,
+                        spreadLabel: "Run Line",
+                      })}
+                    />
                   </div>
                 )}
               </Link>
@@ -741,6 +835,7 @@ function MLBSchedule({ sport }: { sport: string }) {
 function NFLSchedule({ sport }: { sport: string }) {
   const searchParams = useSearchParams();
   const router = useRouter();
+  const weekCarouselRef = useRef<HTMLDivElement>(null);
   const [games, setGames] = useState<Game[]>([]);
   const [week, setWeek] = useState(() => {
     const wp = searchParams.get('week');
@@ -776,6 +871,13 @@ function NFLSchedule({ sport }: { sport: string }) {
     }) + " ET";
   }
 
+  function scrollWeeks(dir: "left" | "right") {
+    const el = weekCarouselRef.current;
+    if (!el) return;
+    const amount = dir === "left" ? -200 : 200;
+    el.scrollBy({ left: amount, behavior: "smooth" });
+  }
+
   return (
     <>
       <h1 className="font-display text-4xl font-bold">NFL Schedule</h1>
@@ -789,37 +891,40 @@ function NFLSchedule({ sport }: { sport: string }) {
         </select>
       </div>
 
-      <div className="text-[10px] uppercase tracking-wider text-gray-500 font-semibold">Preseason</div>
-      <div className="flex gap-1 flex-wrap">
-        {PRESEASON_WEEKS.map((w) => (
-          <button
-            key={w}
-            onClick={() => setWeek(w)}
-            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
-              week === w
-                ? "bg-earl-600 text-white"
-                : "bg-white/5 text-gray-400 hover:bg-white/10"
-            }`}
-          >
-            {weekLabel(w)}
-          </button>
-        ))}
-      </div>
-      <div className="text-[10px] uppercase tracking-wider text-gray-500 font-semibold">Regular Season & Playoffs</div>
-      <div className="flex gap-1 flex-wrap">
-        {REGULAR_WEEKS.map((w) => (
-          <button
-            key={w}
-            onClick={() => setWeek(w)}
-            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
-              week === w
-                ? "bg-earl-600 text-white"
-                : "bg-white/5 text-gray-400 hover:bg-white/10"
-            }`}
-          >
-            {weekLabel(w)}
-          </button>
-        ))}
+      <div className="text-[10px] uppercase tracking-wider text-gray-500 font-semibold mb-1.5">Weeks</div>
+      <div className="flex items-center gap-2">
+        <button
+          onClick={() => scrollWeeks("left")}
+          aria-label="Previous weeks"
+          className="shrink-0 w-7 h-7 rounded-lg bg-white/5 border border-white/10 text-gray-300 hover:bg-white/10 hover:text-white transition flex items-center justify-center"
+        >
+          ‹
+        </button>
+        <div
+          ref={weekCarouselRef}
+          className="flex gap-1 overflow-x-auto pb-1 snap-x snap-mandatory [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        >
+          {ALL_WEEKS.map((w) => (
+            <button
+              key={w}
+              onClick={() => setWeek(w)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap snap-start transition shrink-0 ${
+                week === w
+                  ? "bg-earl-600 text-white"
+                  : "bg-white/5 text-gray-400 hover:bg-white/10"
+              }`}
+            >
+              {weekLabel(w)}
+            </button>
+          ))}
+        </div>
+        <button
+          onClick={() => scrollWeeks("right")}
+          aria-label="Next weeks"
+          className="shrink-0 w-7 h-7 rounded-lg bg-white/5 border border-white/10 text-gray-300 hover:bg-white/10 hover:text-white transition flex items-center justify-center"
+        >
+          ›
+        </button>
       </div>
 
       {loading ? (
@@ -859,19 +964,45 @@ function NFLSchedule({ sport }: { sport: string }) {
                 {/* Status/time */}
                 <div className="mt-1.5">
                   <span className={`text-[10px] font-bold uppercase tracking-wider ${badge.cls}`}>{badge.label}</span>
-                  {!isFinal && !isLive && <div className="text-xs text-gray-500 mt-1">{formatTime(g.date)}</div>}
+                  {!isFinal && !isLive ? (
+                    <div className="text-xs text-gray-500 mt-1">{formatDate(g.date)}</div>
+                  ) : (
+                    <div className="h-4 mt-1" aria-hidden="true" />
+                  )}
                 </div>
 
-                {/* Venue */}
-                {!isFinal && g.venue && <div className="text-[10px] text-gray-600 truncate mt-1 px-2">{g.venue}</div>}
+                {/* Betting lines: spread (favored/Pick'em), moneyline, over/under */}
+                {(g.spread != null || g.over_under != null) && (
+                  <div className="mt-3 pt-3 pb-1 border-t border-white/10 text-xs text-center">
+                    <div className="text-gray-400">
+                      <span className="text-earl-300">{favoredSpread(g.spread, g.home_team, g.away_team)}</span>
+                      <span className="mx-2 text-gray-700">|</span>
+                      <span>{formatMoneyline(g.home_moneyline)}/{formatMoneyline(g.away_moneyline)}</span>
+                      {g.over_under != null && <><span className="mx-2 text-gray-700">|</span><span className="text-gray-400">{formatOverUnder(g.over_under)}</span></>}
+                    </div>
+                  </div>
+                )}
 
-                {/* Betting line */}
-                {g.spread != null && (
-                  <div className="mt-2 pt-2 border-t border-white/10 text-xs">
-                    <span className="text-earl-300">{formatSpreadAway(g.spread, g.away_team || "")}</span>
-                    <span className="mx-2 text-gray-700">|</span>
-                    <span className="text-earl-400">{formatSpread(g.spread, g.home_team || "")}</span>
-                    {g.over_under != null && <><span className="mx-2 text-gray-700">|</span><span className="text-gray-400">{formatOverUnder(g.over_under)}</span></>}
+                {/* Premium picks (self-gated) */}
+                {hasPicks({ spread: g.pick_spread, ou: g.pick_over_under, ml: g.pick_moneyline }) && (
+                  <div className="mt-2">
+                    <EarlsPicksPanel
+                      compact
+                      items={buildPickItems({
+                        spreadPick: g.pick_spread,
+                        overUnder: g.pick_over_under,
+                        mlPick: g.pick_moneyline,
+                        atsEv: g.pick_ats_ev,
+                        ouEv: g.pick_ou_ev,
+                        mlEv: g.pick_ml_ev,
+spreadResult: g.result_spread,
+ouResult: g.result_over_under,
+mlResult: g.result_moneyline,
+                        home: g.home_team,
+                        away: g.away_team,
+                        spreadLabel: "Spread",
+                      })}
+                    />
                   </div>
                 )}
               </Link>

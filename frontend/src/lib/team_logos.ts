@@ -22,6 +22,15 @@ const NBA_TEAMS: Record<string, number> = {
   DET: 1610612765, CHA: 1610612766,
 };
 
+// Normalize NBA abbreviations returned by the game/team endpoints to the canonical
+// logo-resolver keys (endpoints return GS/NY/SA/NO/WSH/UTAH/MEL etc.).
+const NBA_ABBR_MAP: Record<string, string> = {
+  GS: "GSW", NY: "NYK", SA: "SAS", NO: "NOP", WSH: "WAS",
+  UTAH: "UTA", BK: "BKN", NOB: "NOP", PHO: "PHX",
+  // also guard against raw stats-ids / misc spellings
+  GSW: "GSW", NYK: "NYK", SAS: "SAS", NOP: "NOP", WAS: "WAS", UTA: "UTA",
+};
+
 export function getTeamLogoUrl(abbr: string, sport: string): string | null {
   const upper = abbr.toUpperCase();
   if (sport === "nfl") {
@@ -33,7 +42,8 @@ export function getTeamLogoUrl(abbr: string, sport: string): string | null {
     return null; // unknown team
   }
   if (sport === "nba") {
-    const id = NBA_TEAMS[upper];
+    const key = NBA_ABBR_MAP[upper] ?? upper;
+    const id = NBA_TEAMS[key];
     if (id) return `https://cdn.nba.com/logos/nba/${id}/primary/L/logo.svg`;
     return null;
   }

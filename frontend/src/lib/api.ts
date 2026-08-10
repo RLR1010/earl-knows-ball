@@ -71,6 +71,17 @@ export interface Game {
   away_score?: number;
   spread?: number | null;       // from home team perspective (+ = home underdog, - = home favorite)
   over_under?: number | null;
+  home_moneyline?: number | null;
+  away_moneyline?: number | null;
+  pick_spread?: string | null;
+  pick_over_under?: string | null;
+  pick_moneyline?: string | null;
+  pick_ats_ev?: number | null;
+  pick_ou_ev?: number | null;
+  pick_ml_ev?: number | null;
+  result_spread?: string | null;
+  result_over_under?: string | null;
+  result_moneyline?: string | null;
 }
 
 export interface DepthChartEntry {

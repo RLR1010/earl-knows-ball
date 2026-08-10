@@ -24,6 +24,8 @@ interface Game {
   writeup_status: string | null;
   writeup_version: number | null;
   writeup_has_inaccuracy?: boolean;
+  prop_title?: string | null;
+  prop_content?: string | null;
 }
 
 function weekLabel(game: Pick<Game, "season_type" | "week">): string | null {
@@ -211,6 +213,13 @@ function GameCard({
         </div>
       )}
 
+      {game.prop_title && game.writeup_status && (
+        <div className="text-[11px] text-amber-300/80 mb-3 flex items-center gap-1.5">
+          <span aria-hidden>⚖</span>
+          <span className="truncate">{game.prop_title}</span>
+        </div>
+      )}
+
       <div className="flex gap-2 mt-2">
         {game.writeup_status ? (
           <>
@@ -335,7 +344,9 @@ export default function AdminContent() {
         writeup_title: g.writeup_title || null,
         writeup_status: g.writeup_status || null,
         writeup_version: g.writeup_version || null,
-        writeup_has_inaccuracy: !!g.writeup_has_inaccuracy,
+        writeup_has_inaccuracy: g.writeup_has_inaccuracy || false,
+        prop_title: g.prop_title || null,
+        prop_content: g.prop_content || null,
       }));
 
       setGames(gameList);
