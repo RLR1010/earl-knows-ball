@@ -63,7 +63,7 @@ Output format (preferred): Return valid JSON with these keys:
 
 If you cannot return JSON, write the article starting with `## Title` on line 1, then the markdown body.
 
-Length: 1100-1500 words. Be detailed and comprehensive.
+Length: 1000-1400 words. This is a HARD LIMIT — write 1000-1400 words, target ~1200. Do not exceed 1400 words. Be detailed and comprehensive, but every section must earn its length — cut filler rather than padding past 1400.
 {tense_note}"""
 
     def public_system_prompt(self, is_historical: bool = False) -> str:
@@ -92,7 +92,7 @@ FORMATTING: This renders as a web article via markdown. Use `##` for the title o
 
 Keep it article-like — no blockquotes, no emoji, no chat-style formatting.
 
-Length: 800-1000 words.
+Length: 700-900 words. This is a HARD LIMIT — write 700-900 words, target ~800. Do not exceed 900 words. Shorter, sharper sentences; every sentence earns its place. If the article would go over, cut instead of padding.
 {tense_note}"""
 
     async def generate(

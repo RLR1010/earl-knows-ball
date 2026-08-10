@@ -190,7 +190,9 @@ async def list_mlb_games_for_content(
                 w.title AS writeup_title,
                 w.status AS writeup_status,
                 w.version AS writeup_version,
-                w.accuracy_check AS writeup_accuracy_check
+                w.accuracy_check AS writeup_accuracy_check,
+                w.prop_title AS prop_title,
+                w.prop_content AS prop_content
             FROM mlb.games g
             JOIN mlb.teams ht ON ht.id = g.home_team_id
             JOIN mlb.teams at ON at.id = g.away_team_id
@@ -215,6 +217,8 @@ async def list_mlb_games_for_content(
             "writeup_status": r.writeup_status,
             "writeup_version": r.writeup_version,
             "writeup_has_inaccuracy": _acc_to_inaccuracy(r.writeup_accuracy_check),
+            "prop_title": r.prop_title,
+            "prop_content": r.prop_content,
         }
         for r in rows.mappings()
     ]
@@ -376,6 +380,8 @@ async def get_mlb_writeup(
             SELECT
                 w.id, w.game_id, w.title, w.slug,
                 w.public_content, w.premium_content,
+                w.prop_title, w.prop_content,
+                w.prop_published_at,
                 w.status, w.version, w.is_historical,
                 w.generated_by, w.published_at, w.created_at,
                 w.quality_checks,
@@ -394,6 +400,8 @@ async def get_mlb_writeup(
             SELECT
                 w.id, w.game_id, w.title, w.slug,
                 w.public_content, w.premium_content,
+                w.prop_title, w.prop_content,
+                w.prop_published_at,
                 w.status, w.version, w.is_historical,
                 w.generated_by, w.published_at, w.created_at,
                 w.quality_checks,
@@ -423,6 +431,9 @@ async def get_mlb_writeup(
         "game_id": r["game_id"],
         "title": r["title"],
         "content": content,
+        "prop_title": r["prop_title"],
+        "prop_content": r["prop_content"] if tier == "premium" else None,
+        "prop_published_at": r["prop_published_at"].isoformat() if r.get("prop_published_at") else None,
         "matchup": f"{r['away_team']} @ {r['home_team']}",
         "status": r["status"],
         "version": r["version"],
@@ -455,6 +466,7 @@ async def get_mlb_writeup_by_game(
             SELECT
                 w.id AS writeup_id, w.game_id, w.title,
                 w.public_content, w.premium_content,
+                w.prop_title, w.prop_content, w.prop_published_at,
                 w.status, w.version, w.is_historical,
                 w.published_at, w.created_at
             FROM mlb.game_writeups w
@@ -474,6 +486,9 @@ async def get_mlb_writeup_by_game(
         "title": r["title"],
         "public_content": r["public_content"],
         "premium_content": r["premium_content"],
+        "prop_title": r["prop_title"],
+        "prop_content": r["prop_content"],
+        "prop_published_at": r["prop_published_at"].isoformat() if r["prop_published_at"] else None,
         "status": r["status"],
         "version": r["version"],
         "is_historical": r["is_historical"],
@@ -835,6 +850,7 @@ async def get_nfl_writeup_by_game(
     row = await db.execute(
         text("""SELECT w.id AS writeup_id, w.game_id, w.title,
                  w.public_content, w.premium_content,
+                 w.prop_title, w.prop_content, w.prop_published_at,
                  w.status, w.version, w.is_historical,
                  w.published_at, w.created_at
           FROM nfl.game_writeups w
@@ -850,6 +866,9 @@ async def get_nfl_writeup_by_game(
         "title": r["title"], "public_content": r["public_content"],
         "premium_content": r["premium_content"], "status": r["status"],
         "version": r["version"], "is_historical": r["is_historical"],
+        "prop_title": r["prop_title"],
+        "prop_content": r["prop_content"],
+        "prop_published_at": r["prop_published_at"].isoformat() if r["prop_published_at"] else None,
         "published_at": r["published_at"].isoformat() if r["published_at"] else None,
         "created_at": r["created_at"].isoformat() if r["created_at"] else None,
         "has_writeup": True,
@@ -1219,6 +1238,7 @@ async def get_nba_writeup_by_game_id(
     result = await db.execute(
         text("""
             SELECT w.id, w.game_id, w.title, w.public_content, w.premium_content,
+                   w.prop_title, w.prop_content, w.prop_published_at,
                    w.status, w.version
             FROM nba.game_writeups w
             WHERE w.game_id = :gid
@@ -1236,8 +1256,11 @@ async def get_nba_writeup_by_game_id(
         "title": row[2],
         "public_content": row[3],
         "premium_content": row[4],
-        "status": row[5],
-        "version": row[6],
+        "prop_title": row[5],
+        "prop_content": row[6],
+        "prop_published_at": row[7].isoformat() if row[7] else None,
+        "status": row[8],
+        "version": row[9],
     }
 
 

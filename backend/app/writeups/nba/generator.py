@@ -120,7 +120,7 @@ FORMATTING: Start with the article TITLE on its own line (use `##` as a heading)
 
 Bullet lists work for key points in moderation. Keep it article-like — no blockquotes, no emoji, no chat-style formatting.
 
-Length: 1100-1500 words. Be detailed and comprehensive."""
+Length: 1000-1400 words. This is a HARD LIMIT — write 1000-1400 words, target ~1200. Do not exceed 1400 words. Be detailed and comprehensive, but every section must earn its length — cut filler rather than padding past 1400."""
 
     def public_system_prompt(self, is_historical: bool = False) -> str:
         tense = (
@@ -144,7 +144,7 @@ Write a preview covering:
 IMPORTANT RULES:
 - NEVER include betting picks, ATS advice, or over/under recommendations.
 - Do mention betting lines factually ("Lakers are 4.5-point favorites") but don't advise on them.
-- Keep it to 800-1000 words.
+- Keep it to 700-900 words.
 - Be informative and entertaining. No hype or clichés.
 
 FORMATTING: Use `##` for the title on line 1. Use `##` section headers to organize the analysis. Use `**` for emphasis sparingly. For tables, use proper pipe-and-dash markdown syntax with a separator row:

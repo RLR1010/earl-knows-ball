@@ -15,6 +15,33 @@ from app.writeups.mlb.research import get_research_brief, get_public_research_br
 logger = logging.getLogger("writeups")
 
 
+def _format_title_date(value, fallback: str = "") -> str:
+    """Safely format a game date into "Aug 9, 2026" for the prop title."""
+    if not value:
+        return fallback
+    # ISO datetime strings like "2026-08-09T20:20:00-04:00"
+    if isinstance(value, str):
+        for fmt in (
+            "%Y-%m-%dT%H:%M:%S%z",
+            "%Y-%m-%dT%H:%M:%S",
+            "%Y-%m-%d",
+        ):
+            try:
+                return datetime.strptime(value, fmt).strftime("%b %-d, %Y")
+            except ValueError:
+                continue
+        # last resort: pull the YYYY-MM-DD prefix
+        import re
+
+        m = re.match(r"(\d{4}-\d{2}-\d{2})", value)
+        if m:
+            return datetime.strptime(m.group(1), "%Y-%m-%d").strftime("%b %-d, %Y")
+        return fallback
+    if hasattr(value, "strftime"):
+        return value.strftime("%b %-d, %Y")
+    return fallback
+
+
 class MLBWriteupGenerator(BaseWriteupGenerator):
     """MLB-specific write-up generator."""
 
@@ -200,6 +227,15 @@ class MLBWriteupGenerator(BaseWriteupGenerator):
             row_id = result.scalar()
 
         await db.commit()
+
+        # Generate a separate premium Prop Bets article for this game (post-
+        # commit so the main row definitely exists). Skipped when the game has
+        # no player prop odds. Failure here must NOT fail the main write-up.
+        try:
+            await self._generate_props_article(db, game_id, research_brief or {})
+        except Exception as e:  # noqa: BLE001
+            logger.warning("MLB props article step failed for game %s: %s", game_id, e)
+
         return row_id
 
     def _derive_status(self, qc_results: list[dict[str, Any]]) -> str:
@@ -216,6 +252,106 @@ class MLBWriteupGenerator(BaseWriteupGenerator):
 
         The caller is responsible for passing a stripped research brief
         (from get_public_research_brief). Makes a separate shorter LLM call
-        with an 800-1000 word target.
+        with a 700-900 word target.
         """
         return await super().generate_public(game_id, research, is_historical)
+
+    async def _generate_props_article(
+        self,
+        db: AsyncSession,
+        game_id: int,
+        research_brief: dict[str, Any],
+    ) -> None:
+        """Generate a separate premium Prop Bets article for *game_id*.
+
+        Skips entirely (no LLM call) when the game has no player prop odds.
+        Writes the resulting short article into the same game_writeups row's
+        ``prop_*`` columns.
+        """
+        import app.writeups.props_article as shared
+        import app.writeups.props_mlb as mlb_props
+
+        cfg = shared.SPORT_CONFIGS["mlb"]()
+
+        props = await shared.fetch_game_props(db, cfg, game_id)
+        if not props:
+            logger.info("MLB props article: game %s has no prop odds — skipping", game_id)
+            return
+        logger.info("MLB props article: game %s has %d prop lines", game_id, len(props))
+
+        # Title from the research brief, e.g. "Prop Bets for HOU vs SD — Aug 9, 2026".
+        research = research_brief
+        summary = research.get("game_summary") or {}
+        home_abbr = (summary.get("home_team") or {}).get("abbreviation") or "HOME"
+        away_abbr = (summary.get("away_team") or {}).get("abbreviation") or "AWAY"
+        game_date = summary.get("date")
+        game_date = _format_title_date(game_date)
+        title = shared.build_title(away_abbr, home_abbr, game_date)
+
+        prop_players = mlb_props.extract_prop_players(props)
+        season_lookup = mlb_props.build_season_lookup(research)
+
+        # Build per-player context: season stats (from research rosters) +
+        # recent game stats (last N batting lines from batting_game_stats).
+        player_context = []
+        for name, team_id in prop_players.items():
+            norm = mlb_props._norm(name)
+            season = season_lookup.get(norm)
+            recent = None
+            player_id = season.get("player_id") if season else None
+            if player_id is None:
+                try:
+                    player_id = await mlb_props.resolve_player_id(db, name, team_id)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("MLB props: player id lookup failed for %s: %s", name, e)
+            if player_id:
+                try:
+                    recent_lines = await mlb_props.fetch_player_recent_stats(db, player_id)
+                    if recent_lines:
+                        recent = {
+                            "last_n": len(recent_lines),
+                            "lines": recent_lines,
+                        }
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("MLB props: recent stats failed for %s: %s", name, e)
+            player_context.append(
+                {"name": name, "season": season, "recent": recent, "team_id": team_id}
+            )
+
+        system = shared.build_system_prompt()
+        # Send a representative slice of the props to the LLM (games can have
+        # 600+ lines; it only needs enough to pick a few).
+        props_for_llm = props[: shared.MAX_PROPS_TO_SEND] if len(props) > shared.MAX_PROPS_TO_SEND else props
+        user_prompt = shared.build_user_prompt(cfg, props_for_llm, player_context, research)
+
+        usage_log: list[dict[str, Any]] = []
+        content = await self._call_deepseek(
+            system,
+            user_prompt,
+            max_tokens=2000,
+            reasoning="minimal",
+            usage_log=usage_log,
+            call="generate_props_article",
+        )
+        if not content:
+            logger.warning("MLB props article: LLM returned no content for game %s — skipping", game_id)
+            return
+
+        total_tokens = sum(u.get("total_tokens") or 0 for u in usage_log)
+
+        # Persist the exact research that was shown to the LLM for the props
+        # article (prop odds + per-player season/recent stats) into the row's
+        # Research Context so it reflects everything the model saw.
+        prop_research = {
+            "game_id": int(game_id),
+            "prop_count": len(props),
+            "prop_lines_sent": len(props_for_llm),
+            "props": props,
+            "players": player_context,
+        }
+        await shared.save_props_article(
+            db, cfg, game_id, title, content.strip(),
+            generated_by="mlb-prop-bets", total_tokens=total_tokens or 0,
+            prop_research=prop_research,
+        )
+        logger.info("MLB props article saved for game %s (%d tokens)", game_id, total_tokens)

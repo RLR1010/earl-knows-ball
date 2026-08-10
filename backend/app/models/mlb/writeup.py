@@ -37,6 +37,14 @@ class MLBGameWriteup(Base):
     public_content = Column(Text, nullable=False, default="")
     premium_content = Column(Text, nullable=False, default="")
 
+    # Separate premium Prop Bets article (second article on the same game row).
+    # prop_content is premium-only; NULL until a props article is generated.
+    prop_title = Column(String(300), nullable=True)
+    prop_content = Column(Text, nullable=True)
+    prop_generated_by = Column(String(100), nullable=True)
+    prop_total_tokens = Column(Integer, nullable=True)
+    prop_published_at = Column(DateTime(timezone=True), nullable=True)
+
     # Research brief — structured data the AI used to generate
     research_brief = Column(JSON, nullable=True)
 

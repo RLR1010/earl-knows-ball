@@ -36,7 +36,7 @@ class BaseWriteupGenerator(ABC):
     # DeepSeek model to use
     MODEL = "deepseek-v4-flash"
     TEMPERATURE = 0.5  # moderate creativity for sports writing
-    MAX_TOKENS = 24576  # fallback when a call omits max_tokens; PUBLIC=24576, PREMIUM=32768 (4k-6k words total)
+    MAX_TOKENS = 24576  # fallback when a call omits max_tokens; PUBLIC=24576, PREMIUM=32768
     TIMEOUT = 120.0  # generous for longer generation
     # Retry policy for DeepSeek calls. Empty responses are a known DeepSeek
     # behavior when thinking mode burns the whole max_tokens budget on
@@ -99,8 +99,8 @@ OUTPUT FORMAT:
 Return ONLY valid JSON with the following fields:
 {{
     "title": "Engaging article title (include team names, max ~80 chars)",
-    "public_content": "Full public article text (800-1000 words, several paragraphs - be detailed and comprehensive)",
-    "premium_content": "Full premium analysis text (1100-1500 words, several paragraphs - be detailed and comprehensive)"
+    "public_content": "Full public article text. HARD LIMIT: 700-900 words. Do NOT exceed 900 words. Target ~800 words.",
+    "premium_content": "Full premium analysis text. HARD LIMIT: 1000-1400 words. Do NOT exceed 1400 words. Target ~1200 words."
 }}
 
 {tense_note}
@@ -134,7 +134,7 @@ Return valid JSON only. No markdown fences. No extra text."""
 
         return f"""You are a baseball writer for Earl Knows Ball, a sports analysis site. Write a game preview/article for the general public.
 
-Length: 800-1000 words.
+Length: 700-900 words. This is a HARD LIMIT — write 700-900 words, target ~800. Do not exceed 900 words. Shorter, sharper sentences; every sentence earns its place. If the article would go over, cut instead of padding.
 
 Focus on:
 - Game narrative and stakes (division race, wild card implications, streaks)
@@ -192,7 +192,7 @@ Bullet lists work for key points. Keep it article-like — no blockquotes, no em
 
 Write an exclusive insider analysis article for PAYING SUBSCRIBERS. This is a full article, not a short snippet.
 
-Length: 1100-1500 words — be detailed and comprehensive.
+Length: 1000-1400 words. This is a HARD LIMIT — write 1000-1400 words, target ~1200. Do not exceed 1400 words. Be detailed and comprehensive, but every section must earn its length — cut filler rather than padding past 1400.
 
 What to include:
 - Advanced stats breakdown and key matchup analysis
@@ -358,10 +358,6 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
         parsed["seo_description"] = seo_desc or None
         parsed["seo_keywords"] = seo_kw or None
 
-        # ---- 4. Quality checks ----
-        qc_results = self.run_quality_checks(parsed, research)
-        parsed["qc_results"] = qc_results
-
         # ---- 4b. Accuracy verification (final fact-check) ----
         # Verify every fact/stat/name in the article is traceable to the research
         # brief, and that the PUBLIC section contains no betting predictions.
@@ -408,9 +404,7 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
             if corrected.get("premium_content"):
                 parsed["premium_content"] = corrected["premium_content"]
             parsed["title"] = corrected.get("title") or parsed.get("title")
-            # Re-run QC + accuracy on the corrected article.
-            qc_results = self.run_quality_checks(parsed, research)
-            parsed["qc_results"] = qc_results
+            # Re-run accuracy on the corrected article.
             accuracy_check = await self._verify_accuracy(
                 parsed.get("public_content", ""),
                 parsed.get("premium_content", ""),
@@ -451,14 +445,13 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
             parsed["total_tokens"] = 0
 
         # ---- 5. Store ----
-        await self.store(game_id, parsed, qc_results)
+        await self.store(game_id, parsed, [])
 
         logger.info(
-            "write-up %s for game %s — qc=%s/%s passed",
+            "write-up %s for game %s — accuracy: %d finding(s)",
             title or "(no title)",
             game_id,
-            sum(1 for q in qc_results if q.get("passed")),
-            len(qc_results),
+            len(accuracy_check.get("findings") or []),
         )
         return parsed
 
@@ -1446,7 +1439,7 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
         """Generate a public-only write-up (no picks, no premium section).
 
         This is a separate, lighter LLM call meant for the public-facing
-        endpoint. Length: 800-1000 words — same as the public section of a full
+        endpoint. Length: 700-900 words — same as the public section of a full
         writeup. The stripped research keeps proprietary data out of the prompt.
         """
         system = self.SHARED_SYSTEM
@@ -1540,86 +1533,6 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
             "accuracy_check_tokens": accuracy_check.get("tokens") or 0,
             "rejection_history": rejection_history or [],
         }
-
-    # ── Quality Checks ──────────────────────────────────────
-
-    def run_quality_checks(
-        self,
-        article: dict[str, Any],
-        research: dict[str, Any],
-    ) -> QCResults:
-        """Run quality checks on the generated article.
-
-        Returns a list of check results, each with: *check_name*, *passed*, *detail*.
-        """
-        checks: QCResults = []
-
-        # Check 1: title length
-        title = article.get("title", "")
-        checks.append({
-            "check_name": "title_length",
-            "passed": 20 <= len(title) <= 120,
-            "detail": f"Title has {len(title)} characters (target: 20-120)",
-        })
-
-        # Check 2: public content length
-        public_content = article.get("public_content", "")
-        public_words = len(public_content.split())
-        checks.append({
-            "check_name": "public_word_count",
-            "passed": 300 <= public_words <= 6000,
-            "detail": f"Public content has {public_words} words (target: 300-6000)",
-        })
-
-        # Check 3: premium content length
-        premium_content = article.get("premium_content", "")
-        premium_words = len(premium_content.split())
-        checks.append({
-            "check_name": "premium_word_count",
-            "passed": 300 <= premium_words <= 6000,
-            "detail": f"Premium content has {premium_words} words (target: 300-6000)",
-        })
-
-        # Check 4: mentions both teams
-        gs = research.get("game_summary") or {}
-        _ht = gs.get("home_team") or {}
-        _at = gs.get("away_team") or {}
-        home_team = (_ht.get("name") if isinstance(_ht, dict) else None) or research.get("home_team_name") or ""
-        away_team = (_at.get("name") if isinstance(_at, dict) else None) or research.get("away_team_name") or ""
-        home_team = str(home_team).lower()
-        away_team = str(away_team).lower()
-        combined = (public_content + " " + premium_content).lower()
-
-        if home_team and away_team:
-            mentions_home = home_team in combined
-            mentions_away = away_team in combined
-            checks.append({
-                "check_name": "both_teams_mentioned",
-                "passed": mentions_home and mentions_away,
-                "detail": (
-                    f"Home team '{home_team}' mentioned: {mentions_home}, "
-                    f"Away team '{away_team}' mentioned: {mentions_away}"
-                ),
-            })
-        else:
-            checks.append({
-                "check_name": "both_teams_mentioned",
-                "passed": True,  # skip if names unavailable
-                "detail": "Team names not available in research — skipped",
-            })
-
-        # Check 5: premium is distinct from public
-        public_set = set(public_content.lower().split())
-        premium_set = set(premium_content.lower().split())
-        overlap = len(public_set & premium_set)
-        ratio = overlap / max(len(premium_set), 1)
-        checks.append({
-            "check_name": "premium_distinctness",
-            "passed": ratio < 0.6,
-            "detail": f"Word overlap ratio: {ratio:.0%} (target: <60%)",
-        })
-
-        return checks
 
     # ── Storage ─────────────────────────────────────────────
 
