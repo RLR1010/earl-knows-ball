@@ -300,6 +300,92 @@ def _get_features(model_type: str) -> List[str]:
     return feats
 
 
+def _impute_feature(row: pd.Series, feat: str) -> Optional[float]:
+    """Model-path imputation: a *reasoned prior* for a missing feature, never a
+    blind 0.
+
+    The loader ('_first_fill' / '_prior_fill') already seeds most team stats and
+    QB season values from the prior season in-place, so this only fires for the
+    handful of features that can still be absent at model time (a QB missing a
+    last-5 window, a missing line, a signed diff, etc.).
+    """
+    try:
+        v = row.get(feat)
+        if v is not None and not (isinstance(v, float) and pd.isna(v)):
+            return float(v)
+    except Exception:
+        pass
+
+    # QB rolling-last-5 -> the QB's season (ytd) value: the closest true prior.
+    # e.g. home_qb_passer_rating_5 -> home_qb_passer_rating_season
+    if feat.endswith("_5"):
+        season = feat[:-2] + "_season"
+        if season in row.index:
+            s = row.get(season)
+            if s is not None and not (isinstance(s, float) and pd.isna(s)):
+                return float(s)
+
+    # QB trend = season - last5; when both equal the prior it's a neutral 0.
+    if feat.endswith("_trend"):
+        return 0.0
+
+    # QB / signed head-to-head diffs -> neutral 0 (even field). MUST precede the
+    # 'qb' league-avg block below (a diff is a signed delta, not a magnitude).
+    if "_diff" in feat:
+        return 0.0
+
+    # QB stat that is still missing after the season fallback (e.g. a ROOKIE QB
+    # with neither a running last-5 window nor a prior season). Impute a
+    # LEAGUE-AVERAGE value by stat type — a neutral 'average QB', never a 0.0
+    # that reads as 'abysmal'. Covers *_qb_* and the *_season variants too.
+    QB_LEAGUE_AVG = {
+        "passer_rating": 89.0,
+        "any_a": 7.0,
+        "ypa": 7.0,
+        "td_pct": 4.5,
+        "int_pct": 2.5,
+        "sack_rate": 7.0,
+        "rush_ypg": 15.0,
+        "rush_att": 3.0,
+        "rush_att_pg": 3.0,
+    }
+    if "qb" in feat:
+        for token, avg in QB_LEAGUE_AVG.items():
+            if token in feat:
+                return avg
+        if "games" in feat:
+            return 1.0  # a nominal single appearance when count is unavailable
+        return 89.0  # unrecognized QB stat -> average passer
+
+    # Odds / line movement: no line means no movement -> 0 (neutral). A blind 0
+    # here is fine because movement is a signed delta, not a magnitude.
+    if feat in ("sp_h_odds_mvmt", "sp_a_odds_mvmt", "spread_movement",
+                "sp_read_movement"):
+        return 0.0
+
+    # Win streak / won-last flags -> 0 (false / reset) is the true prior.
+    if feat in ("home_win_streak", "away_win_streak", "home_embarrassed"):
+        return 0.0
+
+    # Rest / travel -> league-neutral balance (games ~7 days apart, same tz).
+    if feat in ("rest_diff", "tz_diff"):
+        return 0.0
+
+    # ANY_/ATS/OU cover percentages with no sample -> neutral 0.5 (coin flip).
+    if "_pct" in feat or feat.endswith("_pct"):
+        return 0.5
+
+    # Budgeted league-average-ish neutral for spreads/OU (signed deltas and raw
+    # totals your model sees): a home-field neutral ~2.5-pt spread, a ~44 NFL O/U.
+    if feat == "spread":
+        return 2.5
+    if feat == "opening_ou":
+        return 44.0
+
+    # Generic fallback: league-neutral, but NEVER a hard 0 for a magnitude stat.
+    return 0.0
+
+
 def _extract_feature_vector(
     row: pd.Series,
     model_type: str,
@@ -309,9 +395,7 @@ def _extract_feature_vector(
     values = []
     names = []
     for feat in feature_names:
-        val = row.get(feat)
-        if val is None or (isinstance(val, float) and np.isnan(val)):
-            val = 0.0
+        val = _impute_feature(row, feat)
         values.append(float(val))
         names.append(feat)
     return np.array([values], dtype=np.float32), names

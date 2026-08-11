@@ -1806,25 +1806,28 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
 
     # ── 1. Outcome targets ───────────────────────────────────────────────────
     home_won = df["home_score"] > df["away_score"]
-    # closing_spread can be NaN for seasons without betting data;
-    # must use np.where to avoid pandas NaN > 0 → False bug
-    _has_line = df["closing_spread"].notna()
+    # closing_spread/closing_ou can be None or NaN for scheduled games / seasons
+    # without betting data; coerce to float NaN so the eager >/comparisons below
+    # never throw (None > int → TypeError) and missing lines stay "no result".
+    _ou = pd.to_numeric(df["closing_ou"], errors="coerce")
+    _spread = pd.to_numeric(df["closing_spread"], errors="coerce")
+    _has_line = _spread.notna()
     df["home_ats_cover"] = np.where(
         _has_line & home_won.notna(),
-        (df["home_score"] - df["away_score"] + df["closing_spread"]) > 0,
+        (df["home_score"] - df["away_score"] + _spread) > 0,
         float("nan")
     ).astype(float)
     df["away_ats_cover"] = np.where(
         _has_line & home_won.notna(),
-        (df["away_score"] - df["home_score"] - df["closing_spread"]) > 0,
+        (df["away_score"] - df["home_score"] - _spread) > 0,
         float("nan")
     ).astype(float)
     df["over_result"] = np.where(
-        df["closing_ou"].notna() & df["home_score"].notna() & df["away_score"].notna(),
-        (df["home_score"] + df["away_score"]) > df["closing_ou"],
+        _ou.notna() & df["home_score"].notna() & df["away_score"].notna(),
+        (pd.to_numeric(df["home_score"], errors="coerce") + pd.to_numeric(df["away_score"], errors="coerce")) > _ou,
         float("nan")
     ).astype(float)
-    df["home_score_margin"] = df["home_score"] - df["away_score"]
+    df["home_score_margin"] = pd.to_numeric(df["home_score"], errors="coerce") - pd.to_numeric(df["away_score"], errors="coerce")
 
     # ── 2. Rest days ─────────────────────────────────────────────────────────
     df["game_date"] = pd.to_datetime(df["game_date"])
@@ -2676,12 +2679,16 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
             "home_qb_ypa_trend", "away_qb_ypa_trend",
         ]
         qb_present = [c for c in qb_feat_cols if c in df.columns]
-        if qb_present:
-            df[qb_present] = df[qb_present].fillna(0.0)
+        # NOTE: intentionally do NOT fillna(0.0) here. A missing QB stat (rookie /
+        # backup QB with <5 games, or no prior-season) must stay NaN so the PICK
+        # CARD blanks it (never shows a fake 0.0 rating). The MODEL fills a
+        # reasoned prior via engine._impute_feature (season -> prior-season ->
+        # league-neutral), never blind-0.
 
         logger.info("Merged %d QB feature columns", len(qb_present))
     else:
-        # No QB stats available — zero fill all QB feature columns
+        # No QB stats available — build the QB columns as NaN (NOT zero-filled).
+        # Same principle as above: pick card blanks, model imputes a reasoned prior.
         qb_feat_names = [
             "home_qb_passer_rating_5", "away_qb_passer_rating_5",
             "home_qb_any_a_5", "away_qb_any_a_5",
@@ -2706,8 +2713,8 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
             "home_qb_passer_rating_trend", "away_qb_passer_rating_trend",
             "home_qb_ypa_trend", "away_qb_ypa_trend",
         ]
-        zero_fill = {col: 0.0 for col in qb_feat_names}
-        df = pd.concat([df, pd.DataFrame(zero_fill, index=df.index)], axis=1)
+        nan_fill = {col: float("nan") for col in qb_feat_names}
+        df = pd.concat([df, pd.DataFrame(nan_fill, index=df.index)], axis=1)
 
         logger.debug("No QB stats available — zero-filled %d QB features", len(qb_feat_names))
 
