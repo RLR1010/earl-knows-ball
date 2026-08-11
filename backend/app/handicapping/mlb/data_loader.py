@@ -1839,20 +1839,36 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
             result[l5er] = vals_er
             result[l5ip] = vals_ip
     
-    # Convert L5 sums to bullpen ERA rate
+    # Convert L5 sums to bullpen ERA rate.
+    # RAW truth: era from actual bullpen innings when the team has thrown any
+    # (ip_l5 > 0). When there is NO bullpen data (0 innings in the last-5 window
+    # — e.g. team hasn't played or no relief work logged), the value is missing
+    # and should fall back to the PREVIOUS-YEAR team ERA (h_prior_era), never 0
+    # (a 0.00 reads as "unstoppable bullpen") and never the old flat 4.5.
     for pfx in ["h_", "a_"]:
         er_l5 = f"{pfx}bullpen_er_l5"
         ip_l5 = f"{pfx}bullpen_ip_l5"
         era = f"{pfx}bullpen_era_l5"
         ip_outs = f"{pfx}bullpen_ip_l5"
+        prior_era = f"{pfx}prior_era"
         if er_l5 in result.columns:
-            safe_ip = result[ip_l5].fillna(0).replace(0, 9)
-            result[era] = (9.0 * result[er_l5].fillna(0) / (safe_ip / 3.0)).fillna(4.5)
+            # real ERA from actual innings (ip_l5>0). 0/0 (no data) -> NaN.
+            ip_safe = result[ip_l5].where(result[ip_l5].gt(0))
+            real_era = 9.0 * result[er_l5] / (ip_safe / 3.0)
+            # no data -> prior-year team ERA as the fallback (never 0)
+            if prior_era in result.columns:
+                result[era] = real_era.fillna(result[prior_era])
+            else:
+                result[era] = real_era
             result[era] = result[era].clip(lower=0, upper=27)
-            result[ip_outs] = result[ip_l5].fillna(0) / 3.0
+            # Bullpen IP (innings): real when data exists (outs/3), else NULL.
+            # Preserve the trained model's innings scale (//3), but a genuinely
+            # missing window stays NULL (never fabricate innings a team didn't pitch).
+            ip_out_ser = result[ip_l5]
+            result[ip_outs] = (ip_out_ser.where(ip_out_ser.gt(0)) / 3.0)
         else:
-            result[era] = 4.5
-            result[ip_outs] = 1.5
+            result[era] = result[prior_era] if prior_era in result.columns else np.nan
+            result[ip_outs] = np.nan
 
     # PRIME DIRECTIVE: Every pick card MUST include complete handicapping data.
     # So we keep all the raw columns too for the pick card builder.

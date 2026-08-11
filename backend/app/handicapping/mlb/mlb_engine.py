@@ -334,6 +334,15 @@ def _impute_feature(row: pd.Series, c: str) -> Optional[float]:
     if c in rf_prior:
         return _nanok(row.get(rf_prior[c]))
 
+    # Bullpen ERA (last-5): missing window -> prior-year team ERA (not 0 and not
+    # the old flat 4.5). home bullpen -> h_prior_era, away -> a_prior_era.
+    bp_era = {
+        "h_bullpen_era_l5": "h_prior_era",
+        "a_bullpen_era_l5": "a_prior_era",
+    }
+    if c in bp_era:
+        return _nanok(row.get(bp_era[c]))
+
     # Weather — use realistic league/season averages, not the old crude 80/50.
     if c in ("temperature", "temp"):
         return 69.0   # league avg MLB temp
