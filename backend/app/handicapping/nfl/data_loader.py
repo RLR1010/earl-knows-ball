@@ -1854,8 +1854,12 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
     df["opening_ou"] = df["opening_ou"]
     df["spread_movement"] = df["closing_spread"] - df["opening_spread"]
     df["ou_movement"] = df["closing_ou"] - df["opening_ou"]
-    df["sp_h_odds_mvmt"] = df["closing_spread_home_odds"] - df["opening_spread_home_odds"].fillna(0)
-    df["sp_a_odds_mvmt"] = df["closing_spread_away_odds"] - df["opening_spread_away_odds"].fillna(0)
+    # Odds movement needs BOTH an opening and closing moneyline. If the opening
+    # odds are missing, movement is UNKNOWN -> leave NaN (pick card blanks) and
+    # let _impute_feature give the model a neutral 0. Do NOT fillna(0) the
+    # opening line here (that fabricates full movement as if the line opened at 0).
+    df["sp_h_odds_mvmt"] = df["closing_spread_home_odds"] - df["opening_spread_home_odds"]
+    df["sp_a_odds_mvmt"] = df["closing_spread_away_odds"] - df["opening_spread_away_odds"]
 
     # ── 5. Rolling team stats (per team across ALL games, home & away) ───
     df = df.sort_values(["season_id", "week", "game_date"]).reset_index(drop=True)
@@ -2045,11 +2049,13 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
             .fillna(0.0)
         )
 
-    # Season-long ATS (expanding within each team+season)
+    # Season-long ATS (expanding within each team+season). Leave NaN when a team
+    # has no graded games yet (first game / no betting data) so the PICK CARD
+    # blanks it; _impute_feature gives the model a neutral 0.5. Do not fillna(0.5)
+    # in-place (that fabricates a cover rate for display).
     tg["season_ats_pct"] = (
         tg.groupby(["team_id", "season_id"])["cover"]
         .transform(lambda s: s.shift(1).expanding().mean())
-        .fillna(0.5)
     )
     # Season wins
     tg["season_wins"] = (
@@ -2058,18 +2064,17 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
         .fillna(0)
     )
 
-    # Home/away ATS splits — position-specific (kept for situational data)
+    # Home/away ATS splits — position-specific (kept for situational data).
+    # Same principle: leave NaN (blank on card) when no graded games, model gets 0.5.
     homes = tg[tg.position == "home"].copy()
     homes["ats_cover_pct_r5"] = (
         homes.groupby("team_id")["cover"]
         .transform(lambda s: s.shift(1).rolling(5, min_periods=1).mean())
-        .fillna(0.5)
     )
     aways = tg[tg.position == "away"].copy()
     aways["ats_cover_pct_r5"] = (
         aways.groupby("team_id")["cover"]
         .transform(lambda s: s.shift(1).rolling(5, min_periods=1).mean())
-        .fillna(0.5)
     )
 
     # Streaks
@@ -2166,8 +2171,10 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
     # Home/away ATS split features from position-specific computation
     _homes_ats = homes.set_index("game_id")["ats_cover_pct_r5"]
     _aways_ats = aways.set_index("game_id")["ats_cover_pct_r5"]
-    df["home_ats_home_pct_r5"] = df["game_id"].map(_homes_ats).fillna(0.5)
-    df["away_ats_away_pct_r5"] = df["game_id"].map(_aways_ats).fillna(0.5)
+    # leave NaN (blank on pick card) when no graded games; model gets 0.5 via
+    # _impute_feature. Do not fillna(0.5) — that fabricates a cover % for display.
+    df["home_ats_home_pct_r5"] = df["game_id"].map(_homes_ats)
+    df["away_ats_away_pct_r5"] = df["game_id"].map(_aways_ats)
     # ── 16. Division & primetime flags ───────────────────────────────────
     # NFL division names (North/East/South/West) repeat across conferences, so a
     # same-division game REQUIRES matching conference too (e.g. GB NFC North vs
