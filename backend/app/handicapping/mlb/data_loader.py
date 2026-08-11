@@ -1328,13 +1328,18 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
             for h, a in zip(h_abbr, a_abbr)
         ]
 
-    # Day/night game flag
-    if "time" in result.columns:
-        result["day_night"] = result["time"].apply(
-            lambda t: "D" if pd.notna(t) and str(t).startswith("1") else "N"
-        )
-    elif "date" in result.columns:
-        result["day_night"] = "N"  # default night
+    # Day/night game flag. Prefer the authoritative SQL `g.day_night` (set by the
+    # ingest from the actual scheduled local start time — verified 'day'/'night'
+    # correctly against real games). Only if that column is missing do we fall
+    # back to an hour-based guess.
+    if "day_night" not in result.columns:
+        if "time" in result.columns:
+            # time is a scheduled local clock (e.g. '19:10'); D if < 5pm
+            result["day_night"] = result["time"].apply(
+                lambda t: "D" if pd.notna(t) and str(t)[:2].isdigit() and int(str(t)[:2]) < 17 else "N"
+            )
+        else:
+            result["day_night"] = "N"  # default night
 
     # Stadium / park factors
     if "venue_roof" in result.columns:
