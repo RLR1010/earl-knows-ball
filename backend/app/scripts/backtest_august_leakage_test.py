@@ -27,7 +27,7 @@ from app.handicapping.mlb.mlb_engine import (
 )
 
 YEAR = 2026
-AUG_START = "2026-08-01"
+AUG_START = "2026-08-04"
 AUG_END = "2026-08-12"
 
 

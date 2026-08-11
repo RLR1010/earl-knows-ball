@@ -282,6 +282,22 @@ def _get_models_for_season(year: int) -> Dict[str, Optional[xgb.Booster]]:
     }
 
 
+def _model_file_for_year(year: int, model_type: str) -> Optional[str]:
+    """Return the basename of the pkl model file for *model_type*/*year*,
+    or ``None`` if it cannot be resolved. Stored on every pick."""
+    paths = _resolve_year_pkl_paths(model_type)
+    p = paths.get(year)
+    return p.name if (p is not None and p.name) else None
+
+
+def _model_file_map(year: int) -> Dict[str, Optional[str]]:
+    """Return ``{"ats": filename, "ou": filename}`` for *year*."""
+    return {
+        "ats": _model_file_for_year(year, "ats"),
+        "ou": _model_file_for_year(year, "ou"),
+    }
+
+
 # ── Year evaluation ──────────────────────────────────────────────────────────────
 
 
@@ -623,6 +639,9 @@ async def _backtest_season_inner(
     for year in years:
         ats_model = _load_model_for_year(year, "ats")
         ou_model = _load_model_for_year(year, "ou")
+        ats_model_file = _model_file_for_year(year, "ats")
+        ou_model_file = _model_file_for_year(year, "ou")
+        logger.info("  Pkl for season %d: ats=%s ou=%s", year, ats_model_file, ou_model_file)
 
         if ats_model is None and ou_model is None:
             logger.warning("  No models for year %s – skipping", year)
@@ -678,6 +697,8 @@ async def _backtest_season_inner(
                     ou_features=(ou_feats, ou_names),
                     db=None,
                     curve_data=curve_data,
+                    ats_model_file=ats_model_file,
+                    ou_model_file=ou_model_file,
                 )
                 total_game_preds += 1
 
@@ -743,6 +764,8 @@ async def batch_predict_upcoming_games(
     # Load models for this season
     ats_model = _load_model_for_year(year, "ats")
     ou_model = _load_model_for_year(year, "ou")
+    ats_model_file = _model_file_for_year(year, "ats")
+    ou_model_file = _model_file_for_year(year, "ou")
     if ats_model is None or ou_model is None:
         logger.warning("  Missing models for season %s – cannot predict", year)
         return []
@@ -759,7 +782,8 @@ async def batch_predict_upcoming_games(
             pick_card = await _build_pick_card(row, ats_model, ou_model, year,
                                                 game_id=int(row["game_id"]))
             pick_cards.append(pick_card)
-            await _save_api_prediction(row, pick_card, db=db)
+            await _save_api_prediction(row, pick_card, db=db, ats_model_file=ats_model_file,
+                                       ou_model_file=ou_model_file)
         except Exception as exc:
             logger.error("  Failed to predict game %s: %s", row.get("game_id"), exc)
             continue
@@ -844,6 +868,8 @@ async def _save_api_prediction(
     row: pd.Series,
     pick_card: Dict[str, Any],
     db: Optional[async_sessionmaker] = None,
+    ats_model_file: str = None,
+    ou_model_file: str = None,
 ) -> None:
     """Save a predicted pick card using the NBAGamePrediction ORM model.
 
@@ -999,6 +1025,8 @@ async def _save_api_prediction(
         shap_json=json.dumps(pick_card.get("shap_info"), default=str)
         if pick_card.get("shap_info")
         else None,
+        ats_model_file=ats_model_file,
+        ou_model_file=ou_model_file,
         source=source,
         created_at=now,
     )
@@ -1038,6 +1066,8 @@ async def _save_backtest_prediction(
     ou_features=None,
     db: AsyncSession = None,
     curve_data: dict = None,
+    ats_model_file: str = None,
+    ou_model_file: str = None,
 ) -> None:
     """Save a single backtest prediction using the NBAGamePrediction ORM model.
 
@@ -1275,6 +1305,8 @@ async def _save_backtest_prediction(
             splits_json=splits if isinstance(splits, str) else json.dumps(splits, default=str) if splits else None,
             features_json=features_json_str,
             shap_json=shap_json_str,
+            ats_model_file=ats_model_file,
+            ou_model_file=ou_model_file,
             source="backtest",
             created_at=datetime.now(timezone.utc),
         )

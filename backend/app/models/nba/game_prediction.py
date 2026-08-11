@@ -63,6 +63,10 @@ class NBAGamePrediction(Base):
     # Metadata
     source = Column(String(50), nullable=True)  # "backtest" or "api"
 
+    # Model provenance: exact pkl model file used for the ats and ou picks
+    ats_model_file = Column(String(255), nullable=True, comment="Filename of the pkl model used for the ATS/spread pick")
+    ou_model_file = Column(String(255), nullable=True, comment="Filename of the pkl model used for the O/U pick")
+
     # Enriched metadata for display
     home_stats_json = Column(Text, nullable=True, comment="JSON — NBATeamStats.to_dict() for home team")
     away_stats_json = Column(Text, nullable=True, comment="JSON — NBATeamStats.to_dict() for away team")

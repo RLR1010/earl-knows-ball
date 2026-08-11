@@ -175,6 +175,14 @@ def _load_model_for_year(model_type: str, year: int) -> Optional[xgb.Booster]:
     return None
 
 
+def _model_file_for_year(model_type: str, year: int) -> Optional[str]:
+    """Return the basename of the pkl model file for *model_type*/*year*,
+    or ``None`` if it cannot be resolved. Stored on every pick."""
+    paths = _resolve_year_pkl_paths(model_type)
+    p = paths.get(year)
+    return p.name if (p is not None and p.name) else None
+
+
 # ── Feature helpers ──────────────────────────────────────────────────────────────
 
 _FEATURES_CACHE_ATS: Optional[List[str]] = None
@@ -426,6 +434,8 @@ async def _backtest_season_inner(
             logger.info("Saving %d backtest predictions for %s...", len(year_df), test_year)
             ats_model = _load_model_for_year("ats", test_year)
             ou_model = _load_model_for_year("ou", test_year)
+            ats_model_file = _model_file_for_year("ats", test_year)
+            ou_model_file = _model_file_for_year("ou", test_year)
             for idx, row in year_df.iterrows():
                 ats_feats = _get_features("ats") if ats_model is not None else None
                 ou_feats = _get_features("ou") if ou_model is not None else None
@@ -437,6 +447,8 @@ async def _backtest_season_inner(
                     ou_features=ou_feats,
                     db=None,
                     curve_data=curve_data,
+                    ats_model_file=ats_model_file,
+                    ou_model_file=ou_model_file,
                 )
 
     # Persist calibration curve from all backtest data so live API uses it
@@ -470,6 +482,8 @@ async def batch_predict_upcoming_games(
     year = year or CURRENT_NFL_YEAR
     ats_model = _load_model_for_year("ats", year)
     ou_model = _load_model_for_year("ou", year)
+    ats_model_file = _model_file_for_year("ats", year)
+    ou_model_file = _model_file_for_year("ou", year)
     dl = get_data_loader()
 
     results: List[Dict[str, Any]] = []
@@ -546,6 +560,8 @@ async def batch_predict_upcoming_games(
 
             result: Dict[str, Any] = {
                 "game_id": gid,
+                "ats_model_file": ats_model_file,
+                "ou_model_file": ou_model_file,
                 "home_team": home_str,
                 "away_team": away_str,
                 "spread": spread,
@@ -799,6 +815,8 @@ async def _save_api_prediction(result: Dict[str, Any]) -> None:
             shap_json=json.dumps(result.get("shap_info"), default=str)
             if result.get("shap_info")
             else None,
+            ats_model_file=result.get("ats_model_file"),
+            ou_model_file=result.get("ou_model_file"),
             source=source,
             created_at=now,
         )
@@ -813,6 +831,8 @@ async def _save_backtest_prediction(
     ou_features=None,
     db: AsyncSession = None,
     curve_data: dict = None,
+    ats_model_file: str = None,
+    ou_model_file: str = None,
 ) -> None:
     """Save a single backtest prediction using the NFLGamePrediction ORM model.
 
@@ -1077,6 +1097,8 @@ async def _save_backtest_prediction(
                 splits_json=json.dumps(splits) if splits else None,
                 features_json=features_json_str,
                 shap_json=shap_json_str,
+                ats_model_file=ats_model_file,
+                ou_model_file=ou_model_file,
                 source="backtest",
                 created_at=datetime.now(timezone.utc),
             )
@@ -1138,6 +1160,8 @@ async def _save_backtest_prediction(
                 splits_json=json.dumps(splits) if splits else None,
                 features_json=features_json_str,
                 shap_json=shap_json_str,
+                ats_model_file=ats_model_file,
+                ou_model_file=ou_model_file,
                 source="backtest",
                 created_at=datetime.now(timezone.utc),
             )

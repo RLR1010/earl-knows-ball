@@ -209,6 +209,17 @@ def _load_model_for_year(model_type: str, year: int) -> Any:
         return pickle.load(fh)
 
 
+def _model_file_for_year(model_type: str, year: int) -> Optional[str]:
+    """Return the basename of the pkl model file for *model_type*/*year*
+    (e.g. ``a1b2c3-2026.pkl``), or ``None`` if it cannot be resolved.
+
+    Stored on every pick for model provenance/audit.
+    """
+    paths = _resolve_year_pkl_paths(model_type)
+    p = paths.get(year)
+    return p.name if p is not None else None
+
+
 # ═══════════════════════════════════════════════════════════════════
 # Feature column names — loaded from mlb.features DB table
 # ═══════════════════════════════════════════════════════════════════
@@ -297,9 +308,12 @@ async def batch_predict_upcoming_games(
 
     ats_model = _load_model_for_year("ats", year)
     ou_model = _load_model_for_year("ou", year)
+    ats_model_file = _model_file_for_year("ats", year)
+    ou_model_file = _model_file_for_year("ou", year)
     _logger.info(
         f"Models loaded for {year} (ats={'loaded' if ats_model else 'none'}, "
-        f"ou={'loaded' if ou_model else 'none'})"
+        f"ou={'loaded' if ou_model else 'none'}, "
+        f"ats_pkl={ats_model_file or '?'}, ou_pkl={ou_model_file or '?'})"
     )
 
     dl = get_data_loader()
@@ -394,6 +408,8 @@ async def batch_predict_upcoming_games(
                 pred_home_wins=pred_home_wins,
                 pick_card_features_meta=pic_feats,
                 shap_info=shap_info,
+                ats_model_file=ats_model_file,
+                ou_model_file=ou_model_file,
             )
 
             # Commit after EACH game so the DELETE+INSERT row locks on
@@ -433,6 +449,8 @@ async def _save_api_prediction(
     pred_home_wins: bool,
     pick_card_features_meta: Dict[str, Dict[str, str]] | None = None,
     shap_info: Dict[str, Any] | None = None,
+    ats_model_file: str | None = None,
+    ou_model_file: str | None = None,
 ) -> int:
     """Save a live (pre-game) prediction to ``mlb.game_predictions``.
 
@@ -550,6 +568,8 @@ async def _save_api_prediction(
         splits_json=json.dumps(_build_mlb_splits(_row_dict)),
         features_json=_extract_pick_card_features(row, pick_card_features_meta) if pick_card_features_meta else None,
         shap_json=json.dumps(shap_info, default=str) if shap_info else None,
+        ats_model_file=ats_model_file,
+        ou_model_file=ou_model_file,
         source="api",
         created_at=now,
     )
@@ -592,6 +612,13 @@ async def _backtest_single_season(
     except FileNotFoundError as exc:
         logger.error("OU model not available for %s: %s", year, exc)
         return _zeros_return()
+
+    ats_model_file = _model_file_for_year("ats", year)
+    ou_model_file = _model_file_for_year("ou", year)
+    logger.info(
+        "Backtest models for %s: ats_pkl=%s ou_pkl=%s",
+        year, ats_model_file, ou_model_file,
+    )
 
     # ── 2. Load games + build features (single pipeline) ─────────
     dl = get_data_loader()
@@ -718,6 +745,8 @@ async def _backtest_single_season(
             pick_card_features_meta=pick_card_feats,
             curve_data=curve_data,
             shap_info=shap_info,
+            ats_model_file=ats_model_file,
+            ou_model_file=ou_model_file,
         )
 
     await db.commit()
@@ -874,6 +903,8 @@ async def _save_backtest_prediction(
     pick_card_features_meta: Dict[str, Dict[str, str]] | None = None,
     curve_data: dict = None,
     shap_info: Dict[str, Any] | None = None,
+    ats_model_file: str | None = None,
+    ou_model_file: str | None = None,
 ) -> int:
     """Save a single game\'s prediction to ``mlb.game_predictions``.
 
@@ -1031,6 +1062,8 @@ async def _save_backtest_prediction(
         splits_json=json.dumps(_build_mlb_splits(_row_dict)),
         features_json=_extract_pick_card_features(row, pick_card_features_meta) if pick_card_features_meta else None,
         shap_json=json.dumps(shap_info, default=str) if shap_info else None,
+        ats_model_file=ats_model_file,
+        ou_model_file=ou_model_file,
         source="backtest",
         created_at=now,
     )
