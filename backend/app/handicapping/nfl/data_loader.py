@@ -1979,6 +1979,34 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
     except Exception:
         pass
 
+    # ── Prior-season rolling stats (team_rolling_stats) for week-1 backfill ──
+    # `prior_team_stats` above is a season-aggregate and lacks per-attempt
+    # columns like rush_ypa. The team_rolling_stats table holds the true
+    # prior-season cumulative/rolling values (incl. *_r5 and rush_ypa), so we
+    # also load each team's LAST REG row of the prior season and use it to fill
+    # week-1 gaps for any rolling stat (esp. rush_ypa, which has no
+    # prior_team_stats key).
+    prior_rolling_map = {}
+    try:
+        from app.core.config import settings as _pcs
+        from sqlalchemy import create_engine as _pce
+        _proll_engine = _pce(str(_pcs.database_url).replace("+asyncpg", ""))
+        _PROLL_SQL = """
+            SELECT DISTINCT ON (t.team_abbr)
+                   t.team_abbr, t.season, t.*
+            FROM nfl.team_rolling_stats t
+            WHERE t.game_type = 'REG'
+              AND t.season = (SELECT COALESCE(MAX(season),0)-1 FROM nfl.team_rolling_stats)
+            ORDER BY t.team_abbr, t.week DESC, t.game_id DESC
+        """
+        _proll = pd.read_sql(_PROLL_SQL, _proll_engine)
+        for rec in _proll.to_dict("records"):
+            prior_rolling_map[(rec["team_abbr"], rec["season"])] = rec
+        _proll_engine.dispose()
+        logger.info("Loaded %d prior-season rolling stat rows (week-1 backfill)", len(_proll))
+    except Exception as _proll_exc:
+        logger.warning("Failed to load prior-season rolling stats for week-1 backfill: %s", _proll_exc)
+
     # ── Compute team-overall rolling stats on the long frame ────────────
     def _first_fill(series: pd.Series, prior_key: str,
                     default_val: float = 0.5) -> pd.Series:
@@ -2495,7 +2523,7 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
             "pass_ypg": "off_pass_ypg",
             "rush_ypg": "off_rush_ypg",
             "pass_ypa": "off_ypa",
-            "rush_ypa": None,
+            "rush_ypa": None,  # filled via prior_rolling_map fallback below
             "turnover_diff_r5": "turnover_diff_r5",
             "def_ypg": "def_ypg",
             "def_ypp": "def_ypp",
@@ -2533,6 +2561,12 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
             "adj_def_ypg": "adj_def_ypg",
             "win_streak": "win_streak",
         }
+        # Rolling-table source columns for stats that lack a prior_team_stats
+        # key (e.g. rush_ypa). team_rolling_stats keeps the true prior-season
+        # rolling values; used to seed week-1 holes.
+        _suffix_to_rolling_src = {
+            "rush_ypa": "rush_ypa_r5",
+        }
         for prefix in ["home", "away"]:
             for suffix in stat_suffixes:
                 col = f"{prefix}_{suffix}"
@@ -2552,6 +2586,24 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
                             if cur is not None and not pd.isna(cur) and cur != 0:
                                 return cur
                             return prior_map.get((r[abbr_col], r["season_year"] - 1), {}).get(prior_key, 0.0)
+                        df[col] = df.apply(_prior_fill, axis=1)
+                else:
+                    # No prior_team_stats key (e.g. rush_ypa) — fall back to the
+                    # prior-season team_rolling_stats (last REG row) so week-1
+                    # games get a real prior value instead of NaN.
+                    rolling_col = _suffix_to_rolling_src.get(suffix)
+                    if rolling_col:
+                        def _prior_fill(r, _s=rolling_col, _p=prefix):
+                            cur = r.get(col)
+                            if cur is not None and not pd.isna(cur) and cur != 0:
+                                return cur
+                            rec = prior_rolling_map.get((r[abbr_col], r["season_year"] - 1))
+                            if not rec:
+                                return cur
+                            pv = rec.get(_s)
+                            if pv is None or (isinstance(pv, float) and pv != pv):
+                                return cur
+                            return float(pv)
                         df[col] = df.apply(_prior_fill, axis=1)
                 # NOTE: leave any column still missing here as NaN instead of
                 # blind-0 filling. A team stat with NO prior-season and NO current
@@ -2738,6 +2790,41 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
         "build_features complete: %d rows, %d features",
         len(df), len(df.columns),
     )
+
+    # ── Venue / weather / league-context features ──────────────────────────
+    # These catalog features (is_dome, temp, wind, surface, season_avg_pts) are
+    # derived from the raw games row that load_games already carries, not from
+    # team/QB stats. Populate them so the admin page + pick cards show real
+    # values (and blanks honestly when the underlying weather rows are NULL).
+    try:
+        _roof = df["roof_type"] if "roof_type" in df.columns else None
+        if "is_dome" not in df.columns and _roof is not None:
+            df["is_dome"] = _roof.str.lower().isin({"dome", "retractable", "indoor"}).astype(int)
+        elif "is_dome" not in df.columns:
+            df["is_dome"] = 0
+        if "is_dome" in df.columns and _roof is not None:
+            df["is_dome"] = _roof.str.lower().isin({"dome", "retractable", "indoor"}).astype(int)
+
+        if "temp" not in df.columns and "temperature" in df.columns:
+            df["temp"] = df["temperature"]
+        if "wind" not in df.columns and "wind_speed" in df.columns:
+            df["wind"] = df["wind_speed"]
+        if "surface" not in df.columns and "surface" in df.columns:
+            pass  # already present via load_games context col
+
+        # Season-average points: league-wide mean of team points per game, added
+        # as a constant column (matches "League average points per team").
+        if "season_avg_pts" not in df.columns:
+            _pts_cols = [c for c in df.columns if c.endswith("_pts") and not c.startswith("season")]
+            df["season_avg_pts"] = float("nan")
+            if _pts_cols:
+                _pts = df[_pts_cols].replace([float("inf"), float("-inf")], float("nan"))
+                _med = _pts.notna().sum(axis=1)
+                _sum = _pts.sum(axis=1, skipna=True)
+                df["season_avg_pts"] = (_sum / _med.replace(0, 1)).where(_med > 0)
+        logger.debug("Venue/weather/league features derived")
+    except Exception as _vw_exc:
+        logger.warning("Venue/weather/league feature derivation failed: %s", _vw_exc)
 
     return df
 
