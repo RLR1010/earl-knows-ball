@@ -420,7 +420,7 @@ FROM mlb.games g
 JOIN mlb.seasons s ON s.id = g.season_id
 JOIN mlb.teams ht ON ht.id = g.home_team_id
 JOIN mlb.teams at ON at.id = g.away_team_id
-LEFT JOIN mlb.venues v ON v.id = g.venue_id
+LEFT JOIN mlb.venues v ON v.mlb_venue_id = g.venue_id
 
 -- ──────────────────────────────────────────────────────────────────────
 -- REST DAYS (find each team's last game before this one)

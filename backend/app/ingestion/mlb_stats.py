@@ -710,10 +710,18 @@ async def load_games_for_season(
                 existing_game.home_losses = _safe_int(home_record.get("losses"))
                 existing_game.away_wins = _safe_int(away_record.get("wins"))
                 existing_game.away_losses = _safe_int(away_record.get("losses"))
-                existing_game.temperature = _safe_int(temp_str)
-                existing_game.wind_speed = wind_speed_val
-                existing_game.weather_condition = weather_data.get("condition")
-                existing_game.wind_direction = wind_dir_val
+                # IMPORTANT: For scheduled/upcoming games the MLB API omits the
+                # weather object, so temp_str/wind/condition come back empty.
+                # Only overwrite weather when the API actually returns it;
+                # otherwise we clobber the forecast the weather-update task
+                # (mlb_weather_forecast) wrote to mlb.games.
+                if temp_str is not None and str(temp_str).strip():
+                    existing_game.temperature = _safe_int(temp_str)
+                if wind_str is not None and str(wind_str).strip():
+                    existing_game.wind_speed = wind_speed_val
+                    existing_game.wind_direction = wind_dir_val
+                if weather_data.get("condition") is not None:
+                    existing_game.weather_condition = weather_data.get("condition")
                 continue
 
             db_game = MLBGames(
