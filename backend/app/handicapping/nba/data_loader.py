@@ -1600,14 +1600,11 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
 
 
     # ═══════════════════════════════════════════════════════════════════════════
-    #  6. Fill NaN / clean up
+    #  6. NaN handling — two-path (mirrors MLB/NFL): the MODEL imputes a
+    #     reasoned prior via _impute_feature; the PICK CARD blanks a missing
+    #     value. We therefore do NOT blanket fillna(0) here — a missing stat
+    #     must stay NaN so the card never shows a fabricated 0 (e.g. '0 PPG').
     # ═══════════════════════════════════════════════════════════════════════════
-
-    for col in df.columns:
-        if col in ("spread", "closing_spread", "closing_ou"):
-            continue
-        if df[col].dtype in (np.float64, np.int64) and df[col].isna().any():
-            df[col] = df[col].fillna(0)
 
     drop_cols = [
         c for c in df.columns

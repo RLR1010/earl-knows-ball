@@ -368,6 +368,89 @@ def _get_features(model_type: str) -> List[str]:
     return feats
 
 
+def _impute_feature(row: pd.Series, feat: str) -> Optional[float]:
+    """Model-path imputation: a *reasoned prior* for a missing NBA feature,
+    never a blind 0. Mirrors nfl/engine._impute_feature and the MLB approach.
+
+    NBA stats are season-cumulative or rolling-window; a genuinely missing value
+    means the team has no tracked games yet (early season) or the source row is
+    empty. For the model that should read as an AVERAGE team, not a 0.0 that the
+    model treats as 'dominant'.
+    """
+    try:
+        v = row.get(feat)
+        if v is not None and not (isinstance(v, float) and pd.isna(v)):
+            return float(v)
+    except Exception:
+        pass
+
+    # ---- League-average NBA team statistics (rate / per-game norms) ---------
+    NBA_AVG = {
+        "ppg": 111.0, "oppg": 111.0, "margin_pg": 0.0,
+        "fg_pct": 0.465, "fg3_pct": 0.355, "ft_pct": 0.775,
+        "reb_pg": 43.5, "ast_pg": 24.5, "stl_pg": 7.5,
+        "blk_pg": 4.9, "tov_pg": 13.5, "pf_pg": 18.5,
+        "ortg": 112.0, "drtg": 112.0, "net_ortg": 0.0, "pace": 97.5,
+        "efg_pct": 0.497, "opp_efg_pct": 0.497, "tov_rate": 0.125,
+        "opp_tov_rate": 0.125, "ft_rate": 0.24, "3pa_rate": 0.42,
+        "ast_ratio": 17.0, "stl_rate": 7.0,
+        "usg_pct": 0.20, "ts_pct": 0.55, "orbr_pct": 0.26,
+        "drbr_pct": 0.74, "blk_rate": 0.05, "stl_pct": 0.09,
+        "off_rtg": 112.0, "def_rtg": 112.0,
+        "fast_break_pts": 14.0, "pts_in_paint": 48.0,
+        "assists_pg": 24.5, "rebounds_pg": 43.5, "steals_pg": 7.5,
+        "blocks_pg": 4.9, "turnovers_pg": 13.5, "fouls_pg": 18.5,
+        "threep_rate": 0.355, "two_rate": 0.49,
+    }
+    for token, avg in NBA_AVG.items():
+        if token in feat:
+            return avg
+
+    # ---- Win / ATS / OU counts -> 0 (no games = no wins) is the true default
+    if ("_wins" in feat) or feat.endswith(("_wins", "_loss", "_g_played", "_games")):
+        return 0.0
+
+    # ---- ATS / OU margins and signed diffs -> neutral 0
+    if ("margin" in feat) or ("_diff" in feat or feat.endswith("_diff")):
+        return 0.0
+
+    # ---- Recency composites -> league-average scoring neutral
+    if "recency" in feat:
+        return 101.0
+
+    # ---- Player availability flags: missing -> neutral 0.5 (avoid biasing the
+    #      model toward 'star out')
+    if "active" in feat or "available" in feat:
+        return 0.5
+
+    # ---- Market / betting-line fallbacks
+    if feat == "spread":
+        return 0.0          # even-spread neutral
+    if feat in ("closing_ou", "opening_ou"):
+        return 220.0        # NBA total ~220
+    if "moneyline" in feat or "implied_prob" in feat:
+        return 0.5
+    if ("implied_margin" in feat) or ("implied" in feat):
+        return 0.5 if "implied" in feat else 0.0
+    if "movement" in feat:
+        return 0.0
+    if "mismatch" in feat:
+        return 0.0
+
+    # ---- Rest / travel
+    if feat in ("home_b2b", "away_b2b") or feat.endswith("_b2b"):
+        return 0.0
+    if feat == "rest_diff":
+        return 0.0
+    if "rest" in feat:
+        return 3.0          # typical ~3 days rest
+    if "travel_miles" in feat:
+        return 1150.0       # typical cross-country NBA travel
+
+    # ---- LAST RESORT: neutral for signed/delta/flag features only
+    return 0.0
+
+
 def _extract_feature_vector(
     row: pd.Series,
     model_type: str,
@@ -377,9 +460,7 @@ def _extract_feature_vector(
     values = []
     names = []
     for feat in feature_names:
-        val = row.get(feat)
-        if val is None or (isinstance(val, float) and np.isnan(val)):
-            val = 0.0
+        val = _impute_feature(row, feat)
         values.append(float(val))
         names.append(feat)
     return np.array([values], dtype=np.float32), names
