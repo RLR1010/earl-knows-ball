@@ -196,7 +196,10 @@ WITH qb_games AS (
         COALESCE(pws.rush_attempts::NUMERIC, 0)    AS rush_att,
         COALESCE(pws.rush_yards::NUMERIC, 0)       AS rush_yds,
         COALESCE(pws.rush_tds::NUMERIC, 0)         AS rush_td,
-        COALESCE(pws.sacks::NUMERIC, 0)            AS sck,
+        -- times the QB was SACKED (not defensive sacks). pws.sacks is the
+        -- defensively-mapped column and is empty for QBs; read the real
+        -- 'times sacked' from nfl.game_stats.sacks_suffered (team-level).
+        COALESCE(gs.sacks_suffered::NUMERIC, 0)     AS sck,
         COALESCE(pws.fumbles::NUMERIC, 0)          AS fmb,
         g.game_type                                 AS game_type
     FROM nfl.player_weekly_stats pws
@@ -205,6 +208,10 @@ WITH qb_games AS (
     JOIN nfl.teams t     ON t.id    = pws.team_id
     JOIN nfl.teams ot    ON ot.id   = pws.opponent_id
     JOIN nfl.players p   ON p.id    = pws.player_id
+    LEFT JOIN nfl.game_stats gs
+           ON gs.season     = s.year
+          AND gs.week       = g.week
+          AND gs.team_abbr  = t.abbreviation
     WHERE p.position = 'QB'
       AND pws.game_id IS NOT NULL
       AND s.year IS NOT NULL
