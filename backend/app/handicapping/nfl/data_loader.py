@@ -1400,11 +1400,11 @@ class NFLDataLoader:
                     h_cum.int_pct             AS home_qb_int_pct_season,
                     h_cum.sack_rate           AS home_qb_sack_rate_season,
                     CASE WHEN h_cum.games_played > 0
-                        THEN h_cum.cum_rush_yds / h_cum.games_played
-                        ELSE 0 END            AS home_qb_rush_ypg_season,
+                        THEN GREATEST(0.0, h_cum.cum_rush_yds / h_cum.games_played)
+                        ELSE NULL END        AS home_qb_rush_ypg_season,
                     CASE WHEN h_cum.games_played > 0
-                        THEN h_cum.cum_rush_att / h_cum.games_played
-                        ELSE 0 END            AS home_qb_rush_att_pg_season,
+                        THEN GREATEST(0.0, h_cum.cum_rush_att / h_cum.games_played)
+                        ELSE NULL END        AS home_qb_rush_att_pg_season,
                     -- Home QB: rolling 5-game pre-game stats
                     h_roll.games_5            AS home_qb_games_5,
                     h_roll.passer_rating_5    AS home_qb_passer_rating_5,
@@ -1414,8 +1414,8 @@ class NFLDataLoader:
                     h_roll.int_pct_5          AS home_qb_int_pct_5,
                     h_roll.sack_rate_5        AS home_qb_sack_rate_5,
                     CASE WHEN h_roll.games_5 > 0
-                        THEN h_roll.rush_yds_5 / h_roll.games_5
-                        ELSE 0 END            AS home_qb_rush_ypg_5,
+                        THEN GREATEST(0.0, h_roll.rush_yds_5 / h_roll.games_5)
+                        ELSE NULL END        AS home_qb_rush_ypg_5,
                     h_roll.rush_att_5         AS home_qb_rush_att_5,
                     -- Away QB: cumulative pre-game stats
                     a_cum.games_played       AS away_qb_games_season,
@@ -1426,11 +1426,11 @@ class NFLDataLoader:
                     a_cum.int_pct             AS away_qb_int_pct_season,
                     a_cum.sack_rate           AS away_qb_sack_rate_season,
                     CASE WHEN a_cum.games_played > 0
-                        THEN a_cum.cum_rush_yds / a_cum.games_played
-                        ELSE 0 END            AS away_qb_rush_ypg_season,
+                        THEN GREATEST(0.0, a_cum.cum_rush_yds / a_cum.games_played)
+                        ELSE NULL END        AS away_qb_rush_ypg_season,
                     CASE WHEN a_cum.games_played > 0
-                        THEN a_cum.cum_rush_att / a_cum.games_played
-                        ELSE 0 END            AS away_qb_rush_att_pg_season,
+                        THEN GREATEST(0.0, a_cum.cum_rush_att / a_cum.games_played)
+                        ELSE NULL END        AS away_qb_rush_att_pg_season,
                     -- Away QB: rolling 5-game pre-game stats
                     a_roll.games_5            AS away_qb_games_5,
                     a_roll.passer_rating_5    AS away_qb_passer_rating_5,
@@ -1440,8 +1440,8 @@ class NFLDataLoader:
                     a_roll.int_pct_5          AS away_qb_int_pct_5,
                     a_roll.sack_rate_5        AS away_qb_sack_rate_5,
                     CASE WHEN a_roll.games_5 > 0
-                        THEN a_roll.rush_yds_5 / a_roll.games_5
-                        ELSE 0 END            AS away_qb_rush_ypg_5,
+                        THEN GREATEST(0.0, a_roll.rush_yds_5 / a_roll.games_5)
+                        ELSE NULL END        AS away_qb_rush_ypg_5,
                     a_roll.rush_att_5         AS away_qb_rush_att_5,
                     -- Home QB prior-season fallback (cumulative + rolling) — used
                     -- when current-season pre-game stats don't exist yet (early season)
@@ -1453,10 +1453,10 @@ class NFLDataLoader:
                     h_cum_prev.int_pct          AS home_qb_int_pct_season_prev,
                     h_cum_prev.sack_rate        AS home_qb_sack_rate_season_prev,
                     CASE WHEN h_cum_prev.games_played > 0
-                        THEN h_cum_prev.cum_rush_yds / h_cum_prev.games_played
+                        THEN GREATEST(0.0, h_cum_prev.cum_rush_yds / h_cum_prev.games_played)
                         ELSE 0 END              AS home_qb_rush_ypg_season_prev,
                     CASE WHEN h_cum_prev.games_played > 0
-                        THEN h_cum_prev.cum_rush_att / h_cum_prev.games_played
+                        THEN GREATEST(0.0, h_cum_prev.cum_rush_att / h_cum_prev.games_played)
                         ELSE 0 END              AS home_qb_rush_att_pg_season_prev,
                     h_roll_prev.games_5          AS home_qb_games_5_prev,
                     h_roll_prev.passer_rating_5  AS home_qb_passer_rating_5_prev,
@@ -1466,7 +1466,7 @@ class NFLDataLoader:
                     h_roll_prev.int_pct_5        AS home_qb_int_pct_5_prev,
                     h_roll_prev.sack_rate_5      AS home_qb_sack_rate_5_prev,
                     CASE WHEN h_roll_prev.games_5 > 0
-                        THEN h_roll_prev.rush_yds_5 / h_roll_prev.games_5
+                        THEN GREATEST(0.0, h_roll_prev.rush_yds_5 / h_roll_prev.games_5)
                         ELSE 0 END               AS home_qb_rush_ypg_5_prev,
                     h_roll_prev.rush_att_5       AS home_qb_rush_att_5_prev,
                     -- Away QB prior-season fallback
@@ -1478,10 +1478,10 @@ class NFLDataLoader:
                     a_cum_prev.int_pct          AS away_qb_int_pct_season_prev,
                     a_cum_prev.sack_rate        AS away_qb_sack_rate_season_prev,
                     CASE WHEN a_cum_prev.games_played > 0
-                        THEN a_cum_prev.cum_rush_yds / a_cum_prev.games_played
+                        THEN GREATEST(0.0, a_cum_prev.cum_rush_yds / a_cum_prev.games_played)
                         ELSE 0 END              AS away_qb_rush_ypg_season_prev,
                     CASE WHEN a_cum_prev.games_played > 0
-                        THEN a_cum_prev.cum_rush_att / a_cum_prev.games_played
+                        THEN GREATEST(0.0, a_cum_prev.cum_rush_att / a_cum_prev.games_played)
                         ELSE 0 END              AS away_qb_rush_att_pg_season_prev,
                     a_roll_prev.games_5          AS away_qb_games_5_prev,
                     a_roll_prev.passer_rating_5  AS away_qb_passer_rating_5_prev,
@@ -1491,7 +1491,7 @@ class NFLDataLoader:
                     a_roll_prev.int_pct_5        AS away_qb_int_pct_5_prev,
                     a_roll_prev.sack_rate_5      AS away_qb_sack_rate_5_prev,
                     CASE WHEN a_roll_prev.games_5 > 0
-                        THEN a_roll_prev.rush_yds_5 / a_roll_prev.games_5
+                        THEN GREATEST(0.0, a_roll_prev.rush_yds_5 / a_roll_prev.games_5)
                         ELSE 0 END               AS away_qb_rush_ypg_5_prev,
                     a_roll_prev.rush_att_5       AS away_qb_rush_att_5_prev
                 FROM nfl.games g
