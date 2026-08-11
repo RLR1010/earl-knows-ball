@@ -254,20 +254,62 @@ def _extract_feature_vector(row: pd.Series, model_type: str) -> Optional[np.ndar
     vals = []
     for c in cols:
         v = row.get(c)
-        if v is None or (isinstance(v, float) and np.isnan(v)):
-            # Weather / ancillary features may be missing for upcoming games.
-            # Fill with sensible defaults so the model still gets a vector.
-            if c in ("temperature", "temp"):
-                v = 80.0  # average summer game temp
-            elif c in ("humidity",):
-                v = 50.0
-            elif c in ("wind_speed", "wind"):
-                v = 5.0
-            else:
-                v = 0.0
-            logger.debug("  Missing feature '%s' for game %s — filling %.1f", c, row.get("game_id"), v)
+        if v is not None and not (isinstance(v, float) and np.isnan(v)):
+            vals.append(float(v))
+            continue
+
+        # ── Model-path imputation ────────────────────────────────────
+        # The raw data layer (build_features) preserves real values / NULL.
+        # THIS is the ONLY place missing values become numbers for the model,
+        # using a reasoned prior — never a blind 0 that the model could read
+        # as "dominant here". The user-facing pick card NEVER sees these fills:
+        # it reads the raw row, so a missing stat stays blank/None there.
+        #
+        # See backend/docs/mlb_imputation_table.md (approved by Rich).
+        imputed = _impute_feature(row, c)
+        if imputed is not None:
+            v = imputed
+            logger.debug("  Imputed feature '%s' for game %s — %.3f", c, row.get("game_id"), v)
+        else:
+            v = 0.0
         vals.append(float(v))
     return np.array(vals, dtype=np.float32)
+
+
+def _impute_feature(row: pd.Series, c: str) -> Optional[float]:
+    """Return the model-side imputed value for a missing feature ``c``.
+
+    Called ONLY from the model extraction path (never for the pick card).
+    Returns ``None`` when no better prior exists (caller falls back to 0.0).
+    """
+    # Pitcher VENUE ERA: missing (no starts at this park) -> the pitcher's
+    # home/road season ERA as the closest true prior. Putting 0 here would
+    # read to the model as "dominant at this venue", which is wrong.
+    if c == "a_pitcher_venue_era":
+        return _nanok(row.get("a_p_road_era_ytd"))
+    if c == "h_pitcher_venue_era":
+        return _nanok(row.get("h_p_home_era_ytd"))
+
+    # Weather — use realistic league/season averages, not the old crude 80/50.
+    if c in ("temperature", "temp"):
+        return 69.0   # league avg MLB temp
+    if c in ("humidity",):
+        return 55.0
+    if c in ("wind_speed", "wind"):
+        return 5.0
+
+    return None
+
+
+def _nanok(v) -> Optional[float]:
+    """float(v) if v is a finite number, else None."""
+    if v is None:
+        return None
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if math.isfinite(f) else None
 
 
 
