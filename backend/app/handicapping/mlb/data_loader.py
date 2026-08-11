@@ -1520,7 +1520,8 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
                 result[dst20] = result[src15]
             else:
                 result[dst20] = 0.0
-        # kbb_l20 — prefer 20-start, fall back to YTD
+        # kbb_l20 — prefer 20-start, fall back to YTD (else leave NULL; the model
+        # path imputes ytd via _impute_feature, the pick card blanks it)
         src_kbb20 = f"{ps}kbb_20"
         src_kbb_ytd = f"{ps}kbb_ytd"
         dst_kbb = f"{pt}kbb_l20"
@@ -1529,8 +1530,9 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
         elif src_kbb_ytd in result.columns:
             result[dst_kbb] = result[src_kbb_ytd]
         else:
-            result[dst_kbb] = 0.0
-        # kbb_l10 — prefer 10-start, fall back to YTD
+            result[dst_kbb] = np.nan
+        # kbb_l10 — prefer 10-start, fall back to YTD (else NULL, imputed at model
+        # path only)
         src_kbb10 = f"{ps}kbb_10"
         dst_kbb10 = f"{pt}kbb_l10"
         if src_kbb10 in result.columns:
@@ -1538,28 +1540,34 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
         elif src_kbb_ytd in result.columns:
             result[dst_kbb10] = result[src_kbb_ytd]
         else:
-            result[dst_kbb10] = 0.0
+            result[dst_kbb10] = np.nan
 
-    # Pitcher rest — from PRS rest_days (days since last start)
+    # Pitcher rest — from PRS rest_days (days since last start). Preserve RAW
+    # (NULL when unknown): the pick card blanks it; the model path imputes ~4.
     if "h_p_rest" in result.columns:
-        result["h_pitcher_rest"] = result["h_p_rest"].fillna(0).astype(int)
+        result["h_pitcher_rest"] = result["h_p_rest"]
     else:
-        result["h_pitcher_rest"] = 0
+        result["h_pitcher_rest"] = np.nan
     if "a_p_rest" in result.columns:
-        result["a_pitcher_rest"] = result["a_p_rest"].fillna(0).astype(int)
+        result["a_pitcher_rest"] = result["a_p_rest"]
     else:
-        result["a_pitcher_rest"] = 0
+        result["a_pitcher_rest"] = np.nan
 
-    # Pitcher split ERA — from PRS split columns
-    h_src = [("h_pitcher_home_era", "h_p_home_era_ytd"),
-             ("h_pitcher_day_era", "h_p_day_era_ytd"),
-             ("a_pitcher_road_era", "a_p_road_era_ytd"),
-             ("a_pitcher_night_era", "a_p_night_era_ytd")]
-    for dest, src in h_src:
-        if src in result.columns:
-            result[dest] = result[src].fillna(0)
-        else:
-            result[dest] = 0.0
+    # Pitcher split ERA — from PRS split columns. Map raw ytd split values into
+    # the named columns the model/pick-card expect, preserving RAW truth: real
+    # value or NULL. A missing split (e.g. no night games) stays NULL so the pick
+    # card blanks it and `_impute_feature` (model path) fills the season ytd ERA
+    # only when that feature is a model input. No .fillna(0), no cross-side fallback.
+    _split_map = [
+        ("h_pitcher_home_era", "h_p_home_era_ytd"),
+        ("h_pitcher_day_era", "h_p_day_era_ytd"),
+        ("h_pitcher_night_era", "h_p_night_era_ytd"),
+        ("a_pitcher_road_era", "a_p_road_era_ytd"),
+        ("a_pitcher_day_era", "a_p_day_era_ytd"),
+        ("a_pitcher_night_era", "a_p_night_era_ytd"),
+    ]
+    for dest, src in _split_map:
+        result[dest] = result[src] if src in result.columns else np.nan
 
     # Real pitcher VENUE ERA (from prior starts at this exact park, multi-season).
     # NULL (not 0) when the pitcher has no starts at this venue. Never proxied to
@@ -1573,11 +1581,6 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     for dest in ("h_pitcher_venue_starts", "a_pitcher_venue_starts"):
         if dest not in result.columns:
             result[dest] = 0
-
-
-    # Day/ERA and Night/ERA for the opposite side (need cross-side data from PRS)
-    result["h_pitcher_night_era"] = result.get("h_p_night_era_ytd", result.get("h_pitcher_day_era", 0))
-    result["a_pitcher_day_era"] = result.get("a_p_day_era_ytd", result.get("a_pitcher_night_era", 0))
 
     # Day/Night ERA — use the ERA matching this game's time of day
     # If day_night = 'Day', assign day_era; if 'Night', assign night_era

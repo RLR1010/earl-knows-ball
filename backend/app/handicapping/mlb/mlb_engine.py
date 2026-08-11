@@ -290,6 +290,38 @@ def _impute_feature(row: pd.Series, c: str) -> Optional[float]:
     if c == "h_pitcher_venue_era":
         return _nanok(row.get("h_p_home_era_ytd"))
 
+    # Pitcher split ERAs (home/road/day/night): a missing split -> season ytd ERA
+    # as the prior. A missing night-split must not read as "0 ERA."
+    split = {
+        "h_pitcher_home_era": "h_p_era_ytd",
+        "h_pitcher_road_era": "h_p_era_ytd",
+        "h_pitcher_day_era": "h_p_era_ytd",
+        "h_pitcher_night_era": "h_p_era_ytd",
+        "h_pitcher_day_night_era": "h_p_era_ytd",
+        "a_pitcher_home_era": "a_p_era_ytd",
+        "a_pitcher_road_era": "a_p_era_ytd",
+        "a_pitcher_day_era": "a_p_era_ytd",
+        "a_pitcher_night_era": "a_p_era_ytd",
+        "a_pitcher_day_night_era": "a_p_era_ytd",
+    }
+    if c in split:
+        return _nanok(row.get(split[c]))
+
+    # Pitcher rest: missing (unknown / opener) -> league-avg ~4 days, NOT 0
+    # (0 would read as "pitched back-to-back").
+    if c in ("h_pitcher_rest", "a_pitcher_rest"):
+        return 4.0
+
+    # Pitcher K/BB splits (l20/l10): a missing window -> season ytd K/BB
+    kbb_l = {
+        "h_pitcher_kbb_l20": "h_p_kbb_ytd",
+        "h_pitcher_kbb_l10": "h_p_kbb_ytd",
+        "a_pitcher_kbb_l20": "a_p_kbb_ytd",
+        "a_pitcher_kbb_l10": "a_p_kbb_ytd",
+    }
+    if c in kbb_l:
+        return _nanok(row.get(kbb_l[c]))
+
     # Weather — use realistic league/season averages, not the old crude 80/50.
     if c in ("temperature", "temp"):
         return 69.0   # league avg MLB temp
