@@ -1073,6 +1073,13 @@ class NFLDataLoader:
             game_type = self.game_type
         if game_type:
             conditions.append(f"g.game_type = '{game_type}'")
+        else:
+            # NEVER include preseason games. Callers of the default/backtest
+            # path don't pass a game_type, and preseason results must never
+            # feed rolling stats or training (treat them as practice). This
+            # guards against a FINAL preseason game leaking in via the
+            # status='FINAL' filter alone.
+            conditions.append("g.game_type != 'PRE'")
 
         sql = GAME_QUERY.strip().rstrip(";")
 

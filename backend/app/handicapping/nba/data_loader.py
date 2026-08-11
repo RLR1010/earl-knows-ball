@@ -910,6 +910,10 @@ class NBADataLoader:
         query = GAME_QUERY
 
         where_parts: List[str] = []
+        # Preseason games must never feed stats/training. NBA's PRE games can
+        # carry a FINAL status with results, so excluding purely by status is
+        # not enough — always drop them here.
+        where_parts.append("game_type != 'PRE'")
         if status:
             where_parts.append(f"status = '{status}'")
         if seasons:
