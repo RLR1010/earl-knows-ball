@@ -156,6 +156,7 @@ SELECT
     v.capacity         AS venue_capacity,
     v.latitude         AS venue_latitude,
     v.longitude        AS venue_longitude,
+    v.timezone         AS venue_timezone,
     
 
     g.weather_condition AS weather_condition,
@@ -1628,11 +1629,9 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     if "game_date" in result.columns:
         result["month"] = result["game_date"].dt.month
         result["is_summer"] = result["month"].isin([6, 7, 8]).astype(int)
-        result["week_number"] = result["game_date"].dt.isocalendar().week.astype(int)
     else:
         result["month"] = 6
         result["is_summer"] = 1
-        result["week_number"] = 0
 
     # ── Group 8 — Venue features ───────────────────────────────────────────────
     # is_dome: roof_type in (\"Dome\", \"Retractable\")
