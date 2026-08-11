@@ -3561,6 +3561,20 @@ async def data_loader_load_game(
         row = df.iloc[0]
         feat_meta = {r[0]: r for r in _feat_rows}
 
+        # ── Game summary (games/teams catalog read, NOT feature SQL) ──
+        _gi = (await db.execute(_sa_text(
+            "SELECT g.id AS game_id, s.id AS season_id, g.week, g.home_score, g.away_score, "
+            "g.date AS game_date, g.status, "
+            "ht.abbreviation AS ha, ht.name AS home_team, ht.abbreviation AS home_abbr, "
+            "at.abbreviation AS aa, at.name AS away_team, at.abbreviation AS away_abbr "
+            f"FROM {sport}.games g "
+            f"JOIN {sport}.seasons s ON s.id = g.season_id "
+            f"JOIN {sport}.teams ht ON ht.id = g.home_team_id "
+            f"JOIN {sport}.teams at ON at.id = g.away_team_id "
+            f"WHERE g.id = {int(game_id)}"
+        ))).mappings().first()
+        game_info = dict(_gi) if _gi else {"game_id": game_id}
+
         def _safe_val(v):
             if v is None:
                 return None
@@ -3614,6 +3628,7 @@ async def data_loader_load_game(
 
         return {
             "game_id": game_id,
+            "game_info": game_info,
             "sport": sport,
             "total_features": len(features),
             "raw_features": 0,
