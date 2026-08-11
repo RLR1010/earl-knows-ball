@@ -3529,13 +3529,22 @@ async def data_loader_load_game(
         # Import and instantiate the right data loader
         if sport == "nfl":
             from app.handicapping.nfl.data_loader import NFLDataLoader, TEAM_STATS_OUTPUT_COLUMNS as nfl_team_stat_cols, FEATURE_ALIASES
+            from app.handicapping.nfl import engine as _nfl_engine
             dl = NFLDataLoader(db_url=db_url)
+            _model_impute = _nfl_engine._impute_feature
+            _model_feats = set(_nfl_engine._get_features("ats")) | set(_nfl_engine._get_features("ou"))
         elif sport == "mlb":
             from app.handicapping.mlb.data_loader import MLBDataLoader
+            from app.handicapping.mlb import mlb_engine as _mlb_engine
             dl = MLBDataLoader(db_url=db_url)
+            _model_impute = _mlb_engine._impute_feature
+            _model_feats = set(_mlb_engine._get_features().get("ats", [])) | set(_mlb_engine._get_features().get("ou", []))
         else:  # nba
             from app.handicapping.nba.data_loader import NBADataLoader
+            from app.handicapping.nba import nba_engine as _nba_engine
             dl = NBADataLoader(db_url=db_url)
+            _model_impute = _nba_engine._impute_feature
+            _model_feats = set(_nba_engine._get_features("ats")) | set(_nba_engine._get_features("ou"))
 
         # Step 1: Find the game's season_id so we can load enough context
         # for rolling stats (need current + previous season)
@@ -3903,13 +3912,35 @@ async def data_loader_load_game(
                 grp = "team_stats"
             else:
                 grp = "computed"
+            raw = _safe_val(built_row.get(col_name))
+            # For model-active features, show the value the MODEL actually gets:
+            # imputed via the sport's _impute_feature (real value or a reasoned
+            # prior). This guarantees the admin page matches the model input.
+            if col_name in _model_feats:
+                try:
+                    model_value = _model_impute(built_row, col_name)
+                except Exception:
+                    model_value = raw
+                # Only mark it as model-facing when it differs from raw, so we
+                # can see exactly where the model is imputing.
+                is_imputed = (
+                    model_value is not None
+                    and raw is None
+                ) or (raw is not None and model_value is not None and raw != model_value)
+                item_value = model_value if (model_value is not None) else raw
+            else:
+                is_imputed = False
+                item_value = raw
             features.append({
                 "name": col_name,
                 "display_name": dl.get_display_name(col_name),
                 "group": grp,
                 "description": catalog.get(col_name, ""),
-                "value": _safe_val(built_row.get(col_name)),
+                "value": _safe_val(item_value),
+                "raw_value": raw,
                 "type": "computed",
+                "is_model_value": col_name in _model_feats,
+                "is_imputed": bool(is_imputed),
                 "aliases": FEATURE_ALIASES.get(col_name, []),
             })
 
