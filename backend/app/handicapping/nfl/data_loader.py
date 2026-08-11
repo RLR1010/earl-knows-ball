@@ -2646,7 +2646,11 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
         _qb_prev_cols = set()
         for _cur, _prev in _qb_prev_pairs:
             if _cur in df.columns and _prev in df.columns:
-                mask = df[_cur].isna() | (df[_cur] == 0)
+                # Only backfill a genuinely MISSING current-season value. Do NOT
+                # treat a legitimate 0.0 (e.g. 0 INTs / 0 sacks in a 5-game
+                # window) as if it were absent — overwriting it with the
+                # prior-season figure destroys a real, meaningful signal.
+                mask = df[_cur].isna()
                 df.loc[mask, _cur] = df.loc[mask, _prev]
                 _qb_prev_cols.add(_prev)
         if _qb_prev_cols:
