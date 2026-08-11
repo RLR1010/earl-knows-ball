@@ -369,6 +369,12 @@ SELECT
     prs_a.night_era_ytd    AS a_p_night_era_ytd,
     prs_a.is_quality_start AS a_p_quality_start,
 
+    -- Pitcher VENUE ERA (real, from prior starts at this exact park)
+    vph.venue_era_h AS h_pitcher_venue_era,
+    vpa.venue_era_a AS a_pitcher_venue_era,
+    vph.venue_starts_h AS h_pitcher_venue_starts,
+    vpa.venue_starts_a AS a_pitcher_venue_starts,
+
     -- Current-game pitcher names (from pitcher_game_stats)
     pgs_h.pitcher_name    AS home_starter_name,
     pgs_a.pitcher_name    AS away_starter_name,
@@ -541,6 +547,34 @@ LEFT JOIN LATERAL (
     ORDER BY gp.date DESC, gp.id DESC
     LIMIT 1
 ) prs_a ON TRUE
+
+-- Pitcher venue ERA (home / away): the CURRENT game's pitcher's cumulative ERA
+-- at THIS exact venue, from all prior starts at this park (prior seasons + earlier
+-- this season). No fallback: NULL when the pitcher has no starts at this venue.
+LEFT JOIN LATERAL (
+    SELECT CASE WHEN sum(cpgs.ip) > 0 THEN 9.0 * sum(cpgs.er) / sum(cpgs.ip) END AS venue_era_h,
+           sum(cpgs.ip)  AS venue_ip_h,  -- diagnostic, keep for transparency
+           count(*)      AS venue_starts_h
+    FROM mlb.pitcher_game_stats cpgs
+    JOIN mlb.games gpv ON gpv.id = cpgs.game_id
+    WHERE cpgs.pitcher_mlb_id = pgs_h.pitcher_mlb_id
+      AND cpgs.is_starter = TRUE
+      AND gpv.venue_id = g.venue_id
+      AND gpv.date < g.date - INTERVAL '30 minutes'
+      AND gpv.status = 'FINAL'
+) vph ON TRUE
+LEFT JOIN LATERAL (
+    SELECT CASE WHEN sum(cpgs.ip) > 0 THEN 9.0 * sum(cpgs.er) / sum(cpgs.ip) END AS venue_era_a,
+           sum(cpgs.ip)  AS venue_ip_a,  -- diagnostic
+           count(*)      AS venue_starts_a
+    FROM mlb.pitcher_game_stats cpgs
+    JOIN mlb.games gpv ON gpv.id = cpgs.game_id
+    WHERE cpgs.pitcher_mlb_id = pgs_a.pitcher_mlb_id
+      AND cpgs.is_starter = TRUE
+      AND gpv.venue_id = g.venue_id
+      AND gpv.date < g.date - INTERVAL '30 minutes'
+      AND gpv.status = 'FINAL'
+) vpa ON TRUE
 
 -- Bullpen game stats (home / away)
 -- Bullpen stats from the MOST RECENT completed game (no lookahead)
@@ -1518,16 +1552,28 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
 
     # Pitcher split ERA — from PRS split columns
     h_src = [("h_pitcher_home_era", "h_p_home_era_ytd"),
-             ("h_pitcher_venue_era", "h_p_home_era_ytd"),  # venue ~ home split proxy
              ("h_pitcher_day_era", "h_p_day_era_ytd"),
              ("a_pitcher_road_era", "a_p_road_era_ytd"),
-             ("a_pitcher_night_era", "a_p_night_era_ytd"),
-             ("a_pitcher_venue_era", "a_p_road_era_ytd")]  # venue ~ road split proxy
+             ("a_pitcher_night_era", "a_p_night_era_ytd")]
     for dest, src in h_src:
         if src in result.columns:
             result[dest] = result[src].fillna(0)
         else:
             result[dest] = 0.0
+
+    # Real pitcher VENUE ERA (from prior starts at this exact park, multi-season).
+    # NULL (not 0) when the pitcher has no starts at this venue. Never proxied to
+    # home/road, never .fillna(0) -- a missing venue ERA is meaningful and must
+    # stay NULL for the model to treat it as unknown.
+    for dest in ("h_pitcher_venue_era", "a_pitcher_venue_era"):
+        if dest not in result.columns:
+            # Query did not provide venue ERA (other load path); leave absent so
+            # downstream fillna/feature code treats it as unknown (NULL), never 0.
+            result[dest] = np.nan
+    for dest in ("h_pitcher_venue_starts", "a_pitcher_venue_starts"):
+        if dest not in result.columns:
+            result[dest] = 0
+
 
     # Day/ERA and Night/ERA for the opposite side (need cross-side data from PRS)
     result["h_pitcher_night_era"] = result.get("h_p_night_era_ytd", result.get("h_pitcher_day_era", 0))
