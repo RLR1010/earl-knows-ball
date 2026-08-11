@@ -13,6 +13,9 @@ interface FeatureItem {
   value: unknown;
   type: "raw" | "computed";
   aliases?: string[];
+  raw_value?: unknown;
+  is_model_value?: boolean;
+  is_imputed?: boolean;
 }
 
 interface GameInfo {
@@ -103,9 +106,22 @@ function FeatureRow({ feat }: { feat: FeatureItem }) {
         </div>
       </td>
       <td className="py-2 pr-4">
-        <code className={`text-sm ${valueClass(feat.value)}`}>
-          {formatValue(feat.value)}
-        </code>
+        <div className="flex flex-col gap-0.5">
+          <div className="flex items-center gap-1.5">
+            <code className={`text-sm ${valueClass(feat.value)}`}>
+              {formatValue(feat.value)}
+            </code>
+            {feat.is_imputed && (
+              <span className="text-[10px] font-semibold uppercase tracking-wide px-1 py-0.5 rounded bg-amber-500/15 text-amber-400" title="missing in source data; this is the value the model actually receives (imputed from a prior)">imputed</span>
+            )}
+            {feat.is_model_value && !feat.is_imputed && (
+              <span className="text-[10px] font-semibold uppercase tracking-wide px-1 py-0.5 rounded bg-earl-500/15 text-earl-400" title="this feature feeds the model directly">model</span>
+            )}
+          </div>
+          {feat.is_model_value && feat.raw_value !== undefined && (
+            <span className="text-[11px] text-gray-500">raw: {formatValue(feat.raw_value)}</span>
+          )}
+        </div>
       </td>
       <td className="py-2 pr-4 hidden md:table-cell">
         <span className="text-xs text-gray-600">{groupLabel}</span>
