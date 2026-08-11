@@ -2553,7 +2553,12 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
                                 return cur
                             return prior_map.get((r[abbr_col], r["season_year"] - 1), {}).get(prior_key, 0.0)
                         df[col] = df.apply(_prior_fill, axis=1)
-                df[col] = df[col].fillna(0.0)
+                # NOTE: leave any column still missing here as NaN instead of
+                # blind-0 filling. A team stat with NO prior-season and NO current
+                # data (brand-new team / stat absent from prior_team_stats) stays
+                # NaN so the PICK CARD blanks it (a missing home_off_ypg must not
+                # read as 0 yds/gm). The MODEL imputes a league-average via
+                # _impute_feature — never a hard 0.
 
         logger.info(
             "Team stats merged: home_off_ypg non-null count = %d",

@@ -382,6 +382,26 @@ def _impute_feature(row: pd.Series, feat: str) -> Optional[float]:
     if feat == "opening_ou":
         return 44.0
 
+    # League-average NFL TEAM stat fallback (missing team with no prior-season
+    # and no current data). Conservative NFL norms so a magnitude stat never reads
+    # as a hard 0 to the model. Token-matched on the suffix.
+    TEAM_LEAGUE_AVG = {
+        "off_ypg": 340.0, "def_ypg": 340.0,
+        "ypp": 5.5,
+        "pass_ypg": 230.0, "rush_ypg": 115.0,
+        "pass_ypa": 7.0,
+        "first_downs": 20.0,
+        "third_down_pct": 0.40, "fourth_down_pct": 0.50,
+        "rz_trips": 3.5, "rz_td_pct": 0.58,
+        "explosive_plays": 5.0, "three_and_outs": 2.5,
+        "ints_thrown": 1.0,
+        "off_epa_per_play": 0.0, "def_epa_per_play": 0.0,
+        "turnover_diff": 0.0, "win_streak": 0.0,
+    }
+    for token, avg in TEAM_LEAGUE_AVG.items():
+        if token in feat:
+            return avg
+
     # Generic fallback: league-neutral, but NEVER a hard 0 for a magnitude stat.
     return 0.0
 
