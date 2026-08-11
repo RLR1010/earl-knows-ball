@@ -3509,489 +3509,121 @@ async def data_loader_load_game(
 ):
     """Load and build all features for a single game via the sport's data loader.
 
-    Returns ALL raw and computed features so admins can inspect what the
-    data loader produces for a given game_id.
+    This endpoint shows EXACTLY what the sport data_loader collects for the game
+    (the same values fed to the model). It reuses the loader's own SQL + build
+    pipeline — no duplicated SQL lives here. The feature list is the
+    ``is_trainable`` set from the per-sport ``features`` table.
     """
     sport = sport.lower()
     if sport not in ("nfl", "mlb", "nba"):
         raise HTTPException(status_code=400, detail=f"Unsupported sport '{sport}'. Supported: nfl, mlb, nba")
 
-    # Build the DB URL for the data loader (sync SQLAlchemy engine)
     from app.core.config import settings
+    from sqlalchemy import text as _sa_text
     db_url = str(settings.database_url).replace("+asyncpg", "")
 
-    # Defaults for non-NFL sports. The NFL branch below overrides these via
-    # its import; MLB/NBA have no FEATURE_ALIASES/team-stat column sets.
-    FEATURE_ALIASES = {}
-    nfl_team_stat_cols = set()
-
     try:
-        # Import and instantiate the right data loader
+        # ── Pull the trainable feature list + metadata from the DB registry ──
+        _feat_rows = (await db.execute(_sa_text(
+            "SELECT name, COALESCE(display_name, name) AS display_name, "
+            "description, current_ats, current_ou, pick_card "
+            f"FROM {sport}.features WHERE is_trainable = TRUE ORDER BY name"
+        ))).fetchall()
+        feats = [r[0] for r in _feat_rows]
+
+        # ── Load the game features through the sport's own data_loader ──
         if sport == "nfl":
-            from app.handicapping.nfl.data_loader import NFLDataLoader, TEAM_STATS_OUTPUT_COLUMNS as nfl_team_stat_cols, FEATURE_ALIASES
-            from app.handicapping.nfl import engine as _nfl_engine
+            from app.handicapping.nfl.data_loader import NFLDataLoader
+            from app.handicapping.nfl import engine as _eng
             dl = NFLDataLoader(db_url=db_url)
-            _model_impute = _nfl_engine._impute_feature
-            _model_feats = set(_nfl_engine._get_features("ats")) | set(_nfl_engine._get_features("ou"))
-        elif sport == "mlb":
-            from app.handicapping.mlb.data_loader import MLBDataLoader
-            from app.handicapping.mlb import mlb_engine as _mlb_engine
-            dl = MLBDataLoader(db_url=db_url)
-            _model_impute = _mlb_engine._impute_feature
-            _model_feats = set(_mlb_engine._get_features().get("ats", [])) | set(_mlb_engine._get_features().get("ou", []))
-        else:  # nba
+            _impute = _eng._impute_feature
+            df = dl.load_data(game_ids=[game_id], include_upcoming=True, feature_names=feats)
+            model_ats = set(_eng._get_features("ats")) | set(_eng._get_features("ou"))
+        elif sport == "nba":
             from app.handicapping.nba.data_loader import NBADataLoader
-            from app.handicapping.nba import nba_engine as _nba_engine
+            from app.handicapping.nba import nba_engine as _eng
             dl = NBADataLoader(db_url=db_url)
-            _model_impute = _nba_engine._impute_feature
-            _model_feats = set(_nba_engine._get_features("ats")) | set(_nba_engine._get_features("ou"))
+            _impute = _eng._impute_feature
+            df = dl.load_inference_data(game_ids=[game_id])
+            model_ats = set(_eng._get_features("ats")) | set(_eng._get_features("ou"))
+        else:  # mlb
+            from app.handicapping.mlb.data_loader import MLBDataLoader, build_features as mlb_build_features
+            from app.handicapping.mlb import mlb_engine as _eng
+            dl = MLBDataLoader(db_url=db_url)
+            _impute = _eng._impute_feature
+            gdf = dl.load_games(game_ids=[game_id], status=None)
+            bdf = mlb_build_features(gdf.copy())
+            df = bdf[bdf["game_id"] == game_id] if "game_id" in bdf.columns else bdf
+            model_ats = set(_eng._get_features().get("ats", [])) | set(_eng._get_features().get("ou", []))
 
-        # Step 1: Find the game's season_id so we can load enough context
-        # for rolling stats (need current + previous season)
-        # Use include_upcoming so SCHEDULED/PREGAME games are findable
-        raw_df = dl.load_games(game_ids=[game_id], include_upcoming=True)
-        if raw_df.empty:
-            raise HTTPException(
-                status_code=404,
-                detail=f"No game found with game_id={game_id} for {sport.upper()}",
-            )
+        if df is None or df.empty:
+            raise HTTPException(status_code=404, detail=f"No feature data for game {game_id}")
+        row = df.iloc[0]
+        feat_meta = {r[0]: r for r in _feat_rows}
 
-        game_row = raw_df.iloc[0]
-
-        # We need current + previous season so rolling stats compute correctly.
-        # _build_query filters on s.year (calendar year), not internal season_id.
-        if sport in ("nfl", "nba"):
-            season_val = int(game_row["season_year"])
-            full_raw_df = dl.load_games(seasons=[season_val - 1, season_val], include_upcoming=True)
-            logger.info(
-                "Data loader for %s game_id=%d — loaded %d game rows "
-                "from seasons [%d, %d]",
-                sport, game_id, len(full_raw_df), season_val - 1, season_val,
-            )
-        else:  # mlb - uses calendar year, sequential IDs
-            season_val = int(game_row["season_year"])
-            full_raw_df = dl.load_games(seasons=[season_val - 1, season_val], include_upcoming=True)
-            logger.info(
-                "Data loader for %s game_id=%d — loaded %d game rows "
-                "from seasons [%d, %d]",
-                sport, game_id, len(full_raw_df), season_val - 1, season_val,
-            )
-            if full_raw_df.empty:
-                full_raw_df = dl.load_games(seasons=[season_val], include_upcoming=True)
-
-        # Step 3: Build features on the full context
-        full_built_df = _pd.DataFrame()
-        if sport == "nfl":
-            from app.handicapping.nfl.data_loader import build_features as nfl_build_features
-            from sqlalchemy import create_engine as _create_engine, text as _sql_text
-            _sync_engine = _create_engine(db_url)
-            CUM_SQL = _sql_text("""
-                SELECT t.season, t.week, t.team_abbr,
-                    t.off_yds_r5          AS off_ypg,
-                    t.ypp_r5              AS ypp,
-                    t.pass_yds_r5         AS pass_ypg,
-                    t.rush_yds_r5         AS rush_ypg,
-                    t.pass_ypa_r5         AS pass_ypa,
-                    t.rush_ypa_r5         AS rush_ypa,
-                    t.turnover_margin_r5  AS turnover_diff,
-                    t.def_yds_r5          AS def_ypg,
-                    t.def_ypp_r5          AS def_ypp,
-                    t.def_pass_yds_r5     AS def_pass_ypg,
-                    t.def_rush_yds_r5     AS def_rush_ypg,
-                    t.first_downs_r5      AS first_downs,
-                    t.third_down_pct_r5   AS third_down_pct,
-                    t.fourth_down_pct_r5  AS fourth_down_pct,
-                    t.rz_trips_r5         AS rz_trips,
-                    t.rz_td_pct_r5        AS rz_td_pct,
-                    t.explosive_rate_r5   AS explosive_plays,
-                    t.three_and_out_rate_r5 AS three_and_outs,
-                    t.ints_thrown_r5      AS ints_thrown,
-                    t.def_first_downs_r5   AS def_first_downs,
-                    t.def_third_down_pct_r5 AS def_third_down_pct,
-                    t.def_fourth_down_pct_r5 AS def_fourth_down_pct,
-                    t.def_rz_trips_r5      AS def_rz_trips,
-                    t.def_rz_td_pct_r5    AS def_rz_td_pct,
-                    t.def_explosive_rate_r5 AS def_explosive_plays,
-                    t.def_three_and_outs_r5 AS def_three_and_outs,
-                    t.def_ints_thrown_r5   AS def_ints_thrown,
-                    t.epa_per_play_r5     AS off_epa_per_play,
-                    t.win_streak,
-                    t.off_pts_stddev_r5   AS off_pts_stddev_5,
-                    t.off_yds_stddev_r5   AS off_yds_stddev_5,
-                    c.rw_off_ppg,
-                    c.rw_off_ypg,
-                    c.adj_off_ppg,
-                    c.adj_off_ypg,
-                    t.def_epa_per_play_r5 AS def_epa_per_play,
-                    t.opp_pts_stddev_r5   AS def_pts_stddev_5,
-                    t.opp_yds_stddev_r5   AS def_yds_stddev_5,
-                    c.rw_def_ppg,
-                    c.rw_def_ypg,
-                    c.adj_def_ppg,
-                    c.adj_def_ypg,
-                    t.off_yardage_rank,
-                    t.def_yardage_rank,
-                    t.off_scoring_rank,
-                    t.def_scoring_rank,
-                    t.off_rushing_rank,
-                    t.def_rushing_rank,
-                    t.off_passing_rank,
-                    t.def_passing_rating_rank,
-                    t.feeds_into_game_id
-                FROM nfl.team_rolling_stats t
-                LEFT JOIN nfl.cumulative_game_stats c
-                    ON t.game_id = c.game_id AND t.team_abbr = c.team_abbr
-                ORDER BY t.season, t.week, t.team_abbr
-            """)
-            _ts_df = _pd.read_sql(CUM_SQL, _sync_engine)
-            # Also load QB pre-game stats
-            _qb_stats = _pd.DataFrame()
-            try:
-                QB_SQL = _sql_text("""
-                    WITH actual_starters AS (
-                        SELECT DISTINCT ON (pws.game_id, pws.team_id)
-                            pws.game_id, pws.team_id, pws.player_id
-                        FROM nfl.player_weekly_stats pws
-                        JOIN nfl.players pl ON pl.id = pws.player_id
-                        WHERE pl.position = 'QB'
-                        ORDER BY pws.game_id, pws.team_id, pws.pass_attempts DESC NULLS LAST
-                    ),
-                    projected_starter AS (
-                        SELECT
-                            g.id AS game_id, g.home_team_id AS team_id,
-                            COALESCE(as_.player_id, dc.player_id) AS player_id
-                        FROM nfl.games g
-                        LEFT JOIN actual_starters as_ ON as_.game_id = g.id AND as_.team_id = g.home_team_id
-                        LEFT JOIN nfl.depth_charts dc ON dc.team_id = g.home_team_id AND dc.position = 'QB' AND dc.slot = 1
-                        UNION ALL
-                        SELECT
-                            g.id AS game_id, g.away_team_id AS team_id,
-                            COALESCE(as_.player_id, dc.player_id) AS player_id
-                        FROM nfl.games g
-                        LEFT JOIN actual_starters as_ ON as_.game_id = g.id AND as_.team_id = g.away_team_id
-                        LEFT JOIN nfl.depth_charts dc ON dc.team_id = g.away_team_id AND dc.position = 'QB' AND dc.slot = 1
-                    )
-                    SELECT
-                        g.id AS game_id,
-                        h_cum.games_played       AS home_qb_games_season,
-                        h_cum.passer_rating_cum   AS home_qb_passer_rating_season,
-                        h_cum.any_a               AS home_qb_any_a_season,
-                        h_cum.ypa                 AS home_qb_ypa_season,
-                        h_cum.td_pct              AS home_qb_td_pct_season,
-                        h_cum.int_pct             AS home_qb_int_pct_season,
-                        h_cum.sack_rate           AS home_qb_sack_rate_season,
-                        CASE WHEN h_cum.games_played > 0 THEN GREATEST(0.0, h_cum.cum_rush_yds / h_cum.games_played) ELSE NULL END AS home_qb_rush_ypg_season,
-                        CASE WHEN h_cum.games_played > 0 THEN GREATEST(0.0, h_cum.cum_rush_att / h_cum.games_played) ELSE NULL END AS home_qb_rush_att_pg_season,
-                        h_roll.games_5            AS home_qb_games_5,
-                        h_roll.passer_rating_5    AS home_qb_passer_rating_5,
-                        h_roll.any_a_5            AS home_qb_any_a_5,
-                        h_roll.ypa_5              AS home_qb_ypa_5,
-                        h_roll.td_pct_5           AS home_qb_td_pct_5,
-                        h_roll.int_pct_5          AS home_qb_int_pct_5,
-                        h_roll.sack_rate_5        AS home_qb_sack_rate_5,
-                        CASE WHEN h_roll.games_5 > 0 THEN GREATEST(0.0, h_roll.rush_yds_5 / h_roll.games_5) ELSE NULL END AS home_qb_rush_ypg_5,
-                        h_roll.rush_att_5         AS home_qb_rush_att_5,
-                        a_cum.games_played       AS away_qb_games_season,
-                        a_cum.passer_rating_cum   AS away_qb_passer_rating_season,
-                        a_cum.any_a               AS away_qb_any_a_season,
-                        a_cum.ypa                 AS away_qb_ypa_season,
-                        a_cum.td_pct              AS away_qb_td_pct_season,
-                        a_cum.int_pct             AS away_qb_int_pct_season,
-                        a_cum.sack_rate           AS away_qb_sack_rate_season,
-                        CASE WHEN a_cum.games_played > 0 THEN GREATEST(0.0, a_cum.cum_rush_yds / a_cum.games_played) ELSE NULL END AS away_qb_rush_ypg_season,
-                        CASE WHEN a_cum.games_played > 0 THEN GREATEST(0.0, a_cum.cum_rush_att / a_cum.games_played) ELSE NULL END AS away_qb_rush_att_pg_season,
-                        a_roll.games_5            AS away_qb_games_5,
-                        a_roll.passer_rating_5    AS away_qb_passer_rating_5,
-                        a_roll.any_a_5            AS away_qb_any_a_5,
-                        a_roll.ypa_5              AS away_qb_ypa_5,
-                        a_roll.td_pct_5           AS away_qb_td_pct_5,
-                        a_roll.int_pct_5          AS away_qb_int_pct_5,
-                        a_roll.sack_rate_5        AS away_qb_sack_rate_5,
-                        CASE WHEN a_roll.games_5 > 0 THEN GREATEST(0.0, a_roll.rush_yds_5 / a_roll.games_5) ELSE NULL END AS away_qb_rush_ypg_5,
-                        a_roll.rush_att_5         AS away_qb_rush_att_5,
-                        -- Prior-season fallback columns (early-season seeding)
-                        h_cum_prev.games_played   AS home_qb_games_season_prev,
-                        h_cum_prev.passer_rating_cum AS home_qb_passer_rating_season_prev,
-                        h_cum_prev.any_a          AS home_qb_any_a_season_prev,
-                        h_cum_prev.ypa            AS home_qb_ypa_season_prev,
-                        h_cum_prev.td_pct         AS home_qb_td_pct_season_prev,
-                        h_cum_prev.int_pct        AS home_qb_int_pct_season_prev,
-                        h_cum_prev.sack_rate      AS home_qb_sack_rate_season_prev,
-                        CASE WHEN h_cum_prev.games_played > 0 THEN GREATEST(0.0, h_cum_prev.cum_rush_yds / h_cum_prev.games_played) ELSE 0 END AS home_qb_rush_ypg_season_prev,
-                        CASE WHEN h_cum_prev.games_played > 0 THEN GREATEST(0.0, h_cum_prev.cum_rush_att / h_cum_prev.games_played) ELSE 0 END AS home_qb_rush_att_pg_season_prev,
-                        h_roll_prev.games_5       AS home_qb_games_5_prev,
-                        h_roll_prev.passer_rating_5 AS home_qb_passer_rating_5_prev,
-                        h_roll_prev.any_a_5       AS home_qb_any_a_5_prev,
-                        h_roll_prev.ypa_5         AS home_qb_ypa_5_prev,
-                        h_roll_prev.td_pct_5      AS home_qb_td_pct_5_prev,
-                        h_roll_prev.int_pct_5     AS home_qb_int_pct_5_prev,
-                        h_roll_prev.sack_rate_5   AS home_qb_sack_rate_5_prev,
-                        CASE WHEN h_roll_prev.games_5 > 0 THEN GREATEST(0.0, h_roll_prev.rush_yds_5 / h_roll_prev.games_5) ELSE 0 END AS home_qb_rush_ypg_5_prev,
-                        h_roll_prev.rush_att_5    AS home_qb_rush_att_5_prev,
-                        a_cum_prev.games_played   AS away_qb_games_season_prev,
-                        a_cum_prev.passer_rating_cum AS away_qb_passer_rating_season_prev,
-                        a_cum_prev.any_a          AS away_qb_any_a_season_prev,
-                        a_cum_prev.ypa            AS away_qb_ypa_season_prev,
-                        a_cum_prev.td_pct         AS away_qb_td_pct_season_prev,
-                        a_cum_prev.int_pct        AS away_qb_int_pct_season_prev,
-                        a_cum_prev.sack_rate      AS away_qb_sack_rate_season_prev,
-                        CASE WHEN a_cum_prev.games_played > 0 THEN GREATEST(0.0, a_cum_prev.cum_rush_yds / a_cum_prev.games_played) ELSE 0 END AS away_qb_rush_ypg_season_prev,
-                        CASE WHEN a_cum_prev.games_played > 0 THEN GREATEST(0.0, a_cum_prev.cum_rush_att / a_cum_prev.games_played) ELSE 0 END AS away_qb_rush_att_pg_season_prev,
-                        a_roll_prev.games_5       AS away_qb_games_5_prev,
-                        a_roll_prev.passer_rating_5 AS away_qb_passer_rating_5_prev,
-                        a_roll_prev.any_a_5       AS away_qb_any_a_5_prev,
-                        a_roll_prev.ypa_5         AS away_qb_ypa_5_prev,
-                        a_roll_prev.td_pct_5      AS away_qb_td_pct_5_prev,
-                        a_roll_prev.int_pct_5     AS away_qb_int_pct_5_prev,
-                        a_roll_prev.sack_rate_5   AS away_qb_sack_rate_5_prev,
-                        CASE WHEN a_roll_prev.games_5 > 0 THEN GREATEST(0.0, a_roll_prev.rush_yds_5 / a_roll_prev.games_5) ELSE 0 END AS away_qb_rush_ypg_5_prev,
-                        a_roll_prev.rush_att_5    AS away_qb_rush_att_5_prev
-                    FROM nfl.games g
-                    JOIN nfl.seasons s ON s.id = g.season_id
-                    LEFT JOIN projected_starter h_st ON h_st.game_id = g.id AND h_st.team_id = g.home_team_id
-                    LEFT JOIN LATERAL (
-                        SELECT * FROM nfl.qb_cumulative_stats qc
-                        WHERE qc.player_id = h_st.player_id AND qc.season = s.year AND qc.game_date < g.date::date
-                        ORDER BY qc.game_date DESC LIMIT 1
-                    ) h_cum ON true
-                    LEFT JOIN LATERAL (
-                        SELECT * FROM nfl.qb_rolling_stats qr
-                        WHERE qr.player_id = h_st.player_id AND qr.season = s.year AND qr.game_date < g.date::date
-                        ORDER BY qr.game_date DESC LIMIT 1
-                    ) h_roll ON true
-                    LEFT JOIN LATERAL (
-                        SELECT * FROM nfl.qb_cumulative_stats qc
-                        WHERE qc.player_id = h_st.player_id AND qc.season = s.year - 1
-                        ORDER BY qc.game_date DESC LIMIT 1
-                    ) h_cum_prev ON true
-                    LEFT JOIN LATERAL (
-                        SELECT * FROM nfl.qb_rolling_stats qr
-                        WHERE qr.player_id = h_st.player_id AND qr.season = s.year - 1
-                        ORDER BY qr.game_date DESC LIMIT 1
-                    ) h_roll_prev ON true
-                    LEFT JOIN projected_starter a_st ON a_st.game_id = g.id AND a_st.team_id = g.away_team_id
-                    LEFT JOIN LATERAL (
-                        SELECT * FROM nfl.qb_cumulative_stats qc
-                        WHERE qc.player_id = a_st.player_id AND qc.season = s.year AND qc.game_date < g.date::date
-                        ORDER BY qc.game_date DESC LIMIT 1
-                    ) a_cum ON true
-                    LEFT JOIN LATERAL (
-                        SELECT * FROM nfl.qb_rolling_stats qr
-                        WHERE qr.player_id = a_st.player_id AND qr.season = s.year AND qr.game_date < g.date::date
-                        ORDER BY qr.game_date DESC LIMIT 1
-                    ) a_roll ON true
-                    LEFT JOIN LATERAL (
-                        SELECT * FROM nfl.qb_cumulative_stats qc
-                        WHERE qc.player_id = a_st.player_id AND qc.season = s.year - 1
-                        ORDER BY qc.game_date DESC LIMIT 1
-                    ) a_cum_prev ON true
-                    LEFT JOIN LATERAL (
-                        SELECT * FROM nfl.qb_rolling_stats qr
-                        WHERE qr.player_id = a_st.player_id AND qr.season = s.year - 1
-                        ORDER BY qr.game_date DESC LIMIT 1
-                    ) a_roll_prev ON true
-                    ORDER BY g.date
-                """)
-                _qb_stats = _pd.read_sql(QB_SQL, _sync_engine)
-                logger.info("Loaded %d QB stat rows for admin inspector", len(_qb_stats))
-            except Exception as exc:
-                logger.warning("Failed to load QB stats in admin route: %s", exc)
-            full_built_df = nfl_build_features(full_raw_df, team_stats=_ts_df, qb_stats=_qb_stats)
-        elif sport == "mlb":
-            from app.handicapping.mlb.data_loader import build_features as mlb_build_features
-            try:
-                full_built_df = mlb_build_features(full_raw_df)
-            except Exception:
-                logger.error("  build_features failed for MLB, falling back to raw data")
-                full_built_df = full_raw_df
-        else:  # nba
-            from app.handicapping.nba.data_loader import build_features as nba_build_features
-            try:
-                full_built_df = nba_build_features(full_raw_df)
-            except Exception:
-                logger.error("  build_features failed for NBA, falling back to raw data")
-
-        # Step 4: Filter to just our target game
-        if full_built_df.empty or "game_id" not in full_built_df.columns:
-            built_df = _pd.DataFrame()
-        else:
-            built_df = full_built_df[full_built_df["game_id"] == game_id]
-        if not built_df.empty:
-            pass
-        elif "game_id" in full_built_df.columns:
-            # Might be in the index rather than a column
-            try:
-                built_df = full_built_df.loc[[game_id]]
-            except (KeyError, IndexError):
-                pass
-        if built_df.empty:
-            missing_in_raw = game_id not in full_raw_df["game_id"].values
-            missing_in_built = game_id not in full_built_df["game_id"].values if not full_built_df.empty else True
-            detail_parts = [f"Game {game_id} disappeared after feature engineering"]
-            if missing_in_built:
-                detail_parts.append("— not found in built DataFrame")
-            if missing_in_raw:
-                detail_parts.append("— also not found in raw data")
-            if not missing_in_raw and missing_in_built:
-                detail_parts.append("— possibly filtered out due to missing betting data (no betting_lines_consolidated row)")
-            raise HTTPException(status_code=500, detail=" ".join(detail_parts))
-
-        # Also filter raw_df to match
-        raw_df = full_raw_df[full_raw_df["game_id"] == game_id]
-
-        raw_row = raw_df.iloc[0].to_dict()
-        built_row = built_df.iloc[0].to_dict() if not built_df.empty else {}
-
-        # Step 4: Collect feature metadata from the data loader
-        catalog = dl.get_features_catalog()  # {name: description}
-        # get_display_name is available on NFL, MLB, and NBA data loaders
-
-        # Separate raw columns (pre-build_features) from computed columns
-        raw_columns = set(raw_row.keys())
-        built_columns = set(built_row.keys())
-        computed_cols = built_columns - raw_columns
-
-        # ── Raw feature subgroups ────────────────────────────────────────────
-        # Columns describing the game itself (identifiers, teams, venue, weather)
-        GAME_IDENTITY_COLUMNS = {
-            "game_id", "season_id", "week", "game_type", "status", "game_date",
-            "season_year", "home_team_id", "away_team_id",
-            "home_abbr", "away_abbr", "home_conf", "away_conf",
-            "home_div", "away_div",
-            "venue", "surface", "roof_type", "temperature", "wind_speed",
-            "weather_condition",
-            "venue_lat", "venue_lng", "venue_tz",
-            "away_home_lat", "away_home_lng", "away_home_tz",
-            "travel_miles", "tz_diff", "home_last_game", "away_last_game",
-        }
-        # Current game result stats (NOT used for training/inference — these are outcomes)
-        RESULT_COLUMNS = {
-            "home_score", "away_score",
-        }
-        # Computed result-derived features (also current game outcomes)
-        COMPUTED_RESULT_COLUMNS = {
-            "home_score_margin", "home_ats_cover", "away_ats_cover",
-            "over_result", "ou_margin",
-        }
-
-        # Build feature list
-        features = []
         def _safe_val(v):
             if v is None:
                 return None
             try:
-                if v != v or v == float('inf') or v == float('-inf'):
+                f = float(v)
+                if f != f or f in (float("inf"), float("-inf")):  # NaN/inf
                     return None
             except (TypeError, ValueError):
                 pass
-            if isinstance(v, (_pd.Timestamp, _pd.Series, _pd.DataFrame)):
-                return None
-            return v
+            return v if isinstance(v, (int, float, str, bool)) or v is None else str(v)
 
-        for col_name in sorted(raw_columns):
-            if col_name in GAME_IDENTITY_COLUMNS:
-                subgroup = "game"
-            elif col_name in RESULT_COLUMNS:
-                subgroup = "result"
-            else:
-                subgroup = "lines"
-            features.append({
-                "name": col_name,
-                "display_name": dl.get_display_name(col_name),
-                "group": subgroup,
-                "description": catalog.get(col_name, ""),
-                "value": _safe_val(raw_row.get(col_name)),
-                "type": "raw",
-                "aliases": FEATURE_ALIASES.get(col_name, []),
-            })
+        features = []
+        for feat in feats:
+            m = feat_meta.get(feat)
+            display_name = m[1] if m and len(m) > 1 else feat
+            description = m[2] if m and len(m) > 2 else ""
+            cur_ats = (m[3] if m and len(m) > 3 else None)
+            cur_ou = (m[4] if m and len(m) > 4 else None)
+            pick_card = (m[5] if m and len(m) > 5 else None)
 
-        for col_name in sorted(computed_cols):
-            if col_name in COMPUTED_RESULT_COLUMNS:
-                grp = "result"
-            elif col_name in nfl_team_stat_cols:
-                grp = "team_stats"
-            else:
-                grp = "computed"
-            raw = _safe_val(built_row.get(col_name))
-            # For model-active features, show the value the MODEL actually gets:
-            # imputed via the sport's _impute_feature (real value or a reasoned
-            # prior). This guarantees the admin page matches the model input.
-            if col_name in _model_feats:
+            raw = _safe_val(row.get(feat))
+            # Model-facing value = engine imputer (real value or reasoned prior)
+            if feat in model_ats:
                 try:
-                    model_value = _model_impute(built_row, col_name)
+                    model_value = _impute(row, feat)
                 except Exception:
                     model_value = raw
-                # Only mark it as model-facing when it differs from raw, so we
-                # can see exactly where the model is imputing.
                 is_imputed = (
-                    model_value is not None
-                    and raw is None
-                ) or (raw is not None and model_value is not None and raw != model_value)
-                item_value = model_value if (model_value is not None) else raw
+                    (model_value is not None and raw is None)
+                    or (raw is not None and model_value is not None and raw != model_value)
+                )
+                value = model_value if model_value is not None else raw
             else:
                 is_imputed = False
-                item_value = raw
+                value = raw
+
             features.append({
-                "name": col_name,
-                "display_name": dl.get_display_name(col_name),
-                "group": grp,
-                "description": catalog.get(col_name, ""),
-                "value": _safe_val(item_value),
+                "name": feat,
+                "display_name": display_name,
+                "group": "computed",
+                "description": description or "",
+                "value": _safe_val(value),
                 "raw_value": raw,
                 "type": "computed",
-                "is_model_value": col_name in _model_feats,
+                "is_model_value": feat in model_ats,
                 "is_imputed": bool(is_imputed),
-                "aliases": FEATURE_ALIASES.get(col_name, []),
+                "current_ats": cur_ats,
+                "current_ou": cur_ou,
+                "aliases": [],
             })
 
-        def _clean_val(v):
-            """Replace NaN/Inf with None so JSON serialization doesn't fail."""
-            if v is None:
-                return None
-            if isinstance(v, float) and (v != v or v == float('inf') or v == float('-inf')):
-                return None
-            return v
-
-        game_info = {}
-        sport_lower = sport
-        if sport == "nfl":
-            for key in ("game_id", "season_id", "week", "home_team", "away_team",
-                        "ha", "aa", "home_score", "away_score", "game_date", "status"):
-                if key in raw_row:
-                    game_info[key] = _clean_val(raw_row[key])
-        elif sport == "mlb":
-            for key in ("game_id", "season_id", "ha", "aa",
-                        "home_score", "away_score", "game_date", "status"):
-                if key in raw_row:
-                    game_info[key] = _clean_val(raw_row[key])
-        else:  # nba
-            for key in ("game_id", "season_id", "home_team", "away_team",
-                        "home_abbr", "away_abbr", "home_score", "away_score", "status"):
-                if key in raw_row:
-                    game_info[key] = _clean_val(raw_row[key])
-            # NBA uses `date` column, not `game_date`
-            if "date" in raw_row:
-                game_info["game_date"] = _clean_val(raw_row["date"])
-
-        # Convert game_date from UTC to US Eastern for display
-        if "game_date" in game_info and game_info["game_date"] is not None:
-            gd = game_info["game_date"]
-            if isinstance(gd, datetime):
-                if gd.tzinfo is None:
-                    gd = gd.replace(tzinfo=timezone.utc)
-                et = zoneinfo.ZoneInfo("America/New_York")
-                game_info["game_date"] = gd.astimezone(et).isoformat()
-
         return {
-            "sport": sport_lower,
-            "game_info": game_info,
+            "game_id": game_id,
+            "sport": sport,
             "total_features": len(features),
-            "raw_features": sum(1 for f in features if f["type"] == "raw"),
-            "game_features": sum(1 for f in features if f["group"] == "game"),
-            "stats_features": sum(1 for f in features if f["group"] == "lines"),
-            "result_features": sum(1 for f in features if f["group"] == "result"),
-            "computed_features": sum(1 for f in features if f["type"] == "computed"),
+            "raw_features": 0,
+            "game_features": 0,
+            "lines_features": 0,
+            "result_features": 0,
+            "computed_features": len(features),
             "features": features,
+            "source": "data_loader.{}.load_data".format(sport),
+            "note": "All features are the is_trainable set from {}.features, built by the sport data_loader.".format(sport),
         }
 
     except HTTPException:
@@ -4000,13 +3632,7 @@ async def data_loader_load_game(
         import traceback
         tb = traceback.format_exc()
         logger.error("Data loader error for %s game_id=%d: %s\n%s", sport, game_id, str(e), tb)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Data loader error: {str(e)}",
-        )
-
-
-@router.get("/data-loader/{sport}/game-info")
+        raise HTTPException(status_code=500, detail=f"Data loader error: {str(e)}")
 async def data_loader_game_info(
     sport: str,
     game_id: int = Query(..., description="Game ID to look up"),
