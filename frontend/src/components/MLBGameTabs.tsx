@@ -26,6 +26,10 @@ export default function MLBGameTabs({ gameId, game, formatOdds, boxscore, linesc
   const [loadingStats, setLoadingStats] = useState(false);
   const [loadingProps, setLoadingProps] = useState(false);
 
+  // Sub-tab inside Detailed Analysis: "analysis" vs "stats"
+  const [analysisSubTab, setAnalysisSubTab] = useState<"analysis" | "stats">("analysis");
+  const writeupLoadedOnce = useRef(false);
+
   const hasBoxscore = !!(boxscore?.teams?.away?.teamStats || linescore?.teams?.away?.runs != null);
   const hasProps = !!propBets && propBets.length > 0;
 
@@ -60,9 +64,20 @@ export default function MLBGameTabs({ gameId, game, formatOdds, boxscore, linesc
     }
   }, [activeTab, gameId]);
 
+  // Default sub-tab for Detailed Analysis: Analysis unless there is no premium_content, then Stats.
+  // Only applied after the writeup fetch has completed (avoids a flash to Stats before content loads).
+  useEffect(() => {
+    if (loadingWriteup) writeupLoadedOnce.current = true;
+  }, [loadingWriteup]);
+  useEffect(() => {
+    if (writeupLoadedOnce.current && !loadingWriteup) {
+      setAnalysisSubTab(writeup?.premium_content ? "analysis" : "stats");
+    }
+  }, [loadingWriteup, writeup?.premium_content]);
+
   // Fetch prediction stats when needed — fire once per gameId change
   useEffect(() => {
-    if (activeTab === "stats") {
+    if (activeTab === "analysis" && analysisSubTab === "stats") {
       if (!predictionStats && !loadingStats && !statsAttempted.current) {
         statsAttempted.current = true;
         setLoadingStats(true);
@@ -78,7 +93,7 @@ export default function MLBGameTabs({ gameId, game, formatOdds, boxscore, linesc
           });
       }
     }
-  }, [activeTab, gameId]);
+  }, [activeTab, analysisSubTab, gameId]);
 
   // Preload prop bets for this game (determines whether the Prop Bets tab shows)
   useEffect(() => {
@@ -101,7 +116,6 @@ export default function MLBGameTabs({ gameId, game, formatOdds, boxscore, linesc
     { key: "boxscore", label: "Box Score", enabled: hasBoxscore },
     { key: "summary", label: "Game Preview", enabled: true },
     { key: "analysis", label: "Detailed Analysis", enabled: true },
-    { key: "stats", label: "Detailed Stats", enabled: true },
     { key: "propBets", label: "Prop Bets", enabled: hasProps },
   ];
 
@@ -131,8 +145,31 @@ export default function MLBGameTabs({ gameId, game, formatOdds, boxscore, linesc
       <div className="p-4">
         {activeTab === "boxscore" && renderBoxScore()}
         {activeTab === "summary" && renderGameSummary()}
-        {activeTab === "analysis" && <PremiumGate>{renderDetailedAnalysis()}</PremiumGate>}
-        {activeTab === "stats" && <PremiumGate>{renderDetailedStats()}</PremiumGate>}
+        {activeTab === "analysis" && (
+          <div>
+            {/* Nested sub-tabs: Analysis | Stats */}
+            <div className="flex border-b border-white/10 mb-4">
+              {[
+                { key: "analysis", label: "Analysis" },
+                { key: "stats", label: "Stats" },
+              ].map(sub => (
+                <button
+                  key={sub.key}
+                  onClick={() => setAnalysisSubTab(sub.key as "analysis" | "stats")}
+                  className={`px-4 py-2 text-xs uppercase tracking-wider font-medium transition-colors cursor-pointer ${
+                    analysisSubTab === sub.key
+                      ? "text-earl-400 border-b-2 border-earl-400"
+                      : "text-gray-500 hover:text-gray-300"
+                  }`}
+                >
+                  {sub.label}
+                </button>
+              ))}
+            </div>
+            {analysisSubTab === "analysis" && <PremiumGate>{renderDetailedAnalysis()}</PremiumGate>}
+            {analysisSubTab === "stats" && <PremiumGate>{renderDetailedStats()}</PremiumGate>}
+          </div>
+        )}
         {activeTab === "propBets" && renderPropBets()}
       </div>
     </div>

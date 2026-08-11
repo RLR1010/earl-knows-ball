@@ -6,9 +6,10 @@ import { useParams, useRouter, useSearchParams } from "next/navigation";
 import GameCalendar from "@/components/GameCalendar";
 import Image from "next/image";
 import Link from "next/link";
-import { api, Team, Game, DepthChartEntry, BoxScore, formatSpread, formatSpreadAway, formatOverUnder } from "@/lib/api";
+import { api, Team, Game, DepthChartEntry, BoxScore } from "@/lib/api";
 import { getTeamLogoUrl } from "@/lib/team_logos";
 import { useSeo } from "@/components/Seo";
+import SchedulePicksFooter from "@/components/SchedulePicksFooter";
 
 // ── Team metadata ─────────────────────────────────────────────────────
 const NFL_TEAMS: Record<string, { name: string; conf: string; div: string }> = {
@@ -142,28 +143,6 @@ function getTeamColor(abbr: string): string {
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────
-function predBadge(label: string, result: string | null): React.ReactNode {
-  if (!result) return null;
-  const resultLower = result.toLowerCase();
-  let cls: string;
-  let letter: string;
-  if (resultLower === "win") {
-    cls = "bg-green-900/40 text-green-400 border border-green-500/30";
-    letter = "W";
-  } else if (resultLower === "push") {
-    cls = "bg-gray-700/40 text-gray-400 border border-gray-600/30";
-    letter = "P";
-  } else {
-    cls = "bg-red-900/40 text-red-400 border border-red-500/30";
-    letter = "L";
-  }
-  return (
-    <span className={`inline-block px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${cls}`}>
-      {label} {letter}
-    </span>
-  );
-}
-
 function formatGameDate(iso: string) {
   const d = new Date(iso);
   return d.toLocaleDateString("en-US", {
@@ -368,12 +347,11 @@ export default function TeamDetailPage() {
     router.replace(`/${sport}/teams/${abbrUpper}${params.size > 0 ? `?${params.toString()}` : ""}`, { scroll: false });
   }, [tab, sport, abbrUpper]);
   const [seasonYear, setSeasonYear] = useState(() => {
-    // MLB follows calendar year; NBA season is labeled by its starting year (Oct-Dec = year N, Jan-Jun = year N-1)
-    if (sport === "nba") {
-      const now = new Date();
-      return now.getMonth() + 1 >= 10 ? now.getFullYear() : now.getFullYear() - 1;
-    }
-    return 2026;
+    // MLB follows calendar year; NBA season is keyed by the backend (`/api/nba/seasons`),
+    // where the year is the season's label in nba.seasons (e.g. 2026 = the 2025-26 season).
+    // Start from the current calendar year; it gets corrected to the most recent
+    // backend season once /api/nba/seasons loads (see fetch effect below).
+    return new Date().getFullYear();
   });
   const [error, setError] = useState("");
   const [availableYears, setAvailableYears] = useState<number[]>([]);
@@ -386,12 +364,16 @@ export default function TeamDetailPage() {
       setAvailableYears(mlbYears);
       if (!mlbYears.includes(seasonYear)) setSeasonYear(2026);
     } else if (sport === "nba") {
-      const nbaYears = [2026,2025,2024,2023,2022,2021,2020,2019,2018,2017,2016,2015,2014,2013,2012,2011,2010,2009,2008,2007,2006];
-      setAvailableYears(nbaYears);
-      if (!nbaYears.includes(seasonYear)) {
-        const now = new Date();
-        setSeasonYear(now.getMonth() + 1 >= 10 ? now.getFullYear() : now.getFullYear() - 1);
-      }
+      // Pull real seasons from the backend (matches the schedule page convention), not a hardcoded list.
+      fetch("/api/nba/seasons")
+        .then((r) => r.json())
+        .then((seasons: number[]) => {
+          setAvailableYears(seasons);
+          if (seasons.length > 0 && !seasons.includes(seasonYear)) {
+            setSeasonYear(seasons[0]); // most recent season with games
+          }
+        })
+        .catch(() => {});
     } else {
       api.seasons.list().then((years) => {
         setAvailableYears(years);
@@ -512,7 +494,7 @@ export default function TeamDetailPage() {
                 backgroundPosition: "right 0.5rem center", backgroundRepeat: "no-repeat", backgroundSize: "1.25rem", paddingRight: "2rem",
               }}>
               {availableYears.length === 0 && <option value={seasonYear} className="bg-gray-900">{seasonYear}</option>}
-              {availableYears.map(yr => <option key={yr} value={yr} className="bg-gray-900">{yr} Season</option>)}
+              {availableYears.map(yr => <option key={yr} value={yr} className="bg-gray-900">{sport === "nba" ? `${yr}-${yr + 1} Season` : `${yr} Season`}</option>)}
             </select>
           </div>
           {gamesLoading ? (
@@ -1058,6 +1040,17 @@ interface NBATeamGame {
   game_status?: string;
   spread?: number;
   over_under?: number;
+  home_moneyline?: number | null;
+  away_moneyline?: number | null;
+  pick_spread?: string | null;
+  pick_over_under?: string | null;
+  pick_moneyline?: string | null;
+  pick_ats_ev?: number | null;
+  pick_ou_ev?: number | null;
+  pick_ml_ev?: number | null;
+  result_spread?: string | null;
+  result_over_under?: string | null;
+  result_moneyline?: string | null;
 }
 
 const CURRENT_YEAR_NBA = 2026;
@@ -1383,16 +1376,8 @@ function NBATeamSchedule({ sport, abbrUpper, formatGameDate, formatGameTime }: N
                   )}
                 </div>
 
-                {/* Odds section at bottom */}
-                {g.spread != null && g.over_under != null && (
-                  <div className="mt-2 pt-2 border-t border-white/10 text-xs">
-                    <span className="text-earl-300">{formatSpreadAway(g.spread, awayTeam)}</span>
-                    <span className="mx-2 text-gray-700">|</span>
-                    <span className="text-earl-400">{formatSpread(g.spread, homeTeam)}</span>
-                    <span className="mx-2 text-gray-700">|</span>
-                    <span className="text-gray-400">{formatOverUnder(g.over_under)}</span>
-                  </div>
-                )}
+                {/* Odds section + premium picks — identical to the schedule game cards */}
+                <SchedulePicksFooter game={g} />
               </Link>
             );
           })}
@@ -1494,26 +1479,8 @@ function NFLMLBTeamSchedule({ games, sport, abbrUpper, seasonYear, formatGameDat
                   {isFinal && g.actual_innings && g.actual_innings > 9 && <div className="text-[10px] text-gray-500 mt-1">{g.actual_innings} inn</div>}
                   {!isFinal && g.venue && <div className="text-[10px] text-gray-600 truncate mt-1 px-2">{g.venue}</div>}
 
-                  {/* Betting line */}
-                  {g.spread != null && (
-                    <div className="mt-2 pt-2 border-t border-white/10 text-xs">
-                      <span className="text-earl-300">{isHome ? formatSpreadAway(g.spread, g.away_team) : formatSpread(g.spread, g.home_team)}</span>
-                      <span className="mx-2 text-gray-700">|</span>
-                      <span className="text-earl-400">{isHome ? formatSpread(g.spread, g.home_team) : formatSpreadAway(g.spread, g.away_team)}</span>
-                      {g.over_under != null && (
-                        <><span className="mx-2 text-gray-700">|</span><span className="text-gray-400">{formatOverUnder(g.over_under)}</span></>
-                      )}
-                    </div>
-                  )}
-
-                  {/* Prediction badges — RL | OU | ML */}
-                  {(g.pred_ml_result || g.pred_rl_result || g.pred_ou_result) && (
-                    <div className="mt-2 pt-2 border-t border-white/10 flex items-center justify-center gap-2">
-                      {predBadge("RL", g.pred_rl_result)}
-                      {predBadge("OU", g.pred_ou_result)}
-                      {predBadge("ML", g.pred_ml_result)}
-                    </div>
-                  )}
+                  {/* Betting line + premium picks — identical to the schedule game cards */}
+                  <SchedulePicksFooter game={g} />
                 </Link>
               );
             })}
@@ -1523,62 +1490,50 @@ function NFLMLBTeamSchedule({ games, sport, abbrUpper, seasonYear, formatGameDat
     );
   }
 
-  // NFL schedule: flat list
+  // NFL schedule: 3-column grid (same layout as MLB/NBA team schedule pages)
   return (
-    <div className="space-y-2">
-      {games.map(g => {
+    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+      {games.map((g: any) => {
         const isFinal = g.status === "final";
         const isHome = g.home_team === abbrUpper;
         const teamScore = isHome ? g.home_score : g.away_score;
         const oppScore = isHome ? g.away_score : g.home_score;
         const won = isFinal && teamScore != null && oppScore != null && teamScore > oppScore;
         const lost = isFinal && teamScore != null && oppScore != null && teamScore < oppScore;
+        const opponent = isHome ? g.away_team : g.home_team;
         return (
           <Link key={g.id} href={"/" + sport + "/games/" + g.id}
-            className={"block w-full text-left border rounded-xl p-4 transition hover:border-earl-500/50 hover:bg-earl-600/10 border-white/10 bg-white/5 hover:bg-white/10"}
+            className="block border border-white/10 rounded-xl p-3 bg-white/5 hover:bg-white/10 transition text-center"
           >
-            <div className="flex items-center justify-between">
-              <div className="w-24 shrink-0">
-                <div className="text-xs font-semibold text-gray-500">{g.week ? "Week " + g.week : ""}</div>
-                <div className="text-xs text-gray-500 mt-0.5">{formatGameDate(g.date)}</div>
-              </div>
-              <div className="flex-1 flex items-center justify-center gap-4">
-                <div className="flex items-center gap-2">
-                  <div className="w-6 h-6 rounded-full bg-white/10 flex items-center justify-center shrink-0 overflow-hidden">
-                    <Image src={"/logos/" + g.away_team + ".png"} alt={g.away_team || ""} width={24} height={24} className="object-contain" />
-                  </div>
-                  <span className={"text-sm font-semibold " + (g.away_team === abbrUpper ? "text-white" : "text-gray-400")}>{g.away_team}</span>
-                  {isFinal && <span className={"text-base font-bold " + (won && !isHome ? "text-earl-400" : lost && !isHome ? "text-red-400" : "text-white")}>{g.away_score}</span>}
-                </div>
-                <div className="text-center min-w-[60px]">
-                  {isFinal ? (
-                    <span className={"text-[10px] font-bold uppercase tracking-wider " + (won ? "text-green-400" : lost ? "text-red-400" : "text-gray-500")}>
-                      {won ? "W" : lost ? "L" : "TIE"}
-                    </span>
-                  ) : <span className="text-[10px] text-gray-500">vs</span>}
-                </div>
-                <div className="flex items-center gap-2">
-                  {isFinal && <span className={"text-base font-bold " + (won && isHome ? "text-earl-400" : lost && isHome ? "text-red-400" : "text-white")}>{g.home_score}</span>}
-                  <span className={"text-sm font-semibold " + (g.home_team === abbrUpper ? "text-white" : "text-gray-400")}>{g.home_team}</span>
-                  <div className="w-6 h-6 rounded-full bg-white/10 flex items-center justify-center shrink-0 overflow-hidden">
-                    <Image src={"/logos/" + g.home_team + ".png"} alt={g.home_team || ""} width={24} height={24} className="object-contain" />
-                  </div>
-                </div>
-              </div>
-              <div className="w-28 shrink-0 text-right">
-                {!isFinal ? <div className="text-xs text-gray-500">{formatGameTime(g.date)}</div> : <div className="text-[10px] text-gray-500">FINAL</div>}
-              </div>
+            {/* Week + Date (preseason → PS Week N, matching the NFL schedule page) */}
+            <div className="text-[10px] text-gray-500 uppercase tracking-wider">
+              {g.week
+                ? (g.game_type === "PRE" ? "PS Week " + (g.week - 29) + " · " : "Week " + g.week + " · ")
+                : ""}{formatGameDate(g.date)}
             </div>
-            {g.spread != null && (
-              <div className="mt-3 text-center">
-                <span className="inline-block px-4 py-1.5 rounded-lg bg-gradient-to-r from-earl-700/30 via-earl-600/40 to-earl-700/30 border border-earl-500/40 text-sm font-bold tracking-wide">
-                  <span className="text-earl-300">{formatSpreadAway(g.spread, g.away_team || "")}</span>
-                  <span className="mx-3 text-gray-600">|</span>
-                  <span className="text-earl-400">{formatSpread(g.spread, g.home_team || "")}</span>
-                  {g.over_under != null && (<><span className="mx-3 text-gray-600">|</span><span className="text-gray-200">{formatOverUnder(g.over_under)}</span></>)}
-                </span>
+
+            {/* Opponent */}
+            <div className="flex items-center justify-center gap-2 mt-2">
+              <img src={"/logos/" + opponent + ".png"} alt={opponent} width={24} height={24} className="object-contain shrink-0" />
+              <span className="text-sm font-semibold text-gray-200">{opponent}</span>
+            </div>
+
+            {/* vs/@ indicator */}
+            <div className="text-[11px] text-gray-600 mt-0.5">{isHome ? "vs" : "@"} {isHome ? abbrUpper : opponent}</div>
+
+            {/* Score or Time */}
+            {isFinal ? (
+              <div className="mt-2 flex items-center justify-center gap-3">
+                <span className={"text-base font-bold " + (won ? "text-earl-400" : "text-white")}>{teamScore}</span>
+                <span className={"text-[10px] font-bold uppercase tracking-wider " + (won ? "text-green-400" : lost ? "text-red-400" : "text-gray-500")}>{won ? "W" : lost ? "L" : "T"}</span>
+                <span className={"text-base font-bold " + (lost ? "text-red-400" : "text-white")}>{oppScore}</span>
               </div>
+            ) : (
+              <div className="mt-2 text-sm font-semibold text-gray-400">{formatGameTime(g.date)}</div>
             )}
+
+            {/* Betting lines + premium picks — identical to the schedule game cards */}
+            <SchedulePicksFooter game={g} />
           </Link>
         );
       })}

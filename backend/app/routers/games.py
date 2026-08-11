@@ -1,8 +1,12 @@
 import json
 from fastapi import APIRouter, Depends, Query
+from fastapi.responses import JSONResponse
+from fastapi.encoders import jsonable_encoder
 from sqlalchemy import select, func, text
 from sqlalchemy.orm import joinedload
 from sqlalchemy.ext.asyncio import AsyncSession
+import time
+import threading
 from app.database import get_db
 from app.models import Game, Season, Team, PlayerWeeklyStats, Player, BettingLine, NFLGamePrediction, User
 from app.routers.auth import get_optional_user
@@ -13,6 +17,33 @@ from app.models.nba.game_prediction import NBAGamePrediction
 from pydantic import BaseModel
 
 router = APIRouter()
+
+
+# ---------------------------------------------------------------------------
+# TTL cache for the NFL schedule GET /games endpoint. The frontend schedule page
+# auto-polls /games every ~30s so completed-game pick results stay fresh. This
+# 30s TTL collapses the polling bursts into roughly one DB query per worker per
+# 30s, and we send Cache-Control: max-age=30. Per-worker on purpose.
+# ---------------------------------------------------------------------------
+_NFL_GAMES_TTL = 30
+_nfl_games_cache_lock = threading.Lock()
+_nfl_games_cache = {}  # key: (season_year, week, team_id) -> (expires_at_monotonic, list[dict])
+
+
+def _nfl_games_cached(key):
+    with _nfl_games_cache_lock:
+        item = _nfl_games_cache.get(key)
+        if item and item[0] >= time.monotonic():
+            return item[1]
+        return None
+
+
+def _nfl_games_store(key, payload):
+    with _nfl_games_cache_lock:
+        _nfl_games_cache[key] = (time.monotonic() + _NFL_GAMES_TTL, payload)
+        if len(_nfl_games_cache) > 256:
+            for k in sorted(_nfl_games_cache, key=lambda k: _nfl_games_cache[k][0])[:128]:
+                del _nfl_games_cache[k]
 
 
 class GameOut(BaseModel):
@@ -198,6 +229,12 @@ async def list_games(
     team_id: int | None = Query(None),
     db: AsyncSession = Depends(get_db),
 ):
+    # 30s TTL response cache (per-worker) keyed by query params.
+    cache_key = (season_year, week, team_id)
+    cached = _nfl_games_cached(cache_key)
+    if cached is not None:
+        return JSONResponse(content=cached, headers={"Cache-Control": "public, max-age=30"})
+
     query = (
         select(Game)
         .options(joinedload(Game.home_team), joinedload(Game.away_team))
@@ -257,10 +294,12 @@ async def list_games(
     else:
         latest_lines = {}
 
-    return [
+    out = jsonable_encoder([
         await _game_to_out(g, **latest_lines.get(g.id, {}))
         for g in games
-    ]
+    ])
+    _nfl_games_store(cache_key, out)
+    return JSONResponse(content=out, headers={"Cache-Control": "public, max-age=30"})
 
 
 async def _build_team_box_stats(

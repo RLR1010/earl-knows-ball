@@ -424,6 +424,17 @@ async def refresh_boxscores_for_recent_games(conn) -> dict:
         except Exception as e:
             logger.warning(f"  Error processing game {game['id']}: {e}")
 
+    # Grade any FINAL games that now have scores but no prediction results yet.
+    # update_prediction_results() computes run-line / OU / moneyline pick outcomes
+    # (Win/Loss/Push + profit) from the just-loaded final scores and persists them.
+    # Without this, completed games never get their pick result color coding.
+    try:
+        updated_results = await update_prediction_results(conn)
+        if updated_results:
+            logger.info(f"  Updated prediction results for {updated_results} FINAL games")
+    except Exception as e:
+        logger.warning(f"  Error updating prediction results: {e}")
+
     # Step 2: Update weather for all recent games (even if boxscores already loaded)
     logger.info("  Updating weather for recent games...")
     weather_games = await conn.fetch("""

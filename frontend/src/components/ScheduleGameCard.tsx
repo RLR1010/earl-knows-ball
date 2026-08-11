@@ -2,9 +2,8 @@
 
 import Link from "next/link";
 import Image from "next/image";
-import { formatOverUnder } from "@/lib/api";
 import { getTeamLogoUrl } from "@/lib/team_logos";
-import EarlsPicksPanel from "@/components/EarlsPicksPanel";
+import SchedulePicksFooter from "@/components/SchedulePicksFooter";
 
 /** Type of sport this card renders for. Determines logo set + MLB innings/duration extras. */
 export type CardSport = "nfl" | "nba" | "mlb";
@@ -64,23 +63,6 @@ function statusBadge(status: string): { label: string; cls: string } {
   }
 }
 
-function favoredSpread(
-  spread: number | null | undefined,
-  home?: string | null | undefined,
-  away?: string | null | undefined,
-): string {
-  if (spread == null) return "Pick'em";
-  if (Math.abs(spread) < 0.05) return "Pick'em";
-  const line = spread > 0 ? `-${spread}` : `+${Math.abs(spread)}`;
-  const team = spread < 0 ? (home ?? "?") : (away ?? "?");
-  return `${team} ${line}`;
-}
-
-function formatMoneyline(ml: number | null | undefined): string {
-  if (ml == null) return "-";
-  return ml > 0 ? `+${ml}` : `${ml}`;
-}
-
 function resolvePickTeam(
   pick: string | null | undefined,
   home: string | null | undefined,
@@ -101,7 +83,7 @@ interface EarlsPickItem {
 }
 
 /** Build the three premium pick items (Spread / Over-Under / Moneyline) for a game. */
-function buildPickItems(o: {
+export function buildPickItems(o: {
   spreadPick?: string | null;
   overUnder?: string | null;
   mlPick?: string | null;
@@ -133,7 +115,7 @@ function buildPickItems(o: {
   return items;
 }
 
-function hasPicks(o: {
+export function hasPicks(o: {
   spread?: string | null;
   ou?: string | null;
   ml?: string | null;
@@ -230,53 +212,8 @@ export default function ScheduleGameCard({
         )}
       </div>
 
-      {/* Betting lines: spread (favored/Pick'em), moneyline, over/under */}
-      {(game.spread != null || game.over_under != null) && (
-        <div className="mt-3 pt-3 pb-1 border-t border-white/10 text-xs text-center">
-          <div className="text-gray-400">
-            <span className="text-earl-300">
-              {favoredSpread(game.spread, game.home_team, game.away_team)}
-            </span>
-            <span className="mx-2 text-gray-700">|</span>
-            <span>
-              {formatMoneyline(game.home_moneyline)}/{formatMoneyline(game.away_moneyline)}
-            </span>
-            {game.over_under != null && (
-              <>
-                <span className="mx-2 text-gray-700">|</span>
-                <span className="text-gray-400">{formatOverUnder(game.over_under)}</span>
-              </>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* Premium picks (self-gated) */}
-      {hasPicks({
-        spread: game.pick_spread,
-        ou: game.pick_over_under,
-        ml: game.pick_moneyline,
-      }) && (
-        <div className="mt-2">
-          <EarlsPicksPanel
-            compact
-            items={buildPickItems({
-              spreadPick: game.pick_spread,
-              overUnder: game.pick_over_under,
-              mlPick: game.pick_moneyline,
-              atsEv: game.pick_ats_ev,
-              ouEv: game.pick_ou_ev,
-              mlEv: game.pick_ml_ev,
-              spreadResult: game.result_spread,
-              ouResult: game.result_over_under,
-              mlResult: game.result_moneyline,
-              home: game.home_team,
-              away: game.away_team,
-              spreadLabel: "Spread",
-            })}
-          />
-        </div>
-      )}
+      {/* Betting lines + premium picks (shared footer, identical across schedule cards) */}
+      <SchedulePicksFooter game={game} />
     </Link>
   );
 }

@@ -51,6 +51,20 @@ interface EvBin {
 }
 type EvData = Record<string, EvBin[]>;
 
+// Date-range results payload (matches GET {sport}/results)
+interface RangeBetStats {
+  total: number; wins: number; losses: number; pushes: number;
+  win_pct: number; profit: number;
+}
+interface RangeEvBin {
+  ev: number; n: number; wins: number; losses: number; profit: number;
+}
+interface RangeData {
+  range: { start: string; end: string };
+  by_type: { ats: RangeBetStats; ou: RangeBetStats; ml: RangeBetStats };
+  profit_by_ev: RangeEvBin[];
+}
+
 // ── SVG Chart Component ──
 
 const W = 700, H = 580, PL = 55, PR = 30, PT = 40, PB = 50, MG = 14;
@@ -411,6 +425,35 @@ export default function PredictionsPage() {
   const [error, setError] = useState<string | null>(null);
   const [calModal, setCalModal] = useState<string | null>(null); // 'ats' | 'ou' | 'ml'
 
+  // ---- Date-range results state ----
+  const [startDate, setStartDate] = useState(() => {
+    const d = new Date(); d.setDate(d.getDate() - 30);
+    return d.toISOString().slice(0, 10);
+  });
+  const [endDate, setEndDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [rangeData, setRangeData] = useState<RangeData | null>(null);
+  const [rangeLoading, setRangeLoading] = useState(false);
+  const [rangeError, setRangeError] = useState<string | null>(null);
+
+  const fetchRange = useCallback(async (s: string, start: string, end: string) => {
+    setRangeLoading(true);
+    setRangeError(null);
+    setRangeData(null);
+    try {
+      const tok = token();
+      const res = await fetch(
+        `/api/admin/prediction-stats/${s}/results?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`,
+        { headers: { Authorization: `Bearer ${tok}` } }
+      );
+      if (!res.ok) throw new Error(`Results HTTP ${res.status}: ${await res.text()}`);
+      setRangeData(await res.json());
+    } catch (e: any) {
+      setRangeError(e.message);
+    } finally {
+      setRangeLoading(false);
+    }
+  }, []);
+
   const fetchAll = useCallback(async (s: string) => {
     setLoading(true);
     setError(null);
@@ -539,6 +582,110 @@ export default function PredictionsPage() {
                 </tfoot>
               </table>
             </div>
+          </div>
+
+          {/* Date Range Results — user-set range, win% + profit + profit-by-EV */}
+          <div>
+            <h3 className="text-lg font-semibold text-white mb-4">Date Range Results</h3>
+            <div className="flex flex-wrap items-end gap-4 mb-6">
+              <label className="flex flex-col gap-1">
+                <span className="text-xs text-gray-500 uppercase tracking-wider">Start</span>
+                <input type="date" value={startDate} max={endDate}
+                  onChange={e => setStartDate(e.target.value)}
+                  className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-earl-500/50" />
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="text-xs text-gray-500 uppercase tracking-wider">End</span>
+                <input type="date" value={endDate} min={startDate}
+                  onChange={e => setEndDate(e.target.value)}
+                  className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-earl-500/50" />
+              </label>
+              <button onClick={() => fetchRange(sport, startDate, endDate)}
+                disabled={rangeLoading || !startDate || !endDate || startDate > endDate}
+                className="px-4 py-2 rounded-lg text-sm font-medium bg-earl-600/20 text-earl-400 border border-earl-600/30 hover:bg-earl-600/30 transition-colors disabled:opacity-40">
+                {rangeLoading ? 'Running...' : 'Run Results'}
+              </button>
+            </div>
+
+            {rangeError && (
+              <div className="bg-red-900/20 border border-red-800/30 rounded-xl p-4 mb-4 text-sm text-red-300">
+                {rangeError}
+              </div>
+            )}
+
+            {rangeData && (
+              <>
+                {/* Win% + profit by bet type */}
+                <div className="grid grid-cols-3 gap-4 mb-4">
+                  {(['ats','ou','ml'] as const).map(key => {
+                    const s = rangeData.by_type[key];
+                    const meta = MODEL_META[key];
+                    const isGood = s.win_pct >= 53;
+                    return (
+                      <div key={key} className="bg-white/[0.03] border border-white/10 rounded-2xl p-6">
+                        <div className={`text-lg font-bold mb-3 ${meta.color}`}>{meta.label}</div>
+                        <div className="grid grid-cols-3 gap-2 text-center">
+                          <div>
+                            <div className="text-xs text-gray-500">Win%</div>
+                            <div className={`text-xl font-bold ${isGood ? 'text-green-400' : 'text-red-400'}`}>
+                              {s.win_pct.toFixed(1)}%
+                            </div>
+                          </div>
+                          <div>
+                            <div className="text-xs text-gray-500">Record</div>
+                            <div className="text-xl font-bold text-white">{s.wins}-{s.losses}{s.pushes ? `-${s.pushes}` : ''}</div>
+                          </div>
+                          <div>
+                            <div className="text-xs text-gray-500">Profit</div>
+                            <div className={`text-xl font-bold ${s.profit >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                              {s.profit >= 0 ? '+' : ''}{s.profit.toFixed(1)}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Profit by EV score table */}
+                <div className="bg-white/[0.03] border border-white/10 rounded-2xl p-6">
+                  <h4 className="text-sm font-semibold text-white mb-4">Profit by EV Score</h4>
+                  {rangeData.profit_by_ev.length === 0 ? (
+                    <p className="text-sm text-gray-500">
+                      No settled picks (with odds + result) in this range.
+                    </p>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm">
+                        <thead>
+                          <tr className="border-b border-white/10">
+                            <th className="text-left py-2 px-3 text-gray-400 font-medium">EV</th>
+                            <th className="text-right py-2 px-3 text-gray-400 font-medium">Picks</th>
+                            <th className="text-right py-2 px-3 text-gray-400 font-medium">Wins</th>
+                            <th className="text-right py-2 px-3 text-gray-400 font-medium">Losses</th>
+                            <th className="text-right py-2 px-3 text-gray-400 font-medium">Profit</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {rangeData.profit_by_ev.map((b, i) => (
+                            <tr key={`${b.ev}-${i}`}
+                              className="border-b border-white/5 last:border-0">
+                              <td className="py-2 px-3 text-white">${b.ev} / unit</td>
+                              <td className="py-2 px-3 text-right text-gray-300">{b.n}</td>
+                              <td className="py-2 px-3 text-right text-green-400">{b.wins}</td>
+                              <td className="py-2 px-3 text-right text-red-400">{b.losses}</td>
+                              <td className={`py-2 px-3 text-right font-medium ${b.profit >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                                {b.profit >= 0 ? '+' : ''}{b.profit.toFixed(1)}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
           </div>
 
           {/* Calibration Quality by Model — table + click-to-graph */}

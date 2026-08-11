@@ -668,7 +668,8 @@ async def generate_nfl_writeup(
     """Generate and save a premium NFL writeup."""
     from app.writeups.nfl.generator import NFLWriteupGenerator
     gen = NFLWriteupGenerator()
-    result = await gen.generate(db, game_id)
+    usage_log: list[dict] = []
+    result = await gen.generate(db, game_id, reasoning="minimal", usage_log=usage_log)
     row = await db.execute(
         text("""SELECT id, game_id, title, public_content, premium_content,
                  status, version, is_historical,
@@ -1075,11 +1076,19 @@ async def generate_nba_writeup(
 ):
     """Generate and store a premium NBA write-up."""
     gen = NBAGameWriteupGenerator()
-    writeup, qc_results = await gen.generate(db, game_id, is_historical=historical)
+    usage_log: list[dict] = []
+    writeup, qc_results = await gen.generate(
+        db, game_id, is_historical=historical, reasoning="minimal", usage_log=usage_log
+    )
     if "error" in writeup:
         raise HTTPException(status_code=502, detail=writeup["error"])
-    writeup_id = await gen.store(game_id, writeup, qc_results, db=db)
-    return {"id": writeup_id, "status": "created"}
+    # generate() already stores via base_generator; return the row id.
+    row = await db.execute(
+        text("SELECT id FROM nba.game_writeups WHERE game_id = :gid ORDER BY created_at DESC LIMIT 1"),
+        {"gid": game_id},
+    )
+    r = row.mappings().one_or_none()
+    return {"id": r["id"] if r else None, "status": "created"}
 
 
 @router.post("/nba/generate-public/{game_id}")

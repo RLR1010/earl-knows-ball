@@ -9,6 +9,7 @@ from sqlalchemy import (
     Column, Integer, String, Text, DateTime, Float,
     Boolean, ForeignKey, UniqueConstraint, JSON
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 
 from app.database import Base
@@ -34,6 +35,7 @@ class NFLGameWriteup(Base):
 
     # Content
     title = Column(String(300), nullable=False)
+    slug = Column(Text, nullable=True)
     public_content = Column(Text, nullable=False, default="")
     premium_content = Column(Text, nullable=False, default="")
 
@@ -46,10 +48,10 @@ class NFLGameWriteup(Base):
     prop_published_at = Column(DateTime(timezone=True), nullable=True)
 
     # Research brief — structured data the AI used to generate
-    research_brief = Column(JSON, nullable=True)
+    research_brief = Column(JSONB, nullable=True)
 
     # Quality check results
-    quality_checks = Column(JSON, nullable=True)
+    quality_checks = Column(JSONB, nullable=True)
 
     # Post-generation accuracy-verification results (facts vs. research,
     # and no-predictions rule for public content)

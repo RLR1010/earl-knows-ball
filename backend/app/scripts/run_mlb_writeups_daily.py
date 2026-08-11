@@ -91,11 +91,17 @@ async def generate_writeup(game_id: int) -> dict:
 
     async with async_session() as db:
         gen = MLBWriteupGenerator()
+        # Pass a mutable usage_log accumulator so base_generator populates
+        # parsed["total_tokens"] and nested research_brief _usage_log.
+        # Without it (default None), generate() records 0 tokens / a blank
+        # Usage Log on the admin content page. Mirrors the API route.
+        usage_log: list[dict] = []
         writeup, qc_results = await gen.generate(
             db,
             game_id=game_id,
             is_historical=False,
             reasoning=REASONING,
+            usage_log=usage_log,
         )
         # qc_results is already a JSON-safe list[dict]
         return {"writeup": writeup, "qc": qc_results}

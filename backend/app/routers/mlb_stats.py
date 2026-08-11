@@ -4,6 +4,8 @@ import time
 import threading
 
 from fastapi import APIRouter, Depends, Query, HTTPException
+from fastapi.responses import JSONResponse
+from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 import datetime
@@ -50,6 +52,38 @@ def _mlb_box_store(gid: int, live_data, boxscore_data):
         if len(_mlb_box_cache) > 512:
             for k in sorted(_mlb_box_cache, key=lambda k: _mlb_box_cache[k][0])[:256]:
                 del _mlb_box_cache[k]
+
+
+# ---------------------------------------------------------------------------
+# TTL cache for the schedule GET /mlb/games response.
+#
+# The frontend schedule page auto-polls /mlb/games every ~30s so completed-game
+# pick results (win/loss color coding) stay fresh. Each poll re-runs the query,
+# does per-game live-score fetches and lineup work — a lot of redundant DB/API
+# churn when nothing changed. This 30s TTL collapses the polling bursts into
+# roughly one fresh computation per worker per 30s, and we send
+# Cache-Control: max-age=30 so downstream (Caddy/Next/browser) can also hold it
+# briefly. Small per-worker, intentionally. Same trade-off as the box cache.
+# ---------------------------------------------------------------------------
+_MLB_GAMES_TTL = 30  # seconds to keep the /mlb/games response map fresh
+_mlb_games_cache_lock = threading.Lock()
+_mlb_games_cache = {}  # key: (year, date, team_abbr) -> (expires_at_monotonic, list[dict])
+
+
+def _mlb_games_cached(key) -> list | None:
+    with _mlb_games_cache_lock:
+        item = _mlb_games_cache.get(key)
+        if item and item[0] >= time.monotonic():
+            return item[1]
+        return None
+
+
+def _mlb_games_store(key, payload: list):
+    with _mlb_games_cache_lock:
+        _mlb_games_cache[key] = (time.monotonic() + _MLB_GAMES_TTL, payload)
+        if len(_mlb_games_cache) > 256:
+            for k in sorted(_mlb_games_cache, key=lambda k: _mlb_games_cache[k][0])[:128]:
+                del _mlb_games_cache[k]
 from app.models import User
 from app.routers.auth import get_optional_user
 from app.handicapping.mlb.mlb_splits import MLBSplitAnalyzer
@@ -932,6 +966,12 @@ async def mlb_games(
     team_abbr: str = Query(None),
     db: AsyncSession = Depends(get_db),
 ):
+    # 30s TTL response cache (per-worker) keyed by query params.
+    cache_key = (year, date, (team_abbr or "").upper())
+    cached = _mlb_games_cached(cache_key)
+    if cached is not None:
+        return JSONResponse(content=cached, headers={"Cache-Control": "public, max-age=30"})
+
     # Build query from our DB
     filters = ["s.year = :year"]
     params = {"year": year}
@@ -1082,7 +1122,9 @@ async def mlb_games(
     except Exception:
         pass
 
-    return games_list
+    out = jsonable_encoder(games_list)
+    _mlb_games_store(cache_key, out)
+    return JSONResponse(content=out, headers={"Cache-Control": "public, max-age=30"})
 
 
 @router.get("/mlb/games/nearest-date")

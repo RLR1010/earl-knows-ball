@@ -1,7 +1,11 @@
 """NBA stats endpoints — player stats, team standings, game schedules."""
 
 from fastapi import APIRouter, Depends, Query
+from fastapi.responses import JSONResponse
+from fastapi.encoders import jsonable_encoder
 import datetime
+import time
+import threading
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
@@ -10,6 +14,34 @@ from sqlalchemy import func
 from app.models.nba import NBAGame, NBAPlayer, NBAPlayerSeasonStats, NBASeason, NBATeam
 
 router = APIRouter()
+
+
+# ---------------------------------------------------------------------------
+# TTL cache for the schedule GET /nba/games response.
+# The frontend schedule page auto-polls /nba/games every ~30s so completed-game
+# pick results stay fresh. This 30s TTL collapses the polling bursts into
+# roughly one DB query per worker per 30s, and we send Cache-Control: max-age=30.
+# Per-worker on purpose (same trade-off as the MLB games/box cache).
+# ---------------------------------------------------------------------------
+_NBA_GAMES_TTL = 30
+_nba_games_cache_lock = threading.Lock()
+_nba_games_cache = {}  # key: (year, date, team_abbr) -> (expires_at_monotonic, list[dict])
+
+
+def _nba_games_cached(key) -> list | None:
+    with _nba_games_cache_lock:
+        item = _nba_games_cache.get(key)
+        if item and item[0] >= time.monotonic():
+            return item[1]
+        return None
+
+
+def _nba_games_store(key, payload: list):
+    with _nba_games_cache_lock:
+        _nba_games_cache[key] = (time.monotonic() + _NBA_GAMES_TTL, payload)
+        if len(_nba_games_cache) > 256:
+            for k in sorted(_nba_games_cache, key=lambda k: _nba_games_cache[k][0])[:128]:
+                del _nba_games_cache[k]
 
 SORT_COLS = {
     "points", "points_per_game", "assists", "assists_per_game",
@@ -394,6 +426,12 @@ async def nba_games(
     team_abbr: str = Query(None),
     db: AsyncSession = Depends(get_db),
 ):
+    # 30s TTL response cache (per-worker) keyed by query params.
+    cache_key = (year, date, (team_abbr or "").upper())
+    cached = _nba_games_cached(cache_key)
+    if cached is not None:
+        return JSONResponse(content=cached, headers={"Cache-Control": "public, max-age=30"})
+
     filters = ["s.year = :year"]
     params = {"year": year}
 
@@ -442,7 +480,9 @@ async def nba_games(
     ORDER BY g.date ASC
     """
     result = await db.execute(text(sql), params)
-    return [dict(r) for r in result.mappings().all()]
+    games_list = jsonable_encoder([dict(r) for r in result.mappings().all()])
+    _nba_games_store(cache_key, games_list)
+    return JSONResponse(content=games_list, headers={"Cache-Control": "public, max-age=30"})
 
 
 @router.get("/nba/games/nearest-date")

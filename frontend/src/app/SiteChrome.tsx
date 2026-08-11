@@ -5,6 +5,7 @@ import { AuthProvider } from "@/lib/auth-context";
 import HeaderUserArea from "@/components/HeaderUserArea";
 import MobileMenu from "@/components/MobileMenu";
 import Footer from "@/components/Footer";
+import { Sparkles } from "lucide-react";
 
 type Sport = "nfl" | "nba" | "mlb";
 
@@ -102,41 +103,62 @@ export default function SiteChrome({ children }: { children: React.ReactNode }) 
           {/* ── Sport Sub-Nav ───────────────────────────────────── */}
           {activeSport && !hideSportChrome && (
             <div className="border-b border-white/10 bg-black/40 backdrop-blur-sm">
-              <div className="max-w-7xl mx-auto px-4">
-                <div className="flex items-center overflow-x-auto">
-                  {SUB_NAV_ITEMS.map((item) => {
-                    const href = item.path ? `/${activeSport}${item.path}` : `/${activeSport}`;
-                    const currentSubPath = getSportSubPath(pathname, activeSport);
-                    const isActive =
-                      item.path === ""
-                        ? currentSubPath === "/"
-                        : currentSubPath.startsWith(item.path);
+              <div className="max-w-7xl mx-auto px-4 flex items-center">
+                {/* Scrollable main items (Chat With Earl is pinned separately) */}
+                <div className="relative flex-1 min-w-0">
+                  <div className="flex items-center overflow-x-auto no-scrollbar">
+                    {SUB_NAV_ITEMS.filter((item) => item.label !== "Chat With Earl").map((item) => {
+                      const href = item.path ? `/${activeSport}${item.path}` : `/${activeSport}`;
+                      const currentSubPath = getSportSubPath(pathname, activeSport);
+                      const isActive =
+                        item.path === ""
+                          ? currentSubPath === "/"
+                          : currentSubPath.startsWith(item.path);
 
-                    const displayLabel =
-                      item.label === "Home" && activeSport ? activeSport.toUpperCase() : item.label;
+                      const displayLabel =
+                        item.label === "Home" && activeSport ? activeSport.toUpperCase() : item.label;
 
-                    return (
-                      <a
-                        key={item.label}
-                        href={href}
-                        className={`px-5 py-2.5 text-xs font-semibold tracking-wide uppercase transition border-b-2 ${
-                          isActive
-                            ? "text-earl-400 border-earl-400"
-                            : "text-gray-500 border-transparent hover:text-gray-300 hover:border-gray-600"
-                        }`}
-                      >
-                        {displayLabel}
-                      </a>
-                    );
-                  })}
+                      return (
+                        <a
+                          key={item.label}
+                          href={href}
+                          className={`flex items-center gap-1.5 whitespace-nowrap px-4 py-2.5 text-xs font-semibold tracking-wide uppercase transition border-b-2 ${
+                            isActive
+                              ? "text-earl-400 border-earl-400"
+                              : "text-gray-500 border-transparent hover:text-gray-300 hover:border-gray-600"
+                          }`}
+                        >
+                          {displayLabel}
+                        </a>
+                      );
+                    })}
+                  </div>
+                  {/* Right fade → hints more items can scroll into view */}
+                  <div className="pointer-events-none absolute inset-y-0 right-0 w-6 bg-gradient-to-l from-black/40 to-transparent" />
                 </div>
+
+                {/* Pinned “Chat With Earl” CTA — always visible, never cut off */}
+                <a
+                  href={`/${activeSport}/chat`}
+                  className={`group shrink-0 ml-2 pl-4 flex items-center gap-2 border-l border-white/10 py-2.5 text-xs font-bold tracking-wide uppercase transition ${
+                    getSportSubPath(pathname, activeSport).startsWith("/chat")
+                      ? "text-earl-300"
+                      : "text-earl-400 hover:text-earl-300"
+                  }`}
+                >
+                  <span className="flex items-center gap-1.5 rounded-full bg-gradient-to-r from-earl-600 to-earl-500/80 border border-earl-500/40 px-3 py-1.5 text-gray-300 group-hover:text-white shadow-lg shadow-earl-600/20 group-hover:shadow-earl-600/35">
+                    <Sparkles className="h-4 w-4" />
+                    <span className="hidden sm:inline">Chat With Earl</span>
+                    <span className="sm:hidden">Earl</span>
+                  </span>
+                </a>
               </div>
             </div>
           )}
         </header>
 
         {/* ── Main Content ───────────────────────────────────────── */}
-        <main className={`flex-1 w-full ${activeSport && !hideSportChrome ? "max-w-7xl mx-auto px-4 py-6" : ""}`}>
+        <main className={`flex-1 w-full ${activeSport && !hideSportChrome ? "max-w-7xl mx-auto px-2 sm:px-4 py-6" : ""}`}>
           {children}
         </main>
         <Footer />

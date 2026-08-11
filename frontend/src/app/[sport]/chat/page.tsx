@@ -113,6 +113,10 @@ export default function ChatPage() {
   }, [sport]);
 
   const loadConversation = useCallback(async (convId: string | null) => {
+    // Collapse the sidebar on mobile after selecting New Chat or a historical chat.
+    // On desktop (md+) the `md:flex` class keeps it visible regardless.
+    setSidebarOpen(false);
+
     if (!convId) {
       startNewChat();
       setFocusPending(true);
@@ -143,7 +147,7 @@ export default function ChatPage() {
       setStatusText(null);
       setFocusPending(true);
     }
-  }, [sport, token, startNewChat]);
+  }, [sport, token, startNewChat, setSidebarOpen]);
 
 
 
@@ -235,8 +239,10 @@ export default function ChatPage() {
       let done = false;
       let newConvId: string | null = null;
 
-      // Push an empty assistant message to stream into
-      setMessages((prev) => [...prev, { role: "assistant", content: "" }]);
+      // NOTE: No empty assistant message is pushed here. We only render the
+      // separate "Earl is researching" status box while loading, so the user
+      // sees a single Earl box during research. The assistant message box is
+      // created lazily when the first token/answer event actually arrives.
 
       while (!done) {
         const result = await reader.read();
@@ -276,6 +282,9 @@ export default function ChatPage() {
                     ...last,
                     content: last.content + (data.token || ""),
                   };
+                } else {
+                  // Lazily create the assistant message on the first token
+                  updated.push({ role: "assistant", content: data.token || "" });
                 }
                 return updated;
               });
@@ -316,6 +325,8 @@ export default function ChatPage() {
                   ...last,
                   content: last.content + (data.token || ""),
                 };
+              } else {
+                updated.push({ role: "assistant", content: data.token || "" });
               }
               return updated;
             });

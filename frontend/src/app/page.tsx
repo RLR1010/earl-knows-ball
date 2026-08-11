@@ -26,9 +26,18 @@ export default function Home() {
   return (
     <div className="space-y-16">
       {/* ── Hero: Portrait | Screenshot | Bullet points ──────────── */}
-      <section className="grid grid-cols-1 lg:grid-cols-3 gap-8 items-center py-12">
-        {/* Left: portrait */}
-        <div className="flex justify-center lg:justify-end">
+      <section className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-[1fr_auto_1fr] gap-6 lg:gap-8 items-center py-12">
+        {/* Merged graphic — shown only where the three columns won't fit (below lg) */}
+        <div className="flex justify-center md:justify-end lg:hidden">
+          <img
+            src="/earl-merged.png"
+            alt="Earl Knows Ball"
+            className="w-64 md:w-64 h-auto object-contain"
+          />
+        </div>
+
+        {/* Left: portrait (lg+ only) */}
+        <div className="hidden lg:flex justify-center lg:justify-end">
           <img
             src="/earl-portrait.png"
             alt="Earl Knows Ball"
@@ -36,9 +45,9 @@ export default function Home() {
           />
         </div>
 
-        {/* Center: home page screenshot */}
-        <div className="flex justify-center">
-          <div className="relative w-full max-w-sm rounded-xl overflow-hidden border border-white/10 shadow-2xl shadow-earl-500/5">
+        {/* Center: home page screenshot (lg+ only) */}
+        <div className="hidden lg:flex justify-center">
+          <div className="relative w-auto max-w-sm rounded-xl overflow-hidden shadow-2xl shadow-earl-500/5">
             <img
               src="/earl-home-page.png"
               alt="Earl Knows Ball home page preview"
@@ -48,7 +57,7 @@ export default function Home() {
         </div>
 
         {/* Right: bullet points */}
-        <div className="space-y-5 lg:pl-4">
+        <div className="space-y-5 px-6 md:px-0 lg:pl-0">
           <ul className="space-y-5">
             <li className="flex items-start gap-4">
               <span className="mt-1 shrink-0 w-6 h-6 rounded-full bg-earl-600 flex items-center justify-center">

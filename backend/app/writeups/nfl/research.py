@@ -871,8 +871,19 @@ async def get_situational_context(db: AsyncSession, home_team_id: int, away_team
     home_info = team_info.get(home_team_id, {})
     away_info = team_info.get(away_team_id, {})
 
-    is_division = home_info.get("division") == away_info.get("division") and home_info.get("division") is not None
-    is_conference = home_info.get("conference") == away_info.get("conference") and home_info.get("conference") is not None
+    # NFL division names (North/East/South/West) repeat across conferences, so a
+    # same-division game REQUIRES matching conference too (e.g. GB NFC North vs
+    # PIT AFC North is NOT a division game even though both division == 'North').
+    same_conference = (
+        home_info.get("conference") == away_info.get("conference")
+        and home_info.get("conference") is not None
+    )
+    is_division = (
+        same_conference
+        and home_info.get("division") == away_info.get("division")
+        and home_info.get("division") is not None
+    )
+    is_conference = same_conference
 
     # Roof type from games table
     game_info = await db.execute(text("""

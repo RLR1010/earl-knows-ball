@@ -136,9 +136,9 @@ function NFLPickCard({ pred }: { pred: GamePrediction }) {
   };
   const normalize = (r?: string | null) =>
     r ? r.charAt(0).toUpperCase() + r.slice(1).toLowerCase() : "-";
-  // EV string: show cents with sign.
+  // EV string: show sign, no cents marker.
   const evStr = (v?: number | null) =>
-    v == null ? null : (v >= 0 ? "EV: +" : "EV: ") + v.toFixed(1) + "¢";
+    v == null ? null : (v >= 0 ? "EV: +" : "EV: ") + v.toFixed(1);
   const evColor = (v?: number | null) =>
     v == null ? "text-gray-500" : v >= 0 ? "text-green-400" : "text-red-400";
   return (

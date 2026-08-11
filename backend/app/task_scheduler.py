@@ -14,7 +14,7 @@ from typing import Any
 
 import httpx
 import pytz
-from sqlalchemy import text
+from sqlalchemy import text, bindparam
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -246,22 +246,34 @@ def create_scheduler() -> AsyncIOScheduler:
 
 
 async def load_tasks(scheduler: AsyncIOScheduler):
-    """Read tasks from DB and register with APScheduler."""
+    """Read tasks from DB and register with APScheduler.
+
+    Keeps the in-memory jobs AND the persistent SQLAlchemyJobStore
+    (apscheduler_jobs table) synchronized with task_config.enabled.
+    A disabled/removed task must have BOTH its in-memory job and its
+    persisted job row dropped; otherwise SQLAlchemyJobStore resurrects
+    the stale job on the next scheduler start and it keeps firing.
+    """
     async with async_session() as db:
         rows = await db.execute(
             text("SELECT name, cron_expr, timezone, enabled, description FROM task_config ORDER BY name")
         )
         tasks = rows.fetchall()
 
-    # Remove stale jobs that are no longer in the DB
-    db_names = {row[0] for row in tasks if row[3]}  # only enabled tasks
-    for job in scheduler.get_jobs():
-        if job.id not in db_names:
-            try:
-                scheduler.remove_job(job.id)
-                logger.info("Removed stale job: %s", job.id)
-            except Exception:
-                pass
+        # Remove stale jobs that are no longer in the DB
+        db_names = {row[0] for row in tasks if row[3]}  # only enabled tasks
+        for job in scheduler.get_jobs():
+            if job.id not in db_names:
+                try:
+                    scheduler.remove_job(job.id)
+                    logger.info("Removed stale job: %s", job.id)
+                except Exception:
+                    pass
+
+        # Purge persisted job rows that no longer correspond to an enabled task.
+        # This is the source-of-truth fix: without it, SQLAlchemyJobStore
+        # reloads disabled/removed jobs from apscheduler_jobs on start().
+        await _purge_persisted_jobs(db, tuple(db_names))
 
     for name, cron_expr, tz_name, enabled, description in tasks:
         if not enabled:
@@ -276,6 +288,27 @@ async def load_tasks(scheduler: AsyncIOScheduler):
             logger.info("Registered task %s: cron=%s", name, cron_expr)
         except Exception as e:
             logger.error("Failed to register task %s: %s", name, e)
+
+
+async def _purge_persisted_jobs(db, keep_names):
+    """Delete apscheduler_jobs rows not in keep_names (the enabled set)."""
+    try:
+        if keep_names:
+            res = await db.execute(
+                text("DELETE FROM apscheduler_jobs WHERE id NOT IN :keep")
+                .bindparams(bindparam("keep", expanding=True)),
+                {"keep": list(keep_names)},
+            )
+        else:
+            res = await db.execute(text("DELETE FROM apscheduler_jobs"))
+        await db.commit()
+        logger.info("Purged %d stale persisted job(s) from apscheduler_jobs", res.rowcount or 0)
+    except Exception as e:
+        logger.error("Failed to purge apscheduler_jobs: %s", e)
+        try:
+            await db.rollback()
+        except Exception:
+            pass
 
 
 def _update_next_runs():

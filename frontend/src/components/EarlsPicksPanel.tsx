@@ -18,7 +18,7 @@ export type EarlsPickItem = {
   label: string;            // e.g. "Run Line", "Over/Under", "Moneyline"
   pick: string;             // the pick value / team shown in the accent color
   subpick?: string | null;  // optional secondary line (e.g. "Over 8.5")
-  ev?: number | string | null;    // expected value, shown as "EV: +12.5¢"
+  ev?: number | string | null;    // expected value, shown as "EV: +12.5"
   line?: string | null;     // optional reference line text
   result?: string | null;   // "Win"/"Loss" once the game is final
   pickColor?: string;       // accent class for the pick (default cyan)
@@ -76,7 +76,6 @@ function ScoreLine({
 
 function PickItemCard({ item, compact = false }: { item: EarlsPickItem; compact?: boolean }) {
   const pickColor = item.pickColor ?? "text-cyan-400";
-  const hasLine = item.line != null || item.subpick != null;
   const isFinal = item.result != null;
   // Normalize result casing across sports (NBA ATS uses lowercase 'win'/'loss'/'push').
   const resultNorm =
@@ -110,12 +109,8 @@ function PickItemCard({ item, compact = false }: { item: EarlsPickItem; compact?
             typeof item.ev === "number" && item.ev >= 0 ? "text-green-400" : "text-red-400"
           }`}
         >
-          EV: {typeof item.ev === "number" ? (item.ev >= 0 ? "+" : "") + item.ev.toFixed(1) + "¢" : item.ev}
+          EV: {typeof item.ev === "number" ? (item.ev >= 0 ? "+" : "") + item.ev.toFixed(1) : item.ev}
         </span>
-      )}
-
-      {hasLine && (
-        <div className="text-[11px] text-gray-500 mt-2 leading-snug">{item.line ?? item.subpick}</div>
       )}
     </div>
   );
@@ -183,9 +178,9 @@ export default function EarlsPicksPanel({
       ) : (
         <PremiumGate title={title}>
           {predicted && <ScoreLine heading="Predicted" score={predicted} />}
-          <div className="grid grid-cols-1 md:grid-cols-3 divide-y md:divide-y-0 md:divide-x divide-white/10">
+          <div className="grid grid-cols-3 divide-x divide-white/10">
             {items.map((item) => (
-              <PickItemCard key={item.label} item={item} />
+              <PickItemCard key={item.label} item={item} compact={false} />
             ))}
           </div>
         </PremiumGate>

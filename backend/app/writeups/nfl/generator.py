@@ -6,6 +6,7 @@ and custom message building for the rich nested research structure.
 from __future__ import annotations
 
 import logging
+import json
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Optional
@@ -26,6 +27,7 @@ class NFLWriteupGenerator(BaseWriteupGenerator):
     """Generates NFL game preview writeups (public & premium)."""
 
     SPORT = "nfl"
+    schema = "nfl"
 
     def premium_system_prompt(self, is_historical: bool = False) -> str:
         """System prompt for premium (with picks) NFL writeups."""
@@ -101,10 +103,14 @@ Length: 700-900 words. This is a HARD LIMIT — write 700-900 words, target ~800
         game_id: int,
         is_historical: bool = False,
         as_of_date: Optional[date] = None,
+        reasoning: Optional[str] = None,
+        usage_log: Optional[list[dict]] = None,
     ) -> Any:
         """Full pipeline with DB session."""
         self._db = db
-        result = await super().generate(game_id, is_historical, as_of_date)
+        result = await super().generate(
+            game_id, is_historical, as_of_date, reasoning=reasoning, usage_log=usage_log
+        )
         self._db = None
         return result
 
@@ -142,96 +148,9 @@ Length: 700-900 words. This is a HARD LIMIT — write 700-900 words, target ~800
             return float(obj)
         return obj
 
-    async def store(
-        self,
-        game_id: int,
-        writeup: dict[str, Any],
-        qc_results: list[dict[str, Any]],
-    ) -> int:
-        """Insert or update the write-up in `nfl.game_writeups`."""
-        db = self._db
-        from app.models.nfl.writeup import NFLGameWriteup
-
-        status = self._derive_status(qc_results)
-        is_hist = writeup.get("is_historical", False)
-
-        hist_game_date = None
-        if is_hist:
-            game_summary = (writeup.get("research_brief", {}) or {}).get("game_summary", {})
-            date_str = game_summary.get("date", "")
-            if date_str:
-                try:
-                    hist_game_date = datetime.fromisoformat(date_str)
-                except (ValueError, TypeError):
-                    pass
-
-        research_data = NFLWriteupGenerator._convert_for_json(writeup.get("research_brief") or None)
-        # Persist the per-call usage log through the research_brief JSONB column
-        # (it was previously computed in generate() but never written to the DB).
-        if research_data is not None and isinstance(research_data, dict):
-            if writeup.get("usage_log") is not None:
-                research_data["_usage_log"] = writeup["usage_log"]
-            if writeup.get("total_tokens") is not None:
-                research_data["_total_tokens"] = writeup["total_tokens"]
-        qc_data = NFLWriteupGenerator._convert_for_json(qc_results or writeup.get("quality_checks") or None)
-        accuracy_data = NFLWriteupGenerator._convert_for_json(
-            writeup.get("accuracy_check") or None
-        )
-        rejection_data = NFLWriteupGenerator._convert_for_json(
-            writeup.get("rejection_history") or []
-        )
-
-        existing_row = await db.execute(
-            text("SELECT id, version FROM nfl.game_writeups WHERE game_id = :gid"),
-            {"gid": game_id},
-        )
-        existing = existing_row.mappings().one_or_none()
-
-        if existing:
-            writeup_obj = await db.get(NFLGameWriteup, existing["id"])
-            if writeup_obj:
-                writeup_obj.version = existing["version"] + 1
-                writeup_obj.title = writeup.get("title", "")
-                writeup_obj.public_content = writeup.get("public_content", "")
-                writeup_obj.premium_content = writeup.get("premium_content", "")
-                writeup_obj.research_brief = research_data
-                writeup_obj.quality_checks = qc_data
-                writeup_obj.accuracy_check = accuracy_data
-                writeup_obj.accuracy_check_tokens = writeup.get("accuracy_check_tokens")
-                writeup_obj.rejection_history = rejection_data
-                writeup_obj.status = status
-                writeup_obj.published_at = writeup_obj.published_at or datetime.now()
-                writeup_obj.is_historical = is_hist
-                writeup_obj.historical_game_date = hist_game_date
-                writeup_obj.seo_description = writeup.get("seo_description")
-                writeup_obj.seo_keywords = writeup.get("seo_keywords")
-                writeup_obj.slug = writeup.get("slug")
-                db.add(writeup_obj)
-        else:
-            writeup_obj = NFLGameWriteup(
-                game_id=game_id,
-                version=1,
-                title=writeup.get("title", ""),
-                public_content=writeup.get("public_content", ""),
-                premium_content=writeup.get("premium_content", ""),
-                research_brief=research_data,
-                quality_checks=qc_data,
-                accuracy_check=accuracy_data,
-                accuracy_check_tokens=writeup.get("accuracy_check_tokens"),
-                rejection_history=rejection_data,
-                status=status,
-                published_at=datetime.now(),
-                is_historical=is_hist,
-                historical_game_date=hist_game_date,
-                seo_description=writeup.get("seo_description"),
-                seo_keywords=writeup.get("seo_keywords"),
-                slug=writeup.get("slug"),
-            )
-            db.add(writeup_obj)
-
-        await db.flush()
-        await db.commit()
-        return writeup_obj.id
+    # ── Storage ─────────────────────────────────────────────
+    # store() is inherited from BaseWriteupGenerator (shared across all three
+    # sports; writes to self.schema = 'nfl'). No NFL-specific store logic remains.
 
     def _derive_status(self, qc_results: list[dict[str, Any]]) -> str:
         """Write-ups go live immediately — no draft/review workflow."""

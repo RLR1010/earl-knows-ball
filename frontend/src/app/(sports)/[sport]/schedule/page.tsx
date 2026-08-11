@@ -337,9 +337,11 @@ function NBASchedule({ sport }: { sport: string }) {
     } catch {}
   }
 
-  // Auto-poll live scores for today
+  // Auto-poll live scores + completed-game pick results every 30s for the
+  // current year at ANY selected date (not just today) so pick result color
+  // coding updates automatically after games finish.
   useEffect(() => {
-    if (!isCurrentYear || selectedDate !== todayStr()) return;
+    if (!isCurrentYear) return;
     const interval = setInterval(() => {
       const params = new URLSearchParams({ year: String(CURRENT_YEAR), date: selectedDate });
       fetch(`/api/nba/games?${params}`)
@@ -638,7 +640,7 @@ function MLBSchedule({ sport }: { sport: string }) {
   }
 
   useEffect(() => {
-    if (!isCurrentYear || selectedDate !== todayStr()) return;
+    if (!isCurrentYear) return;
     const interval = setInterval(() => {
       const params = new URLSearchParams({ year: String(CURRENT_YEAR), date: selectedDate });
       fetch(`/api/mlb/games?${params}`)
@@ -861,6 +863,19 @@ function NFLSchedule({ sport }: { sport: string }) {
       .then(data => setGames(data))
       .finally(() => setLoading(false));
   }, [week, seasonYear]);
+
+  // Auto-poll schedule + pick results every 30s for the current NFL season year
+  // (any week) so completed-game pick color coding updates automatically.
+  useEffect(() => {
+    if (seasonYear !== CURRENT_YEAR) return;
+    const interval = setInterval(() => {
+      api.games
+        .list({ season_year: seasonYear, week })
+        .then(data => setGames(data))
+        .catch(() => {});
+    }, 30000);
+    return () => clearInterval(interval);
+  }, [seasonYear, week]);
 
   function formatDate(iso: string) {
     const d = new Date(iso);

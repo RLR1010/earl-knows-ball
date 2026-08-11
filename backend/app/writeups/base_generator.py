@@ -14,6 +14,7 @@ from typing import Any, Optional
 
 from json_repair import repair_json
 from openai import AsyncOpenAI
+from sqlalchemy import text
 
 from app.core.config import settings
 
@@ -26,6 +27,38 @@ QCResults = list[QCResult]
 
 
 # ── Base Generator ─────────────────────────────────────────────────
+
+
+def _extract_content_lenient(cleaned: str) -> str:
+    """Recover a premium "content" payload when DeepSeek emits it as JSON-ish
+    with an unterminated string value (no closing quote before the object's
+    final '}').
+
+    Strategy: find the `"content":` key, skip past the opening quote of its
+    value, then take everything up to the final '}' that closes the top-level
+    object (typically a '\n}' on its own line). Any JSON framing artifact left
+    (a stray trailing quote or lone closing brace) is trimmed off.
+    """
+    val_key = cleaned.find('"content"')
+    if val_key == -1:
+        return ""
+    colon = cleaned.find(':', val_key)
+    start = cleaned.find('"', colon)
+    if start == -1:
+        return ""
+    body = cleaned[start + 1:]  # everything after the opening content quote
+    # cut at the last '}' that closes the object (prefer a '\n}' on its own line)
+    cut = body.rfind('\n}')
+    if cut == -1:
+        cut = body.rfind('}')
+    if cut != -1:
+        body = body[:cut]
+    # drop a stray trailing unescaped quote if the LLM actually closed it
+    body = body.rstrip()
+    if body.endswith('"') and not body.endswith('\\"'):
+        body = body[:-1]
+    return body.strip()
+
 
 class BaseWriteupGenerator(ABC):
     """Shared generation logic for all sports.
@@ -56,6 +89,15 @@ class BaseWriteupGenerator(ABC):
         """Return a description of the sport for the system prompt
         (e.g. 'Major League Baseball', 'National Football League')."""
         ...
+
+    @property
+    def schema(self) -> str:
+        """Database schema this sport writes its `game_writeups` to
+        (e.g. 'mlb', 'nfl', 'nba'). Subclasses MUST override this."""
+        raise NotImplementedError(
+            f"{type(self).__name__} must define a `schema` attribute "
+            "(e.g. 'mlb', 'nfl', 'nba')."
+        )
 
     def system_prompt(self, is_historical: bool = False) -> str:
         """System prompt shared by all generations."""
@@ -444,6 +486,36 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
         else:
             parsed["total_tokens"] = 0
 
+        # ---- Content normalization guard (all sports) ----
+        # Defensively ensure public/premium content are stored as plain article
+        # text, never as the raw JSON/response dict. Guarantees identical behavior
+        # across mlb/nfl/nba regardless of the LLM's response format.
+        def _coerce_article(v: Any) -> str:
+            if isinstance(v, dict):
+                inner = v.get("content")
+                if isinstance(inner, str) and inner.strip():
+                    return inner
+                return json.dumps(v)  # fallback: stringify
+            if isinstance(v, str):
+                s = v.strip()
+                if s.startswith("{") and ('"content"' in s or '"title"' in s):
+                    try:
+                        decoded = json.loads(s)
+                        if isinstance(decoded, dict):
+                            inner = decoded.get("content")
+                            if isinstance(inner, str) and inner.strip():
+                                return inner
+                            return json.dumps(decoded)
+                    except (ValueError, TypeError):
+                        return s
+                return v
+            if v is None:
+                return ""
+            return str(v)
+
+        parsed["public_content"] = _coerce_article(parsed.get("public_content"))
+        parsed["premium_content"] = _coerce_article(parsed.get("premium_content"))
+
         # ---- 5. Store ----
         await self.store(game_id, parsed, [])
 
@@ -473,26 +545,73 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
                 if isinstance(parsed, dict) and ("title" in parsed or "content" in parsed):
                     t = parsed.get("title", "").strip()
                     c = parsed.get("content", "").strip()
-                    return {"title": t, "content": c}
+                    return {"title": t, "content": self._strip_leading_heading(c, t)}
             except (json.JSONDecodeError, ValueError, TypeError):
                 pass
 
-            # Fallback: manual extraction of "title" and "content" keys
+            # Fallback: manual extraction of "title" and "content" keys.
+            # Robust to DeepSeek output that is JSON-ish but not strictly valid
+            # (e.g. literal newlines inside string values, unescaped quotes in
+            # prose, or a content value with no closing quote). Two recovery
+            # passes: first a precise double-quote-aware match, then a lenient
+            # cut for unterminated content values that the regex cannot handle.
             import re
-            title_match = re.search(r'"title"\s*:\s*"(.*?)"(?:[,\n]|$)', cleaned, re.DOTALL)
-            content_match = re.search(r'"content"\s*:\s*"(.*?)"$', cleaned, re.DOTALL)
+            esc = r'(?:\\.|[^"\\])*'  # any chars, backslash-escaped or not an unescaped quote
+            title_match = re.search(r'"title"\s*:\s*"(' + esc + r')"\s*[,} ]\s*', cleaned, re.DOTALL)
+            content_match = re.search(r'"content"\s*:\s*"(' + esc + r')"\s*[,} ]\s*', cleaned, re.DOTALL)
             title = title_match.group(1).strip() if title_match else ""
-            content = content_match.group(1).strip() if content_match else cleaned
-            # Unescape internal quotes
+            content = content_match.group(1).strip() if content_match else ""
+
+            if not content:
+                # Lenient pass: DeepSeek sometimes emits "content" with a literal
+                # (unterminated) string value, e.g. ...\"content\": \"## Body...\n\n...prose\n}"
+                # where the closing quote before \"\n}\" is missing. The regex above
+                # needs a closing quote, so slice from the content key to the last
+                # '\n}' that closes the object and drop any trailing braces/quotes.
+                content = _extract_content_lenient(cleaned)
+                if not title:
+                    t2 = re.search(r'"title"\s*:\s*("[^"]*"|\S+)', cleaned)
+                    if t2:
+                        title = t2.group(1).strip().strip('"')
+
+            # Unescape internal quotes / newline escapes
             title = title.replace('\\"', '"').replace('\\n', '\n')
             content = content.replace('\\"', '"').replace('\\n', '\n')
-            return {"title": title, "content": content}
+            return {"title": title, "content": self._strip_leading_heading(content, title)}
 
         # Plain text format: first line = title, blank line, then content
         lines = cleaned.split("\n", 1)
         title = lines[0].strip().strip("#").strip() if lines else ""
         content = lines[1].strip() if len(lines) > 1 else cleaned
         return {"title": title, "content": content}
+
+    def _strip_leading_heading(self, content: str, title: str = "") -> str:
+        """Remove a leading markdown heading (the title line) from content.
+
+        The premium prompt asks the LLM to start the body with a `## Title`
+        line. When the response arrives as JSON, the "content" field often
+        retains that heading. Public content (and the plain-text premium path)
+        strip the title out into the separate title field instead.
+
+        To avoid clobbering a legitimate first section heading, we only drop
+        the leading heading when it actually echoes the extracted title (the
+        duplicate-title case) or when no title could be parsed (pure-title-only
+        content). Any other first line is left untouched.
+        """
+        if not content:
+            return content
+        stripped = content.lstrip("\n")
+        lines = stripped.split("\n", 1)
+        if not lines or not lines[0].lstrip().startswith("#"):
+            return content
+        heading = lines[0].lstrip().lstrip("#").strip()
+        title_norm = (title or "").strip()
+        # Only strip when the heading mirrors the title (or title is empty).
+        if title_norm and heading != title_norm and not (
+            heading.startswith(title_norm) or title_norm.startswith(heading)
+        ):
+            return content
+        return lines[1].strip() if len(lines) > 1 else ""
 
     async def _call_deepseek(self, system: str, user_prompt: str, *, max_tokens: int | None = None, reasoning: str | None = None, usage_log: list[dict[str, Any]] | None = None, max_attempts: int | None = None, call: str = "generate") -> str | None:
         """Call DeepSeek via OpenAI SDK and return the raw response content.
@@ -1539,12 +1658,202 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
     async def store(
         self,
         game_id: int,
-        article: dict[str, Any],
+        writeup: dict[str, Any],
         qc_results: QCResults,
-    ) -> None:
-        """Persist the generated article. Subclass hook."""
-        # Override in sport-specific subclass
-        pass
+    ) -> int:
+        """Insert or update the write-up in the DB. Returns the row id.
+
+        Shared across mlb/nfl/nba — the ONLY per-sport differences are the DB
+        `schema` and an optional `_post_store` hook. Same code runs for all
+        three sports, so a fix here fixes every sport.
+        """
+        db = self._db
+        schema = self.schema  # e.g. 'mlb', 'nfl', 'nba'
+
+        # ---- Content normalization (all sports: never store a raw JSON/response
+        # dict in the content columns) ----
+        def _coerce_article(v):
+            if isinstance(v, dict):
+                # Some responses pass premium/public content as a dict; unwind it.
+                inner = v.get("content")
+                return inner if isinstance(inner, str) and inner.strip() else json.dumps(v)
+            if isinstance(v, str):
+                s = v.strip()
+                # Guard against a JSON-encoded string sneaking through (e.g. a
+                # string that contains '{"title":...,"content":...}').
+                if s.startswith("{") and ("\"content\"" in s or "\"title\"" in s):
+                    try:
+                        decoded = json.loads(s)
+                        if isinstance(decoded, dict):
+                            inner = decoded.get("content")
+                            if isinstance(inner, str) and inner.strip():
+                                return inner
+                            return json.dumps(decoded)
+                    except (ValueError, TypeError):
+                        return s
+                return v
+            if v is None:
+                return ""
+            return str(v)
+
+        title = _coerce_article(writeup.get("title", ""))
+        public_content = _coerce_article(writeup.get("public_content"))
+        premium_content = _coerce_article(writeup.get("premium_content"))
+
+        # Nest the per-call usage log inside research_brief so it persists through
+        # the existing JSONB column.
+        research_brief = dict(writeup.get("research_brief") or {})
+        if writeup.get("usage_log") is not None:
+            research_brief["_usage_log"] = writeup["usage_log"]
+        if writeup.get("total_tokens") is not None:
+            research_brief["_total_tokens"] = writeup["total_tokens"]
+        research_brief_json = json.dumps(
+            research_brief, default=str
+        ) if research_brief else None
+        qc_json = json.dumps(
+            qc_results or writeup.get("quality_checks"), default=str
+        ) if (qc_results or writeup.get("quality_checks")) else None
+        accuracy_json = json.dumps(
+            writeup.get("accuracy_check"), default=str
+        ) if writeup.get("accuracy_check") else None
+        rejection_json = json.dumps(
+            writeup.get("rejection_history") or [], default=str
+        ) if (writeup.get("rejection_history") or []) else None
+
+        status = self._derive_status(qc_results)
+        is_hist = writeup.get("is_historical", False)
+
+        hist_game_date = None
+        if is_hist:
+            game_summary = (writeup.get("research_brief", {}) or {}).get("game_summary", {})
+            date_str = game_summary.get("date", "")
+            if date_str:
+                try:
+                    hist_game_date = datetime.fromisoformat(date_str)
+                except (ValueError, TypeError):
+                    pass
+
+        version = 1
+
+        # Check existing
+        existing = await db.execute(
+            text(f"SELECT id, version FROM {schema}.game_writeups WHERE game_id = :gid"),
+            {"gid": game_id},
+        )
+        ex = existing.mappings().one_or_none()
+
+        if ex:
+            version = ex["version"] + 1
+            result = await db.execute(
+                text(f"""
+                    UPDATE {schema}.game_writeups SET
+                        title = :title,
+                        public_content = :pub,
+                        premium_content = :prem,
+                        research_brief = CAST(:rb AS jsonb),
+                        quality_checks = CAST(:qc AS jsonb),
+                        status = :status,
+                        version = :version,
+                        is_historical = :is_hist,
+                        historical_game_date = :hist_date,
+                        generated_by = :gen_by,
+                        total_tokens = :tokens,
+                        accuracy_check = CAST(:acc AS jsonb),
+                        accuracy_check_tokens = :acc_tokens,
+                        rejection_history = CAST(:rej AS jsonb),
+                        seo_description = :seo_desc,
+                        seo_keywords = :seo_kw,
+                        slug = :slug,
+                        published_at = NOW(),
+                        updated_at = NOW()
+                    WHERE game_id = :gid
+                    RETURNING id
+                """),
+                {
+                    "gid": game_id,
+                    "title": title,
+                    "pub": public_content,
+                    "prem": premium_content,
+                    "rb": research_brief_json,
+                    "qc": qc_json,
+                    "status": status,
+                    "version": version,
+                    "is_hist": is_hist,
+                    "hist_date": hist_game_date,
+                    "gen_by": writeup.get("generated_by", self.MODEL),
+                    "tokens": writeup.get("total_tokens"),
+                    "acc": accuracy_json,
+                    "acc_tokens": writeup.get("accuracy_check_tokens"),
+                    "rej": rejection_json,
+                    "seo_desc": writeup.get("seo_description"),
+                    "seo_kw": writeup.get("seo_keywords"),
+                    "slug": writeup.get("slug"),
+                },
+            )
+            row_id = result.scalar()
+        else:
+            result = await db.execute(
+                text(f"""
+                    INSERT INTO {schema}.game_writeups
+                        (game_id, title, public_content, premium_content,
+                         research_brief, quality_checks, status, version,
+                         is_historical, historical_game_date,
+                         generated_by, total_tokens,
+                         accuracy_check, accuracy_check_tokens,
+                         rejection_history,
+                         seo_description, seo_keywords, slug, published_at)
+                    VALUES
+                        (:gid, :title, :pub, :prem,
+                         CAST(:rb AS jsonb), CAST(:qc AS jsonb), :status, :version,
+                         :is_hist, :hist_date,
+                         :gen_by, :tokens,
+                         CAST(:acc AS jsonb), :acc_tokens,
+                         CAST(:rej AS jsonb),
+                         :seo_desc, :seo_kw, :slug, NOW())
+                    RETURNING id
+                """),
+                {
+                    "gid": game_id,
+                    "title": title,
+                    "pub": public_content,
+                    "prem": premium_content,
+                    "rb": research_brief_json,
+                    "qc": qc_json,
+                    "status": status,
+                    "version": version,
+                    "is_hist": is_hist,
+                    "hist_date": hist_game_date,
+                    "gen_by": writeup.get("generated_by", self.MODEL),
+                    "tokens": writeup.get("total_tokens"),
+                    "acc": accuracy_json,
+                    "acc_tokens": writeup.get("accuracy_check_tokens"),
+                    "rej": rejection_json,
+                    "seo_desc": writeup.get("seo_description"),
+                    "seo_kw": writeup.get("seo_keywords"),
+                    "slug": writeup.get("slug"),
+                },
+            )
+            row_id = result.scalar()
+
+        await db.commit()
+
+        # Sport-specific post-store hook (e.g. MLB prop-bets article). No-op
+        # by default. Failure here must NOT fail the main write-up.
+        try:
+            await self._post_store(db, game_id, research_brief or {})
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "%s post-store hook failed for game %s: %s",
+                type(self).__name__,
+                game_id,
+                e,
+            )
+
+        return row_id
+
+    async def _post_store(self, db, game_id: int, research_brief: dict) -> None:
+        """Sport-specific work after the write-up row is committed. No-op base."""
+        return None
 
     # ── Static helpers ──────────────────────────────────────
 

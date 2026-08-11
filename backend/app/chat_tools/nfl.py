@@ -790,9 +790,21 @@ async def _get_player_stats(db: AsyncSession, args: dict) -> dict:
     if not s or s.games_played == 0:
         return {"error": f"No stats for {player.name} in {year}"}
 
+    # Team(s) the player suited up for this season (handles mid-season trades).
+    team_sql = text("""
+        SELECT t.name
+        FROM (SELECT DISTINCT team_id FROM nfl.player_weekly_stats
+              WHERE player_id = :pid AND season_id = :sid) d
+        JOIN nfl.teams t ON t.id = d.team_id
+        ORDER BY t.name
+    """)
+    tr = await db.execute(team_sql, {"pid": player.id, "sid": sid})
+    teams = [row[0] for row in tr.fetchall()]
+
     return {
         "player": player.name,
         "position": player.position,
+        "team": ", ".join(teams) if teams else None,
         "season_year": year,
         "games_played": s.games_played,
         "passing": {"yards": s.pass_yds, "tds": s.pass_td, "ints": s.ints},
@@ -821,9 +833,11 @@ async def _get_player_weekly_log(db: AsyncSession, args: dict) -> dict:
 
     sql = text("""
         SELECT pws.*, g.week,
+               t.name AS team_name,
                ht.name AS opponent_name,
                CASE WHEN g.home_team_id = pws.team_id THEN 'home' ELSE 'away' END AS venue
         FROM nfl.player_weekly_stats pws
+        JOIN nfl.teams t ON t.id = pws.team_id
         JOIN nfl.games g ON g.id = pws.game_id
         LEFT JOIN nfl.teams ht ON ht.id = CASE
             WHEN g.home_team_id = pws.team_id THEN g.away_team_id
@@ -836,6 +850,7 @@ async def _get_player_weekly_log(db: AsyncSession, args: dict) -> dict:
     for row in r.mappings():
         games.append({
             "week": row.week,
+            "team": row.team_name,
             "opponent": row.opponent_name,
             "venue": row.venue,
             "pass_yds": row.pass_yards,
@@ -848,7 +863,7 @@ async def _get_player_weekly_log(db: AsyncSession, args: dict) -> dict:
             "rec_yds": row.receiving_yards,
             "rec_td": row.receiving_tds,
         })
-    return {"player": player.name, "season_year": year, "game_logs": games}
+    return {"player": player.name, "team": games[0]["team"] if games else None, "season_year": year, "game_logs": games}
 
 
 async def _get_team_trends(db: AsyncSession, args: dict) -> dict:

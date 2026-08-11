@@ -557,13 +557,13 @@ async def batch_predict_upcoming_games(
                 "ou_pick": ou_pick,
                 "spread_pick": spread_pick,
                 "ml_pick": ml_pick,
-                "home_ml": _float_safe(row.get("home_ml")),
-                "away_ml": _float_safe(row.get("away_ml")),
+                "home_ml": _float_safe(row.get("closing_home_ml")),
+                "away_ml": _float_safe(row.get("closing_away_ml")),
                 "closing_ou": _float_safe(over_under),
-                "spread_home_odds": _float_safe(row.get("spread_home_odds")),
-                "spread_away_odds": _float_safe(row.get("spread_away_odds")),
-                "over_odds": _float_safe(row.get("over_odds")),
-                "under_odds": _float_safe(row.get("under_odds")),
+                "spread_home_odds": _float_safe(row.get("closing_spread_home_odds")),
+                "spread_away_odds": _float_safe(row.get("closing_spread_away_odds")),
+                "over_odds": _float_safe(row.get("closing_over_odds")),
+                "under_odds": _float_safe(row.get("closing_under_odds")),
             }
             # Enrich with handicapper info
             pc_feats = _load_pick_card_feature_metadata()

@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -437,6 +437,10 @@ export default function NFLGameTabs({ gameId, boxscore, prediction, isFinal }: N
   const [propBets, setPropBets] = useState<any[] | null>(null);
   const [propBetsLoading, setPropBetsLoading] = useState(false);
 
+  // Sub-tab inside Detailed Analysis: "analysis" vs "stats"
+  const [analysisSubTab, setAnalysisSubTab] = useState<"analysis" | "stats">("analysis");
+  const writeupLoadedOnce = useRef(false);
+
   const home_stats = boxscore.home_stats || { total_yards: null, pass_yards: null, rush_yards: null, turnovers: null, first_downs: null, third_down_pct: null, fourth_down_pct: null, time_of_possession: null, penalties: null, penalty_yards: null, top_players: [] };
   const away_stats = boxscore.away_stats || { total_yards: null, pass_yards: null, rush_yards: null, turnovers: null, first_downs: null, third_down_pct: null, fourth_down_pct: null, time_of_possession: null, penalties: null, penalty_yards: null, top_players: [] };
   const homeTeam = boxscore.game?.home_team || "";
@@ -464,6 +468,17 @@ export default function NFLGameTabs({ gameId, boxscore, prediction, isFinal }: N
       .finally(() => setWriteupLoading(false));
   }, [activeTab, gameId, writeupData, writeupLoading]);
 
+  // Default sub-tab for Detailed Analysis: Analysis unless there is no premium_content, then Stats.
+  // Only applied after the writeup fetch completes (avoids a flash to Stats before content loads).
+  useEffect(() => {
+    if (writeupLoading) writeupLoadedOnce.current = true;
+  }, [writeupLoading]);
+  useEffect(() => {
+    if (writeupLoadedOnce.current && !writeupLoading) {
+      setAnalysisSubTab(writeupData?.premium_content ? "analysis" : "stats");
+    }
+  }, [writeupLoading, writeupData?.premium_content]);
+
   // Load prop bets availability for this game (controls whether the tab shows)
   useEffect(() => {
     if (propBets !== null) return;
@@ -486,7 +501,6 @@ export default function NFLGameTabs({ gameId, boxscore, prediction, isFinal }: N
     ...(isGameInProgress ? [{ key: "boxscore", label: "Box Score" }] : []),
     { key: "preview", label: "Game Preview" },
     { key: "analysis", label: "Detailed Analysis" },
-    { key: "stats", label: "Detailed Stats" },
     ...(hasProps ? [{ key: "propBets", label: "Prop Bets" }] : []),
   ];
 
@@ -533,6 +547,9 @@ export default function NFLGameTabs({ gameId, boxscore, prediction, isFinal }: N
               <div className="text-sm text-gray-500 animate-pulse">Loading preview...</div>
             ) : writeupData?.has_writeup && writeupData.public_content ? (
               <div className="writeup-content">
+                {writeupData.title && (
+                  <div className="text-sm font-semibold text-white mb-3">{writeupData.title}</div>
+                )}
                 <ReactMarkdown remarkPlugins={[remarkGfm]}>
                   {writeupData.public_content}
                 </ReactMarkdown>
@@ -545,37 +562,57 @@ export default function NFLGameTabs({ gameId, boxscore, prediction, isFinal }: N
           </div>
         )}
 
-        {/* Detailed Analysis */}
+        {/* Detailed Analysis (with nested Analysis | Stats sub-tabs) */}
         {activeTab === "analysis" && (
           <PremiumGate>
           <div className="border border-white/10 rounded-xl p-6 bg-gradient-to-br from-earl-900/20 to-transparent">
-            <div className="text-xs text-gray-500 uppercase tracking-wider mb-3">Detailed Analysis</div>
-            {writeupLoading ? (
-              <div className="text-sm text-gray-500 animate-pulse">Loading analysis...</div>
-            ) : writeupData?.has_writeup && writeupData.premium_content ? (
+            {/* Nested sub-tabs: Analysis | Stats */}
+            <div className="flex border-b border-white/10 mb-4">
+              {[
+                { key: "analysis", label: "Analysis" },
+                { key: "stats", label: "Stats" },
+              ].map((sub) => (
+                <button
+                  key={sub.key}
+                  onClick={() => setAnalysisSubTab(sub.key as "analysis" | "stats")}
+                  className={`px-4 py-2 text-xs uppercase tracking-wider font-medium transition-colors cursor-pointer border-b-2 ${
+                    analysisSubTab === sub.key
+                      ? "text-earl-300 border-earl-500"
+                      : "text-gray-500 hover:text-gray-300 border-transparent"
+                  }`}
+                >
+                  {sub.label}
+                </button>
+              ))}
+            </div>
+
+            {analysisSubTab === "analysis" && (
               <>
-                {writeupData.title && (
-                  <h3 className="text-lg font-bold text-white mb-3">{writeupData.title}</h3>
+                {writeupLoading ? (
+                  <div className="text-sm text-gray-500 animate-pulse">Loading analysis...</div>
+                ) : writeupData?.has_writeup && writeupData.premium_content ? (
+                  <>
+                    {writeupData.title && (
+                      <h3 className="text-lg font-bold text-white mb-3">{writeupData.title}</h3>
+                    )}
+                    <div className="writeup-content">
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                        {writeupData.premium_content}
+                      </ReactMarkdown>
+                    </div>
+                  </>
+                ) : (
+                  <div className="text-sm text-gray-500 text-center py-8">
+                    No detailed analysis available yet.
+                  </div>
                 )}
-                <div className="writeup-content">
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                    {writeupData.premium_content}
-                  </ReactMarkdown>
-                </div>
               </>
-            ) : (
-              <div className="text-sm text-gray-500 text-center py-8">
-                No detailed analysis available yet.
-              </div>
+            )}
+
+            {analysisSubTab === "stats" && (
+              <DetailedStatsTab gameId={gameId} boxscore={boxscore} />
             )}
           </div>
-          </PremiumGate>
-        )}
-
-        {/* Detailed Stats */}
-        {activeTab === "stats" && (
-          <PremiumGate>
-            <DetailedStatsTab gameId={gameId} boxscore={boxscore} />
           </PremiumGate>
         )}
 

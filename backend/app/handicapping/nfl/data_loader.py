@@ -2166,10 +2166,18 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
     df["home_ats_home_pct_r5"] = df["game_id"].map(_homes_ats).fillna(0.5)
     df["away_ats_away_pct_r5"] = df["game_id"].map(_aways_ats).fillna(0.5)
     # ── 16. Division & primetime flags ───────────────────────────────────
+    # NFL division names (North/East/South/West) repeat across conferences, so a
+    # same-division game REQUIRES matching conference too (e.g. GB NFC North vs
+    # PIT AFC North is NOT a division game even though both division == 'North').
     if "home_div" in df.columns and "away_div" in df.columns:
-        df["is_division_game"] = (
-            (df["home_div"] == df["away_div"]).astype(float)
-        )
+        if "home_conf" in df.columns and "away_conf" in df.columns:
+            df["is_division_game"] = (
+                (df["home_conf"] == df["away_conf"]) & (df["home_div"] == df["away_div"])
+            ).astype(float)
+        else:
+            df["is_division_game"] = (
+                (df["home_div"] == df["away_div"]).astype(float)
+            )
     else:
         df["is_division_game"] = 0.0
 

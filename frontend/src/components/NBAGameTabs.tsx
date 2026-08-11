@@ -167,6 +167,10 @@ export default function NBAGameTabs({ gameId, prediction }: NBAGameTabsProps) {
   const [writeup, setWriteup] = useState<any>(null);
   const [loadingWriteup, setLoadingWriteup] = useState(false);
   const [propBets, setPropBets] = useState<any[] | null>(null);
+
+  // Sub-tab inside Detailed Analysis: "analysis" vs "stats"
+  const [analysisSubTab, setAnalysisSubTab] = useState<"analysis" | "stats">("analysis");
+  const writeupLoadedOnce = useRef(false);
   const [loadingProps, setLoadingProps] = useState(false);
   const writeupAttempted = useRef(false);
 
@@ -201,6 +205,17 @@ export default function NBAGameTabs({ gameId, prediction }: NBAGameTabsProps) {
       setActiveTab("summary");
     }
   }, [hasBoxscore, loading]);
+
+  // Default sub-tab for Detailed Analysis: Analysis unless there is no premium_content, then Stats.
+  // Only applied after the writeup fetch has completed (avoids a flash to Stats before content loads).
+  useEffect(() => {
+    if (loadingWriteup) writeupLoadedOnce.current = true;
+  }, [loadingWriteup]);
+  useEffect(() => {
+    if (writeupLoadedOnce.current && !loadingWriteup) {
+      setAnalysisSubTab(writeup?.premium_content ? "analysis" : "stats");
+    }
+  }, [loadingWriteup, writeup?.premium_content]);
 
   // Fetch writeup when Game Preview or Detailed Analysis tab is active
   useEffect(() => {
@@ -245,7 +260,6 @@ export default function NBAGameTabs({ gameId, prediction }: NBAGameTabsProps) {
     { key: "boxscore", label: "Box Score", enabled: hasBoxscore },
     { key: "summary", label: "Game Preview", enabled: true },
     { key: "analysis", label: "Detailed Analysis", enabled: true },
-    { key: "stats", label: "Detailed Stats", enabled: true },
     { key: "propBets", label: "Prop Bets", enabled: hasProps },
   ];
 
@@ -826,8 +840,35 @@ export default function NBAGameTabs({ gameId, prediction }: NBAGameTabsProps) {
           <div className="p-4">
             {activeTab === "boxscore" && renderBoxScore()}
             {activeTab === "summary" && renderGamePreview()}
-            {activeTab === "analysis" && <PremiumGate>{renderAnalysis()}</PremiumGate>}
-            {activeTab === "stats" && <PremiumGate><DetailedStatsTab gameId={gameId} /></PremiumGate>}
+            {activeTab === "analysis" && (
+              <div>
+                {/* Nested sub-tabs: Analysis | Stats */}
+                <div className="flex border-b border-white/10 mb-4">
+                  {[
+                    { key: "analysis", label: "Analysis" },
+                    { key: "stats", label: "Stats" },
+                  ].map((sub) => (
+                    <button
+                      key={sub.key}
+                      onClick={() => setAnalysisSubTab(sub.key as "analysis" | "stats")}
+                      className={`px-4 py-2 text-xs uppercase tracking-wider font-medium transition-colors cursor-pointer border-b-2 ${
+                        analysisSubTab === sub.key
+                          ? "text-earl-400 border-earl-400"
+                          : "text-gray-500 hover:text-gray-300 border-transparent"
+                      }`}
+                    >
+                      {sub.label}
+                    </button>
+                  ))}
+                </div>
+                {analysisSubTab === "analysis" && <PremiumGate>{renderAnalysis()}</PremiumGate>}
+                {analysisSubTab === "stats" && (
+                  <PremiumGate>
+                    <DetailedStatsTab gameId={gameId} />
+                  </PremiumGate>
+                )}
+              </div>
+            )}
             {activeTab === "propBets" && <PropBetsTab sport="nba" gameId={gameId} />}
           </div>
         </div>

@@ -45,6 +45,8 @@ def _format_title_date(value, fallback: str = "") -> str:
 class MLBWriteupGenerator(BaseWriteupGenerator):
     """MLB-specific write-up generator."""
 
+    schema = "mlb"
+
     async def research_brief(
         self, game_id: int, as_of_date: Optional[datetime] = None
     ) -> dict[str, Any]:
@@ -79,164 +81,17 @@ class MLBWriteupGenerator(BaseWriteupGenerator):
         return result, qc_results
 
     # ── Storage ─────────────────────────────────────────────
+    # store() is inherited from BaseWriteupGenerator and shared by all three
+    # sports (uses self.schema). MLB only adds a post-store hook for the
+    # premium Prop Bets article.
 
-    async def store(
-        self,
-        game_id: int,
-        writeup: dict[str, Any],
-        qc_results: list[dict[str, Any]],
-    ) -> int:
-        """Insert or update the write-up in the database. Returns the row id."""
-        db = self._db
-        import json
-
-        # Nest the per-call usage log inside research_brief so it persists through
-        # the existing JSONB column (it was previously computed in generate() but
-        # never written to the DB — only the aggregated total_tokens was saved).
-        research_brief = dict(writeup.get("research_brief") or {})
-        if writeup.get("usage_log") is not None:
-            research_brief["_usage_log"] = writeup["usage_log"]
-        if writeup.get("total_tokens") is not None:
-            research_brief["_total_tokens"] = writeup["total_tokens"]
-        research_brief_json = json.dumps(
-            research_brief, default=str
-        ) if research_brief else None
-        qc_json = json.dumps(
-            qc_results or writeup.get("quality_checks"), default=str
-        ) if (qc_results or writeup.get("quality_checks")) else None
-        accuracy_json = json.dumps(
-            writeup.get("accuracy_check"), default=str
-        ) if writeup.get("accuracy_check") else None
-        rejection_json = json.dumps(
-            writeup.get("rejection_history") or [], default=str
-        ) if (writeup.get("rejection_history") or []) else None
-
-        status = self._derive_status(qc_results)
-        is_hist = writeup.get("is_historical", False)
-
-        hist_game_date = None
-        if is_hist:
-            game_summary = (writeup.get("research_brief", {}) or {}).get("game_summary", {})
-            date_str = game_summary.get("date", "")
-            if date_str:
-                try:
-                    hist_game_date = datetime.fromisoformat(date_str)
-                except (ValueError, TypeError):
-                    pass
-
-        version = 1
-
-        # Check existing
-        existing = await db.execute(
-            text("SELECT id, version FROM mlb.game_writeups WHERE game_id = :gid"),
-            {"gid": game_id},
-        )
-        ex = existing.mappings().one_or_none()
-
-        if ex:
-            version = ex["version"] + 1
-            result = await db.execute(
-                text("""
-                    UPDATE mlb.game_writeups SET
-                        title = :title,
-                        public_content = :pub,
-                        premium_content = :prem,
-                        research_brief = CAST(:rb AS jsonb),
-                        quality_checks = CAST(:qc AS jsonb),
-                        status = :status,
-                        version = :version,
-                        is_historical = :is_hist,
-                        historical_game_date = :hist_date,
-                        generated_by = :gen_by,
-                        total_tokens = :tokens,
-                        accuracy_check = CAST(:acc AS jsonb),
-                        accuracy_check_tokens = :acc_tokens,
-                        rejection_history = CAST(:rej AS jsonb),
-                        seo_description = :seo_desc,
-                        seo_keywords = :seo_kw,
-                        slug = :slug,
-                        published_at = NOW(),
-                        updated_at = NOW()
-                    WHERE game_id = :gid
-                    RETURNING id
-                """),
-                {
-                    "gid": game_id,
-                    "title": writeup.get("title", ""),
-                    "pub": writeup.get("public_content", ""),
-                    "prem": writeup.get("premium_content", ""),
-                    "rb": research_brief_json,
-                    "qc": qc_json,
-                    "status": status,
-                    "version": version,
-                    "is_hist": is_hist,
-                    "hist_date": hist_game_date,
-                    "gen_by": writeup.get("generated_by", self.MODEL),
-                    "tokens": writeup.get("total_tokens"),
-                    "acc": accuracy_json,
-                    "acc_tokens": writeup.get("accuracy_check_tokens"),
-                    "rej": rejection_json,
-                    "seo_desc": writeup.get("seo_description"),
-                    "seo_kw": writeup.get("seo_keywords"),
-                    "slug": writeup.get("slug"),
-                },
-            )
-            row_id = result.scalar()
-        else:
-            result = await db.execute(
-                text("""
-                    INSERT INTO mlb.game_writeups
-                        (game_id, title, public_content, premium_content,
-                         research_brief, quality_checks, status, version,
-                         is_historical, historical_game_date,
-                         generated_by, total_tokens,
-                         accuracy_check, accuracy_check_tokens,
-                         rejection_history,
-                         seo_description, seo_keywords, slug, published_at)
-                    VALUES
-                        (:gid, :title, :pub, :prem,
-                         CAST(:rb AS jsonb), CAST(:qc AS jsonb), :status, :version,
-                         :is_hist, :hist_date,
-                         :gen_by, :tokens,
-                         CAST(:acc AS jsonb), :acc_tokens,
-                         CAST(:rej AS jsonb),
-                         :seo_desc, :seo_kw, :slug, NOW())
-                    RETURNING id
-                """),
-                {
-                    "gid": game_id,
-                    "title": writeup.get("title", ""),
-                    "pub": writeup.get("public_content", ""),
-                    "prem": writeup.get("premium_content", ""),
-                    "rb": research_brief_json,
-                    "qc": qc_json,
-                    "status": status,
-                    "version": version,
-                    "is_hist": is_hist,
-                    "hist_date": hist_game_date,
-                    "gen_by": writeup.get("generated_by", self.MODEL),
-                    "tokens": writeup.get("total_tokens"),
-                    "acc": accuracy_json,
-                    "acc_tokens": writeup.get("accuracy_check_tokens"),
-                    "rej": rejection_json,
-                    "seo_desc": writeup.get("seo_description"),
-                    "seo_kw": writeup.get("seo_keywords"),
-                    "slug": writeup.get("slug"),
-                },
-            )
-            row_id = result.scalar()
-
-        await db.commit()
-
-        # Generate a separate premium Prop Bets article for this game (post-
-        # commit so the main row definitely exists). Skipped when the game has
-        # no player prop odds. Failure here must NOT fail the main write-up.
+    async def _post_store(self, db, game_id: int, research_brief: dict) -> None:
+        """After the main write-up commits, generate the premium Prop Bets
+        article (stored in the SAME game_writeups row's prop_* columns)."""
         try:
             await self._generate_props_article(db, game_id, research_brief or {})
         except Exception as e:  # noqa: BLE001
-            logger.warning("MLB props article step failed for game %s: %s", game_id, e)
-
-        return row_id
+            logger.warning("MLB props article generation failed for game %s: %s", game_id, e)
 
     def _derive_status(self, qc_results: list[dict[str, Any]]) -> str:
         """Write-ups go live immediately — no draft/review workflow."""

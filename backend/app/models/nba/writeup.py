@@ -9,6 +9,7 @@ from sqlalchemy import (
     Column, Integer, String, Text, DateTime, Float,
     Boolean, ForeignKey, UniqueConstraint, JSON
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 
 from app.database import Base
@@ -34,6 +35,7 @@ class NBAGameWriteup(Base):
 
     # Content
     title = Column(String(300), nullable=False)
+    slug = Column(Text, nullable=True)
     public_content = Column(Text, nullable=False, default="")
     premium_content = Column(Text, nullable=False, default="")
 
@@ -46,15 +48,16 @@ class NBAGameWriteup(Base):
     prop_published_at = Column(DateTime(timezone=True), nullable=True)
 
     # Research brief — structured data the AI used to generate
-    research_brief = Column(JSON, nullable=True)
+    research_brief = Column(JSONB, nullable=True)
 
     # Quality check results
-    quality_checks = Column(JSON, nullable=True)
+    quality_checks = Column(JSONB, nullable=True)
 
     # Post-generation accuracy-verification results (facts vs. research,
     # and no-predictions rule for public content)
     accuracy_check = Column(JSON, nullable=True)
     accuracy_check_tokens = Column(Integer, nullable=True)
+    rejection_history = Column(JSON, nullable=True)
 
     # Status lifecycle: draft → review → published → archived
     STATUS_CHOICES = ("draft", "review", "published", "archived")
@@ -74,6 +77,8 @@ class NBAGameWriteup(Base):
     # Generation metadata
     generated_by = Column(String(100), nullable=True)  # model name
     total_tokens = Column(Integer, nullable=True)
+    seo_description = Column(Text, nullable=True)
+    seo_keywords = Column(Text, nullable=True)
 
     # Timestamps
     published_at = Column(DateTime(timezone=True), nullable=True)

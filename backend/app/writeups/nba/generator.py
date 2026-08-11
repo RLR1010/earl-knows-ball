@@ -26,6 +26,7 @@ class NBAGameWriteupGenerator(BaseWriteupGenerator):
     """Generator for NBA game write-ups."""
 
     SPORT = "nba"
+    schema = "nba"
 
     # ── Generate (overridden to inject db) ─────────────────────
 
@@ -35,10 +36,14 @@ class NBAGameWriteupGenerator(BaseWriteupGenerator):
         game_id: int,
         is_historical: bool = False,
         as_of_date: datetime | None = None,
+        reasoning: str = "minimal",
+        usage_log: Optional[list[dict]] = None,
     ):
         """Full pipeline with DB session. Follows NFL pattern."""
         self._db = db
-        result = await super().generate(game_id, is_historical, as_of_date)
+        result = await super().generate(
+            game_id, is_historical, as_of_date, reasoning=reasoning, usage_log=usage_log
+        )
         self._db = None
         if "error" in result:
             return result, []
@@ -257,149 +262,9 @@ Bullet lists work for key points. Keep it article-like — no blockquotes, no em
 
     # ── Store ─────────────────────────────────────────────────
 
-    async def store(
-        self,
-        game_id: int,
-        writeup: dict[str, Any],
-        qc_results: list[dict[str, Any]],
-        db: AsyncSession | None = None,
-    ) -> int:
-        """Insert or update the write-up in nba.game_writeups."""
-        db = db or self._db
-        if db is None:
-            raise RuntimeError("No database session available for store()")
-
-        research_brief = dict(writeup.get("research_brief") or {})
-        if writeup.get("usage_log") is not None:
-            research_brief["_usage_log"] = writeup["usage_log"]
-        if writeup.get("total_tokens") is not None:
-            research_brief["_total_tokens"] = writeup["total_tokens"]
-        research_brief_json = json.dumps(
-            research_brief, default=str
-        ) if research_brief else None
-        qc_json = json.dumps(
-            qc_results or writeup.get("quality_checks"), default=str
-        ) if (qc_results or writeup.get("quality_checks")) else None
-        accuracy_json = json.dumps(
-            writeup.get("accuracy_check"), default=str
-        ) if writeup.get("accuracy_check") else None
-        rejection_json = json.dumps(
-            writeup.get("rejection_history") or [], default=str
-        ) if (writeup.get("rejection_history") or []) else None
-
-        status = self._derive_status(qc_results)
-        is_hist = writeup.get("is_historical", False)
-
-        hist_game_date = None
-        if is_hist:
-            gi = (writeup.get("research_brief", {}) or {}).get("game_info", {})
-            date_str = gi.get("date", "")
-            if date_str:
-                try:
-                    hist_game_date = datetime.fromisoformat(str(date_str))
-                except (ValueError, TypeError):
-                    pass
-
-        version = 1
-        existing = await db.execute(
-            text("SELECT id, version FROM nba.game_writeups WHERE game_id = :gid"),
-            {"gid": game_id},
-        )
-        ex = existing.mappings().one_or_none()
-
-        if ex:
-            version = ex["version"] + 1
-            await db.execute(
-                text("""
-                    UPDATE nba.game_writeups
-                    SET title = :title,
-                        public_content = :pub,
-                        premium_content = :prem,
-                        status = :status,
-                        version = :ver,
-                        is_historical = :hist,
-                        historical_game_date = :hgd,
-                        research_brief = CAST(:rb AS jsonb),
-                        quality_checks = CAST(:qc AS jsonb),
-                        generated_by = :gb,
-                        total_tokens = :tt,
-                        accuracy_check = CAST(:acc AS jsonb),
-                        accuracy_check_tokens = :acc_tokens,
-                        rejection_history = CAST(:rej AS jsonb),
-                        seo_description = :sd,
-                        seo_keywords = :sk,
-                        slug = :slug,
-                        published_at = NOW(),
-                        updated_at = NOW()
-                    WHERE id = :eid
-                """),
-                {
-                    "eid": ex["id"],
-                    "title": writeup.get("title", ""),
-                    "pub": writeup.get("public_content", ""),
-                    "prem": writeup.get("premium_content", ""),
-                    "status": status,
-                    "ver": version,
-                    "hist": is_hist,
-                    "hgd": hist_game_date,
-                    "rb": research_brief_json or "{}",
-                    "qc": qc_json or "[]",
-                    "gb": writeup.get("generated_by") or "deepseek",
-                    "tt": writeup.get("total_tokens") or 0,
-                    "acc": accuracy_json,
-                    "acc_tokens": writeup.get("accuracy_check_tokens"),
-                    "sd": writeup.get("seo_description"),
-                    "sk": writeup.get("seo_keywords"),
-                    "slug": writeup.get("slug"),
-                },
-            )
-            await db.commit()
-            return ex["id"]
-
-        result = await db.execute(
-            text("""
-                INSERT INTO nba.game_writeups
-                    (game_id, title, public_content, premium_content,
-                     status, version, is_historical, historical_game_date,
-                     research_brief, quality_checks, generated_by, total_tokens,
-                     accuracy_check, accuracy_check_tokens,
-                     rejection_history,
-                     seo_description, seo_keywords, slug,
-                     published_at, created_at, updated_at)
-                VALUES
-                    (:gid, :title, :pub, :prem,
-                     :status, :ver, :hist, :hgd,
-                     CAST(:rb AS jsonb), CAST(:qc AS jsonb), :gb, :tt,
-                     CAST(:acc AS jsonb), :acc_tokens,
-                     CAST(:rej AS jsonb),
-                     :sd, :sk, :slug, NOW(), NOW(), NOW())
-                RETURNING id
-            """),
-            {
-                "gid": game_id,
-                "title": writeup.get("title", ""),
-                "pub": writeup.get("public_content", ""),
-                "prem": writeup.get("premium_content", ""),
-                "status": status,
-                "ver": version,
-                "hist": is_hist,
-                "hgd": hist_game_date,
-                "rb": research_brief_json or "{}",
-                "qc": qc_json or "[]",
-                "gb": writeup.get("generated_by") or "deepseek",
-                "tt": writeup.get("total_tokens") or 0,
-                "acc": accuracy_json,
-                "acc_tokens": writeup.get("accuracy_check_tokens"),
-                "rej": rejection_json,
-                "sd": writeup.get("seo_description"),
-                "sk": writeup.get("seo_keywords"),
-                "slug": writeup.get("slug"),
-            },
-        )
-        await db.commit()
-        return result.scalar()
-
-    # ── status derivation ────────────────────────────────────
+    # ── Storage ─────────────────────────────────────────────
+    # store() is inherited from BaseWriteupGenerator (shared across all three
+    # sports; writes to self.schema = 'nba'). No NBA-specific store logic remains.
 
     def _derive_status(self, qc_results: list[dict[str, Any]]) -> str:
         """Write-ups go live immediately — no draft/review workflow."""

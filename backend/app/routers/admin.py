@@ -3132,6 +3132,159 @@ def _pg_conn():
         url = url.replace("+asyncpg", "")
     return psycopg2.connect(url)
 
+
+@router.get("/prediction-stats/{sport}/results")
+async def get_prediction_results_by_date(
+    sport: str,
+    start: str = Query(..., description="Start date (YYYY-MM-DD, inclusive)"),
+    end: str = Query(..., description="End date (YYYY-MM-DD, inclusive)"),
+    admin: User = Depends(get_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return pick results over a date range: win% + units profit per bet
+    type (ATS/Run Line, OU, ML) and profit broken down by EV score.
+
+    Uses the latest prediction per game ({sport}.game_predictions), the same
+    dedup logic as the EV-distribution endpoint, filtered by game date.
+    """
+    from sqlalchemy import text as _sa_text
+    from sqlalchemy.exc import SQLAlchemyError
+    from datetime import datetime, timezone as _tz
+
+    # ---- Resolve sport config (mirrors ev-distribution) ----------------
+    if sport == "nfl":
+        schema, use_ml = "nfl", True
+        conf_ats, conf_ou, conf_ml = "ats_conf_cal", "ou_conf_cal", "ml_conf_cal"
+        rl_col, ou_col, ml_col = "ats_result", "ou_result", "ml_result"
+    elif sport == "nba":
+        schema, use_ml = "nba", True
+        conf_ats, conf_ou, conf_ml = "ats_conf_cal", "ou_conf_cal", "ml_conf_cal"
+        rl_col, ou_col, ml_col = "ats_result", "ou_result", "ml_result"
+    else:
+        schema, use_ml = "mlb", True
+        conf_ats, conf_ou, conf_ml = "rl_conf_cal", "ou_conf_cal", "ml_conf_cal"
+        rl_col, ou_col, ml_col = "run_line_result", "ou_result", "ml_result"
+
+    # Inclusive date range; g.date is tz-aware UTC.
+    try:
+        start_dt = datetime.fromisoformat(start + "T00:00:00").replace(tzinfo=_tz.utc)
+        end_dt = datetime.fromisoformat(end + "T23:59:59").replace(tzinfo=_tz.utc)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date range format")
+
+    try:
+        rows = await db.execute(
+            _sa_text(f"""
+            SELECT
+                gp.{rl_col} AS ats_result, gp.{ou_col} AS ou_result,
+                gp.{ml_col} AS ml_result,
+                gp.ats_profit, gp.ou_profit, gp.ml_profit,
+                gp.{conf_ats} AS rl_conf, gp.{conf_ou} AS ou_conf,
+                gp.{conf_ml} AS ml_conf,
+                gp.ats_odds, gp.ou_odds, gp.ml_odds
+            FROM (
+                SELECT DISTINCT ON (gp_inner.game_id) gp_inner.*
+                FROM {schema}.game_predictions gp_inner
+                ORDER BY gp_inner.game_id, gp_inner.created_at DESC
+            ) gp
+            JOIN {schema}.games g ON g.id = gp.game_id
+            WHERE g.date >= :start AND g.date <= :end
+            """),
+            {"start": start_dt, "end": end_dt},
+        )
+        _rows = list(rows.fetchall())
+    except SQLAlchemyError as exc:
+        raise HTTPException(status_code=500, detail=f"Query failed: {exc}")
+
+    def _stats(attr_result, attr_profit):
+        """Aggregate one bet type from rows. result in (Win, Loss, Push/None)."""
+        wins = losses = pushes = n = 0
+        units = 0.0
+        for r in _rows:
+            res = getattr(r, attr_result)
+            if res is None:
+                continue
+            n += 1
+            prof = getattr(r, attr_profit)
+            units += float(prof) if prof is not None else 0.0
+            if res == "Win":
+                wins += 1
+            elif res == "Loss":
+                losses += 1
+            else:
+                pushes += 1
+        return {
+            "total": n,
+            "wins": wins,
+            "losses": losses,
+            "pushes": pushes,
+            "win_pct": round(100.0 * wins / n, 1) if n else 0.0,
+            "profit": round(units, 2),
+        }
+
+    by_type = {
+        "ats": _stats("ats_result", "ats_profit"),
+        "ou": _stats("ou_result", "ou_profit"),
+        "ml": _stats("ml_result", "ml_profit") if use_ml else {
+            "total": 0, "wins": 0, "losses": 0, "pushes": 0, "win_pct": 0.0, "profit": 0.0,
+        },
+    }
+
+    # ---- Profit by EV score --------------------------------------------
+    # For each pick with a result, approximate EV using the stored confidence
+    # as win probability and the stored odds to derive per-unit value, then
+    # bucket by $5 EV windows so we can chart profit vs EV.
+    def _win_dollar(odds):
+        if not odds:
+            return 100.0
+        o = int(odds)
+        if o == 0:
+            return 100.0
+        return float(o) if o > 0 else 100.0 * 100.0 / abs(o)
+
+    profit_by_ev = {}
+    for r in _rows:
+        for key, attr_conf, attr_odds, attr_profit, attr_res in (
+            ("ats", "rl_conf", "ats_odds", "ats_profit", "ats_result"),
+            ("ou", "ou_conf", "ou_odds", "ou_profit", "ou_result"),
+            ("ml", "ml_conf", "ml_odds", "ml_profit", "ml_result"),
+        ):
+            prof = getattr(r, attr_profit)
+            conf = getattr(r, attr_conf)
+            odds = getattr(r, attr_odds)
+            res = getattr(r, attr_res)
+            if prof is None or conf is None or odds is None:
+                continue
+            ev = (float(conf) * _win_dollar(odds)) - ((1.0 - float(conf)) * 100.0)
+            bucket = int(ev // 5.0) * 5.0
+            entry = profit_by_ev.setdefault(
+                bucket, {"n": 0, "wins": 0, "losses": 0, "profit": 0.0}
+            )
+            entry["n"] += 1
+            entry["profit"] += float(prof)
+            if res == "Win":
+                entry["wins"] += 1
+            elif res == "Loss":
+                entry["losses"] += 1
+
+    profit_by_ev_list = [
+        {
+            "ev": round(b, 0),
+            "n": e["n"],
+            "wins": e["wins"],
+            "losses": e["losses"],
+            "profit": round(e["profit"], 2),
+        }
+        for b, e in sorted(profit_by_ev.items())
+    ]
+
+    return {
+        "range": {"start": start, "end": end},
+        "by_type": by_type,
+        "profit_by_ev": profit_by_ev_list,
+    }
+
+
 class TaskStatusOut(BaseModel):
     id: int
     name: str
