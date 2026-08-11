@@ -299,12 +299,22 @@ SELECT
     -- PRIOR SEASON STATS (for early-season blending)
     -- From: mlb.prior_team_stats
     -- ──────────────────────────────────────────────────────────────────────
-
-
-    -- ──────────────────────────────────────────────────────────────────────
-    -- PITCHER STATS (from pitcher_rolling_stats + PTY info from current game)
-    -- Rolling stats for home starter and away starter
-    -- ──────────────────────────────────────────────────────────────────────
+    pts_h.avg            AS h_prior_avg,
+    pts_h.obp            AS h_prior_obp,
+    pts_h.slg            AS h_prior_slg,
+    pts_h.ops            AS h_prior_ops,
+    pts_h.era            AS h_prior_era,
+    pts_h.whip           AS h_prior_whip,
+    pts_h.rf             AS h_prior_rf,
+    pts_h.rf_home        AS h_prior_rf_home,
+    pts_a.avg            AS a_prior_avg,
+    pts_a.obp            AS a_prior_obp,
+    pts_a.slg            AS a_prior_slg,
+    pts_a.ops            AS a_prior_ops,
+    pts_a.era            AS a_prior_era,
+    pts_a.whip           AS a_prior_whip,
+    pts_a.rf             AS a_prior_rf,
+    pts_a.rf_away        AS a_prior_rf_away,
     prs_h.era_ytd         AS h_p_era_ytd,
     prs_h.whip_ytd        AS h_p_whip_ytd,
     prs_h.k9_ytd          AS h_p_k9_ytd,
@@ -1708,16 +1718,26 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     # ── h_home_rf / a_away_rf (per-game averages from CGS / game count) ──────
     # h_home_rf = home team's avg runs scored when playing at home
     # a_away_rf = away team's avg runs scored when playing on the road
+    # Always a real value: current-season runs/game when the team has played
+    # there; else fall back to PRIOR-SEASON rf_home/rf_away (only the very first
+    # home/away game of the season has no current-season sample). Never 0.
     if "h_cum_runs" in result.columns and "h_home_games" in result.columns:
-        safe_g = result["h_home_games"].fillna(0).replace(0, 1)
-        result["h_home_rf"] = result["h_cum_runs"].fillna(0) / safe_g
+        hg = result["h_home_games"]
+        cur = result["h_cum_runs"] / hg.where(hg.gt(0))
+        # use prior-season home RF whenever current-season home sample is missing
+        if "h_prior_rf_home" in result.columns:
+            cur = cur.fillna(result["h_prior_rf_home"])
+        result["h_home_rf"] = cur
     else:
-        result["h_home_rf"] = 0
+        result["h_home_rf"] = result["h_prior_rf_home"] if "h_prior_rf_home" in result.columns else np.nan
     if "a_cum_runs" in result.columns and "a_away_games" in result.columns:
-        safe_g = result["a_away_games"].fillna(0).replace(0, 1)
-        result["a_away_rf"] = result["a_cum_runs"].fillna(0) / safe_g
+        ag = result["a_away_games"]
+        cur = result["a_cum_runs"] / ag.where(ag.gt(0))
+        if "a_prior_rf_away" in result.columns:
+            cur = cur.fillna(result["a_prior_rf_away"])
+        result["a_away_rf"] = cur
     else:
-        result["a_away_rf"] = 0
+        result["a_away_rf"] = result["a_prior_rf_away"] if "a_prior_rf_away" in result.columns else np.nan
 
     # ── a_team_venue_winpct (comes from SQL subquery, just pass through) ────────
     if "a_team_venue_winpct" not in result.columns:

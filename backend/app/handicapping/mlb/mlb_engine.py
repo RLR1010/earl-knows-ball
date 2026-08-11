@@ -322,6 +322,18 @@ def _impute_feature(row: pd.Series, c: str) -> Optional[float]:
     if c in kbb_l:
         return _nanok(row.get(kbb_l[c]))
 
+    # Team runs-for game (home/away): a truly missing value -> prior-season RF
+    # (never 0 -- a 0 reads as 'no offense'). Prior-season already fills the raw
+    # row for normal cases; this guards the rare fully-missing case.
+    rf_prior = {
+        "h_home_rf": "h_prior_rf_home",
+        "a_away_rf": "a_prior_rf_away",
+        "h_rf": "h_prior_rf",
+        "a_rf": "a_prior_rf",
+    }
+    if c in rf_prior:
+        return _nanok(row.get(rf_prior[c]))
+
     # Weather — use realistic league/season averages, not the old crude 80/50.
     if c in ("temperature", "temp"):
         return 69.0   # league avg MLB temp
