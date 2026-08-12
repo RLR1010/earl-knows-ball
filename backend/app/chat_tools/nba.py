@@ -5,6 +5,7 @@ All raw SQL queries use actual nba schema column names (verified against the DB)
 
 import json
 import logging
+import unicodedata
 from datetime import date, datetime, timedelta, timezone as dt_timezone
 
 from sqlalchemy import select, text
@@ -67,6 +68,27 @@ async def _resolve_props_season(db: AsyncSession) -> int:
         val = r2.scalar_one_or_none()
     cur = await _resolve_season_year(db)
     return int(val or cur)
+
+
+async def _resolve_player_split(db: AsyncSession, player_name: str) -> dict:
+    """Resolve an NBA player by (accent-insensitive) name, mirroring MLB's NFD
+    normalization so "Jose Calderon" -> "José Calderón".
+
+    Returns {'name': ..., 'id': ...} or raises ValueError.
+    """
+    def _norm(s: str) -> str:
+        return unicodedata.normalize("NFD", s).encode("ascii", "ignore").decode().lower()
+    n = _norm(player_name)
+    r = await db.execute(text("SELECT id, name FROM nba.players"))
+    best = None
+    for pid, name in r.all():
+        if _norm(str(name)) == n:
+            return {"name": name, "id": pid}
+        if not best and n in _norm(str(name)):
+            best = {"name": name, "id": pid}
+    if best:
+        return best
+    raise ValueError(f"Player not found: {player_name}")
 
 
 async def _resolve_team_id(db: AsyncSession, name_or_abbr: str) -> int | None:
@@ -210,6 +232,21 @@ TOOL_DEFINITIONS = [
                     "player_name": {"type": "string", "description": "Player full name"},
                     "season_year": {"type": "integer", "description": "Season year (defaults to current)"},
                     "limit": {"type": "integer", "description": "Recent games (default 10, max 20)"},
+                },
+                "required": ["player_name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_player_split_stats",
+            "description": "Get an NBA player's split stats for handicapping: home vs away, vs East vs West, starter vs bench, back-to-back (0 days rest) vs 1+ rest, and monthly averages. Returns career (all-time) and current-season splits with PPG, RPG, APG, SPG, BPG, FG%, 3P%, FT%, TS%, plus-minus.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "player_name": {"type": "string", "description": "Player full name (accent-insensitive, e.g. 'Jose Calderon' or 'Giannis Antetokounmpo')"},
+                    "season_year": {"type": "integer", "description": "Season year (defaults to most recent season)"},
                 },
                 "required": ["player_name"],
             },
@@ -652,6 +689,107 @@ async def _get_player_game_logs(db: AsyncSession, args: dict) -> dict:
 
 
 
+async def _get_player_split_stats(db: AsyncSession, args: dict) -> dict:
+    """Return an NBA player's per-split and career stats for handicapping.
+
+    args:
+        player_name: str (required; accent-insensitive)
+        season_year: int (optional; default = most recent). None/latest only.
+
+    Returns career (season_id NULL) + current-season split rows grouped by
+    split_type for home/away, vs East/West, starter/bench, rest, month.
+    """
+    pname = args.get("player_name")
+    if not pname:
+        return {"error": "player_name is required"}
+    try:
+        player = await _resolve_player_split(db, pname)
+    except ValueError as e:
+        return {"error": str(e)}
+
+    season_year = args.get("season_year")
+    season_id = None
+    if season_year is not None:
+        try:
+            season_id = await _resolve_season_id(db, int(season_year))
+        except ValueError:
+            return {"error": f"No NBA season found for year {season_year}"}
+
+    # Pull career rows + (optionally) the requested season's rows.
+    where = "p.player_id = :pid AND p.season_id IS NULL"
+    params = {"pid": player["id"]}
+    if season_id is not None:
+        where += " OR (p.player_id = :pid AND p.season_id = :sid)"
+        params["sid"] = season_id
+
+    sql = text(f"""
+        SELECT p.split_type, p.split_label, p.season_id,
+               p.games, p.games_started, p.minutes_per_game,
+               p.points_per_game, p.field_goals_pct, p.three_point_pct,
+               p.free_throw_pct, p.rebounds_per_game,
+               p.offensive_rebounds_per_game, p.defensive_rebounds_per_game,
+               p.assists_per_game, p.steals_per_game, p.blocks_per_game,
+               p.turnovers_per_game, p.fouls_per_game, p.plus_minus_per_game,
+               p.true_shooting_pct
+        FROM nba.player_splits p
+        WHERE ({where})
+        ORDER BY p.season_id NULLS FIRST, p.split_type
+    """)
+    r = await db.execute(sql, params)
+
+    career = {}
+    season = {}
+    any_rows = False
+    for row in r.mappings():
+        any_rows = True
+        d = {
+            "label": row.split_label,
+            "games": row.games,
+            "games_started": row.games_started,
+            "minutes_per_game": float(row.minutes_per_game) if row.minutes_per_game is not None else None,
+            "points_per_game": float(row.points_per_game) if row.points_per_game is not None else None,
+            "field_goals_pct": float(row.field_goals_pct) if row.field_goals_pct is not None else None,
+            "three_point_pct": float(row.three_point_pct) if row.three_point_pct is not None else None,
+            "free_throw_pct": float(row.free_throw_pct) if row.free_throw_pct is not None else None,
+            "rebounds_per_game": float(row.rebounds_per_game) if row.rebounds_per_game is not None else None,
+            "offensive_rebounds_per_game": float(row.offensive_rebounds_per_game) if row.offensive_rebounds_per_game is not None else None,
+            "defensive_rebounds_per_game": float(row.defensive_rebounds_per_game) if row.defensive_rebounds_per_game is not None else None,
+            "assists_per_game": float(row.assists_per_game) if row.assists_per_game is not None else None,
+            "steals_per_game": float(row.steals_per_game) if row.steals_per_game is not None else None,
+            "blocks_per_game": float(row.blocks_per_game) if row.blocks_per_game is not None else None,
+            "turnovers_per_game": float(row.turnovers_per_game) if row.turnovers_per_game is not None else None,
+            "fouls_per_game": float(row.fouls_per_game) if row.fouls_per_game is not None else None,
+            "plus_minus_per_game": float(row.plus_minus_per_game) if row.plus_minus_per_game is not None else None,
+            "true_shooting_pct": float(row.true_shooting_pct) if row.true_shooting_pct is not None else None,
+        }
+        if row.season_id is None:
+            career[row.split_type] = d
+        else:
+            season[row.split_type] = d
+
+    if not any_rows:
+        return {"player": player["name"], "message": "No split data found.", "hint": "Run the NBA splits refresh first."}
+
+    result = {"player": player["name"]}
+    if career:
+        result["career"] = {
+            "home": career.get("home"), "away": career.get("away"),
+            "vs_east": career.get("vs_east"), "vs_west": career.get("vs_west"),
+            "starter": career.get("starter"), "bench": career.get("bench"),
+            "rest0": career.get("rest0"), "rest_ge1": career.get("rest_ge1"),
+        }
+    if season_id is not None and season:
+        result["season"] = {
+            "home": season.get("home"), "away": season.get("away"),
+            "vs_east": season.get("vs_east"), "vs_west": season.get("vs_west"),
+            "starter": season.get("starter"), "bench": season.get("bench"),
+            "rest0": season.get("rest0"), "rest_ge1": season.get("rest_ge1"),
+            "months": {k: v for k, v in season.items() if k.startswith("month_")},
+        }
+    return result
+
+
+
 async def _get_game_prediction(db: AsyncSession, args: dict) -> dict:
     gid = args["game_id"]
 
@@ -1029,6 +1167,7 @@ _TOOL_HANDLERS = {
     "get_head_to_head": _get_head_to_head,
     "get_player_stats": _get_player_stats,
     "get_player_game_logs": _get_player_game_logs,
+    "get_player_split_stats": _get_player_split_stats,
     "get_game_prediction": _get_game_prediction,
     "search_articles": _search_articles,
     "get_team_schedule": _get_team_schedule,
