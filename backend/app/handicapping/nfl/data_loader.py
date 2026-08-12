@@ -914,6 +914,10 @@ TEAM_STATS_OUTPUT_COLUMNS: set[str] = {
     "home_season_ats_pct", "away_season_ats_pct",
     "home_season_wins", "away_season_wins",
     "home_weighted_margin_r5", "away_weighted_margin_r5",
+    "home_cold_ppg", "away_cold_ppg", "home_cold_ypg", "away_cold_ypg",
+    "home_cold_win_pct", "away_cold_win_pct",
+    "home_precip_ppg", "away_precip_ppg", "home_precip_ypg", "away_precip_ypg",
+    "home_precip_win_pct", "away_precip_win_pct",
 }
 
 
@@ -1282,10 +1286,19 @@ class NFLDataLoader:
                     t.def_rushing_rank,
                     t.off_passing_rank,
                     t.def_passing_rating_rank,
-                    t.feeds_into_game_id
+                    t.feeds_into_game_id,
+                    -- Team bad-weather situational stats (leak-free, prior games)
+                    tbw.cold_ppg       AS cold_ppg,
+                    tbw.cold_ypg       AS cold_ypg,
+                    tbw.cold_win_pct   AS cold_win_pct,
+                    tbw.precip_ppg     AS precip_ppg,
+                    tbw.precip_ypg     AS precip_ypg,
+                    tbw.precip_win_pct AS precip_win_pct
                 FROM nfl.team_rolling_stats t
                 LEFT JOIN nfl.games g ON t.game_id = g.id
                 LEFT JOIN nfl.teams ht ON g.home_team_id = ht.id
+                LEFT JOIN nfl.team_badweather_stats tbw
+                    ON tbw.feeds_into_game_id = t.game_id AND tbw.team_abbr = t.team_abbr
                 LEFT JOIN nfl.teams at ON g.away_team_id = at.id
                 WHERE t.game_type = %(gt)s
                 ORDER BY t.season, t.week, t.team_abbr
@@ -1500,7 +1513,16 @@ class NFLDataLoader:
                     CASE WHEN a_roll_prev.games_5 > 0
                         THEN GREATEST(0.0, a_roll_prev.rush_yds_5 / a_roll_prev.games_5)
                         ELSE 0 END               AS away_qb_rush_ypg_5_prev,
-                    a_roll_prev.rush_att_5       AS away_qb_rush_att_5_prev
+                    a_roll_prev.rush_att_5       AS away_qb_rush_att_5_prev,
+                    -- Home/away QB bad-weather passer rating (leak-free, prior starts only)
+                    h_qbw.cold_passer_rating     AS home_qb_cold_passer_rating,
+                    h_qbw.precip_passer_rating   AS home_qb_precip_passer_rating,
+                    h_qbw.cold_starts            AS home_qb_cold_starts,
+                    h_qbw.precip_starts          AS home_qb_precip_starts,
+                    a_qbw.cold_passer_rating     AS away_qb_cold_passer_rating,
+                    a_qbw.precip_passer_rating   AS away_qb_precip_passer_rating,
+                    a_qbw.cold_starts            AS away_qb_cold_starts,
+                    a_qbw.precip_starts          AS away_qb_precip_starts
                 FROM nfl.games g
                 JOIN nfl.seasons s ON s.id = g.season_id
                 -- Home starter + their pre-game stats
@@ -1542,6 +1564,10 @@ class NFLDataLoader:
                     ORDER BY qr.game_date DESC
                     LIMIT 1
                 ) h_roll_prev ON true
+                -- Home QB bad-weather passer rating (this game's row holds prior-starts rating)
+                LEFT JOIN nfl.qb_badweather_stats h_qbw
+                    ON h_qbw.player_id = h_st.player_id
+                   AND h_qbw.feeds_into_game_id = g.id
                 -- Away starter + their pre-game stats
                 LEFT JOIN projected_starter a_st
                     ON a_st.game_id = g.id AND a_st.team_id = g.away_team_id
@@ -1580,6 +1606,10 @@ class NFLDataLoader:
                     ORDER BY qr.game_date DESC
                     LIMIT 1
                 ) a_roll_prev ON true
+                -- Away QB bad-weather passer rating
+                LEFT JOIN nfl.qb_badweather_stats a_qbw
+                    ON a_qbw.player_id = a_st.player_id
+                   AND a_qbw.feeds_into_game_id = g.id
                 ORDER BY g.date
             """
             with self.engine.connect() as conn:
@@ -2330,6 +2360,12 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
             "off_scoring_rank": "home_off_scoring_rank",
             "off_rushing_rank": "home_off_rushing_rank",
             "off_passing_rank": "home_off_passing_rank",
+            "cold_ppg": "home_cold_ppg",
+            "cold_ypg": "home_cold_ypg",
+            "cold_win_pct": "home_cold_win_pct",
+            "precip_ppg": "home_precip_ppg",
+            "precip_ypg": "home_precip_ypg",
+            "precip_win_pct": "home_precip_win_pct",
         })
         _ho_cols = [season_col, "feeds_into_game_id", "home_abbr",
                     "home_off_ypg", "home_ypp", "home_pass_ypg",
@@ -2344,7 +2380,9 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
                     "home_rw_off_ppg", "home_rw_off_ypg",
                     "home_adj_off_ppg", "home_adj_off_ypg",
                     "home_off_yardage_rank", "home_off_scoring_rank",
-                    "home_off_rushing_rank", "home_off_passing_rank"]
+                    "home_off_rushing_rank", "home_off_passing_rank",
+                    "home_cold_ppg", "home_cold_ypg", "home_cold_win_pct",
+                    "home_precip_ppg", "home_precip_ypg", "home_precip_win_pct"]
         _ho_cols = [c for c in _ho_cols if c in home_off.columns]
         df = df.merge(
             home_off[_ho_cols],
@@ -2384,6 +2422,12 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
             "off_scoring_rank": "away_off_scoring_rank",
             "off_rushing_rank": "away_off_rushing_rank",
             "off_passing_rank": "away_off_passing_rank",
+            "cold_ppg": "away_cold_ppg",
+            "cold_ypg": "away_cold_ypg",
+            "cold_win_pct": "away_cold_win_pct",
+            "precip_ppg": "away_precip_ppg",
+            "precip_ypg": "away_precip_ypg",
+            "precip_win_pct": "away_precip_win_pct",
         })
         _ao_cols = [season_col, "feeds_into_game_id", "away_abbr",
                     "away_off_ypg", "away_ypp", "away_pass_ypg",
@@ -2398,7 +2442,9 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
                     "away_rw_off_ppg", "away_rw_off_ypg",
                     "away_adj_off_ppg", "away_adj_off_ypg",
                     "away_off_yardage_rank", "away_off_scoring_rank",
-                    "away_off_rushing_rank", "away_off_passing_rank"]
+                    "away_off_rushing_rank", "away_off_passing_rank",
+                    "away_cold_ppg", "away_cold_ypg", "away_cold_win_pct",
+                    "away_precip_ppg", "away_precip_ypg", "away_precip_win_pct"]
         _ao_cols = [c for c in _ao_cols if c in away_off.columns]
         df = df.merge(
             away_off[_ao_cols],

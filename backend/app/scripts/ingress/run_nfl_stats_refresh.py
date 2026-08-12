@@ -191,6 +191,26 @@ async def run(started_at=None, game_type: str = "REG"):
         logger.error(f"  QB rolling stats failed: {e}")
         step_failures.append(f"qb_rolling_stats: {e}")
 
+    # Step 8: team bad-weather situational stats (leak-free, prior games)
+    logger.info("[Step 8] Refreshing nfl.team_badweather_stats...")
+    try:
+        from app.handicapping.nfl.populate_team_badweather_stats import run as run_team_bad
+        tb_res = await run_in_thread(run_team_bad)
+        logger.info(f"  team_badweather_stats: {tb_res}")
+    except Exception as e:
+        logger.error(f"  team_badweather_stats failed: {e}")
+        step_failures.append(f"team_badweather_stats: {e}")
+
+    # Step 9: QB bad-weather passer rating (leak-free, prior starts)
+    logger.info("[Step 9] Refreshing nfl.qb_badweather_stats...")
+    try:
+        from app.handicapping.nfl.populate_qb_badweather_stats import run as run_qb_bad
+        qb_bad_res = await run_in_thread(run_qb_bad)
+        logger.info(f"  qb_badweather_stats: {qb_bad_res}")
+    except Exception as e:
+        logger.error(f"  qb_badweather_stats failed: {e}")
+        step_failures.append(f"qb_badweather_stats: {e}")
+
     # Report the REAL outcome to task_runs
     if step_failures:
         joined = "; ".join(step_failures)
