@@ -47,7 +47,7 @@ def _rows_for(conn):
         SELECT q.player_id, q.game_id, q.season, q.game_type, q.week,
                q.game_date, q.team_abbr, q.starter_flag,
                q.pass_attempts, q.pass_completions, q.pass_yards, q.pass_tds, q.pass_int,
-               g.temperature, g.weather_condition
+               g.temperature, g.weather_condition, g.roof_type
         FROM nfl.qb_cumulative_stats q
         JOIN nfl.games g ON g.id = q.game_id
         WHERE g.status = 'FINAL'
@@ -104,6 +104,14 @@ def run(conn=None, min_starts: int = 1) -> dict:
         # Per QB: list of starts, sorted by date, tagged cold/precip + your own passing
         qb_games: dict[int, list[dict]] = {}
         for r in rows:
+            # Dome games are always warm + dry (climate-controlled, no weather).
+            is_dome = (r.get("roof_type") == "dome")
+            if is_dome:
+                cold, warm, precip = False, True, False
+            else:
+                cold = (r["temperature"] is not None and r["temperature"] < COLD_TEMP)
+                warm = (r["temperature"] is not None and r["temperature"] >= COLD_TEMP)
+                precip = _precip(r["weather_condition"])
             qb_games.setdefault(r["player_id"], []).append(
                 {
                     "date": r["game_date"],
@@ -112,9 +120,9 @@ def run(conn=None, min_starts: int = 1) -> dict:
                     "yds": r["pass_yards"] or 0,
                     "td": r["pass_tds"] or 0,
                     "intc": r["pass_int"] or 0,
-                    "cold": (r["temperature"] is not None and r["temperature"] < COLD_TEMP),
-                    "warm": (r["temperature"] is not None and r["temperature"] >= COLD_TEMP),
-                    "precip": _precip(r["weather_condition"]),
+                    "cold": cold,
+                    "warm": warm,
+                    "precip": precip,
                     "starter": bool(r["starter_flag"]),
                 }
             )

@@ -24,3 +24,6 @@ backend/app/scrapers/storage_state.json
 *.bak
 compare_params.py
 *.bak*
+
+# Local DB backups (never commit — large data dumps)
+backups/

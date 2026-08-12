@@ -41,7 +41,7 @@ def _rows_for(conn):
         WITH per_game AS (
             SELECT
                 c.game_id, c.team_abbr, c.season, c.season_type AS game_type, c.week,
-                g.date AS game_date, g.temperature, g.weather_condition,
+                g.date AS game_date, g.temperature, g.weather_condition, g.roof_type,
                 g.home_score, g.away_score,
                 (ht.abbreviation = c.team_abbr) AS is_home,
                 c.off_pts - COALESCE(LAG(c.off_pts) OVER w, 0) AS off_pts_pg,
@@ -120,14 +120,23 @@ def run(conn=None) -> dict:
         # Index per team: list of game dicts
         team_games: dict[str, list[dict]] = {}
         for r in rows:
+            # Dome games are always warm + dry (climate-controlled, no weather).
+            # Ignore any bogus stored temperature/weather for indoor games.
+            is_dome = (r.get("roof_type") == "dome")
+            if is_dome:
+                cold, warm, precip = False, True, False
+            else:
+                cold = (r["temperature"] is not None and r["temperature"] < COLD_TEMP)
+                warm = (r["temperature"] is not None and r["temperature"] >= COLD_TEMP)
+                precip = _precip(r["weather_condition"])
             team_games.setdefault(r["team_abbr"], []).append(
                 {
                     "date": r["game_date"],
                     "pts": r["off_pts_pg"] or 0,
                     "yds": r["off_yds_pg"] or 0,
-                    "cold": (r["temperature"] is not None and r["temperature"] < COLD_TEMP),
-                    "warm": (r["temperature"] is not None and r["temperature"] >= COLD_TEMP),
-                    "precip": _precip(r["weather_condition"]),
+                    "cold": cold,
+                    "warm": warm,
+                    "precip": precip,
                     "win": _win(r),
                 }
             )
