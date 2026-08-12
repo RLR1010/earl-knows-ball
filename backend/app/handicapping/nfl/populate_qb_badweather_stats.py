@@ -57,11 +57,11 @@ def _rows_for(conn):
     return conn.execute(sql).mappings().all()
 
 
-def _build_row(r, cold, precip):
+def _build_row(r, cold, warm, precip):
     def _rate(games):
         if not games:
             return None, None
-        # aggregate raw passing counts across cold/precip games, then one rating
+        # aggregate raw passing counts across games, then one rating
         att = sum(g["att"] for g in games)
         comp = sum(g["comp"] for g in games)
         yds = sum(g["yds"] for g in games)
@@ -70,6 +70,7 @@ def _build_row(r, cold, precip):
         return len(games), passer_rating(att, comp, yds, td, intc)
 
     c_starts, c_rate = _rate(cold)
+    w_starts, w_rate = _rate(warm)
     p_starts, p_rate = _rate(precip)
     return {
         "player_id": r["player_id"],
@@ -82,6 +83,8 @@ def _build_row(r, cold, precip):
         "feeds_into_game_id": r["game_id"],
         "cold_starts": c_starts,
         "cold_passer_rating": c_rate,
+        "warm_starts": w_starts,
+        "warm_passer_rating": w_rate,
         "precip_starts": p_starts,
         "precip_passer_rating": p_rate,
     }
@@ -107,6 +110,7 @@ def run(conn=None, min_starts: int = 1) -> dict:
                     "td": r["pass_tds"] or 0,
                     "intc": r["pass_int"] or 0,
                     "cold": (r["temperature"] is not None and r["temperature"] < COLD_TEMP),
+                    "warm": (r["temperature"] is not None and r["temperature"] >= COLD_TEMP),
                     "precip": _precip(r["weather_condition"]),
                     "starter": bool(r["starter_flag"]),
                 }
@@ -124,8 +128,9 @@ def run(conn=None, min_starts: int = 1) -> dict:
                 and g["date"] < target_date
             ]
             cold = [g for g in prior if g["cold"]]
+            warm = [g for g in prior if g["warm"]]
             precip = [g for g in prior if g["precip"]]
-            insert_rows.append(_build_row(r, cold, precip))
+            insert_rows.append(_build_row(r, cold, warm, precip))
 
         if insert_rows:
             game_ids = sorted({r["game_id"] for r in rows})

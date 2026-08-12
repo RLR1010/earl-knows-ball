@@ -1514,6 +1514,10 @@ class NFLDataLoader:
                         THEN GREATEST(0.0, a_roll_prev.rush_yds_5 / a_roll_prev.games_5)
                         ELSE 0 END               AS away_qb_rush_ypg_5_prev,
                     a_roll_prev.rush_att_5       AS away_qb_rush_att_5_prev,
+                    -- Derived weather-aware QB rating: cold rating if game is cold, else warm rating
+                    CASE WHEN g.temperature < 40
+                        THEN h_qbw.cold_passer_rating
+                        ELSE h_qbw.warm_passer_rating END AS home_qb_cold_warm_passer_rating,
                     -- Home/away QB bad-weather passer rating (leak-free, prior starts only)
                     h_qbw.cold_passer_rating     AS home_qb_cold_passer_rating,
                     h_qbw.precip_passer_rating   AS home_qb_precip_passer_rating,
@@ -1522,7 +1526,11 @@ class NFLDataLoader:
                     a_qbw.cold_passer_rating     AS away_qb_cold_passer_rating,
                     a_qbw.precip_passer_rating   AS away_qb_precip_passer_rating,
                     a_qbw.cold_starts            AS away_qb_cold_starts,
-                    a_qbw.precip_starts          AS away_qb_precip_starts
+                    a_qbw.precip_starts          AS away_qb_precip_starts,
+                    -- Away weather-aware QB rating (cold if game cold, else warm)
+                    CASE WHEN g.temperature < 40
+                        THEN a_qbw.cold_passer_rating
+                        ELSE a_qbw.warm_passer_rating END AS away_qb_cold_warm_passer_rating
                 FROM nfl.games g
                 JOIN nfl.seasons s ON s.id = g.season_id
                 -- Home starter + their pre-game stats

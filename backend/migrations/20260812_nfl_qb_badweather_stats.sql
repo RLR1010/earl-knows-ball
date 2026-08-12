@@ -22,6 +22,10 @@ CREATE TABLE IF NOT EXISTS nfl.qb_badweather_stats (
     cold_starts      INTEGER,
     cold_passer_rating REAL,   -- NFL passer rating in cold games
 
+    -- WARM/GOD (>=40F, i.e. not cold) prior starts
+    warm_starts      INTEGER,
+    warm_passer_rating REAL,   -- NFL passer rating in non-cold games
+
     -- PRECIPITATION (rain/snow/drizzle/thunder/shower) prior starts
     precip_starts    INTEGER,
     precip_passer_rating REAL,
