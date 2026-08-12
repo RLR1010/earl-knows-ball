@@ -263,11 +263,22 @@ async def train_model(
                 if "closing_ou" in df_test_clean.columns:
                     closing_ou_values = df_test_clean["closing_ou"].values
                     for i in range(ou_total):
-                        actual_over = y_test[i] > closing_ou_values[i]
-                        pred_over = pred_totals[i] > closing_ou_values[i]
-                        if abs(y_test[i] - closing_ou_values[i]) < 0.05:
+                        line = closing_ou_values[i]
+                        total = y_test[i]
+                        # A real over/under push requires the line to be a WHOLE
+                        # number (e.g. 45.0) AND the (integer) final total to land
+                        # EXACTLY on it. Final scores are always integers and the
+                        # total is home+away, so it can never be a fraction; a .5
+                        # line (45.5) can therefore never push. The <0.05 fudge
+                        # this replaces was wrong logic that could only hold by
+                        # accident. Determine over/under only for non-push lines.
+                        is_push = (line % 1 == 0) and (int(total) == int(line))
+                        if is_push:
                             ou_push += 1
-                        elif pred_over == actual_over:
+                            continue
+                        actual_over = total > line
+                        pred_over = pred_totals[i] > line
+                        if pred_over == actual_over:
                             ou_correct += 1
 
         ou_incorrect = ou_total - ou_correct - ou_push
