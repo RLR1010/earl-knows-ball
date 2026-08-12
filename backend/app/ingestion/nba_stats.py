@@ -56,6 +56,48 @@ YEARS = list(range(2006, 2027))
 BBREF_HEADERS = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"}
 
 
+def _norm_team_key(s: str) -> str:
+    """Normalize a team identifier for alias lookups: lowercase, strip non-alnum."""
+    if not s:
+        return ""
+    return "".join(ch for ch in s.lower() if ch.isalnum())
+
+
+# Alias map: every form a team id may appear as (full name, 2-letter, 4-letter)
+# -> canonical NBA_TEAMS abbreviation. Built from the NBA_TEAMS list plus the
+# known BBRef/NBA-com short forms. This guarantees game-log/boxscore/stat
+# ingestion never creates or matches a non-canonical team row.
+_TEAM_ALIASES = {
+    # canonical 3-letter
+    **{_norm_team_key(abbr): abbr for _, abbr, _, _, _ in NBA_TEAMS},
+    # full names
+    **{_norm_team_key(name): abbr for _, abbr, name, _, _ in NBA_TEAMS},
+}
+# BBRef/NBA-com 2- and 4-letter short forms (from the `tfoot`/schedule links)
+_TEAM_ALIASES.update({
+    "goldenstate": "GSW", "goldenstatewarriors": "GSW", "gs": "GSW",
+    "newyork": "NYK", "newyorkknicks": "NYK", "ny": "NYK",
+    "sanantonio": "SAS", "sanantoniospurs": "SAS", "sa": "SAS",
+    "neworleans": "NOP", "neworleansepelicans": "NOP", "no": "NOP",
+    "utah": "UTA", "utahjazz": "UTA", "utah": "UTA",
+    "washington": "WAS", "washingtonwizards": "WAS", "wsh": "WAS",
+    "phoenix": "PHX", "phoenixsuns": "PHX",
+    "brooklyn": "BKN", "brooklynnets": "BKN",
+    "laclippers": "LAC", "lalakers": "LAL", "la": "LAL",
+})
+
+
+def _resolve_team_abbr(key: str) -> str | None:
+    """Return canonical NBA_TEAMS abbreviation for any alias form, or None."""
+    nk = _norm_team_key(key)
+    return _TEAM_ALIASES.get(nk) if nk else None
+
+
+# canonical abbreviation -> NBA.com aid (team_map is keyed by aid)
+_AID_BY_ABBR = {abbr: aid for aid, abbr, _, _, _ in NBA_TEAMS}
+
+
+
 def season_str(y: int) -> str:
     return f"{y}-{str(y+1)[-2:]}"
 
@@ -309,11 +351,11 @@ async def load_game_logs(db: AsyncSession, team_map: dict[int, int], season_map:
             visitor_abbr = visitor_a.text.strip() if visitor_a else visitor_el.text.strip()
             home_abbr = home_a.text.strip() if home_a else home_el.text.strip()
 
-            visitor_id = None
-            home_id = None
-            for aid, abbr, _, _, _ in NBA_TEAMS:
-                if abbr == visitor_abbr: visitor_id = team_map[aid]
-                if abbr == home_abbr: home_id = team_map[aid]
+            visitor_abbr = _resolve_team_abbr(visitor_abbr)
+            home_abbr = _resolve_team_abbr(home_abbr)
+
+            visitor_id = team_map.get(_AID_BY_ABBR.get(visitor_abbr))
+            home_id = team_map.get(_AID_BY_ABBR.get(home_abbr))
             if not visitor_id or not home_id:
                 continue
 
