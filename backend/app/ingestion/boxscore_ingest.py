@@ -279,7 +279,38 @@ async def process_game(conn, game: dict) -> int:
                             $12, $13, $14, $15, $16, $17, $18, $19, $20, $21,
                             $22, $23, $24, $25, $26, $27, $28, $29, $30,
                             $31, $32, $33, $34)
-                    ON CONFLICT (game_id, player_id) DO NOTHING
+                    ON CONFLICT (game_id, player_id) DO UPDATE SET
+                        plate_appearances = EXCLUDED.plate_appearances,
+                        at_bats = EXCLUDED.at_bats,
+                        runs = EXCLUDED.runs,
+                        hits = EXCLUDED.hits,
+                        doubles = EXCLUDED.doubles,
+                        triples = EXCLUDED.triples,
+                        home_runs = EXCLUDED.home_runs,
+                        runs_batted_in = EXCLUDED.runs_batted_in,
+                        base_on_balls = EXCLUDED.base_on_balls,
+                        intentional_walks = EXCLUDED.intentional_walks,
+                        strikeouts = EXCLUDED.strikeouts,
+                        stolen_bases = EXCLUDED.stolen_bases,
+                        caught_stealing = EXCLUDED.caught_stealing,
+                        hit_by_pitch = EXCLUDED.hit_by_pitch,
+                        sacrifice_flies = EXCLUDED.sacrifice_flies,
+                        sacrifice_bunts = EXCLUDED.sacrifice_bunts,
+                        left_on_base = EXCLUDED.left_on_base,
+                        total_bases = EXCLUDED.total_bases,
+                        ground_outs = EXCLUDED.ground_outs,
+                        air_outs = EXCLUDED.air_outs,
+                        fly_outs = EXCLUDED.fly_outs,
+                        line_outs = EXCLUDED.line_outs,
+                        pop_outs = EXCLUDED.pop_outs,
+                        ground_into_double_play = EXCLUDED.ground_into_double_play,
+                        ground_into_triple_play = EXCLUDED.ground_into_triple_play,
+                        catchers_interference = EXCLUDED.catchers_interference,
+                        pickoffs = EXCLUDED.pickoffs,
+                        avg = EXCLUDED.avg,
+                        obp = EXCLUDED.obp,
+                        slg = EXCLUDED.slg,
+                        ops = EXCLUDED.ops
                 """, our_gid, our_pid, side,
                    pa, ab, runs, h, dbl, tri, hr, rbi, bb, ibb, so, sb, cs, hbp, sf, sh, lob, tb,
                    go, ao, fo, lo, po, gidp, gitp, ci, pick,
@@ -404,11 +435,6 @@ async def refresh_boxscores_for_recent_games(conn) -> dict:
         WHERE status = 'FINAL'
           AND date >= CURRENT_DATE - INTERVAL '3 days'
           AND date <= CURRENT_DATE + INTERVAL '1 day'
-          AND (
-              NOT EXISTS (SELECT 1 FROM mlb.batting_game_stats bgs WHERE bgs.game_id = mlb.games.id)
-              OR NOT EXISTS (SELECT 1 FROM mlb.pitcher_game_stats pgs WHERE pgs.game_id = mlb.games.id)
-              OR NOT EXISTS (SELECT 1 FROM mlb.pitcher_game_stats pgs WHERE pgs.game_id = mlb.games.id AND pgs.is_starter = true)
-          )
         ORDER BY date DESC
         LIMIT 50
     """)
