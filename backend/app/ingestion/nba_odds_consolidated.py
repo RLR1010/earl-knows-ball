@@ -289,10 +289,15 @@ def run(game_ids_filter=None):
     # Set status = "final" for all rows
     insert_df["status"] = "final"
 
-    if DROP_AND_REPLACE:
-        logger.info("  Dropping and replacing table contents...")
+    if DROP_AND_REPLACE and not game_ids_filter:
+        logger.info("  Dropping and replacing table contents (full rebuild)...")
         with engine.begin() as conn:
             conn.execute(sa_text("TRUNCATE TABLE nba.betting_lines_consolidated"))
+    elif DROP_AND_REPLACE:
+        # Incremental run (game_ids_filter given): do NOT truncate, or every
+        # 30-min task run would wipe migrated historical lines from
+        # nba.betting_lines_old. Only full rebuilds (no filter) may TRUNCATE.
+        logger.info("  Incremental run — skipping TRUNCATE to preserve historical lines")
 
     # Write in batches to avoid OOM
     batch_size = 500

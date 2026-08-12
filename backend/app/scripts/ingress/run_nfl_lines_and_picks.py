@@ -78,7 +78,10 @@ async def run(api_key: str, db: AsyncSession):
         if updated_game_ids:
             try:
                 from app.ingestion.nfl_betting_lines_consolidate import run as consolidate_nfl
-                await _run_in_thread(consolidate_nfl, set(updated_game_ids))
+                # Pass game_ids as game_ids_filter (keyword) — NEVER positionally, or it
+                # lands on rebuild_full and TRUNCATES + rebuilds from the live table,
+                # wiping migrated historical lines (2016-2020).
+                await _run_in_thread(consolidate_nfl, game_ids_filter=set(updated_game_ids))
                 results["consolidated"] = {"status": "ok", "games": len(updated_game_ids)}
             except Exception as exc:
                 logger.error(f"Consolidation failed: {exc}")
