@@ -169,8 +169,15 @@ class MLBWriteupGenerator(BaseWriteupGenerator):
                         }
                 except Exception as e:  # noqa: BLE001
                     logger.warning("MLB props: recent stats failed for %s: %s", name, e)
+                try:
+                    splits = await mlb_props.fetch_player_split_stats(db, player_id)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("MLB props: split stats failed for %s: %s", name, e)
+                    splits = {}
+            else:
+                splits = {}
             player_context.append(
-                {"name": name, "season": season, "recent": recent, "team_id": team_id}
+                {"name": name, "season": season, "recent": recent, "splits": splits, "team_id": team_id}
             )
 
         system = shared.build_system_prompt()

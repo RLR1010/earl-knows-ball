@@ -22,7 +22,7 @@ __all__ = [
     # MLB
     "MLBTeam", "MLBSeason", "MLBGames", "GameStatus", "MLBPlayer",
     "MLBBattingStats", "MLBPitchingStats", "MLBArticle", "MLBBettingLine",
-    "MLBGamePrediction", "MLBLineup",
+    "MLBGamePrediction", "MLBLineup", "MLBPlayerSplit",
 ]
 
 # Note: articles table has embedded_at TIMESTAMP column

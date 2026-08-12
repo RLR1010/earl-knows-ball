@@ -213,15 +213,53 @@ def build_system_prompt() -> str:
     )
 
 
+def _format_splits_for_prompt(splits: dict) -> str:
+    """Format split stats dict -> concise prompt line. Key format: <split>.<scope>.
+
+    Example: ``vs_lhp.career: PA 280 .296/.351/.508 12 HR``
+    """
+    parts = []
+    scope_label = {"season": "S", "career": "C"}
+    for key, v in splits.items():
+        if not isinstance(v, dict):
+            continue
+        try:
+            split_type, scope = key.split(".")
+        except ValueError:
+            continue
+        label = {
+            "vs_lhp": "vs LHP", "vs_rhp": "vs RHP", "home": "Home",
+            "away": "Away", "day": "Day", "night": "Night",
+            "grass": "Grass", "turf": "Turf",
+        }.get(split_type, split_type.replace("city_", "Home:").replace("-", " ").title())
+        tag = scope_label.get(scope, scope)
+        pa = v.get("pa")
+        avg, obp, slg, ops = v.get("avg"), v.get("obp"), v.get("slg"), v.get("ops")
+        hr = v.get("hr")
+        if pa is None:
+            continue
+        parts.append(
+            f"{label}[{tag}] PA {pa}"
+            + (f" {avg:.3f}/{obp:.3f}/{slg:.3f}" if avg is not None and obp is not None and slg is not None else "")
+            + (f" OPS {ops:.3f}" if ops is not None else "")
+            + (f" {hr} HR" if hr else "")
+        )
+    return " | ".join(parts)
+
+
 def build_user_prompt(cfg: dict, props: list[dict], player_context: list[dict], research_brief: dict) -> str:
     ctx_lines = []
     for ent in player_context:
         ctx_lines.append(f"Player: {ent['name']}")
-        if ent["season"]:
+        if ent.get("season"):
             ctx_lines.append(f"  Season: {ent['season']}")
-        if ent["recent"]:
+        if ent.get("recent"):
             ctx_lines.append(f"  Recent (last {PROP_RECENT_GAMES} games): {ent['recent']}")
-        if not ent["season"] and not ent["recent"]:
+        if ent.get("splits"):
+            split_lines = _format_splits_for_prompt(ent["splits"])
+            if split_lines:
+                ctx_lines.append("  Splits (platoon + siting): " + split_lines)
+        if not ent.get("season") and not ent.get("recent") and not ent.get("splits"):
             ctx_lines.append("  (no detailed stats available)")
 
     return (

@@ -84,12 +84,51 @@ async def fetch_player_recent_stats(db, player_id: int) -> list[dict] | None:
     return [dict(r) for r in rows.mappings().all()]
 
 
+async def fetch_player_split_stats(db, player_id: int) -> dict:
+    """Return a batter's split stats (L/R, home/away, day/night, city) from
+    ``mlb.player_splits`` for prop-bet context.
+
+    Returns a dict keyed by split_type with the current-season and career
+    AVG/OBP/SLG/OPS + PA/HR, suitable for citing in a prop article.
+    """
+    rows = (
+        await db.execute(
+            text(
+                """
+                SELECT split_type, season_id, plate_appearances, avg, obp, slg, ops,
+                       home_runs, runs_batted_in
+                FROM mlb.player_splits
+                WHERE player_id = :pid
+                ORDER BY split_type, season_id NULLS FIRST
+                """
+            ),
+            {"pid": player_id},
+        )
+    ).mappings().all()
+    if not rows:
+        return {}
+    out: dict[str, dict] = {}
+    for r in rows:
+        scope = "career" if r["season_id"] is None else "season"
+        st = r["split_type"]
+        key = f"{st}.{scope}"
+        out[key] = {
+            "pa": r["plate_appearances"],
+            "avg": r["avg"],
+            "obp": r["obp"],
+            "slg": r["slg"],
+            "ops": r["ops"],
+            "hr": r["home_runs"],
+            "rbi": r["runs_batted_in"],
+        }
+    return out
+
+
 async def resolve_player_id(db, player_name: str, team_id: int | None) -> int | None:
     """Resolve a player's id from ``mlb.players`` by (accent-insensitive) name + team."""
     norm = _norm(player_name)
     if not norm:
         return None
-
     if team_id is not None:
         row = (
             await db.execute(

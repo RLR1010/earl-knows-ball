@@ -5,8 +5,10 @@ Exports:
     execute_mlb_tool: Async dispatcher that runs the right DB query.
 """
 
+import difflib
 import json
 import logging
+import unicodedata
 from datetime import date, datetime, timedelta, timezone as dt_timezone
 
 from sqlalchemy import select, text
@@ -18,6 +20,7 @@ from app.models.mlb import (
     MLBSeason,
     MLBGamePrediction,
     MLBTeamSplit,
+    MLBPlayerSplit,
 )
 
 logger = logging.getLogger(__name__)
@@ -198,6 +201,57 @@ TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
+            "name": "get_player_split_stats",
+            "description": "Get a batter's split statistics for prop-bet research and platoon analysis: vs left-handed pitchers, vs right-handed pitchers, home/away, day/night, and per-city (venue) splits. Returns current-season and career numbers (AVG/OBP/SLG/OPS, PA, HR, RBI, BB, K). Use this to answer questions like 'how does this hitter perform vs LHP' or 'what are his numbers at this ballpark city'.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "player_name": {
+                        "type": "string",
+                        "description": "Player full name (e.g., 'Jose Ramirez', 'Aaron Judge')",
+                    },
+                    "split_type": {
+                        "type": "string",
+                        "enum": ["vs_lhp", "vs_rhp", "home", "away", "day", "night", "grass", "turf", "all", "city"],
+                        "description": "Which split to return. 'vs_lhp'/'vs_rhp' for platoon, 'home'/'away', 'day'/'night', 'grass'/'turf', 'city' for all city splits, or 'all' for everything (default).",
+                    },
+                    "season": {
+                        "type": "integer",
+                        "description": "Optional MLB season year (e.g. 2025). Omit for career + current season.",
+                    },
+                },
+                "required": ["player_name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_players",
+            "description": "Fuzzy MLB player lookup: returns a ranked list of players matching a name even with typos or misspellings, so you can disambiguate (e.g. 'Soto' -> Juan Soto (NYY) vs Giovanni Soto). Use this when you're unsure of the exact spelling or want alternatives, then call get_player_stats / get_player_split_stats with player_name.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "player_name": {
+                        "type": "string",
+                        "description": "Name to search (typos allowed; accent-insensitive). e.g. 'Jose Ramres' or 'Judge'.",
+                    },
+                    "team": {
+                        "type": "string",
+                        "description": "Optional team abbreviation (e.g. 'NYY', 'LAD') to boost players on that team (resolves shared names like Soto/Judge).",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max candidates to return (default 8).",
+                    },
+                },
+                "required": ["player_name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "get_game_prediction",
             "description": "Get Earl's model prediction for a specific game: ATS, O/U, and moneyline probabilities.",
             "parameters": {
@@ -285,6 +339,35 @@ TOOL_DEFINITIONS = [
                     "team_b": {"type": "string", "description": "Second team name/abbreviation/city"},
                 },
                 "required": ["team_a", "team_b"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_bullpen_stats",
+            "description": "Get a team's bullpen quality: season ERA/WHIP/FIP/K/9, saves & blown saves, and L/R batting splits against the pen (opponents' AVG/OPS L vs R). Helps assess late-game/relief risk for fades and over/under.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "team_name": {"type": "string", "description": "Team name, abbreviation, or city"},
+                },
+                "required": ["team_name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_player_recent_form",
+            "description": "Get a hitter's recent form over the trailing N days (default 30): games, PA, AVG/OBP/SLG/OPS, HR, RBI, runs, K%, and whether they're hot or cold. Aggregates from game logs to answer 'who's hot right now?'.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "player_name": {"type": "string", "description": "Player name (accent/typo tolerant)"},
+                    "days": {"type": "integer", "description": "Trailing window in days (default 30, max 90)"},
+                },
+                "required": ["player_name"],
             },
         },
     },
@@ -815,6 +898,54 @@ async def _get_game_info(db: AsyncSession, args: dict) -> dict:
     def _f(v):
         return float(v) if v is not None else None
 
+    # ── LIVE LINE MOVEMENT (from betting_lines: opening vs current, per book) ──
+    # Opening = is_opening=true row; Current = latest is_opening=false row per book.
+    bl = (await db.execute(text("""
+        SELECT sportsbook, is_opening, spread, over_under,
+               home_moneyline, away_moneyline, recorded_at
+        FROM mlb.betting_lines
+        WHERE game_id = :gid AND is_opening IS NOT NULL
+        ORDER BY sportsbook, recorded_at
+    """), {"gid": game_id})).fetchall()
+
+    movement_by_book = {}
+    for b in bl:
+        book = b[0]; is_open = b[1]
+        entry = movement_by_book.setdefault(book, {"opening": None, "current": None})
+        key = "opening" if is_open else "current"
+        if key == "current":
+            # keep the LATEST current row per book (iteration is ordered by recorded_at)
+            entry[key] = {
+                "spread": _f(b[2]), "over_under": _f(b[3]),
+                "home_ml": _f(b[4]), "away_ml": _f(b[5]), "recorded_at": str(b[6]),
+            }
+        elif is_open and entry["opening"] is None:
+            entry["opening"] = {
+                "spread": _f(b[2]), "over_under": _f(b[3]),
+                "home_ml": _f(b[4]), "away_ml": _f(b[5]), "recorded_at": str(b[6]),
+            }
+
+    def _movement(open_val, curr_val):
+        if open_val is None or curr_val is None:
+            return None
+        return round(curr_val - open_val, 2)
+
+    line_movement = {}
+    for book, e in movement_by_book.items():
+        op = e["opening"]; cu = e["current"]
+        line_movement[book] = {
+            "opening_spread": op["spread"] if op else None,
+            "current_spread": cu["spread"] if cu else None,
+            "spread_movement": _movement(op["spread"] if op else None, cu["spread"] if cu else None),
+            "opening_ou": op["over_under"] if op else None,
+            "current_ou": cu["over_under"] if cu else None,
+            "ou_movement": _movement(op["over_under"] if op else None, cu["over_under"] if cu else None),
+            "opening_home_ml": op["home_ml"] if op else None,
+            "current_home_ml": cu["home_ml"] if cu else None,
+            "home_ml_movement": _movement(op["home_ml"] if op else None, cu["home_ml"] if cu else None),
+            "current_recorded_at": cu["recorded_at"] if cu else None,
+        }
+
     return {
         "game_id": row.id,
         "home_team": row.home_team,
@@ -841,6 +972,7 @@ async def _get_game_info(db: AsyncSession, args: dict) -> dict:
             "implied_home_pct": _f(row.closing_home_implied_probability),
             "implied_away_pct": _f(row.closing_away_implied_probability),
         },
+        "line_movement": line_movement,
     }
 
 
@@ -1001,6 +1133,216 @@ async def _get_player_stats(db: AsyncSession, args: dict) -> dict:
             }
 
     return data
+
+
+def _norm_name(s: str) -> str:
+    """Accent- and case-insensitive name key (NFD-stripped lowercase)."""
+    return unicodedata.normalize("NFD", s).encode("ascii", "ignore").decode().lower()
+
+
+async def _search_players(db: AsyncSession, name: str, team_abbr: str = "", limit: int = 8):
+    """Fuzzy player lookup. Returns a ranked list of candidate dicts
+    ``{player_id, name, team, position, bats, score, exact}`` best-first.
+
+    Accent/case-insensitive (NFD) with token-overlap + Levenshtein-style fuzzy
+    (SequenceMatcher) scoring so typos still rank well. Optional ``team_abbr``
+    (e.g. "NYY") boosts players on that team to disambiguate shared names
+    ("Soto" + NYY -> Juan).
+    """
+    q = _norm_name(name)
+    if not q:
+        return []
+    q_tokens = q.split()
+    q_set = set(q_tokens)
+    team_abbr = (team_abbr or "").upper()
+
+    rows = (await db.execute(text(
+        """
+        SELECT p.id, p.name, p.position, p.team_id, p.bats,
+               t.abbreviation AS team_abbr
+        FROM mlb.players p
+        LEFT JOIN mlb.teams t ON t.id = p.team_id
+        """
+    ))).fetchall()
+    if not rows:
+        return []
+
+    results = []
+    for pid, rname, pos, team_id, bats, tabbr in rows:
+        pn = _norm_name(rname or "")
+        ptokens = pn.split()
+        if not ptokens:
+            continue
+        exact = (pn == q)
+        # token overlap
+        overlap = len(q_set & set(ptokens))
+        # Levenshtein-ish similarity on full normalized string
+        ratio = difflib.SequenceMatcher(None, q, pn).ratio()
+        # per-token best match (catches "Judg" vs "Judge")
+        tok_ratio = max(
+            (difflib.SequenceMatcher(None, qt, pt).ratio() for qt in q_tokens for pt in ptokens),
+            default=0.0,
+        )
+        # combined score; team boost strong for shared names
+        team_boost = 0.25 if tabbr and tabbr == team_abbr else 0.0
+        score = overlap + ratio * 1.5 + tok_ratio * 1.0 + team_boost + (2.0 if exact else 0.0)
+        if exact or overlap >= 1 or tok_ratio >= 0.7 or ratio >= 0.55:
+            results.append({
+                "player_id": pid,
+                "name": rname,
+                "team": tabbr,
+                "position": pos,
+                "bats": bats,
+                "score": round(score, 3),
+                "exact": exact,
+            })
+
+    results.sort(key=lambda r: (r["exact"], r["score"]), reverse=True)
+    return results[:limit]
+
+
+async def _resolve_hitter(db: AsyncSession, name: str, team_abbr: str = ""):
+    """Find a single best MLBPlayer by (accent-insensitive, fuzzy) name.
+    Returns the top match or None."""
+    hits = await _search_players(db, name, team_abbr=team_abbr, limit=1)
+    if not hits:
+        return None
+    return await db.get(MLBPlayer, hits[0]["player_id"])
+
+
+async def _team_abbr_of(db: AsyncSession, player) -> str:
+    """Resolve a player's current team abbreviation."""
+    if getattr(player, "team_id", None):
+        row = (await db.execute(
+            text("SELECT abbreviation FROM mlb.teams WHERE id = :tid"), {"tid": player.team_id}
+        )).first()
+        if row:
+            return row[0]
+    return ""
+
+
+async def _get_player_split_stats(db: AsyncSession, args: dict) -> dict:
+    """Return a batter's split stats (L/R, home/away, day/night, grass/turf, city)."""
+    player_name = args.get("player_name", "")
+    split_type = args.get("split_type", "all") or "all"
+    season_year = args.get("season")
+    team_abbr = args.get("team", "") or ""
+
+    player = await _resolve_hitter(db, player_name, team_abbr=team_abbr)
+    if not player:
+        # No confident match -> suggest close candidates so the LLM can retry.
+        suggestions = await _search_players(db, player_name, team_abbr=team_abbr, limit=5)
+        return {
+            "player": player_name,
+            "error": f"Player not found: {player_name}",
+            "suggestions": [
+                {"name": s["name"], "team": s["team"], "position": s["position"], "player_id": s["player_id"]}
+                for s in suggestions
+            ],
+            "help": "No exact match. Use one of the suggested player ids (e.g. via search_players) and retry get_player_split_stats.",
+        }
+
+    # Resolve season scope
+    season_id = None
+    season_label = "career"
+    if season_year:
+        season = (await db.execute(select(MLBSeason).where(MLBSeason.year == season_year))).scalar_one_or_none()
+        if season:
+            season_id = season.id
+            season_label = str(season_year)
+    else:
+        # No explicit season -> provide current-season AND career both.
+        pass
+
+    # Normalize split filter
+    if split_type == "city":
+        like_pat = "city_%"
+        exact = None
+    elif split_type == "all":
+        like_pat = None
+        exact = None
+    else:
+        like_pat = None
+        exact = split_type
+
+    # Query stored splits
+    q = (
+        select(MLBPlayerSplit)
+        .where(MLBPlayerSplit.player_id == player.id)
+        .order_by(MLBPlayerSplit.split_type, MLBPlayerSplit.season_id)
+    )
+    if exact:
+        q = q.where(MLBPlayerSplit.split_type == exact)
+    if like_pat:
+        q = q.where(MLBPlayerSplit.split_type.like(like_pat))
+    rows = (await db.execute(q)).scalars().all()
+
+    if not rows:
+        return {
+            "player": player.name,
+            "note": "No split data stored for this player yet. The mlb-splits refresh job has not populated them.",
+            "splits": [],
+        }
+
+    def fmt(r: MLBPlayerSplit) -> dict:
+        return {
+            "split_type": r.split_type,
+            "label": r.split_label,
+            "season": r.season_id if r.season_id else "career",
+            "games": r.games_played,
+            "plate_appearances": r.plate_appearances,
+            "at_bats": r.at_bats,
+            "hits": r.hits,
+            "home_runs": r.home_runs,
+            "rbi": r.runs_batted_in,
+            "walks": r.base_on_balls,
+            "strikeouts": r.strikeouts,
+            "avg": round(r.avg, 3) if r.avg is not None else None,
+            "obp": round(r.obp, 3) if r.obp is not None else None,
+            "slg": round(r.slg, 3) if r.slg is not None else None,
+            "ops": round(r.ops, 3) if r.ops is not None else None,
+        }
+
+    # Filter: if exact/all and no season year -> split into current-season vs career
+    if season_year:
+        return {"player": player.name, "season": season_label,
+                "splits": [fmt(r) for r in rows if r.season_id == season_id]}
+
+    current_season = await _resolve_current_season(db)
+    current_id = current_season.id if current_season else None
+    current = [r for r in rows if r.season_id == current_id]
+    career = [r for r in rows if r.season_id is None]
+    return {
+        "player": player.name,
+        "current_season": season_label if not current_season else current_season.year,
+        "current_season_splits": [fmt(r) for r in current],
+        "career_splits": [fmt(r) for r in career],
+    }
+
+
+async def _search_players_tool(db: AsyncSession, args: dict) -> dict:
+    """Executor for the fuzzy search_players tool."""
+    player_name = args.get("player_name", "")
+    team = args.get("team", "") or ""
+    limit = args.get("limit") or 8
+    hits = await _search_players(db, player_name, team_abbr=team, limit=int(limit))
+    if not hits:
+        return {"query": player_name, "results": [], "count": 0}
+    return {
+        "query": player_name,
+        "count": len(hits),
+        "results": [
+            {
+                "name": h["name"],
+                "team": h["team"],
+                "position": h["position"],
+                "bats": h["bats"],
+                "player_id": h["player_id"],
+                "match_score": h["score"],
+            }
+            for h in hits
+        ],
+    }
 
 
 async def _get_game_prediction(db: AsyncSession, args: dict) -> dict:
@@ -1293,6 +1635,114 @@ async def _get_pitcher_form(db: AsyncSession, args: dict) -> dict:
     }
 
 
+async def _get_bullpen_stats(db: AsyncSession, args: dict) -> dict:
+    """Team bullpen quality: season ERA/WHIP/FIP/K9 + L/R batting splits vs the pen."""
+    team = await _resolve_team(db, args.get("team_name", ""))
+    if not team:
+        return {"error": f"Team not found: {args.get('team_name', '')}"}
+
+    sql = text("""
+        SELECT era, whip, fip, strikeouts, walks, hits, home_runs, innings_pitched,
+               saves, blown_saves, hold, left_avg, right_avg,
+               left_ops, right_ops
+        FROM mlb.bullpen_stats
+        WHERE team_id = :tid
+        ORDER BY season_id DESC NULLS LAST
+        LIMIT 1
+    """)
+    row = (await db.execute(sql, {"tid": team.id})).mappings().first()
+    if not row:
+        return {"error": f"No bullpen stats found for {team.name}"}
+
+    def f(v):
+        return round(float(v), 3) if v is not None else None
+
+    k9 = None
+    if row.innings_pitched and row.strikeouts:
+        ip = float(row.innings_pitched)
+        k9 = round(float(row.strikeouts) / ip * 9, 2) if ip else None
+
+    return {
+        "team": f"{team.name} ({team.abbreviation})",
+        "season_era": f(row.era),
+        "whip": f(row.whip),
+        "fip": f(row.fip),
+        "k9": k9,
+        "opp_avg_vs_left": f(row.left_avg),
+        "opp_avg_vs_right": f(row.right_avg),
+        "opp_ops_vs_left": f(row.left_ops),
+        "opp_ops_vs_right": f(row.right_ops),
+        "saves": row.saves,
+        "blown_saves": row.blown_saves,
+        "holds": row.hold,
+    }
+
+
+async def _get_player_recent_form(db: AsyncSession, args: dict) -> dict:
+    """Hitter's recent form over a trailing day window (e.g. last 30 days)."""
+    player_name = args.get("player_name", "")
+    days = min(max(int(args.get("days") or 30), 1), 90)
+    player = await _resolve_hitter(db, player_name)
+    if not player:
+        return {"error": f"Player not found: {player_name}", "suggestions": [{"name": s["name"], "team": s["team"], "position": s["position"], "player_id": s["player_id"]} for s in await _search_players(db, player_name, limit=5)]}
+
+    sql = text("""
+        SELECT count(*) AS games,
+               sum(plate_appearances) AS pa,
+               sum(at_bats) AS ab,
+               sum(hits) AS hits,
+               sum(doubles) AS dbl,
+               sum(triples) AS trp,
+               sum(home_runs) AS hr,
+               sum(total_bases) AS tb,
+               sum(runs) AS runs,
+               sum(runs_batted_in) AS rbi,
+               sum(base_on_balls) AS bb,
+               sum(strikeouts) AS k
+        FROM mlb.batting_game_stats bg
+        JOIN mlb.games g ON g.id = bg.game_id
+        WHERE bg.player_id = :pid
+          AND g.date >= now() - (:days * interval '1 day')
+          AND g.status = 'FINAL'
+    """)
+    row = (await db.execute(sql, {"pid": player.id, "days": days})).mappings().first()
+    if not row or not row.games:
+        return {"player": player.name, "games": 0, "note": f"No finalized games in the last {days} days"}
+
+    ab = row.ab or 0
+    pa = row.pa or 0
+    avg = round(float(row.hits) / ab, 3) if ab else None
+    obp = round((float(row.hits) + float(row.bb)) / (ab + (row.bb or 0)), 3) if (ab + (row.bb or 0)) else None
+    slg = round(float(row.tb or 0) / ab, 3) if ab else None
+    ops = round((float(avg or 0) + float(slg or 0)), 3) if (avg is not None and slg is not None) else None
+    k_pct = round(float(row.k or 0) / pa * 100, 1) if pa else None
+    bb_pct = round(float(row.bb or 0) / pa * 100, 1) if pa else None
+
+    hot = None
+    if avg is not None:
+        hot = "hot" if avg >= 0.300 else ("cold" if avg <= 0.220 else "neutral")
+
+    return {
+        "player": player.name,
+        "team_abbr": await _team_abbr_of(db, player),
+        "window_days": days,
+        "games": row.games,
+        "pa": pa,
+        "avg": avg,
+        "obp": obp,
+        "slg": slg,
+        "ops": ops,
+        "home_runs": row.hr,
+        "doubles": row.dbl,
+        "triples": row.trp,
+        "rbi": row.rbi,
+        "runs": row.runs,
+        "k_pct": k_pct,
+        "bb_pct": bb_pct,
+        "form": hot,
+    }
+
+
 async def _get_team_season_futures(db: AsyncSession, args: dict) -> dict:
     """Team season futures odds from mlb.team_props.
 
@@ -1456,6 +1906,10 @@ _TOOL_MAP = {
     "get_head_to_head": _get_head_to_head,
     "get_injuries": _get_injuries,
     "get_player_stats": _get_player_stats,
+    "get_player_split_stats": _get_player_split_stats,
+    "get_bullpen_stats": _get_bullpen_stats,
+    "get_player_recent_form": _get_player_recent_form,
+    "search_players": _search_players_tool,
     "get_game_prediction": _get_game_prediction,
     "get_team_splits": _get_team_splits,
     "search_articles": _search_articles_tool,
