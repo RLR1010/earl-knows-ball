@@ -57,7 +57,7 @@ def _rows_for(conn):
     return conn.execute(sql).mappings().all()
 
 
-def _build_row(r, cold, warm, precip):
+def _build_row(r, cold, warm, precip, dry):
     def _rate(games):
         if not games:
             return None, None
@@ -72,6 +72,7 @@ def _build_row(r, cold, warm, precip):
     c_starts, c_rate = _rate(cold)
     w_starts, w_rate = _rate(warm)
     p_starts, p_rate = _rate(precip)
+    d_starts, d_rate = _rate(dry)
     return {
         "player_id": r["player_id"],
         "game_id": r["game_id"],
@@ -87,6 +88,8 @@ def _build_row(r, cold, warm, precip):
         "warm_passer_rating": w_rate,
         "precip_starts": p_starts,
         "precip_passer_rating": p_rate,
+        "dry_starts": d_starts,
+        "dry_passer_rating": d_rate,
     }
 
 
@@ -130,7 +133,8 @@ def run(conn=None, min_starts: int = 1) -> dict:
             cold = [g for g in prior if g["cold"]]
             warm = [g for g in prior if g["warm"]]
             precip = [g for g in prior if g["precip"]]
-            insert_rows.append(_build_row(r, cold, warm, precip))
+            dry = [g for g in prior if not g["precip"]]
+            insert_rows.append(_build_row(r, cold, warm, precip, dry))
 
         if insert_rows:
             game_ids = sorted({r["game_id"] for r in rows})

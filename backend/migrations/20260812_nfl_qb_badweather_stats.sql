@@ -30,6 +30,10 @@ CREATE TABLE IF NOT EXISTS nfl.qb_badweather_stats (
     precip_starts    INTEGER,
     precip_passer_rating REAL,
 
+    -- DRY (no precipitation) prior starts
+    dry_starts        INTEGER,
+    dry_passer_rating REAL,
+
     PRIMARY KEY (player_id, game_id)
 );
 

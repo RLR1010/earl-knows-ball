@@ -25,11 +25,23 @@ CREATE TABLE IF NOT EXISTS nfl.team_badweather_stats (
     cold_ypg         REAL,   -- yards per game in cold prior games
     cold_win_pct     REAL,   -- win rate in cold prior games
 
+    -- WARM (>=40F) prior games
+    warm_games       INTEGER,
+    warm_ppg         REAL,
+    warm_ypg         REAL,
+    warm_win_pct     REAL,
+
     -- PRECIPITATION (rain/snow/drizzle/thunder/shower) prior games
     precip_games     INTEGER,
     precip_ppg       REAL,
     precip_ypg       REAL,
     precip_win_pct   REAL,
+
+    -- DRY (no precipitation) prior games
+    dry_games        INTEGER,
+    dry_ppg          REAL,
+    dry_ypg          REAL,
+    dry_win_pct      REAL,
 
     PRIMARY KEY (game_id, team_abbr)
 );

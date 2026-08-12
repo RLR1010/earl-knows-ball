@@ -67,7 +67,7 @@ def _win(r):
     return (hs > aw) if r["is_home"] else (aw > hs)
 
 
-def _build_row(r, cold, precip):
+def _build_row(r, cold, warm, precip, dry):
     def _agg(games):
         if not games:
             return None, None, None
@@ -78,7 +78,9 @@ def _build_row(r, cold, precip):
         return round(pts / n, 1), round(yds / n, 1), round(w / n, 3)
 
     c_ppg, c_ypg, c_wp = _agg(cold)
+    w_ppg, w_ypg, w_wp = _agg(warm)
     p_ppg, p_ypg, p_wp = _agg(precip)
+    d_ppg, d_ypg, d_wp = _agg(dry)
     return {
         "game_id": r["game_id"],
         "team_abbr": r["team_abbr"],
@@ -92,10 +94,18 @@ def _build_row(r, cold, precip):
         "cold_ppg": c_ppg,
         "cold_ypg": c_ypg,
         "cold_win_pct": c_wp,
+        "warm_games": len(warm) or None,
+        "warm_ppg": w_ppg,
+        "warm_ypg": w_ypg,
+        "warm_win_pct": w_wp,
         "precip_games": len(precip) or None,
         "precip_ppg": p_ppg,
         "precip_ypg": p_ypg,
         "precip_win_pct": p_wp,
+        "dry_games": len(dry) or None,
+        "dry_ppg": d_ppg,
+        "dry_ypg": d_ypg,
+        "dry_win_pct": d_wp,
     }
 
 
@@ -116,6 +126,7 @@ def run(conn=None) -> dict:
                     "pts": r["off_pts_pg"] or 0,
                     "yds": r["off_yds_pg"] or 0,
                     "cold": (r["temperature"] is not None and r["temperature"] < COLD_TEMP),
+                    "warm": (r["temperature"] is not None and r["temperature"] >= COLD_TEMP),
                     "precip": _precip(r["weather_condition"]),
                     "win": _win(r),
                 }
@@ -133,8 +144,10 @@ def run(conn=None) -> dict:
                 if g["date"] is not None and target_date is not None and g["date"] < target_date
             ]
             cold = [g for g in prior if g["cold"]]
+            warm = [g for g in prior if g["warm"]]
             precip = [g for g in prior if g["precip"]]
-            insert_rows.append(_build_row(r, cold, precip))
+            dry = [g for g in prior if not g["precip"]]
+            insert_rows.append(_build_row(r, cold, warm, precip, dry))
 
         if insert_rows:
             game_ids = sorted({r["game_id"] for r in rows})

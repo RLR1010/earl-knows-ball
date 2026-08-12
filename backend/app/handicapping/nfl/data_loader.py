@@ -918,6 +918,12 @@ TEAM_STATS_OUTPUT_COLUMNS: set[str] = {
     "home_cold_win_pct", "away_cold_win_pct",
     "home_precip_ppg", "away_precip_ppg", "home_precip_ypg", "away_precip_ypg",
     "home_precip_win_pct", "away_precip_win_pct",
+    "home_team_cold_warm_ppg", "away_team_cold_warm_ppg",
+    "home_team_cold_warm_ypg", "away_team_cold_warm_ypg",
+    "home_team_cold_warm_win_pct", "away_team_cold_warm_win_pct",
+    "home_team_precip_dry_ppg", "away_team_precip_dry_ppg",
+    "home_team_precip_dry_ypg", "away_team_precip_dry_ypg",
+    "home_team_precip_dry_win_pct", "away_team_precip_dry_win_pct",
 }
 
 
@@ -1291,9 +1297,25 @@ class NFLDataLoader:
                     tbw.cold_ppg       AS cold_ppg,
                     tbw.cold_ypg       AS cold_ypg,
                     tbw.cold_win_pct   AS cold_win_pct,
+                    tbw.warm_ppg       AS warm_ppg,
+                    tbw.warm_ypg       AS warm_ypg,
+                    tbw.warm_win_pct   AS warm_win_pct,
                     tbw.precip_ppg     AS precip_ppg,
                     tbw.precip_ypg     AS precip_ypg,
-                    tbw.precip_win_pct AS precip_win_pct
+                    tbw.precip_win_pct AS precip_win_pct,
+                    tbw.dry_ppg        AS dry_ppg,
+                    tbw.dry_ypg        AS dry_ypg,
+                    tbw.dry_win_pct    AS dry_win_pct,
+                    -- Derived weather-aware team stats (game weather = this game's)
+                    CASE WHEN g.temperature < 40 THEN tbw.cold_ppg ELSE tbw.warm_ppg END       AS cold_warm_ppg,
+                    CASE WHEN g.temperature < 40 THEN tbw.cold_ypg ELSE tbw.warm_ypg END       AS cold_warm_ypg,
+                    CASE WHEN g.temperature < 40 THEN tbw.cold_win_pct ELSE tbw.warm_win_pct END AS cold_warm_win_pct,
+                    CASE WHEN g.weather_condition ~* 'rain|snow|drizzle|thunder|shower'
+                         THEN tbw.precip_ppg ELSE tbw.dry_ppg END       AS precip_dry_ppg,
+                    CASE WHEN g.weather_condition ~* 'rain|snow|drizzle|thunder|shower'
+                         THEN tbw.precip_ypg ELSE tbw.dry_ypg END       AS precip_dry_ypg,
+                    CASE WHEN g.weather_condition ~* 'rain|snow|drizzle|thunder|shower'
+                         THEN tbw.precip_win_pct ELSE tbw.dry_win_pct END AS precip_dry_win_pct
                 FROM nfl.team_rolling_stats t
                 LEFT JOIN nfl.games g ON t.game_id = g.id
                 LEFT JOIN nfl.teams ht ON g.home_team_id = ht.id
@@ -1518,6 +1540,10 @@ class NFLDataLoader:
                     CASE WHEN g.temperature < 40
                         THEN h_qbw.cold_passer_rating
                         ELSE h_qbw.warm_passer_rating END AS home_qb_cold_warm_passer_rating,
+                    -- Derived weather-aware QB rating: precip rating if raining, else dry rating
+                    CASE WHEN g.weather_condition ~* 'rain|snow|drizzle|thunder|shower'
+                        THEN h_qbw.precip_passer_rating
+                        ELSE h_qbw.dry_passer_rating END AS home_qb_precip_dry_passer_rating,
                     -- Home/away QB bad-weather passer rating (leak-free, prior starts only)
                     h_qbw.cold_passer_rating     AS home_qb_cold_passer_rating,
                     h_qbw.precip_passer_rating   AS home_qb_precip_passer_rating,
@@ -1530,7 +1556,11 @@ class NFLDataLoader:
                     -- Away weather-aware QB rating (cold if game cold, else warm)
                     CASE WHEN g.temperature < 40
                         THEN a_qbw.cold_passer_rating
-                        ELSE a_qbw.warm_passer_rating END AS away_qb_cold_warm_passer_rating
+                        ELSE a_qbw.warm_passer_rating END AS away_qb_cold_warm_passer_rating,
+                    -- Away weather-aware QB rating (precip if raining, else dry)
+                    CASE WHEN g.weather_condition ~* 'rain|snow|drizzle|thunder|shower'
+                        THEN a_qbw.precip_passer_rating
+                        ELSE a_qbw.dry_passer_rating END AS away_qb_precip_dry_passer_rating
                 FROM nfl.games g
                 JOIN nfl.seasons s ON s.id = g.season_id
                 -- Home starter + their pre-game stats
@@ -2374,6 +2404,12 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
             "precip_ppg": "home_precip_ppg",
             "precip_ypg": "home_precip_ypg",
             "precip_win_pct": "home_precip_win_pct",
+            "cold_warm_ppg": "home_team_cold_warm_ppg",
+            "cold_warm_ypg": "home_team_cold_warm_ypg",
+            "cold_warm_win_pct": "home_team_cold_warm_win_pct",
+            "precip_dry_ppg": "home_team_precip_dry_ppg",
+            "precip_dry_ypg": "home_team_precip_dry_ypg",
+            "precip_dry_win_pct": "home_team_precip_dry_win_pct",
         })
         _ho_cols = [season_col, "feeds_into_game_id", "home_abbr",
                     "home_off_ypg", "home_ypp", "home_pass_ypg",
@@ -2390,7 +2426,9 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
                     "home_off_yardage_rank", "home_off_scoring_rank",
                     "home_off_rushing_rank", "home_off_passing_rank",
                     "home_cold_ppg", "home_cold_ypg", "home_cold_win_pct",
-                    "home_precip_ppg", "home_precip_ypg", "home_precip_win_pct"]
+                    "home_precip_ppg", "home_precip_ypg", "home_precip_win_pct",
+                    "home_team_cold_warm_ppg", "home_team_cold_warm_ypg", "home_team_cold_warm_win_pct",
+                    "home_team_precip_dry_ppg", "home_team_precip_dry_ypg", "home_team_precip_dry_win_pct"]
         _ho_cols = [c for c in _ho_cols if c in home_off.columns]
         df = df.merge(
             home_off[_ho_cols],
@@ -2436,6 +2474,12 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
             "precip_ppg": "away_precip_ppg",
             "precip_ypg": "away_precip_ypg",
             "precip_win_pct": "away_precip_win_pct",
+            "cold_warm_ppg": "away_team_cold_warm_ppg",
+            "cold_warm_ypg": "away_team_cold_warm_ypg",
+            "cold_warm_win_pct": "away_team_cold_warm_win_pct",
+            "precip_dry_ppg": "away_team_precip_dry_ppg",
+            "precip_dry_ypg": "away_team_precip_dry_ypg",
+            "precip_dry_win_pct": "away_team_precip_dry_win_pct",
         })
         _ao_cols = [season_col, "feeds_into_game_id", "away_abbr",
                     "away_off_ypg", "away_ypp", "away_pass_ypg",
@@ -2452,7 +2496,9 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
                     "away_off_yardage_rank", "away_off_scoring_rank",
                     "away_off_rushing_rank", "away_off_passing_rank",
                     "away_cold_ppg", "away_cold_ypg", "away_cold_win_pct",
-                    "away_precip_ppg", "away_precip_ypg", "away_precip_win_pct"]
+                    "away_precip_ppg", "away_precip_ypg", "away_precip_win_pct",
+                    "away_team_cold_warm_ppg", "away_team_cold_warm_ypg", "away_team_cold_warm_win_pct",
+                    "away_team_precip_dry_ppg", "away_team_precip_dry_ypg", "away_team_precip_dry_win_pct"]
         _ao_cols = [c for c in _ao_cols if c in away_off.columns]
         df = df.merge(
             away_off[_ao_cols],
