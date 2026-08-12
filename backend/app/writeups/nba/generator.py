@@ -22,6 +22,49 @@ from app.writeups.base_generator import BaseWriteupGenerator
 logger = logging.getLogger("nba.generator")
 
 
+def _format_title_date(value, fallback: str = "") -> str:
+    """Safely format a game date into "Aug 9, 2026" for the prop title."""
+    if not value:
+        return fallback
+    if isinstance(value, str):
+        for fmt in ("%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
+            try:
+                return datetime.strptime(value, fmt).strftime("%b %-d, %Y")
+            except ValueError:
+                continue
+    return fallback
+
+
+def _format_nba_splits(splits: dict) -> list[str]:
+    """Format NBA player-split lines into readable strings for the prompt.
+
+    splits keys are '<split_type>.<scope>' (scope: career|season), values are
+    dicts with per-game rates.
+    """
+    labels = {
+        "home": "Home", "away": "Away", "vs_east": "vs East",
+        "vs_west": "vs West", "starter": "as Starter", "bench": "off Bench",
+        "rest0": "Back-to-back", "rest_ge1": "1+ rest",
+    }
+    lines = []
+    for key in sorted(splits):
+        if "." not in key:
+            continue
+        st, scope = key.split(".", 1)
+        v = splits[key]
+        if not isinstance(v, dict) or "games" not in v:
+            continue
+        scope_txt = "Career" if scope == "career" else "Season"
+        lab = labels.get(st, st.replace("_", " ").title())
+        lines.append(
+            f"{lab} ({scope_txt}, {v.get('games')}g): "
+            f"{v.get('pts')}/g pts, {v.get('reb')}/g reb, {v.get('ast')}/g ast, "
+            f"{v.get('stl')}/g stl, {v.get('blk')}/g blk, {v.get('tov')}/g tov"
+        )
+    return lines
+
+
+
 class NBAGameWriteupGenerator(BaseWriteupGenerator):
     """Generator for NBA game write-ups."""
 
@@ -282,6 +325,146 @@ Bullet lists work for key points. Keep it article-like — no blockquotes, no em
         result = await super().generate_public(game_id, research, is_historical)
         qc_results = result.pop("qc_results", [])
         return result, qc_results
+
+    # ── Premium: Prop Bets article (mirrors MLB flow) ──────────
+
+    async def _post_store(self, db, game_id, research_brief) -> None:
+        """After the main writeup is committed, generate+store the premium
+        "Prop Bets" article if the game has DraftKings player props.
+        Wrapped so a props failure never fails the main writeup.
+        """
+        try:
+            await self._generate_props_article(db, game_id, research_brief)
+        except Exception as e:  # noqa: BLE001
+            logger.exception("NBA props article failed for game %s: %s", game_id, e)
+
+    async def _generate_props_article(self, db, game_id, research_brief) -> None:
+        """Generate + store the premium Prop Bets article on game %s.
+
+        Mirrors MLB's generator.store() -> _generate_props_article: fetch the
+        DraftKings player props for the game, build per-player research context
+        (season stats, recent form, splits), then ask the LLM to write a
+        premium prop-bet piece. Saves into the same game_writeups row's
+        prop_* columns.
+        """
+        import app.writeups.props_article as shared
+        import app.writeups.props_nba as nba_props
+
+        cfg = shared.SPORT_CONFIGS["nba"]()
+
+        props = await shared.fetch_game_props(db, cfg, game_id)
+        if not props:
+            logger.info("NBA props article: game %s has no prop odds — skipping", game_id)
+            return
+        logger.info("NBA props article: game %s has %d prop lines", game_id, len(props))
+
+        research = research_brief or {}
+        summary = research.get("game_summary") or {}
+        home_abbr = (summary.get("home_team") or {}).get("abbreviation") or "HOME"
+        away_abbr = (summary.get("away_team") or {}).get("abbreviation") or "AWAY"
+        game_date = _format_title_date(summary.get("date"))
+        title = shared.build_title(away_abbr, home_abbr, game_date)
+
+        prop_players = nba_props.extract_prop_players(props)
+
+        # Build per-player context. NBA research brief has no rosters, so
+        # season stats come straight from nba.player_season_stats; recent
+        # form from nba.player_game_stats; splits from nba.player_splits.
+        player_context = []
+        for name in prop_players:
+            team_id = None
+            season = await nba_props.fetch_player_season_stats(db, name, team_id)
+            recent = None
+            player_id = season.get("player_id") if season else None
+            if player_id is None:
+                try:
+                    player_id = await nba_props.resolve_player_id(db, name, team_id)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("NBA props: player id lookup failed for %s: %s", name, e)
+            splits = {}
+            if player_id:
+                try:
+                    recent = await nba_props.fetch_player_recent_stats(db, name, team_id)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("NBA props: recent stats failed for %s: %s", name, e)
+                try:
+                    splits = await nba_props.fetch_player_split_stats(db, name, team_id)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("NBA props: split stats failed for %s: %s", name, e)
+
+            rec_txt = None
+            if isinstance(recent, dict) and recent.get("recent_games"):
+                lines = recent["recent_games"]
+                parts = []
+                for ln in lines[:5]:
+                    parts.append(
+                        f"{ln.get('points')}pts/{ln.get('rebounds_total')}reb/"
+                        f"{ln.get('assists')}ast/{ln.get('steals')}stl/"
+                        f"{ln.get('three_pointers_made')}x3pm"
+                    )
+                rec_txt = f"Last {len(lines)} games: " + ", ".join(parts)
+
+            season_txt = None
+            if season:
+                season_txt = (
+                    f"Season {season.get('games_played')}g: "
+                    f"{season.get('points_per_game')}/g pts, "
+                    f"{season.get('rebounds_per_game')}/g reb, "
+                    f"{season.get('assists_per_game')}/g ast, "
+                    f"{season.get('steals')}/g stl, {season.get('blocks')}/g blk, "
+                    f"{season.get('turnovers')}/g tov, "
+                    f"FG% {season.get('field_goal_pct')}, 3P% {season.get('three_point_pct')}, "
+                    f"FT% {season.get('free_throw_pct')}, TS% {season.get('true_shooting_pct')}, "
+                    f"+/ - {season.get('plus_minus')}, usage {season.get('usage_pct')}"
+                )
+
+            split_txt = None
+            if splits:
+                split_lines = _format_nba_splits(splits)
+                if split_lines:
+                    split_txt = "Splits: " + "; ".join(split_lines)
+
+            player_context.append(
+                {
+                    "name": name,
+                    "season": season_txt,
+                    "recent": rec_txt,
+                    "splits": split_txt,
+                    "team_id": team_id,
+                }
+            )
+
+        props_for_llm = props[: cfg.get("max_props_to_send", 20)]
+        user_prompt = shared.build_user_prompt(
+            cfg, props_for_llm, player_context, research
+        )
+
+        usage_log = []
+        content = await self._call_deepseek(
+            user_prompt,
+            max_tokens=2000,
+            reasoning="minimal",
+            usage_log=usage_log,
+            call="generate_props_article",
+        )
+        if not content:
+            logger.warning("NBA props article: LLM returned no content for game %s — skipping", game_id)
+            return
+
+        total_tokens = sum(u.get("total_tokens") or 0 for u in usage_log)
+        prop_research = {
+            "game_id": int(game_id),
+            "prop_count": len(props),
+            "prop_lines_sent": len(props_for_llm),
+            "props": props,
+            "players": player_context,
+        }
+        await shared.save_props_article(
+            db, cfg, game_id, title, content.strip(),
+            generated_by="nba-prop-bets", total_tokens=total_tokens or 0,
+            prop_research=prop_research,
+        )
+        logger.info("NBA props article saved for game %s (%d tokens)", game_id, total_tokens)
 
 
 # Import research functions at module level

@@ -87,6 +87,27 @@ NFL_PROP_MARKETS = [
     "player_anytime_td",
 ]
 
+# NBA player prop market keys (the-odds-api.com betting-markets doc).
+NBA_PROP_MARKETS = [
+    "player_points",
+    "player_rebounds",
+    "player_assists",
+    "player_points_rebounds_assists",
+    "player_points_rebounds",
+    "player_points_assists",
+    "player_rebounds_assists",
+    "player_threes",
+    "player_steals",
+    "player_blocks",
+    "player_blocks_steals",
+    "player_assists_turnovers",
+    "player_double_double",
+    "player_triple_double",
+    "player_first_basket",
+    "player_offensive_rebounds",
+]
+
+
 
 def _prop_books() -> dict:
     """Return sportsbook map used for props. Reuse mainstream map, but props
@@ -419,4 +440,5 @@ async def snapshot_team_futures(
 _MARKETS_BY_SPORT = {
     "baseball_mlb": MLB_PROP_MARKETS,
     "americanfootball_nfl": NFL_PROP_MARKETS,
+    "basketball_nba": NBA_PROP_MARKETS,
 }

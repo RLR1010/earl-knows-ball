@@ -70,6 +70,11 @@ async def _resolve_props_season(db: AsyncSession) -> int:
     return int(val or cur)
 
 
+def _strip_accents(s) -> str:
+    """NFD-decompose + lowercase for accent-insensitive matching."""
+    return unicodedata.normalize("NFD", s or "").encode("ascii", "ignore").decode().lower()
+
+
 async def _resolve_player_split(db: AsyncSession, player_name: str) -> dict:
     """Resolve an NBA player by (accent-insensitive) name, mirroring MLB's NFD
     normalization so "Jose Calderon" -> "José Calderón".
@@ -370,6 +375,22 @@ TOOL_DEFINITIONS = [
                     "player_name": {"type": "string", "description": "Player name"},
                 },
                 "required": ["player_name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_game_player_props",
+            "description": "Get an NBA player prop betting lines for a specific game (points/rebounds/assists/threes, DraftKings) with line and odds. Use the game_id from get_todays_games. Optionally filter to one player or prop type.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "game_id": {"type": "integer", "description": "Game ID from get_todays_games or get_game_info."},
+                    "player_name": {"type": "string", "description": "Optional: filter to one player (accent-insensitive)."},
+                    "prop_type": {"type": "string", "description": "Optional: filter by prop type (e.g. Points, Rebounds, Assists)."},
+                },
+                "required": ["game_id"],
             },
         },
     },
@@ -1139,6 +1160,70 @@ async def _get_player_season_props(db: AsyncSession, args: dict) -> dict:
     return {"player_name": name, "season": season, "props": props}
 
 
+async def _get_game_player_props(db: AsyncSession, args: dict) -> dict:
+    """Player prop betting lines (DraftKings) for a specific game.
+
+    Reads nba.player_daily_props (game_id = our internal nba.games.id as
+    text). De-dupes repeating lines per (player, prop_type, direction).
+    """
+    gid = args.get("game_id")
+    if not gid:
+        return {"error": "game_id required"}
+    player = (args.get("player_name") or "").strip()
+    prop_type = (args.get("prop_type") or "").strip()
+
+    sql = text(
+        """SELECT game_id, player_name, team_id, prop_type, line, odds,
+                  direction, bookmaker, scraped_at
+           FROM nba.player_daily_props
+           WHERE game_id = :gid
+           ORDER BY player_name, prop_type, line"""
+    )
+    r = await db.execute(sql, {"gid": str(gid)})
+    rows = r.mappings().all()
+
+    # accent-insensitive player filter
+    if player:
+        want = _strip_accents(player).lower()
+        rows = [x for x in rows if want in _strip_accents(x["player_name"]).lower()]
+    if prop_type:
+        pt = prop_type.lower()
+        rows = [x for x in rows if pt in (x["prop_type"] or "").lower()]
+
+    if not rows:
+        return {
+            "error": f"No player props found for game {gid}"
+            + (f" / player '{player}'" if player else "")
+            + " (Props are only ingested during the NBA season)",
+        }
+
+    # de-dupe by (player, prop_type, direction, bookmaker) keeping each line
+    seen = set()
+    props = []
+    books_used = set()
+    for r in rows:
+        books_used.add(r["bookmaker"])
+        key = (r["player_name"], r["prop_type"], r["direction"], r["bookmaker"])
+        if key in seen:
+            continue
+        seen.add(key)
+        props.append(
+            {
+                "player": r["player_name"],
+                "prop_type": r["prop_type"],
+                "line": float(r["line"]) if r["line"] is not None else None,
+                "over": r["direction"].lower() == "over",
+                "odds": r["odds"],
+            }
+        )
+    return {
+        "game_id": gid,
+        "prop_count": len(props),
+        "books": sorted(books_used),
+        "props": props,
+    }
+
+
 
 
 # Alias map: model-invoked name variants -> canonical registered tool name.
@@ -1148,6 +1233,8 @@ _TOOL_ALIASES = {
     "get_team_season_future": "get_team_season_futures",
     "get_player_props": "get_player_season_props",
     "get_player_season_prop": "get_player_season_props",
+    "get_player_prop_lines": "get_game_player_props",
+    "get_game_props": "get_game_player_props",
 }
 
 
@@ -1176,6 +1263,7 @@ _TOOL_HANDLERS = {
     "get_team_rankings": _get_team_rankings,
     "get_team_season_futures": _get_team_season_futures,
     "get_player_season_props": _get_player_season_props,
+    "get_game_player_props": _get_game_player_props,
 }
 
 
