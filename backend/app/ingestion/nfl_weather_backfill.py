@@ -49,11 +49,57 @@ async def backfill_surfaces(db) -> int:
     return res.rowcount
 
 
+async def infer_home_venues(db) -> dict[int, int]:
+    """Build {team_id: home_venue_id} from FINAL games' most common home venue."""
+    res = await db.execute(text("""
+        SELECT g.home_team_id AS team_id, g.venue_id,
+               count(*) AS cnt
+        FROM nfl.games g
+        WHERE g.status = 'FINAL'
+          AND g.venue_id IS NOT NULL
+          AND g.home_team_id IS NOT NULL
+        GROUP BY g.home_team_id, g.venue_id
+        ORDER BY g.home_team_id, cnt DESC
+    """))
+    mapping: dict[int, int] = {}
+    for row in res.mappings():
+        mapping.setdefault(row["team_id"], row["venue_id"])
+    return mapping
+
+
+async def backfill_venues(db) -> int:
+    """Link venue_id for games missing it (esp. upcoming SCHEDULED games),
+    inferred from each home team's most-common home venue in FINAL games.
+
+    Fixes the weather forecast task: games with NULL venue_id can't join
+    nfl.venues -> filtered out -> no weather fetched.
+    """
+    mapping = await infer_home_venues(db)
+    if not mapping:
+        logger.warning("No home-venue mapping available; venue backfill skipped")
+        return 0
+
+    # Build CASE: home_team_id -> venue_id for teams we know
+    case_sql = " CASE g.home_team_id "
+    for team_id, venue_id in mapping.items():
+        case_sql += f" WHEN {team_id} THEN {venue_id} "
+    case_sql += " END"
+
+    res = await db.execute(text(f"""
+        UPDATE nfl.games g
+        SET venue_id = {case_sql}
+        WHERE g.venue_id IS NULL
+          AND g.home_team_id IS NOT NULL
+          AND {case_sql} IS NOT NULL
+    """))
+    return res.rowcount
+
+
 async def fetch_open_meteo(client: httpx.AsyncClient, lat: float, lng: float,
                            game_date: str, tz_name: str, game_time_utc: datetime) -> dict | None:
     """Fetch hourly archive weather for a venue+date, return nearest-to-kick reading.
 
-    Returns {temperature_f, wind_mph, time} or None on failure.
+    Returns {temperature_f, wind_mph, weather_code, condition, time} or None on failure.
     """
     from zoneinfo import ZoneInfo
     tz = ZoneInfo(tz_name)
@@ -73,6 +119,7 @@ async def fetch_open_meteo(client: httpx.AsyncClient, lat: float, lng: float,
         times = hourly.get("time") or []
         temps = hourly.get("temperature_2m") or []
         winds = hourly.get("wind_speed_10m") or []
+        codes = hourly.get("weather_code") or []
         if not times:
             return None
 
@@ -94,12 +141,15 @@ async def fetch_open_meteo(client: httpx.AsyncClient, lat: float, lng: float,
 
         temp_c = temps[best_i] if best_i < len(temps) else None
         wind_kmh = winds[best_i] if best_i < len(winds) else None
+        code = codes[best_i] if best_i < len(codes) else None
 
         temp_f = (temp_c * 9 / 5 + 32) if temp_c is not None else None
         wind_mph = (wind_kmh * 0.621371) if wind_kmh is not None else None
         return {
             "temperature": round(temp_f) if temp_f is not None else None,
             "wind_speed": round(wind_mph, 1) if wind_mph is not None else None,
+            "weather_code": int(code) if code is not None else None,
+            "condition": _wmo_condition(int(code)) if code is not None else None,
             "time": times[best_i],
         }
     except Exception as e:
@@ -107,9 +157,18 @@ async def fetch_open_meteo(client: httpx.AsyncClient, lat: float, lng: float,
         return None
 
 
-async def backfill_weather(db, caught_up_from: int | None = None, limit: int | None = None) -> int:
-    """Fetch historical weather for FINAL games lacking temperature."""
-    q = """
+async def backfill_weather(db, caught_up_from: int | None = None, limit: int | None = None,
+                           fill_conditions: bool = True) -> int:
+    """Fetch historical weather for FINAL games missing temperature/wind and/or
+    a real condition label.
+
+    fill_conditions=True (default): also refetch games that already have temp/wind
+    but only carry the stub 'Historical' condition, so we capture weather_code (rain).
+    """
+    missing = "(g.temperature IS NULL OR g.wind_speed IS NULL)"
+    if fill_conditions:
+        missing = f"({missing} OR g.weather_condition IS NULL OR g.weather_condition = 'Historical')"
+    q = f"""
         SELECT g.id, g.date, v.latitude, v.longitude, s.tz_name
         FROM nfl.games g
         JOIN nfl.venues v ON v.id = g.venue_id
@@ -118,7 +177,7 @@ async def backfill_weather(db, caught_up_from: int | None = None, limit: int | N
         WHERE g.status = 'FINAL'
           AND g.game_type = 'REG'
           AND v.latitude IS NOT NULL AND v.longitude IS NOT NULL
-          AND (g.temperature IS NULL OR g.wind_speed IS NULL)
+          AND {missing}
     """
     params = {}
     if caught_up_from is not None:
@@ -157,10 +216,11 @@ async def backfill_weather(db, caught_up_from: int | None = None, limit: int | N
                 """), {
                     "gid": game_id, "temp": fc["temperature"],
                     "ws": fc["wind_speed"],
-                    "wcond": _code_label(None),
+                    "wcond": fc.get("condition") or "Dry",
                 })
                 updated += 1
-                logger.info(f"  [{i+1}/{len(games)}] game {game_id} -> {fc['temperature']}F, {fc['wind_speed']}mph")
+                _cond = fc.get("condition") or "-"
+                logger.info(f"  [{i+1}/{len(games)}] game {game_id} -> {fc['temperature']}F, {fc['wind_speed']}mph, {_cond}")
             else:
                 logger.debug(f"  [{i+1}/{len(games)}] game {game_id} no data")
 
@@ -173,9 +233,43 @@ async def backfill_weather(db, caught_up_from: int | None = None, limit: int | N
     return updated
 
 
-def _code_label(code):
-    # keep simple; conserve API field usage
-    return "Historical"
+def _wmo_condition(code):
+    """Map WMO weather_code to a coarse game-useful condition label.
+
+    Used to detect precipitation (rain/snow/thunder) for player_splits.
+    Codes: 0 clear, 1-3 partly/overcast, 45/48 fog, 51-57 drizzle,
+    61-67 rain, 71-77 snow, 80-82 rain showers, 85/86 snow showers,
+    95/96/99 thunderstorm.
+    """
+    if code is None:
+        return None
+    if code == 0:
+        return "Clear"
+    if code in (1, 2, 3):
+        return "Cloudy"
+    if code == 45 or code == 48:
+        return "Fog"
+    if code in (51, 53, 55, 56, 57):
+        return "Drizzle"
+    if code in (61, 63, 65, 66, 67):
+        return "Rain"
+    if code in (71, 73, 75, 77):
+        return "Snow"
+    if code in (80, 81, 82):
+        return "Rain Shower"
+    if code in (85, 86):
+        return "Snow Shower"
+    if code in (95, 96, 99):
+        return "Thunderstorm"
+    return "Other"
+
+
+def _is_precip(condition):
+    """Whether a condition label counts as precipitation (rain/snow/thunder)."""
+    if not condition:
+        return False
+    c = condition.lower()
+    return any(k in c for k in ("rain", "snow", "drizzle", "thunder"))
 
 
 async def main():
@@ -184,15 +278,25 @@ async def main():
     ap.add_argument("--limit", type=int, default=None, help="Max games to backfill (weather)")
     ap.add_argument("--caught-up-from", type=int, default=None,
                     help="Only games from this year onward (e.g. 2024)")
+    ap.add_argument("--no-fill-conditions", action="store_true",
+                    help="Only fill games missing temperature/wind (skip condition re-fetch)")
+    ap.add_argument("--venues-only", action="store_true",
+                    help="Only backfill venue_id for NULL-venue games, then exit")
     args = ap.parse_args()
 
     async with async_session() as db:
+        if not args.venues_only:
+            vn = await backfill_venues(db)
+            await db.commit()
+            if vn:
+                logger.info(f"Venue backfill complete: {vn} games linked")
         surf = await backfill_surfaces(db)
         await db.commit()
         logger.info(f"Surface backfill complete: {surf} games updated")
 
-        if not args.surface_only:
-            n = await backfill_weather(db, caught_up_from=args.caught_up_from, limit=args.limit)
+        if not args.surface_only and not args.venues_only:
+            n = await backfill_weather(db, caught_up_from=args.caught_up_from, limit=args.limit,
+                                       fill_conditions=not args.no_fill_conditions)
             logger.info(f"Weather backfill complete: {n} games updated")
 
 

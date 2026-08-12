@@ -301,7 +301,7 @@ TOOL_DEFINITIONS = [
                 "type": "object",
                 "properties": {
                     "player_name": {"type": "string", "description": "Player full name (e.g., 'Patrick Mahomes', 'Justin Jefferson')"},
-                    "split_type": {"type": "string", "description": "Optional: one split type to isolate (home, away, cold, mild, warm, outdoor_cold, dome, outdoor, grass, turf, division, non_division, primetime, day)"},
+                    "split_type": {"type": "string", "description": "Optional: one split type to isolate (home, away, cold, mild, warm, outdoor_cold, dome, outdoor, grass, turf, precipitation, dry, division, non_division, primetime, day)"},
                     "season_year": {"type": "integer", "description": "Season year for a single-season split (defaults to career)"},
                 },
                 "required": ["player_name"],

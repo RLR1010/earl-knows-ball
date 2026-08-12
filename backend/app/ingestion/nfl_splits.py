@@ -48,6 +48,8 @@ SPLIT_TYPES: Dict[str, str] = {
     "outdoor": "Outdoor",
     "grass": "Grass",
     "turf": "Artificial / Turf",
+    "precipitation": "Precipitation (rain/snow)",
+    "dry": "Dry / No precipitation",
     "division": "Division",
     "non_division": "Non-division",
     "primetime": "Primetime",
@@ -131,9 +133,17 @@ def _game_split_types(g: dict, home_team_id, away_team_id, team_id, div: str) ->
     splits.extend(_roof_bucket(g.get("roof_type")))
     # surface
     splits.extend(_surface_bucket(g.get("surface")))
+    # precipitation (real game-time condition from Open-Meteo backfill: Rain,
+    # Snow, Drizzle, Thunderstorm, Rain Shower, Snow Shower, Clear, Cloudy, Fog)
+    cond = (g.get("weather_condition") or "").strip()
+    if cond:
+        low = cond.lower()
+        if any(k in low for k in ("rain", "snow", "drizzle", "thunder", "shower")):
+            splits.append("precipitation")
+        else:
+            splits.append("dry")
     # division
     if div:
-        # division if opponent shares our division
         opp = away_team_id if team_id == home_team_id else home_team_id
         opp_div = TEAM_DIVISIONS.get(opp)
         splits.append("division" if (div and div == opp_div) else "non_division")
@@ -229,7 +239,7 @@ async def build_player_splits(db: AsyncSession, season_ids: Optional[Sequence[in
                pws.fantasy_points_std, pws.fantasy_points_half, pws.fantasy_points_ppr,
                pws.points_allowed, pws.snaps_defense,
                g.home_team_id, g.away_team_id, g.date, g.temperature, g.roof_type,
-               g.surface, g.season_id AS g_season_id
+               g.surface, g.weather_condition, g.season_id AS g_season_id
         FROM nfl.player_weekly_stats pws
         JOIN nfl.games g ON g.id = pws.game_id
         WHERE pws.season_id IN ({sq})
