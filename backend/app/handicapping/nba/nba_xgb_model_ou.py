@@ -28,6 +28,7 @@ import xgboost as xgb
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
 from app.handicapping.db_training import save_training_run, update_pkl_filename
+from app.handicapping.nba.nba_engine import _impute_feature
 from app.handicapping.nba.data_loader import (
     FEATURES_CATALOG,
     NBADataLoader,
@@ -160,6 +161,19 @@ async def train_model(
             continue
 
         available = [c for c in feature_cols if c in df_train.columns]
+        # Impute-first (NOT blind dropna): NBA loader leaves early-season games NaN on
+        # a few features. nba_engine._impute_feature fills a reasoned prior exactly as
+        # for live inference, so we don't silently throw away real games while training.
+        _mask = df_train[available].isna()
+        if _mask.any().any():
+            for feat in available:
+                na = df_train[feat].isna()
+                if na.any():
+                    df_train.loc[na, feat] = df_train.loc[na, :].apply(
+                        lambda row: _impute_feature(row, feat), axis=1
+                    )
+            logger.info("imputed NaN features across %d training games (test_year=%s)",
+                        int(_mask.any(axis=1).sum()), test_year)
         df_train = df_train.dropna(subset=available)
 
         X = df_train[available].values
@@ -187,6 +201,14 @@ async def train_model(
 
         if not df_test.empty and len(df_test) > 0:
             available_test = [c for c in feature_cols if c in df_test.columns]
+            _mask_t = df_test[available_test].isna()
+            if _mask_t.any().any():
+                for feat in available_test:
+                    na = df_test[feat].isna()
+                    if na.any():
+                        df_test.loc[na, feat] = df_test.loc[na, :].apply(
+                            lambda row: _impute_feature(row, feat), axis=1
+                        )
             df_test_clean = df_test.dropna(subset=available_test)
 
             if len(df_test_clean) > 0:
@@ -199,11 +221,19 @@ async def train_model(
                 if "closing_ou" in df_test_clean.columns:
                     closing_ou_values = df_test_clean["closing_ou"].values
                     for i in range(ou_total):
-                        actual_over = y_test[i] > closing_ou_values[i]
-                        pred_over = pred_totals[i] > closing_ou_values[i]
-                        if abs(y_test[i] - closing_ou_values[i]) < 0.05:
+                        line = closing_ou_values[i]
+                        total = y_test[i]
+                        # A real OU push requires the line to be a WHOLE number AND the
+                        # integer total to land exactly on it. NBA totals are integers
+                        # (home+away scores) and lines are whole or .5, so a .5 line can
+                        # never push. The <0.05 tolerance this replaces was wrong logic.
+                        is_push = (line % 1 == 0) and (int(total) == int(line))
+                        if is_push:
                             ou_push += 1
-                        elif pred_over == actual_over:
+                            continue
+                        actual_over = total > line
+                        pred_over = pred_totals[i] > line
+                        if pred_over == actual_over:
                             ou_correct += 1
 
         ou_incorrect = ou_total - ou_correct - ou_push

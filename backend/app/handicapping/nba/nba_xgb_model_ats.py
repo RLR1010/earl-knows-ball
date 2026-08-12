@@ -30,6 +30,7 @@ from sklearn.metrics import (
 )
 
 from app.handicapping.db_training import save_training_run, update_pkl_filename
+from app.handicapping.nba.nba_engine import _impute_feature
 from app.handicapping.nba.data_loader import (
     FEATURES_CATALOG,
     NBADataLoader,
@@ -187,6 +188,22 @@ async def train_model(
             continue
 
         available = [c for c in feature_cols if c in df_train.columns]
+        available = [c for c in available if df_train[c].notna().any()]
+
+        # Impute-first (NOT blind dropna): NBA loader leaves week-1 / early-season
+        # games legitimately NaN on a few features. nba_engine._impute_feature fills
+        # a reasoned prior (season-cumulative avg, carry, league-avg) exactly as for
+        # live inference, so we don't silently throw away real games while training.
+        _mask = df_train[available].isna()
+        if _mask.any().any():
+            for feat in available:
+                na = df_train[feat].isna()
+                if na.any():
+                    df_train.loc[na, feat] = df_train.loc[na, :].apply(
+                        lambda row: _impute_feature(row, feat), axis=1
+                    )
+            logger.info("imputed NaN features across %d training games (test_year=%s)",
+                        int(_mask.any(axis=1).sum()), test_year)
         df_train = df_train.dropna(subset=available)
 
         X_train = df_train[available].values
@@ -216,6 +233,17 @@ async def train_model(
 
         if not df_test.empty and len(df_test) > 0:
             available_test = [c for c in feature_cols if c in df_test.columns]
+            available_test = [c for c in available_test if df_test[c].notna().any()]
+            # Impute-first for the holdout year too, so early-season games are scored
+            # instead of silently dropped (mirrors live inference).
+            _mask_t = df_test[available_test].isna()
+            if _mask_t.any().any():
+                for feat in available_test:
+                    na = df_test[feat].isna()
+                    if na.any():
+                        df_test.loc[na, feat] = df_test.loc[na, :].apply(
+                            lambda row: _impute_feature(row, feat), axis=1
+                        )
             df_test_clean = df_test.dropna(subset=available_test)
 
             if len(df_test_clean) > 0:
