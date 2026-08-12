@@ -27,6 +27,7 @@ import xgboost as xgb
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
 from app.handicapping.db_training import save_training_run, update_pkl_filename
+from app.handicapping.nfl.engine import _impute_feature
 from app.handicapping.nfl.data_loader import (
     FEATURES_CATALOG,
     NFLDataLoader,
@@ -182,8 +183,30 @@ async def train_model(
             continue
 
         available = [c for c in feature_cols if c in df_train.columns]
-        # Remove columns that are entirely NaN (never computed by build_features)
+        # Remove columns that are entirely NaN (never computed)
         available = [c for c in available if df_train[c].notna().any()]
+
+        # Impute-first (NOT dropna): the loader leaves some features NaN at the
+        # boundary of a team's season (week-1 season_ats_pct, a rookie/backup QB
+        # with no last-5 window, implied probs, etc.). The engine's _impute_feature
+        # fills a reasoned prior exactly as the live inference path does. Without
+        # it, dropna() silently throws out real games and we under-train.
+        _mask = df_train[available].isna()
+        if _mask.any().any():
+            _n_imputed = 0
+            for feat in available:
+                na = df_train[feat].isna()
+                if na.any():
+                    df_train.loc[na, feat] = df_train.loc[na, :].apply(
+                        lambda row: _impute_feature(row, feat), axis=1
+                    )
+                    _n_imputed += int(na.sum())
+            logger.info(
+                "imputed %d NaN feature values across %d games (test_year=%s)",
+                _n_imputed, int(_mask.any(axis=1).sum()), test_year,
+            )
+
+        # After reasoned imputation, drop only what is still unusable.
         df_train = df_train.dropna(subset=available)
 
         if df_train.empty:
@@ -218,6 +241,16 @@ async def train_model(
         if not df_test.empty and len(df_test) > 0:
             available_test = [c for c in feature_cols if c in df_test.columns]
             available_test = [c for c in available_test if df_test[c].notna().any()]
+            # Impute-first for the holdout year too, so week-1/rookie-QB games are
+            # scored instead of silently dropped (mirrors train + live inference).
+            _mask_t = df_test[available_test].isna()
+            if _mask_t.any().any():
+                for feat in available_test:
+                    na = df_test[feat].isna()
+                    if na.any():
+                        df_test.loc[na, feat] = df_test.loc[na, :].apply(
+                            lambda row: _impute_feature(row, feat), axis=1
+                        )
             df_test_clean = df_test.dropna(subset=available_test)
 
             if len(df_test_clean) > 0:
