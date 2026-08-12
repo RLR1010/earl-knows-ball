@@ -25,6 +25,7 @@ import xgboost as xgb
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 from app.handicapping.db_training import save_training_run, update_pkl_filename
+from app.handicapping.nfl.engine import _impute_feature
 from app.handicapping.nfl.data_loader import (
     FEATURES_CATALOG,
     NFLDataLoader,
@@ -563,6 +564,30 @@ async def train_model(
         available = [c for c in feature_cols if c in df_train.columns]
         # Remove columns that are entirely NaN (never computed)
         available = [c for c in available if df_train[c].notna().any()]
+
+        # Impute-first (NOT dropna): the loader intentionally leaves some
+        # features NaN at the boundary of a team's season (week-1 season_ats_pct,
+        # a rookie/backup QB with no last-5 window, signed diffs). The engine's
+        # _impute_feature fills a reasoned prior (prior-season -> league-avg /
+        # neutral) exactly as the live prediction path does. If we dropna()
+        # before imputing, every such game is silently thrown out and we
+        # under-train on real games (e.g. 2022-2024 losing ~8-10 each).
+        _impute_mask = df_train[available].isna()
+        if _impute_mask.any().any():
+            _n_imputed = 0
+            for feat in available:
+                na = df_train[feat].isna()
+                if na.any():
+                    df_train.loc[na, feat] = df_train.loc[na, :].apply(
+                        lambda row: _impute_feature(row, feat), axis=1
+                    )
+                    _n_imputed += int(na.sum())
+            logger.info(
+                "imputed %d NaN feature values across %d games (test_year=%s)",
+                _n_imputed, int(_impute_mask.any(axis=1).sum()), test_year,
+            )
+
+        # After reasoned imputation, drop only what is still unusable.
         df_train = df_train.dropna(subset=available)
 
         if df_train.empty:

@@ -2092,6 +2092,22 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
         tg.groupby(["team_id", "season_id"])["cover"]
         .transform(lambda s: s.shift(1).expanding().mean())
     )
+    # Carry prior-season final ATS cover% into a team's first game of a new
+    # season (week 1), where shift(1).expanding() is NaN. This stops run_backtest's
+    # dropna(subset=features) from discarding every week-1 game, while keeping
+    # real data (no fabricated 0.5) on the pick card.
+    _prior_ats = tg.assign(_sy=tg["season_year"]).dropna(subset=["season_ats_pct"])
+    _last = (
+        _prior_ats.sort_values(["team_abbr", "season_year", "week", "date"])
+        .groupby(["team_abbr", "season_year"])["season_ats_pct"]
+        .last()
+        .to_dict()
+    )
+    def _carry_prior_ats(row):
+        if pd.notna(row["season_ats_pct"]):
+            return row["season_ats_pct"]
+        return _last.get((row["team_abbr"], row["season_year"] - 1))
+    tg["season_ats_pct"] = tg.apply(_carry_prior_ats, axis=1)
     # Season wins
     tg["season_wins"] = (
         tg.groupby(["team_id", "season_id"])["won"]
