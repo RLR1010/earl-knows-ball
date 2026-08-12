@@ -656,6 +656,11 @@ async def train_model(
             ml_correct = int(((pred_ml == actual_home_won) & tie_mask).sum())
 
         ats_push = int(ats_push_mask.sum())
+        # games_with_lines is the FULL number of games available for that test
+        # year (285 for a completed NFL regular season) BEFORE push exclusion.
+        # This is what the model actually evaluated on. Pushes are reported
+        # separately below instead of silently shrinking the headline count.
+        games_with_lines = int(ats_total)
         ats_total = ats_total - ats_push  # pushes excluded from denominator, matching engine.py
         ats_incorrect = ats_total - ats_correct
         ats_pct = round(100 * ats_correct / ats_total, 2) if ats_total > 0 else 0.0
@@ -673,7 +678,10 @@ async def train_model(
         ty_result = {
             "name": f"{test_year} NFL ATS",
             "test_year": test_year,
-            "total_games": ats_total,
+            "total_games": games_with_lines,
+            "games_with_lines": games_with_lines,
+            "ats_pushes": ats_push,
+            "games_with_decision": ats_total,
             "rmse": round(rmse_val, 4),
             "mae": round(mae_val, 4),
             "train_rmse": round(train_rmse, 4),
