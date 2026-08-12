@@ -8,6 +8,7 @@ Exports:
 import difflib
 import json
 import logging
+import re
 import unicodedata
 from datetime import date, datetime, timedelta, timezone as dt_timezone
 
@@ -1140,6 +1141,16 @@ def _norm_name(s: str) -> str:
     return unicodedata.normalize("NFD", s).encode("ascii", "ignore").decode().lower()
 
 
+_SUFFIX_RE = re.compile(r"\b(jr|sr|ii|iii|iv|v)\.?\s*$", re.IGNORECASE)
+
+
+def _strip_suffix(s: str) -> str:
+    """Remove a trailing name suffix (Jr., Sr., II, III, IV, V) from a player
+    name so suffixed and non-suffixed variants match on their core name.
+    E.g. "Fernando Tatis Jr." -> "Fernando Tatis"."""
+    return _SUFFIX_RE.sub("", s or "")
+
+
 async def _search_players(db: AsyncSession, name: str, team_abbr: str = "", limit: int = 8):
     """Fuzzy player lookup. Returns a ranked list of candidate dicts
     ``{player_id, name, team, position, bats, score, exact}`` best-first.
@@ -1159,7 +1170,12 @@ async def _search_players(db: AsyncSession, name: str, team_abbr: str = "", limi
     rows = (await db.execute(text(
         """
         SELECT p.id, p.name, p.position, p.team_id, p.bats,
-               t.abbreviation AS team_abbr
+               t.abbreviation AS team_abbr,
+               EXISTS (
+                   SELECT 1 FROM mlb.batting_game_stats bgs
+                   JOIN mlb.games g ON g.id = bgs.game_id
+                   WHERE bgs.player_id = p.id AND g.season_id = 21
+               ) AS has_season_data
         FROM mlb.players p
         LEFT JOIN mlb.teams t ON t.id = p.team_id
         """
@@ -1168,36 +1184,59 @@ async def _search_players(db: AsyncSession, name: str, team_abbr: str = "", limi
         return []
 
     results = []
-    for pid, rname, pos, team_id, bats, tabbr in rows:
+    for pid, rname, pos, team_id, bats, tabbr, has_season_data in rows:
         pn = _norm_name(rname or "")
         ptokens = pn.split()
         if not ptokens:
             continue
-        exact = (pn == q)
-        # token overlap
-        overlap = len(q_set & set(ptokens))
-        # Levenshtein-ish similarity on full normalized string
+        # core name (suffix-stripped, NFD) so "Jr.\" doesn't penalize a suffixed
+        # player when the user omits the suffix (fixes Tatis/Guerrero/Young/etc.)
+        core_candidate = _norm_name(_strip_suffix(rname or ""))
+        core_query = _norm_name(_strip_suffix(name))
+        q_tokens_local = core_query.split()
+        c_tokens = core_candidate.split()
+
+        exact = (pn == q)  # full normalized match (query includes suffix)
+        # core overlap + similarity on suffix-stripped names
+        core_exact = (core_candidate == core_query)
+        overlap = len(set(q_tokens) & set(ptokens))
+        core_overlap = len(set(q_tokens_local) & set(c_tokens))
+
+        # Levenshtein-ish similarity on both full and core names
         ratio = difflib.SequenceMatcher(None, q, pn).ratio()
-        # per-token best match (catches "Judg" vs "Judge")
+        core_ratio = difflib.SequenceMatcher(None, core_query, core_candidate).ratio()
+
         tok_ratio = max(
             (difflib.SequenceMatcher(None, qt, pt).ratio() for qt in q_tokens for pt in ptokens),
             default=0.0,
         )
-        # combined score; team boost strong for shared names
-        team_boost = 0.25 if tabbr and tabbr == team_abbr else 0.0
-        score = overlap + ratio * 1.5 + tok_ratio * 1.0 + team_boost + (2.0 if exact else 0.0)
-        if exact or overlap >= 1 or tok_ratio >= 0.7 or ratio >= 0.55:
+        # team boost strong for shared names
+        team_boost = 0.35 if tabbr and tabbr == team_abbr else 0.0
+        # suffix-aware bonus: match on core name strongly, reward active-season data
+        suffix_bonus = 1.5 if core_exact else 0.0
+        active_bonus = 0.6 if has_season_data else 0.0
+        score = core_overlap + core_ratio * 1.5 + tok_ratio * 1.0 + team_boost + suffix_bonus + active_bonus + (2.0 if exact else 0.0)
+        if exact or core_exact or core_overlap >= 1 or tok_ratio >= 0.7 or ratio >= 0.55:
             results.append({
                 "player_id": pid,
                 "name": rname,
                 "team": tabbr,
                 "position": pos,
                 "bats": bats,
+                "has_season_data": bool(has_season_data),
                 "score": round(score, 3),
-                "exact": exact,
+                "exact": core_exact,
+                "_core": core_candidate,
             })
 
-    results.sort(key=lambda r: (r["exact"], r["score"]), reverse=True)
+    # sort: strong team match first, then core-exact, then active-season data,
+    # then score. This resolves Sr./Jr./phantom collisions to the real active player.
+    results.sort(
+        key=lambda r: ("" if r["_core"] == core_query else "zz",
+                       not r["has_season_data"],
+                       not r["exact"],
+                       -r["score"])
+    )
     return results[:limit]
 
 
