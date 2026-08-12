@@ -295,6 +295,22 @@ TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
+            "name": "get_player_splits",
+            "description": "Get a player's situational/career splits: home vs away, cold vs warm games, dome vs outdoor, grass vs turf, division vs non-division, primetime vs day. Optional split_type to request one (e.g. 'home','cold','dome','division','primetime'). Returns career splits by default; set season_year for one season. Great for 'is he better at home / in cold weather?' questions.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "player_name": {"type": "string", "description": "Player full name (e.g., 'Patrick Mahomes', 'Justin Jefferson')"},
+                    "split_type": {"type": "string", "description": "Optional: one split type to isolate (home, away, cold, mild, warm, outdoor_cold, dome, outdoor, grass, turf, division, non_division, primetime, day)"},
+                    "season_year": {"type": "integer", "description": "Season year for a single-season split (defaults to career)"},
+                },
+                "required": ["player_name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "get_game_prediction",
             "description": "Get Earl's model prediction for an NFL game: ATS pick, O/U pick, moneyline with confidence.",
             "parameters": {
@@ -866,6 +882,97 @@ async def _get_player_weekly_log(db: AsyncSession, args: dict) -> dict:
     return {"player": player.name, "team": games[0]["team"] if games else None, "season_year": year, "game_logs": games}
 
 
+async def _get_player_splits(db: AsyncSession, args: dict) -> dict:
+    """Situational/career splits from nfl.player_splits (home/away, weather,
+    dome, surface, division, primetime). season_year optional -> single season."""
+    player_name = args.get("player_name", "")
+    split_type = (args.get("split_type") or "").strip().lower()
+    year = args.get("season_year")
+
+    # Resolve player (reuse the weekly-log resolution approach)
+    clean = player_name.strip()
+    parts = clean.lower().split(" ", 1)
+    if len(parts) == 2:
+        stmt = select(Player).where(Player.name.ilike(f"{parts[0]}% {parts[1]}%"))
+    else:
+        stmt = select(Player).where(Player.name.ilike(f"%{parts[0]}%"))
+    r = await db.execute(stmt)
+    player = r.scalar_one_or_none()
+    if not player:
+        return {"error": f"Player not found: {player_name}"}
+
+    season_scope = None
+    if year:
+        sid = await _resolve_season_id(db, year)
+        season_scope = sid
+
+    where = "player_id = :pid"
+    params = {"pid": player.id}
+    if season_scope:
+        where += " AND season_id = :sid"
+        params["sid"] = season_scope
+    else:
+        where += " AND season_id IS NULL"  # career aggregate
+    if split_type:
+        where += " AND split_type = :st"
+        params["st"] = split_type
+
+    sql = text(f"""
+        SELECT split_type, games_played, pass_attempts, pass_completions, pass_yards,
+               pass_tds, pass_int, rush_attempts, rush_yards, rush_tds,
+               targets, receptions, receiving_yards, receiving_tds, fumbles,
+               fantasy_ppr, ypc, ypr
+        FROM nfl.player_splits
+        WHERE {where}
+        ORDER BY split_type
+    """)
+    rows = (await db.execute(sql, params)).mappings().all()
+    if not rows:
+        return {"error": f"No splits found for {player.name}"}
+
+    def _fmt(row) -> dict:
+        rate = None
+        att = row.pass_attempts
+        if att and att > 0:
+            rate = _passer_rating(
+                att, row.pass_completions or 0, row.pass_yards or 0,
+                row.pass_tds or 0, row.pass_int or 0,
+            )
+        return {
+            "split": row.split_type,
+            "games": row.games_played,
+            "passing": {"yards": row.pass_yards, "tds": row.pass_tds, "ints": row.pass_int,
+                        "rating": rate, "cmppct": round((row.pass_completions or 0) / att * 100, 1) if att else None},
+            "rushing": {"attempts": row.rush_attempts, "yards": row.rush_yards, "tds": row.rush_tds,
+                        "ypc": row.ypc},
+            "receiving": {"targets": row.targets, "receptions": row.receptions,
+                          "yards": row.receiving_yards, "tds": row.receiving_tds,
+                          "ypr": row.ypr},
+            "fumbles": row.fumbles,
+            "fantasy_ppr": round(row.fantasy_ppr, 1) if row.fantasy_ppr else None,
+        }
+
+    splits = {r.split_type: _fmt(r) for r in rows}
+    scope = "career" if not season_scope else f"{year}"
+    return {"player": player.name, "position": player.position, "scope": scope, "splits": splits}
+
+
+def _passer_rating(att, comp, yds, td, intc):
+    """Standard NFL passer rating (0-158.3)."""
+    if not att:
+        return None
+    a = ((comp / att) - 0.30) * 5.0
+    b = ((yds / att) - 3.0) * 0.25
+    c = (td / att) * 20.0
+    d = 2.375 - ((intc / att) * 25.0)
+    for v in (a, b, c, d):
+        if v < 0:
+            v = 0
+        elif v > 2.375:
+            v = 2.375
+    return round(((a + b + c + d) / 6.0) * 100.0, 1)
+
+
 async def _get_team_trends(db: AsyncSession, args: dict) -> dict:
     """Recent performance trends from nfl.team_rolling_stats."""
     abbr = await _resolve_team_abbr(db, args.get("team_name", ""))
@@ -1311,6 +1418,8 @@ _TOOL_ALIASES = {
     "get_player_season_prop": "get_player_season_props",
     "get_defense_rankings": "get_team_defense_rankings",
     "get_defense_ranking": "get_team_defense_rankings",
+    "get_player_split_stats": "get_player_splits",
+    "get_player_situational": "get_player_splits",
 }
 
 
@@ -1333,6 +1442,7 @@ _TOOL_HANDLERS = {
     "get_depth_chart": _get_depth_chart,
     "get_player_stats": _get_player_stats,
     "get_player_weekly_log": _get_player_weekly_log,
+    "get_player_splits": _get_player_splits,
     "get_game_prediction": _get_game_prediction,
     "search_articles": _search_articles,
     "get_team_schedule": _get_team_schedule,
