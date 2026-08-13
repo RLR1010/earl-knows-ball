@@ -258,6 +258,21 @@ TOOL_DEFINITIONS = [
         },
     },
     {
+        "type": "function",
+        "function": {
+            "name": "get_team_split_stats",
+            "description": "Get an NBA team's split stats for handicapping: home vs away, vs East vs West. Returns career (all-time) splits and the requested season's splits with W/L, PPG, Opp PPG, point differential, pace, FG%/3P%/FT%, reb/ast/stl/blk/tov/fouls, plus ATS (wins/losses/pushes, cover %) and O/U (overs/unders, over %) vs the consensus closing line. Reads nba.team_splits.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "team_name": {"type": "string", "description": "Team name or abbreviation (e.g. 'Boston Celtics', 'BOS', 'Lakers')"},
+                    "season_year": {"type": "integer", "description": "Season year (defaults to most recent season)"},
+                },
+                "required": ["team_name"],
+            },
+        },
+    },
+    {
     "type": "function",
     "function": {
         "name": "get_game_prediction",
@@ -810,6 +825,144 @@ async def _get_player_split_stats(db: AsyncSession, args: dict) -> dict:
     return result
 
 
+async def _get_team_split_stats(db: AsyncSession, args: dict) -> dict:
+    """Return NBA team split stats (home/away, vs conference) + career for handicapping.
+
+    Reads nba.team_splits (freshly rebuilt by the nba-splits-refresh task). Returns
+    both the most recent completed season's splits AND the career (lifetime) splits.
+
+    args:
+        team_name: str (required; name or abbreviation, case-insensitive)
+        season_year: int (optional; default = most recent season that has data)
+    """
+    tname = args.get("team_name")
+    if not tname:
+        return {"error": "team_name is required"}
+
+    tid = await _resolve_team_id(db, tname)
+    if not tid:
+        return {"error": f"No NBA team found for '{tname}'"}
+
+    # Resolve team display name
+    tn = await db.execute(
+        text("SELECT name, abbreviation, conference, division FROM nba.teams WHERE id = :tid"),
+        {"tid": tid},
+    )
+    tmeta = tn.mappings().first()
+    if not tmeta:
+        return {"error": f"No NBA team found for '{tname}'"}
+
+    season_year = args.get("season_year")
+    season_id = None
+    if season_year is not None:
+        try:
+            season_id = await _resolve_season_id(db, int(season_year))
+        except ValueError:
+            return {"error": f"No NBA season found for year {season_year}"}
+
+    # Career rows + (optionally) the requested season's rows.
+    where = "ts.team_id = :tid AND ts.season_id IS NULL"
+    params = {"tid": tid}
+    if season_id is not None:
+        where += " OR (ts.team_id = :tid AND ts.season_id = :sid)"
+        params["sid"] = season_id
+
+    sql = text(f"""
+        SELECT ts.split_type, ts.split_label, ts.season_id,
+               ts.games, ts.wins, ts.losses, ts.win_pct,
+               ts.points_for, ts.points_against, ts.point_differential, ts.pace,
+               ts.field_goal_pct, ts.three_point_pct, ts.free_throw_pct,
+               ts.rebounds_per_game, ts.assists_per_game, ts.steals_per_game,
+               ts.blocks_per_game, ts.turnovers_per_game, ts.fouls_per_game,
+               ts.ats_wins, ts.ats_losses, ts.ats_pushes, ts.ats_pct,
+               ts.ou_overs, ts.ou_unders, ts.ou_pushes, ts.ou_overs_pct
+        FROM nba.team_splits ts
+        WHERE ({where})
+        ORDER BY ts.season_id NULLS FIRST, ts.split_type
+    """)
+    r = await db.execute(sql, params)
+
+    def _num(v):
+        return float(v) if v is not None else None
+
+    career = {}
+    season = {}
+    any_rows = False
+    for row in r.mappings():
+        any_rows = True
+        d = {
+            "label": row.split_label,
+            "games": row.games,
+            "wins": row.wins,
+            "losses": row.losses,
+            "win_pct": _num(row.win_pct),
+            "points_for": _num(row.points_for),
+            "points_against": _num(row.points_against),
+            "point_differential": _num(row.point_differential),
+            "pace": _num(row.pace),
+            "field_goal_pct": _num(row.field_goal_pct),
+            "three_point_pct": _num(row.three_point_pct),
+            "free_throw_pct": _num(row.free_throw_pct),
+            "rebounds_per_game": _num(row.rebounds_per_game),
+            "assists_per_game": _num(row.assists_per_game),
+            "steals_per_game": _num(row.steals_per_game),
+            "blocks_per_game": _num(row.blocks_per_game),
+            "turnovers_per_game": _num(row.turnovers_per_game),
+            "fouls_per_game": _num(row.fouls_per_game),
+            "ats_wins": row.ats_wins,
+            "ats_losses": row.ats_losses,
+            "ats_pushes": row.ats_pushes,
+            "ats_pct": _num(row.ats_pct),
+            "ou_overs": row.ou_overs,
+            "ou_unders": row.ou_unders,
+            "ou_pushes": row.ou_pushes,
+            "ou_overs_pct": _num(row.ou_overs_pct),
+        }
+        if row.season_id is None:
+            career[row.split_type] = d
+        else:
+            season[row.split_type] = d
+
+    if not any_rows:
+        return {
+            "team": tmeta.name,
+            "message": "No split data found.",
+            "hint": "Run the NBA splits refresh first.",
+        }
+
+    result = {
+        "team": tmeta.name,
+        "abbreviation": tmeta.abbreviation,
+        "conference": tmeta.conference,
+        "division": tmeta.division,
+    }
+    if career:
+        result["career"] = {
+            "home": career.get("home"), "away": career.get("away"),
+            "vs_east": career.get("vs_east"), "vs_west": career.get("vs_west"),
+        }
+    if season_id is not None and season:
+        result["season"] = {
+            "home": season.get("home"), "away": season.get("away"),
+            "vs_east": season.get("vs_east"), "vs_west": season.get("vs_west"),
+        }
+    elif season_id is None:
+        # fall back: latest season present in the table
+        latest = await db.execute(
+            text("SELECT MAX(ts.season_id) AS max_sid FROM nba.team_splits ts WHERE ts.team_id = :tid AND ts.season_id IS NOT NULL"),
+            {"tid": tid},
+        )
+        max_sid = latest.scalar_one_or_none()
+        if max_sid and season:
+            result["latest_season"] = {
+                "season_id": max_sid,
+                "splits": {
+                    "home": season.get("home"), "away": season.get("away"),
+                    "vs_east": season.get("vs_east"), "vs_west": season.get("vs_west"),
+                },
+            }
+    return result
+
 
 async def _get_game_prediction(db: AsyncSession, args: dict) -> dict:
     gid = args["game_id"]
@@ -1255,6 +1408,7 @@ _TOOL_HANDLERS = {
     "get_player_stats": _get_player_stats,
     "get_player_game_logs": _get_player_game_logs,
     "get_player_split_stats": _get_player_split_stats,
+    "get_team_split_stats": _get_team_split_stats,
     "get_game_prediction": _get_game_prediction,
     "search_articles": _search_articles,
     "get_team_schedule": _get_team_schedule,

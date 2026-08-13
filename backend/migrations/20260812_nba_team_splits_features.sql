@@ -29,3 +29,8 @@ ON CONFLICT (name) DO UPDATE SET
     live_ats       = EXCLUDED.live_ats,
     live_ou        = EXCLUDED.live_ou,
     pick_card      = EXCLUDED.pick_card;
+
+-- vs-conference split features don't help training -> not trainable.
+-- (Kept pick_card = TRUE so handicappers can still see them.)
+UPDATE nba.features SET is_trainable = FALSE
+WHERE name IN ('h_ats_pct_vs_conf','a_ats_pct_vs_conf','h_ou_over_pct_vs_conf','a_ou_over_pct_vs_conf');
