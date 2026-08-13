@@ -3562,8 +3562,12 @@ async def data_loader_load_game(
         feat_meta = {r[0]: r for r in _feat_rows}
 
         # ── Game summary (games/teams catalog read, NOT feature SQL) ──
+        # Only NFL.games has a `week` column; NBA/MLB don't, so select it
+        # conditionally (NULL otherwise) to keep the cross-sport query valid.
+        _week_sql = "g.week" if sport == "nfl" else "NULL::int AS week"
         _gi = (await db.execute(_sa_text(
-            "SELECT g.id AS game_id, s.id AS season_id, g.week, g.home_score, g.away_score, "
+            "SELECT g.id AS game_id, s.id AS season_id, " + _week_sql + ", "
+            "g.home_score, g.away_score, "
             "g.date AS game_date, g.status, "
             "ht.abbreviation AS ha, ht.name AS home_team, ht.abbreviation AS home_abbr, "
             "at.abbreviation AS aa, at.name AS away_team, at.abbreviation AS away_abbr "
