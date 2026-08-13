@@ -18,7 +18,7 @@ interface PublicArticle {
   visibility?: string;
 }
 
-const VALID_SPORTS = ["nfl", "nba", "mlb"];
+const VALID_SPORTS = ["all", "nfl", "nba", "mlb"];
 
 const BACKEND_BASE =
   process.env.BACKEND_URL || process.env.NEXT_PUBLIC_BACKEND_URL || COMPUTE_URL;
@@ -106,8 +106,11 @@ export default async function SportArticleDetailPage({
   return (
     <div className="max-w-4xl mx-auto px-4 py-12">
       <div className="mb-6 text-sm text-gray-400">
-        <Link href={`/${normalizedSport}`} className="hover:text-earl-400 transition">
-          ← {normalizedSport.toUpperCase()}
+        <Link
+          href={normalizedSport === "all" ? "/" : `/${normalizedSport}`}
+          className="hover:text-earl-400 transition"
+        >
+          ← {normalizedSport === "all" ? "Home" : normalizedSport.toUpperCase()}
         </Link>
         <span className="mx-2 text-gray-600">/</span>
         <Link
