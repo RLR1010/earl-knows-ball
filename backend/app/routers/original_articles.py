@@ -1289,6 +1289,7 @@ async def list_original_articles(
     sport: str,
     limit: int = Query(50, ge=1, le=100),
     section: Optional[str] = Query(None, description="Filter to a specific destination section, e.g. 'article' or 'daily_picks'"),
+    tier: str = Query("public", description="'public' (default) or 'premium'. Premium article bodies are redacted unless tier=premium."),
     db: AsyncSession = Depends(get_db),
 ):
     sport = _validate_sport(sport)
@@ -1311,6 +1312,12 @@ async def list_original_articles(
         params,
     )
     rows = [dict(r) for r in result.mappings()]
+    # Premium gate: never send premium article bodies to a public caller.
+    # (Matches the writeup `tier` convention — full content only for tier=premium.)
+    if tier != "premium":
+        for r in rows:
+            if r.get("visibility") in ("premium", "ultimate"):
+                r["content"] = None
     return {"sport": sport, "articles": rows}
 
 
@@ -1318,6 +1325,7 @@ async def list_original_articles(
 async def get_original_article(
     sport: str,
     ref: str,
+    tier: str = Query("public", description="'public' (default) or 'premium'. Premium article bodies are redacted unless tier=premium."),
     db: AsyncSession = Depends(get_db),
 ):
     sport = _validate_sport(sport)
@@ -1351,7 +1359,11 @@ async def get_original_article(
     row = result.mappings().first()
     if not row:
         raise HTTPException(status_code=404, detail="Article not found")
-    return {"article": dict(row), "slug": row["slug"]}
+    art = dict(row)
+    # Premium gate: redact the body for non-premium callers.
+    if tier != "premium" and art.get("visibility") in ("premium", "ultimate"):
+        art["content"] = None
+    return {"article": art, "slug": art["slug"]}
 
 
 # Admin routes live under `/api/admin` (matching the existing admin.py

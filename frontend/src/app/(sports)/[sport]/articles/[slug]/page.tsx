@@ -1,8 +1,7 @@
 import Link from "next/link";
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import ArticleContent from "@/components/ArticleContent";
 import { COMPUTE_URL } from "@/lib/backend-url";
 
 interface PublicArticle {
@@ -16,6 +15,7 @@ interface PublicArticle {
   slug?: string | null;
   seo_description?: string | null;
   seo_keywords?: string | null;
+  visibility?: string;
 }
 
 const VALID_SPORTS = ["nfl", "nba", "mlb"];
@@ -130,7 +130,14 @@ export default async function SportArticleDetailPage({
 
         <div className="writeup-content">
           <div className="text-gray-300 leading-relaxed">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{article.content}</ReactMarkdown>
+            <ArticleContent
+              sport={sport}
+              articleId={article.id ?? article.slug ?? slug}
+              visibility={article.visibility}
+              content={article.content}
+              summary={article.summary}
+              title={article.title}
+            />
           </div>
         </div>
       </article>

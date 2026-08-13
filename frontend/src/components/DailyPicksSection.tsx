@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { useAuth } from "@/lib/auth-context";
 
 interface DailyPickArticle {
   id: number;
@@ -11,6 +12,7 @@ interface DailyPickArticle {
   content?: string | null;
   slug?: string | null;
   published_at: string | null;
+  visibility?: string;
 }
 
 function formatRelative(ts: string | null): string {
@@ -28,16 +30,6 @@ function formatRelative(ts: string | null): string {
   return diffDay === 1 ? "yesterday" : `${diffDay}d ago`;
 }
 
-function stripHtml(html?: string | null): string {
-  if (!html) return "";
-  // naive HTML strip for the excerpt; the API summary is preferred anyway
-  return html
-    .replace(/<[^>]*>/g, " ")
-    .replace(/&nbsp;/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
 /**
  * Home-page section that surfaces the most recent article tagged with the
  * `daily_picks` destination section. Fetches via the same public original
@@ -48,6 +40,9 @@ function stripHtml(html?: string | null): string {
  */
 export default function DailyPicksSection({ sport }: { sport: string }) {
   const [article, setArticle] = useState<DailyPickArticle | null | undefined>(undefined);
+  const { user } = useAuth();
+  const isPremiumMember =
+    user?.subscription_tier === "premium" || user?.subscription_tier === "ultimate";
 
   useEffect(() => {
     let active = true;
@@ -66,7 +61,8 @@ export default function DailyPicksSection({ sport }: { sport: string }) {
     };
   }, [sport]);
 
-  const excerpt = article?.summary || stripHtml(article?.content);
+  const excerpt = article?.summary;
+  const isPremium = article?.visibility === "premium" || article?.visibility === "ultimate";
   const detailHref = `/${sport}/articles/${article?.slug || article?.id}`;
 
   return (
@@ -80,6 +76,14 @@ export default function DailyPicksSection({ sport }: { sport: string }) {
           <span className="h-1.5 w-1.5 rounded-full bg-amber-400 animate-pulse" />
           Daily Picks
         </span>
+        {isPremium && (
+          <span className="inline-flex items-center gap-1 rounded-full bg-gradient-to-r from-amber-500/25 to-earl-500/25 border border-amber-500/40 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-amber-300">
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+              <path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4-6.2-4.5-6.2 4.5 2.4-7.4L2 9.4h7.6z" />
+            </svg>
+            Premium
+          </span>
+        )}
       </div>
 
       {article ? (
@@ -88,11 +92,11 @@ export default function DailyPicksSection({ sport }: { sport: string }) {
             {article.title}
           </h2>
           {excerpt && (
-            <p className="mt-3 text-gray-300 line-clamp-3 max-w-3xl">{excerpt}</p>
+            <p className="mt-3 text-gray-300 line-clamp-2 max-w-3xl">{excerpt}</p>
           )}
-          <div className="mt-4 flex items-center gap-4">
+          <div className="mt-4 flex flex-wrap items-center gap-4">
             <span className="inline-flex items-center gap-2 rounded-full bg-amber-500/15 border border-amber-500/30 px-4 py-1.5 text-sm font-semibold text-amber-300">
-              Read today&apos;s picks
+              {isPremium && !isPremiumMember ? "Unlock today's picks" : "Read today's picks"}
               <span aria-hidden="true">→</span>
             </span>
             {formatRelative(article.published_at) && (
