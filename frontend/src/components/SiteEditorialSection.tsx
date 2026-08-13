@@ -61,7 +61,7 @@ export default function SiteEditorialSection() {
   }, []);
 
   return (
-    <section aria-label="Latest Editorial" className="py-4">
+    <section aria-label="Latest Editorial" className="max-w-5xl mx-auto px-4 mb-12">
       <div className="flex items-center justify-between mb-5">
         <h2 className="font-display text-2xl font-bold text-white tracking-tight flex items-center gap-2">
           <span className="inline-flex h-6 items-center rounded-md bg-gradient-to-r from-earl-600 to-earl-500 px-2 text-xs font-black uppercase tracking-widest text-white">
