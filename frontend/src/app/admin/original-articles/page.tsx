@@ -972,6 +972,17 @@ Manage it under Admin → Auto Generation.`);
                                       ))}
                                     </ul>
                                   )}
+                                {editAccuracyCheck.raw ? (
+                                  <details className="text-xs">
+                                    <summary className="cursor-pointer text-gray-500 hover:text-gray-300">Show accuracy log</summary>
+                                    <pre className="mt-1 whitespace-pre-wrap rounded bg-black/40 p-2 text-[11px] text-gray-400 max-h-48 overflow-auto">
+                                      {editAccuracyCheck.raw}
+                                    </pre>
+                                  </details>
+                                ) : editAccuracyCheck.error ? (
+                                  <p className="text-[11px] text-red-400/80">Error: {String(editAccuracyCheck.error)}
+                                  </p>
+                                ) : null}
                               </div>
                             )}
                             {editRejectionHistory.length > 0 && (
@@ -1007,6 +1018,16 @@ Manage it under Admin → Auto Generation.`);
                                           ))}
                                         </ul>
                                       )}
+                                      {d.accuracy_check?.raw ? (
+                                        <details className="text-[11px]">
+                                          <summary className="text-gray-500 cursor-pointer">Show accuracy log</summary>
+                                          <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap rounded bg-black/40 border border-gray-700 p-2 text-[11px] text-gray-400">
+                                            {d.accuracy_check.raw}
+                                          </pre>
+                                        </details>
+                                      ) : d.accuracy_check?.error ? (
+                                        <p className="text-[11px] text-red-400/80">Error: {String(d.accuracy_check.error)}</p>
+                                      ) : null}
                                       {d.content && (
                                         <details className="text-[11px]">
                                           <summary className="text-blue-400 cursor-pointer">View rejected draft</summary>

@@ -804,31 +804,54 @@ async def _verify_original_accuracy(
     if not research_text.strip():
         research_text = "=== RESEARCH DATA ===\n(no research captured)"
     article_text = f"TITLE:\n{title}\n\nBODY:\n{(content or '')[:28000]}"
-    try:
-        resp = await client.chat.completions.create(
-            model=settings.deepseek_model,
-            messages=[
-                {
-                    "role": "system",
-                    "content": ORIGINAL_ARTICLE_SHARED_SYSTEM,
-                },
-                {
-                    "role": "user",
-                    "content": f"{research_text}\n\n=== ARTICLE TO VERIFY ===\n{article_text}"
-                    f"{_accuracy_task_tail(visibility)}",
-                },
-            ],
-            temperature=0.0,
-            max_tokens=1600,
-            response_format={"type": "json_object"},
-            # Match the writeups generator: the accuracy check reasons lightly
-            # so it can actually trace claims to the research (incl. the
-            # enrichment section), instead of running hidden CoT at default.
-            extra_body={"thinking": {"type": "enabled"}, "reasoning_effort": "minimal"},
-        )
-        raw = resp.choices[0].message.content or ""
-        tokens = resp.usage.total_tokens if resp.usage else 0
-        if usage_log is not None and resp.usage is not None:
+    # DeepSeek with thinking+JSON mode can burn the token budget on reasoning
+    # and return empty content. That is a transient contract failure, so retry
+    # the verification call a few times specifically when content comes back
+    # empty before we treat the check as not-passed.
+    import asyncio as _asyncio
+
+    raw = ""
+    tokens = 0
+    last_err = None
+    user_content = (
+        f"{research_text}\n\n=== ARTICLE TO VERIFY ===\n{article_text}"
+        f"{_accuracy_task_tail(visibility)}"
+    )
+    for attempt in range(3):
+        try:
+            resp = await client.chat.completions.create(
+                model=settings.deepseek_model,
+                messages=[
+                    {"role": "system", "content": ORIGINAL_ARTICLE_SHARED_SYSTEM},
+                    {"role": "user", "content": user_content},
+                ],
+                temperature=0.0,
+                max_tokens=4000,
+                response_format={"type": "json_object"},
+                extra_body={"thinking": {"type": "enabled"}, "reasoning_effort": "minimal"},
+            )
+            raw = resp.choices[0].message.content or ""
+            tokens = resp.usage.total_tokens if resp.usage else 0
+            if raw.strip():
+                break
+            last_err = "empty-verdict"
+            if attempt < 2:
+                logger.warning(
+                    "Original-article accuracy check returned empty content "
+                    "(attempt %s/3); retrying.", attempt + 1,
+                )
+                await _asyncio.sleep(1.0)
+        except Exception as e:  # noqa: BLE001
+            last_err = e
+            if attempt >= 2:
+                break
+            await _asyncio.sleep(1.0)
+    if not raw.strip() and last_err and "empty-verdict" not in str(last_err):
+        logger.warning("Original-article accuracy check failed: %s", last_err)
+        return ({"passed": False, "error": str(last_err)[:300]}, 0)
+
+    if usage_log is not None:
+        try:
             usage = resp.usage
             ptd = getattr(usage, "prompt_tokens_details", None) or {}
             cache_hit = getattr(usage, "prompt_cache_hit_tokens", None)
@@ -854,9 +877,8 @@ async def _verify_original_accuracy(
                 ),
                 "total_tokens": getattr(usage, "total_tokens", 0) or 0,
             })
-    except Exception as e:  # noqa: BLE001
-        logger.warning("Original-article accuracy check failed: %s", e)
-        return ({"passed": False, "error": str(e)[:300]}, 0)
+        except Exception:  # noqa: BLE001
+            pass
 
     data = _extract_seo_json(raw)
     if not isinstance(data, dict):
@@ -1139,6 +1161,10 @@ async def generate_original_article(
     summary = _guess_summary(answer)
     max_passes = int(getattr(settings, "MAX_ORIGINAL_CORRECTION_PASSES", 2) or 2)
     has_findings = bool(accuracy_check.get("findings")) and not accuracy_check.get("skipped")
+    # A check that did NOT pass (real findings OR a failed/empty verification
+    # verdict) is an inaccuracy — never silently report an unverified article
+    # as accurate just because the findings list happened to be empty.
+    check_failed = (not accuracy_check.get("passed")) and not accuracy_check.get("skipped")
     while has_findings and retries_used < max_passes:
         rejection_history.append({
             "attempt": retries_used + 1,
@@ -1163,8 +1189,8 @@ async def generate_original_article(
         )
         has_findings = bool(accuracy_check.get("findings")) and not accuracy_check.get("skipped")
     accuracy_check["retries_used"] = retries_used
-    accuracy_check["has_inaccuracy"] = has_findings
-    accuracy_check["accuracy_pass"] = not has_findings
+    accuracy_check["has_inaccuracy"] = bool(has_findings or check_failed)
+    accuracy_check["accuracy_pass"] = not bool(has_findings or check_failed)
 
     # Build SEO meta for the final (post-correction) article and persist it now,
     # so every generated article has seo_description/seo_keywords saved (not just
