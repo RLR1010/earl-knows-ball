@@ -585,6 +585,23 @@ COMPUTED_FEATURES_CATALOG: Dict[str, str] = {
     "a_star1_ppg_5": "Away team leading scorer PPG rolling 5",
     "h_star1_active": "Home team leading scorer active (binary)",
     "a_star1_active": "Away team leading scorer active (binary)",
+
+    # ── Team splits (home/away + vs conference) — PRIOR SEASON ─────────
+    # Derived from nba.team_splits (ATS/OU over-rate + venue scoring). Home/away
+    # venue splits for the venue team; vs_conf = vs the OPPONENT's conference.
+    # (Back-to-back/rest splits excluded per Rich.)
+    "h_ats_pct_home": "Home team ATS cover % at home (prior season)",
+    "a_ats_pct_away": "Away team ATS cover % on road (prior season)",
+    "h_ou_over_pct_home": "Home team OU over % at home (prior season)",
+    "a_ou_over_pct_away": "Away team OU over % on road (prior season)",
+    "h_pts_home": "Home team pts-for per game at home (prior season)",
+    "a_pts_away": "Away team pts-for per game on road (prior season)",
+    "h_pts_against_home": "Home team pts-against per game at home (prior season)",
+    "a_pts_against_away": "Away team pts-against per game on road (prior season)",
+    "h_ats_pct_vs_conf": "Home team ATS cover % vs opponent conference (prior season)",
+    "a_ats_pct_vs_conf": "Away team ATS cover % vs opponent conference (prior season)",
+    "h_ou_over_pct_vs_conf": "Home team OU over % vs opponent conference (prior season)",
+    "a_ou_over_pct_vs_conf": "Away team OU over % vs opponent conference (prior season)",
 }
 
 DISPLAY_NAMES: Dict[str, str] = {
@@ -708,6 +725,24 @@ DISPLAY_NAMES: Dict[str, str] = {
     "a_star1_ppg_5": "Away Top Scorer PPG L5",
     "h_star1_active": "Home Top Scorer Active",
     "a_star1_active": "Away Top Scorer Active",
+
+    # ── Team splits (home/away + vs conference) — PRIOR SEASON ─────────
+    # Derived from nba.team_splits (contains ATS/OU over-rate + venue scoring).
+    # Uses the team's previous completed season to avoid lookahead. Home/away
+    # venue splits for the venue team; vs_conf = team's split vs the OPPONENT's
+    # conference. (Back-to-back/rest splits deliberately excluded.)
+    "h_ats_pct_home": "Home team ATS cover % at home (prior season)",
+    "a_ats_pct_away": "Away team ATS cover % on road (prior season)",
+    "h_ou_over_pct_home": "Home team OU over % at home (prior season)",
+    "a_ou_over_pct_away": "Away team OU over % on road (prior season)",
+    "h_pts_home": "Home team pts-for per game at home (prior season)",
+    "a_pts_away": "Away team pts-for per game on road (prior season)",
+    "h_pts_against_home": "Home team pts-against per game at home (prior season)",
+    "a_pts_against_away": "Away team pts-against per game on road (prior season)",
+    "h_ats_pct_vs_conf": "Home team ATS cover % vs opponent conference (prior season)",
+    "a_ats_pct_vs_conf": "Away team ATS cover % vs opponent conference (prior season)",
+    "h_ou_over_pct_vs_conf": "Home team OU over % vs opponent conference (prior season)",
+    "a_ou_over_pct_vs_conf": "Away team OU over % vs opponent conference (prior season)",
 }
 
 
@@ -1448,6 +1483,102 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
                 )
     finally:
         _star_engine.dispose()
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    #  1d. Team splits (home/away, vs conference) — PRIOR SEASON only
+    #  ATS/OU over-rate, venue scoring from nba.team_splits (home/away) and
+    #  vs_east/vs_west (relative to the OPPONENT's conference). Uses the team's
+    #  previous completed season (season_id - 1) to avoid lookahead. No
+    #  back-to-back/rest features here (Rich: excludes them).
+    # ═══════════════════════════════════════════════════════════════════════════
+    if len(df) > 0:
+        try:
+            with create_engine(DEFAULT_DB_URL).connect() as _ts_conn:
+                _splits = pd.read_sql("""
+                    SELECT team_id, season_id, split_type,
+                           ats_pct, ou_overs_pct, points_for, points_against
+                    FROM nba.team_splits
+                    WHERE split_type IN ('home', 'away', 'vs_east', 'vs_west')
+                """, _ts_conn)
+                _teams = pd.read_sql("""
+                    SELECT id AS team_id, conference
+                    FROM nba.teams WHERE conference IS NOT NULL
+                """, _ts_conn)
+
+            if len(_splits) > 0 and len(_teams) > 0:
+                # Pivot splits: one row per (team_id, season_id) with per-split cols
+                _splits = _splits.pivot_table(
+                    index=["team_id", "season_id"],
+                    columns="split_type",
+                    values=["ats_pct", "ou_overs_pct", "points_for", "points_against"],
+                )
+                _splits.columns = [
+                    f"{stat}_{split}" for stat, split in _splits.columns
+                ]
+                _splits = _splits.reset_index()
+                _conf = _teams.set_index("team_id")["conference"].to_dict()
+
+                _g = df[["game_id", "home_team_id", "away_team_id", "season_id"]].copy()
+                _g["home_prior"] = _g["season_id"] - 1
+                _g["away_prior"] = _g["season_id"] - 1
+                _g["home_opp_conf"] = _g["away_team_id"].map(_conf)
+                _g["away_opp_conf"] = _g["home_team_id"].map(_conf)
+
+                def _vs_split(conf):
+                    return "vs_east" if conf == "East" else "vs_west" if conf == "West" else None
+
+                # Home venue + away venue splits (prior season)
+                _hs = _splits.add_prefix("h__").rename(
+                    columns={"h__team_id": "team_id", "h__season_id": "season_id"}
+                )
+                _as = _splits.add_prefix("a__").rename(
+                    columns={"a__team_id": "team_id", "a__season_id": "season_id"}
+                )
+                _hs_cols = [c for c in _hs.columns if c not in ("team_id", "season_id")]
+                _as_cols = [c for c in _as.columns if c not in ("team_id", "season_id")]
+                _g = _g.merge(
+                    _hs[["team_id", "season_id"] + _hs_cols],
+                    left_on=["home_team_id", "home_prior"], right_on=["team_id", "season_id"],
+                    how="left", suffixes=("", "_rh"),
+                )
+                _g = _g.merge(
+                    _as[["team_id", "season_id"] + _as_cols],
+                    left_on=["away_team_id", "away_prior"], right_on=["team_id", "season_id"],
+                    how="left", suffixes=("", "_ra"),
+                )
+
+                # Vs-conference: home team's vs_<oppconf>, away team's vs_<oppconf>
+                for side, opp_col in (("h", "home_opp_conf"), ("a", "away_opp_conf")):
+                    pfx = f"{side}__"
+                    vals_at = []
+                    vals_ou = []
+                    for _, r in _g.iterrows():
+                        k = _vs_split(r[opp_col])
+                        vals_at.append(r[pfx + f"ats_pct_{k}"] if k else None)
+                        vals_ou.append(r[pfx + f"ou_overs_pct_{k}"] if k else None)
+                    _g[f"{side}__ats_pct_vs_conf"] = vals_at
+                    _g[f"{side}__ou_overs_pct_vs_conf"] = vals_ou
+
+                # Map onto df
+                _set = _g.set_index("game_id")
+                for col, dcol in (
+                    ("h__ats_pct_home", "h_ats_pct_home"),
+                    ("h__ou_overs_pct_home", "h_ou_over_pct_home"),
+                    ("h__points_for_home", "h_pts_home"),
+                    ("h__points_against_home", "h_pts_against_home"),
+                    ("h__ats_pct_vs_conf", "h_ats_pct_vs_conf"),
+                    ("h__ou_overs_pct_vs_conf", "h_ou_over_pct_vs_conf"),
+                    ("a__ats_pct_away", "a_ats_pct_away"),
+                    ("a__ou_overs_pct_away", "a_ou_over_pct_away"),
+                    ("a__points_for_away", "a_pts_away"),
+                    ("a__points_against_away", "a_pts_against_away"),
+                    ("a__ats_pct_vs_conf", "a_ats_pct_vs_conf"),
+                    ("a__ou_overs_pct_vs_conf", "a_ou_over_pct_vs_conf"),
+                ):
+                    if col in _set.columns:
+                        df[dcol] = df["game_id"].map(_set[col])
+        except Exception as _ts_err:  # noqa: BLE001
+            print(f"[data_loader] team_splits features skipped: {_ts_err}")
 
     # ═══════════════════════════════════════════════════════════════════════════
     #  2. Rest days & back-to-back
