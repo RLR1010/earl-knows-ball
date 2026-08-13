@@ -132,6 +132,16 @@ def _visibility_instructions(visibility: str) -> str:
             "betting advice and opinions on bets (side, over/under, moneyline, "
             "props). You may make a case for a bet. You still must base every "
             "claim on the data you retrieve."
+            "\n\nHOOK BEFORE THE PAYWALL: Do NOT give away the pick in the "
+            "title or in the first couple of sentences. Open with the setup, "
+            "the stakes, the key matchup(s), and the reasoning that a reader "
+            "needs context for — build intrigue on WHY this game matters and "
+            "WHAT'S at play. Save the actual recommendation (the side, the "
+            "total, the prop, the play) for deeper into the body. A title like "
+            "'How the pitching duel sets up tonight's game' is good; a title "
+            "like 'Take the OVER tonight' gives the pick away. The reader should "
+            "have to read past the first couple of sentences (past the paywall) "
+            "to get the call."
         )
     return (
         "\n\nAUDIENCE & CRITICAL RULE: This is a FREE public article. "
