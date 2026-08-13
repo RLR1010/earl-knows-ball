@@ -338,11 +338,18 @@ async def _upsert_team_split_row(db, team_id: int, season_id: int, split_type: s
     row = existing or MLBTeamSplit(
         team_id=team_id, season_id=season_id, split_type=split_type
     )
-    row.games = _safe_int(stat.get("gamesPlayed"))
-    row.runs_scored = _safe_int(stat.get("runs"))
-    row.wins = _safe_int(stat.get("wins"))
-    row.losses = _safe_int(stat.get("losses"))
-    row.home_runs = _safe_int(stat.get("homeRuns"))
+    # The team hitting L/R endpoint (group=hitting, sitCodes=vl/vr) returns
+    # gamesPlayed/homeRuns/avg/obp/slg/ops but DOES NOT return runs, wins, or
+    # losses for the L/R splits. Those columns are NOT NULL in mlb.team_splits,
+    # so calling _safe_int() on a missing key yields None and crashes the
+    # insert/update with an IntegrityError. Coerce missing -> 0 (meaningless for
+    # a hitting-only split, but keeps the row valid; the same 0s are what the
+    # game-log-derived rows leave for these columns too).
+    row.games = _safe_int(stat.get("gamesPlayed")) or 0
+    row.runs_scored = _safe_int(stat.get("runs")) or 0
+    row.wins = _safe_int(stat.get("wins")) or 0
+    row.losses = _safe_int(stat.get("losses")) or 0
+    row.home_runs = _safe_int(stat.get("homeRuns")) or 0
     row.avg = _safe_float(stat.get("avg"))
     row.obp = _safe_float(stat.get("obp"))
     row.slg = _safe_float(stat.get("slg"))
