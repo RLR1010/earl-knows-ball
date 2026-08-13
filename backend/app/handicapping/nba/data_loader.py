@@ -1485,16 +1485,27 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
         _star_engine.dispose()
 
     # ═══════════════════════════════════════════════════════════════════════════
-    #  1d. Team splits (home/away, vs conference) — PRIOR SEASON only
-    #  ATS/OU over-rate, venue scoring from nba.team_splits (home/away) and
-    #  vs_east/vs_west (relative to the OPPONENT's conference). Uses the team's
-    #  previous completed season (season_id - 1) to avoid lookahead. No
-    #  back-to-back/rest features here (Rich: excludes them).
+    #  1d. Team splits (home/away, vs conference) — PRIOR SEASON, career fallback
+    #  ATS/OU over-rate + venue scoring from nba.team_splits (home/away) and
+    #  vs_east/vs_west (relative to the OPPONENT's conference).
+    #
+    #  PRIOR VALUES:  uses the team's previous completed season (season_id - 1)
+    #                 to avoid lookahead.
+    #  CAREER FALLBACK: nba.team_splits ATS/OU is only populated for seasons
+    #                 30-35 + career (NULL for 16-29, i.e. years 2016-2019). To
+    #                 prevent a train/test feature-column divergence (all-NaN
+    #                 early features get dropped from the model, but appear in
+    #                 later-year test sets -> XGBoost feature_names mismatch and
+    #                 training crash), when a prior-season value is NULL we fill
+    #                 with the team's CAREER split (season_id IS NULL), which is
+    #                 populated for all 30 teams. This keeps the prior-season
+    #                 value when available and guarantees a value always.
+    #  No back-to-back/rest features here (Rich: excludes them).
     # ═══════════════════════════════════════════════════════════════════════════
     if len(df) > 0:
         try:
             with create_engine(DEFAULT_DB_URL).connect() as _ts_conn:
-                _splits = pd.read_sql("""
+                _raw = pd.read_sql("""
                     SELECT team_id, season_id, split_type,
                            ats_pct, ou_overs_pct, points_for, points_against
                     FROM nba.team_splits
@@ -1505,18 +1516,25 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
                     FROM nba.teams WHERE conference IS NOT NULL
                 """, _ts_conn)
 
-            if len(_splits) > 0 and len(_teams) > 0:
-                # Pivot splits: one row per (team_id, season_id) with per-split cols
-                _splits = _splits.pivot_table(
-                    index=["team_id", "season_id"],
-                    columns="split_type",
-                    values=["ats_pct", "ou_overs_pct", "points_for", "points_against"],
-                )
-                _splits.columns = [
-                    f"{stat}_{split}" for stat, split in _splits.columns
-                ]
-                _splits = _splits.reset_index()
+            if len(_raw) > 0 and len(_teams) > 0:
                 _conf = _teams.set_index("team_id")["conference"].to_dict()
+
+                def _pivot(_src):
+                    _p = _src.pivot_table(
+                        index=["team_id", "season_id"],
+                        columns="split_type",
+                        values=["ats_pct", "ou_overs_pct", "points_for", "points_against"],
+                    )
+                    _p.columns = [f"{stat}_{split}" for stat, split in _p.columns]
+                    return _p.reset_index()
+
+                # Prior-season rows + career rows (season_id NULL)
+                _prior = _raw[_raw["season_id"].notna()]
+                _career = _raw[_raw["season_id"].isna()].copy()
+                _career["season_id"] = 0  # sentinel for pivot
+
+                _splits = _pivot(_prior)
+                _career_splits = _pivot(_career)
 
                 _g = df[["game_id", "home_team_id", "away_team_id", "season_id"]].copy()
                 _g["home_prior"] = _g["season_id"] - 1
@@ -1559,24 +1577,75 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
                     _g[f"{side}__ats_pct_vs_conf"] = vals_at
                     _g[f"{side}__ou_overs_pct_vs_conf"] = vals_ou
 
-                # Map onto df
+                # Career fallback maps (career slots by team / by opponent conference)
+                _ch = _career_splits.add_prefix("h__").rename(
+                    columns={"h__team_id": "team_id", "h__season_id": "season_id"}
+                ).set_index("team_id")
+                _ca = _career_splits.add_prefix("a__").rename(
+                    columns={"a__team_id": "team_id", "a__season_id": "season_id"}
+                ).set_index("team_id")
+                _ch_vs_home = {}  # career: (team_id, split) -> (ats_pct, ou_overs_pct)
+                for _, row in _career_splits.iterrows():
+                    tid = int(row["team_id"])
+                    for split in ("vs_east", "vs_west"):
+                        _ch_vs_home[(tid, split)] = (row[f"ats_pct_{split}"], row[f"ou_overs_pct_{split}"])
+
+                def _career_vs(_tid, _opp_conf):
+                    k = _vs_split(_opp_conf)
+                    if k is None:
+                        return None
+                    return _ch_vs_home.get((int(_tid), k))
+
                 _set = _g.set_index("game_id")
-                for col, dcol in (
-                    ("h__ats_pct_home", "h_ats_pct_home"),
-                    ("h__ou_overs_pct_home", "h_ou_over_pct_home"),
-                    ("h__points_for_home", "h_pts_home"),
-                    ("h__points_against_home", "h_pts_against_home"),
-                    ("h__ats_pct_vs_conf", "h_ats_pct_vs_conf"),
-                    ("h__ou_overs_pct_vs_conf", "h_ou_over_pct_vs_conf"),
-                    ("a__ats_pct_away", "a_ats_pct_away"),
-                    ("a__ou_overs_pct_away", "a_ou_over_pct_away"),
-                    ("a__points_for_away", "a_pts_away"),
-                    ("a__points_against_away", "a_pts_against_away"),
-                    ("a__ats_pct_vs_conf", "a_ats_pct_vs_conf"),
-                    ("a__ou_overs_pct_vs_conf", "a_ou_over_pct_vs_conf"),
-                ):
-                    if col in _set.columns:
-                        df[dcol] = df["game_id"].map(_set[col])
+
+                def _place(_col, _dcol, _fallback):
+                    """Map prior value, then fillna with career fallback series."""
+                    df[_dcol] = df["game_id"].map(_set[_col])
+                    if _fallback is not None:
+                        df[_dcol] = df[_dcol].fillna(df["game_id"].map(_fallback))
+
+                # Home: prior venue/seats/scoring with career fallback by home_team_id
+                _place("h__ats_pct_home", "h_ats_pct_home",
+                       df.set_index("game_id")["home_team_id"].map(_ch["h__ats_pct_home"]))
+                _place("h__ou_overs_pct_home", "h_ou_over_pct_home",
+                       df.set_index("game_id")["home_team_id"].map(_ch["h__ou_overs_pct_home"]))
+                _place("h__points_for_home", "h_pts_home",
+                       df.set_index("game_id")["home_team_id"].map(_ch["h__points_for_home"]))
+                _place("h__points_against_home", "h_pts_against_home",
+                       df.set_index("game_id")["home_team_id"].map(_ch["h__points_against_home"]))
+                # Away: prior venue/seats/scoring with career fallback by away_team_id
+                _place("a__ats_pct_away", "a_ats_pct_away",
+                       df.set_index("game_id")["away_team_id"].map(_ca["a__ats_pct_away"]))
+                _place("a__ou_overs_pct_away", "a_ou_over_pct_away",
+                       df.set_index("game_id")["away_team_id"].map(_ca["a__ou_overs_pct_away"]))
+                _place("a__points_for_away", "a_pts_away",
+                       df.set_index("game_id")["away_team_id"].map(_ca["a__points_for_away"]))
+                _place("a__points_against_away", "a_pts_against_away",
+                       df.set_index("game_id")["away_team_id"].map(_ca["a__points_against_away"]))
+
+                # vs_conf: prior value filled by career (opponent-conference split)
+                _career_vs_h = df[["game_id", "home_team_id", "away_team_id"]].copy()
+                _career_vs_h["ats"] = _career_vs_h.apply(
+                    lambda r: (lambda v: v[0] if v else None)(
+                        _career_vs(r["home_team_id"], _conf.get(int(r["away_team_id"])))), axis=1)
+                _career_vs_h["ou"] = _career_vs_h.apply(
+                    lambda r: (lambda v: v[1] if v else None)(
+                        _career_vs(r["home_team_id"], _conf.get(int(r["away_team_id"])))), axis=1)
+                _place("h__ats_pct_vs_conf", "h_ats_pct_vs_conf",
+                       _career_vs_h.set_index("game_id")["ats"])
+                _place("h__ou_overs_pct_vs_conf", "h_ou_over_pct_vs_conf",
+                       _career_vs_h.set_index("game_id")["ou"])
+                _career_vs_a = df[["game_id", "home_team_id", "away_team_id"]].copy()
+                _career_vs_a["ats"] = _career_vs_a.apply(
+                    lambda r: (lambda v: v[0] if v else None)(
+                        _career_vs(r["away_team_id"], _conf.get(int(r["home_team_id"])))), axis=1)
+                _career_vs_a["ou"] = _career_vs_a.apply(
+                    lambda r: (lambda v: v[1] if v else None)(
+                        _career_vs(r["away_team_id"], _conf.get(int(r["home_team_id"])))), axis=1)
+                _place("a__ats_pct_vs_conf", "a_ats_pct_vs_conf",
+                       _career_vs_a.set_index("game_id")["ats"])
+                _place("a__ou_overs_pct_vs_conf", "a_ou_over_pct_vs_conf",
+                       _career_vs_a.set_index("game_id")["ou"])
         except Exception as _ts_err:  # noqa: BLE001
             print(f"[data_loader] team_splits features skipped: {_ts_err}")
 
