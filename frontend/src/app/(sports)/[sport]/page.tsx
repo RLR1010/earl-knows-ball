@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import SportUpcomingGames from "@/components/SportUpcomingGames";
 import RecentContent from "@/components/RecentContent";
+import DailyPicksSection from "@/components/DailyPicksSection";
 import type { CardSport } from "@/components/ScheduleGameCard";
 
 const SPORT_INFO: Record<string, { name: string }> = {
@@ -58,6 +59,9 @@ export default async function SportHomePage({ params }: { params: Promise<{ spor
     <div className="space-y-16">
       {/* Upcoming Games */}
       <SportUpcomingGames sport={sport as CardSport} />
+
+      {/* Daily Picks (MLB home page special section) */}
+      {sport === "mlb" && <DailyPicksSection sport={sport} />}
 
       {/* Recent Articles & Game Previews */}
       <RecentContent sport={sport} />

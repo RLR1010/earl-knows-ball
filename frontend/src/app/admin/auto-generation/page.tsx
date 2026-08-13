@@ -9,6 +9,11 @@ const SPORT_LABEL: Record<Sport, string> = { mlb: "MLB", nfl: "NFL", nba: "NBA" 
 
 const CADENCES = ["daily", "weekly"] as const;
 const SCOPES = ["sport", "team"] as const;
+const SECTIONS = ["article", "daily_picks"] as const;
+const SECTION_LABEL: Record<string, string> = {
+  article: "Articles",
+  daily_picks: "Daily Picks",
+};
 
 interface Team {
   id: number;
@@ -28,6 +33,7 @@ interface Config {
   team_abbr: string | null;
   team_name: string | null;
   template_article_id: number | null;
+  section: "article" | "daily_picks";
   status: "active" | "inactive" | "paused";
   reasoning: "minimal" | "low" | "medium" | "high" | "xhigh";
   visibility: "public" | "premium";
@@ -54,6 +60,7 @@ interface ConfigFormState {
   cadence: "daily" | "weekly";
   scope_type: "sport" | "team";
   team_id: number | null;
+  section: "article" | "daily_picks";
   status: "active" | "inactive" | "paused";
   reasoning: "minimal" | "low" | "medium" | "high" | "xhigh";
   visibility: "public" | "premium";
@@ -70,6 +77,7 @@ const EMPTY_FORM: ConfigFormState = {
   cadence: "daily",
   scope_type: "sport",
   team_id: null,
+  section: "article",
   status: "active",
   reasoning: "medium",
   visibility: "public",
@@ -208,6 +216,7 @@ export default function AutoGenerationPage() {
       instructions: cfg.instructions || "",
       cadence: cfg.cadence,
       scope_type: cfg.scope_type,
+      section: cfg.section || "article",
       team_id: cfg.team_id,
       status: cfg.status,
       reasoning: cfg.reasoning,
@@ -234,6 +243,7 @@ export default function AutoGenerationPage() {
         instructions: form.instructions || null,
         cadence: form.cadence,
         scope_type: form.scope_type,
+        section: form.section,
         team_id: form.scope_type === "team" ? form.team_id : null,
         status: form.status,
         reasoning: form.reasoning,
@@ -372,6 +382,11 @@ export default function AutoGenerationPage() {
                     </span>
                     <CadenceBadge cadence={cfg.cadence} />
                     <StatusBadge status={cfg.status} />
+                    {cfg.section && cfg.section !== "article" && (
+                      <span className="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded-full bg-amber-500/15 text-amber-400 border border-amber-500/20">
+                        {SECTION_LABEL[cfg.section] ?? cfg.section}
+                      </span>
+                    )}
                     {isTeam && (
                       <span className="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded-full bg-blue-500/15 text-blue-400 border border-blue-500/20">
                         {cfg.team_name || cfg.team_abbr || "Team"}
@@ -526,6 +541,18 @@ export default function AutoGenerationPage() {
                 </select>
               </ContentField>
             </div>
+
+            <ContentField label="Section" required>
+              <select
+                value={form.section}
+                onChange={(e) => setForm({ ...form, section: e.target.value as "article" | "daily_picks" })}
+                className="w-full px-3 py-2 rounded-lg bg-black/40 border border-white/10 text-white text-sm focus:outline-none focus:border-earl-500"
+              >
+                {SECTIONS.map((s) => (
+                  <option key={s} value={s}>{SECTION_LABEL[s]}</option>
+                ))}
+              </select>
+            </ContentField>
 
             {form.scope_type === "team" && (
               <ContentField label="Team">

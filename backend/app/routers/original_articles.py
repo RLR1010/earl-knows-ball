@@ -124,6 +124,7 @@ class GenerateRequest(BaseModel):
     reasoning: Optional[str] = Field(None)  # minimal | low | medium | high | xhigh
     word_count: Optional[tuple[int, int]] = Field(None)  # (min_words, max_words)
     visibility: str = Field("public", pattern="^(public|premium)$")
+    section: str = Field("article", pattern="^(article|daily_picks)$")
 
 
 class PublishRequest(BaseModel):
@@ -1146,19 +1147,19 @@ async def generate_original_article(
         text(
             """
             INSERT INTO public.original_articles
-                (sport, title, summary, content, instructions, status, slug,
+                (sport, title, summary, content, instructions, status, slug, section,
                  created_at, updated_at, prompt_json, research_json, author, tokens_used,
                  reasoning, word_min, word_max, word_count, teams,
                  accuracy_check, accuracy_check_tokens, rejection_history, visibility,
                  seo_description, seo_keywords, usage_json)
             VALUES
-                (:sport, :title, :summary, :content, :instructions, 'draft', :slug,
+                (:sport, :title, :summary, :content, :instructions, 'draft', :slug, :section,
                  :now, :now, CAST(:prompt AS jsonb), CAST(:research AS jsonb),
                  :author, :tokens_used, :reasoning, :word_lo, :word_hi, :word_count,
                  CAST(:teams AS jsonb),
                  CAST(:accuracy AS jsonb), :accuracy_tokens, CAST(:rej AS jsonb), :visibility,
                  :seo_description, :seo_keywords, CAST(:usage AS jsonb))
-            RETURNING id, sport, title, summary, content, instructions, status, slug,
+            RETURNING id, sport, title, summary, content, instructions, status, slug, section,
                       created_at, author, tokens_used, visibility,
                       seo_description, seo_keywords
             """
@@ -1170,6 +1171,7 @@ async def generate_original_article(
             "content": answer,
             "slug": draft_slug,
             "instructions": req.instructions,
+            "section": (req.section or "article"),
             "now": now,
             "prompt": json.dumps(trace["prompt"]),
             "research": json.dumps(trace["tool_calls"]),
@@ -1286,21 +1288,27 @@ async def publish_original_article(
 async def list_original_articles(
     sport: str,
     limit: int = Query(50, ge=1, le=100),
+    section: Optional[str] = Query(None, description="Filter to a specific destination section, e.g. 'article' or 'daily_picks'"),
     db: AsyncSession = Depends(get_db),
 ):
     sport = _validate_sport(sport)
+    where = "WHERE sport = :sport AND status = 'published'"
+    params: dict = {"sport": sport, "limit": limit}
+    if section:
+        where += " AND section = :section"
+        params["section"] = section
     result = await db.execute(
         text(
-            """
-            SELECT id, sport, title, summary, content, status, slug, published_at, created_at, author,
-                   seo_description, seo_keywords, teams, visibility
+            f"""
+            SELECT id, sport, title, summary, content, status, slug, section, published_at,
+                   created_at, author, seo_description, seo_keywords, teams, visibility
             FROM public.original_articles
-            WHERE sport = :sport AND status = 'published'
+            {where}
             ORDER BY published_at DESC
             LIMIT :limit
             """
         ),
-        {"sport": sport, "limit": limit},
+        params,
     )
     rows = [dict(r) for r in result.mappings()]
     return {"sport": sport, "articles": rows}
@@ -1617,7 +1625,7 @@ async def admin_list_original_articles(
     result = await db.execute(
         text(
             """
-            SELECT id, sport, title, summary, content, status, slug, published_at, created_at,
+            SELECT id, sport, title, summary, content, status, slug, section, published_at, created_at,
                    updated_at, author, tokens_used,
                    reasoning, word_min, word_max, word_count,
                    seo_description, seo_keywords,

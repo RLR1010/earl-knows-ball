@@ -37,6 +37,7 @@ logger = logging.getLogger("auto_generation")
 SPORTS = ("mlb", "nfl", "nba")
 CADENCES = ("daily", "weekly")
 SCOPES = ("team", "sport")
+SECTIONS = ("article", "daily_picks")
 REASONINGS = ("minimal", "low", "medium", "high", "xhigh")
 VISIBILITIES = ("public", "premium")
 TITLE_MODES = ("fixed", "llm")
@@ -71,6 +72,7 @@ class CreateConfigRequest(BaseModel):
     team_abbr: Optional[str] = None
     team_name: Optional[str] = None
     template_article_id: Optional[int] = None
+    section: str = "article"
     status: str = "active"
     reasoning: str = "medium"
     visibility: str = "public"
@@ -92,6 +94,7 @@ class FromArticleRequest(BaseModel):
     team_id: Optional[int] = None
     team_abbr: Optional[str] = None
     team_name: Optional[str] = None
+    section: str = "article"
     reasoning: str = "medium"
     visibility: str = "public"
     word_min: Optional[int] = None
@@ -108,6 +111,7 @@ class UpdateConfigRequest(BaseModel):
     team_id: Optional[int] = None
     team_abbr: Optional[str] = None
     team_name: Optional[str] = None
+    section: Optional[str] = None
     status: Optional[str] = None
     reasoning: Optional[str] = None
     visibility: Optional[str] = None
@@ -149,6 +153,22 @@ def _validate_enum(value: str, allowed: tuple, field: str, default: str = None) 
     if v not in allowed:
         raise HTTPException(status_code=400, detail=f"Invalid {field} '{value}'. Expected one of: {', '.join(allowed)}.")
     return v
+
+
+async def _lookup_article_section(db: AsyncSession, article_id: Any) -> str:
+    """Return the section of an original_articles row, or 'article' if absent."""
+    try:
+        res = await db.execute(
+            text(
+                "SELECT section FROM public.original_articles "
+                "WHERE id = :aid LIMIT 1"
+            ),
+            {"aid": article_id},
+        )
+        row = res.mappings().first()
+        return (row.get("section") if row else None) or "article"
+    except Exception:
+        return "article"
 
 
 async def _fetch_team(db: AsyncSession, sport: str, team_id: Any) -> tuple:
@@ -220,13 +240,13 @@ async def create_config(req: CreateConfigRequest, db: AsyncSession = Depends(get
             """
             INSERT INTO public.auto_generation_configs
                 (sport, title, description, instructions, cadence, scope_type,
-                 team_id, team_abbr, team_name, template_article_id, status,
+                 team_id, team_abbr, team_name, template_article_id, section, status,
                  reasoning, visibility, word_min, word_max,
                  title_mode,
                  created_at, updated_at)
             VALUES
                 (:sport, :title, :description, :instructions, :cadence, :scope_type,
-                 :team_id, :team_abbr, :team_name, :template_article_id, :status,
+                 :team_id, :team_abbr, :team_name, :template_article_id, :section, :status,
                  :reasoning, :visibility, :word_min, :word_max,
                  :title_mode,
                  NOW(), NOW())
@@ -244,6 +264,7 @@ async def create_config(req: CreateConfigRequest, db: AsyncSession = Depends(get
             "team_abbr": team_abbr if scope_type == "team" else None,
             "team_name": team_name if scope_type == "team" else None,
             "template_article_id": req.template_article_id,
+            "section": _validate_enum(req.section, SECTIONS, "section", "article"),
             "status": _validate_enum(req.status, ("active", "inactive", "paused"), "status", "active"),
             "reasoning": _validate_enum(req.reasoning, REASONINGS, "reasoning", "medium"),
             "visibility": _validate_enum(req.visibility, VISIBILITIES, "visibility", "public"),
@@ -290,13 +311,13 @@ async def create_from_article(req: FromArticleRequest, db: AsyncSession = Depend
             """
             INSERT INTO public.auto_generation_configs
                 (sport, title, description, instructions, cadence, scope_type,
-                 team_id, team_abbr, team_name, template_article_id, status,
+                 team_id, team_abbr, team_name, template_article_id, section, status,
                  reasoning, visibility, word_min, word_max,
                  title_mode,
                  created_at, updated_at)
             VALUES
                 (:sport, :title, :description, :instructions, :cadence, :scope_type,
-                 :team_id, :team_abbr, :team_name, :template_article_id, 'active',
+                 :team_id, :team_abbr, :team_name, :template_article_id, :section, 'active',
                  :reasoning, :visibility, :word_min, :word_max,
                  :title_mode,
                  NOW(), NOW())
@@ -314,6 +335,7 @@ async def create_from_article(req: FromArticleRequest, db: AsyncSession = Depend
             "team_abbr": team_abbr if scope_type == "team" else None,
             "team_name": team_name if scope_type == "team" else None,
             "template_article_id": template_id,
+            "section": getattr(req, "section", None) or _lookup_article_section(db, template_id) or "article",
             "reasoning": _validate_enum(req.reasoning, REASONINGS, "reasoning", "medium"),
             "visibility": _validate_enum(req.visibility, VISIBILITIES, "visibility", "public"),
             "word_min": _coerce_word_range(req.word_min, req.word_max)[0],
@@ -356,6 +378,9 @@ async def update_config(config_id: int, req: UpdateConfigRequest, db: AsyncSessi
         cur["word_max"] = req.word_max
     cur["word_min"], cur["word_max"] = _coerce_word_range(cur.get("word_min"), cur.get("word_max"))
 
+    if req.section is not None:
+        cur["section"] = _validate_enum(req.section, SECTIONS, "section", "article")
+
     for k in ("title", "description", "instructions", "team_id"):
         v = getattr(req, k, None)
         if v is not None:
@@ -383,7 +408,7 @@ async def update_config(config_id: int, req: UpdateConfigRequest, db: AsyncSessi
             UPDATE public.auto_generation_configs
             SET title=:title, description=:description, instructions=:instructions,
                 cadence=:cadence, scope_type=:scope_type, team_id=:team_id,
-                team_abbr=:team_abbr, team_name=:team_name, status=:status,
+                team_abbr=:team_abbr, team_name=:team_name, status=:status, section=:section,
                 reasoning=:reasoning, visibility=:visibility,
                 word_min=:word_min, word_max=:word_max, title_mode=:title_mode,
                 updated_at=NOW()
@@ -400,6 +425,7 @@ async def update_config(config_id: int, req: UpdateConfigRequest, db: AsyncSessi
             "team_id": cur["team_id"],
             "team_abbr": cur["team_abbr"],
             "team_name": cur["team_name"],
+            "section": cur["section"],
             "status": cur["status"],
             "reasoning": cur["reasoning"],
             "visibility": cur["visibility"],
