@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import UpcomingGames from "@/components/UpcomingGames";
+import SiteEditorialSection from "@/components/SiteEditorialSection";
 
 export const metadata: Metadata = {
   title: "Earl Knows Ball — AI-Powered Sports Handicapping & Picks",
@@ -94,6 +95,9 @@ export default function Home() {
           </ul>
         </div>
       </section>
+
+      {/* Site-wide "All" editorial articles */}
+      <SiteEditorialSection />
 
       {/* Upcoming games across all sports */}
       <UpcomingGames />

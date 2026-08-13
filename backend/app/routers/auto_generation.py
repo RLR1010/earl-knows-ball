@@ -34,7 +34,7 @@ from app.database import get_db
 
 logger = logging.getLogger("auto_generation")
 
-SPORTS = ("mlb", "nfl", "nba")
+SPORTS = ("all", "mlb", "nfl", "nba")
 CADENCES = ("daily", "weekly")
 SCOPES = ("team", "sport")
 SECTIONS = ("article", "daily_picks")
@@ -225,6 +225,10 @@ async def list_teams(sport: str, db: AsyncSession = Depends(get_db)):
 async def create_config(req: CreateConfigRequest, db: AsyncSession = Depends(get_db)):
     sport = _validate_sport(req.sport)
     cadence = _validate_enum(req.cadence, CADENCES, "cadence", "daily")
+    # 'all' is a site-wide editorial scope — no team dimension.
+    if sport == "all":
+        req.scope_type = "sport"
+        req.team_id, req.team_abbr, req.team_name = None, None, None
     scope_type = _validate_enum(req.scope_type, SCOPES, "scope_type", "sport")
 
     team_abbr, team_name = req.team_abbr, req.team_name
@@ -283,6 +287,10 @@ async def create_from_article(req: FromArticleRequest, db: AsyncSession = Depend
     """Import an existing original article as a continuous generation config."""
     sport = _validate_sport(req.sport)
     cadence = _validate_enum(req.cadence, CADENCES, "cadence", "daily")
+    # 'all' is a site-wide editorial scope — no team dimension.
+    if sport == "all":
+        req.scope_type = "sport"
+        req.team_id, req.team_abbr, req.team_name = None, None, None
     scope_type = _validate_enum(req.scope_type, SCOPES, "scope_type", "sport")
 
     # Resolve denormalized team fields if team-scoped.
@@ -364,6 +372,12 @@ async def update_config(config_id: int, req: UpdateConfigRequest, db: AsyncSessi
         cur["cadence"] = _validate_enum(req.cadence, CADENCES, "cadence", cur["cadence"])
     if req.scope_type is not None:
         cur["scope_type"] = _validate_enum(req.scope_type, SCOPES, "scope_type", cur["scope_type"])
+    # 'all' is a site-wide editorial scope — never team-scoped.
+    if cur.get("sport") == "all":
+        cur["scope_type"] = "sport"
+        cur["team_id"] = None
+        cur["team_abbr"] = None
+        cur["team_name"] = None
     if req.status is not None:
         cur["status"] = _validate_enum(req.status, ("active", "inactive", "paused"), "status", cur["status"])
     if req.reasoning is not None:

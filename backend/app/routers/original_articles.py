@@ -41,18 +41,46 @@ from app.services.team_extractor import extract_teams
 from app.routers.chat import nfl_chat_engine
 from app.routers.chat_mlb import mlb_chat_engine
 from app.routers.chat_nba import nba_chat_engine
+# Cross-sport ("All") engine: every tool from all three sports, name-prefixed.
+from app.chat_tools import ToolChatEngine
+from app.chat_tools.all_sports import PREFIXED_TOOL_DEFINITIONS, execute_all_sports_tool
 
 logger = logging.getLogger("original_articles")
 
 router = APIRouter(tags=["original-articles"])
 
-SPORTS = ("mlb", "nfl", "nba")
+SPORTS = ("all", "mlb", "nfl", "nba")
 
 ENGINES = {
     "mlb": mlb_chat_engine,
     "nfl": nfl_chat_engine,
     "nba": nba_chat_engine,
 }
+
+# Cross-sport engine for the "all" / site-wide editorial category. It exposes
+# the union of every research tool across NFL, MLB, and NBA (prefix-mangled so
+# names don't collide) and routes each call to the correct sport's executor.
+ALL_SPORTS_SYSTEM_EXTRA = (
+    "\n\nYou are writing across ALL of the NFL, NBA, and MLB simultaneously. "
+    "You have access to every research tool from all three sports. Tool names "
+    "are prefixed by sport, e.g. mlb_get_team_stats, nfl_get_team_stats, "
+    "nba_get_team_stats. Use the sport-prefixed forms so you address the "
+    "right league. Look across the three sports to surface the biggest stories, "
+    "upcoming matchups, and what fans should be watching. Every claim you make "
+    "must be grounded in the data you retrieve."
+)
+
+ENGINES["all"] = ToolChatEngine(
+    sport="all",
+    sport_display="All Sports",
+    data_description=(
+        "cross-league news and upcoming games across the NFL, NBA, and MLB"
+    ),
+    tools=PREFIXED_TOOL_DEFINITIONS,
+    executor=execute_all_sports_tool,
+    model=settings.deepseek_model,
+    system_prompt_extra=ALL_SPORTS_SYSTEM_EXTRA,
+)
 
 # Default article-writing system prompt. Mirrors the game-preview writeup
 # philosophy (research first, accurate, numbers-backed) but frames it for a

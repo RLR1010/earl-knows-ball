@@ -3,9 +3,14 @@
 import { useEffect, useState, useCallback } from "react";
 import { useSeo } from "@/components/Seo";
 
-const SPORTS = ["mlb", "nfl", "nba"] as const;
+const SPORTS = ["all", "mlb", "nfl", "nba"] as const;
 type Sport = (typeof SPORTS)[number];
-const SPORT_LABEL: Record<Sport, string> = { mlb: "MLB", nfl: "NFL", nba: "NBA" };
+const SPORT_LABEL: Record<Sport, string> = {
+  all: "All Sports",
+  mlb: "MLB",
+  nfl: "NFL",
+  nba: "NBA",
+};
 
 const CADENCES = ["daily", "weekly"] as const;
 const SCOPES = ["sport", "team"] as const;
@@ -152,12 +157,12 @@ export default function AutoGenerationPage() {
   useSeo({ title: "Auto Generation · Earl Admin" });
 
   const [configs, setConfigs] = useState<Config[]>([]);
-  const [teams, setTeams] = useState<Record<Sport, Team[]>>({ mlb: [], nfl: [], nba: [] });
+  const [teams, setTeams] = useState<Record<Sport, Team[]>>({ mlb: [], nfl: [], nba: [], all: [] });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   // Filters
-  const [sportFilter, setSportFilter] = useState<"all" | Sport>("all");
+  const [sportFilter, setSportFilter] = useState<"*" | Sport>("*");
   const [cadenceFilter, setCadenceFilter] = useState<"all" | "daily" | "weekly">("all");
   const [scopeFilter, setScopeFilter] = useState<"all" | "sport" | "team">("all");
 
@@ -242,9 +247,9 @@ export default function AutoGenerationPage() {
         description: form.description || null,
         instructions: form.instructions || null,
         cadence: form.cadence,
-        scope_type: form.scope_type,
+        scope_type: form.sport === "all" ? "sport" : form.scope_type,
         section: form.section,
-        team_id: form.scope_type === "team" ? form.team_id : null,
+        team_id: form.sport === "all" ? null : form.scope_type === "team" ? form.team_id : null,
         status: form.status,
         reasoning: form.reasoning,
         visibility: form.visibility,
@@ -288,7 +293,7 @@ export default function AutoGenerationPage() {
   };
 
   const filtered = configs.filter((c) => {
-    if (sportFilter !== "all" && c.sport !== sportFilter) return false;
+    if (sportFilter !== "*" && c.sport !== sportFilter) return false;
     if (cadenceFilter !== "all" && c.cadence !== cadenceFilter) return false;
     if (scopeFilter !== "all" && c.scope_type !== scopeFilter) return false;
     return true;
@@ -340,7 +345,7 @@ export default function AutoGenerationPage() {
 
       {/* Filters */}
       <div className="mb-4 flex flex-wrap items-center gap-2">
-        <FilterChip active={sportFilter === "all"} onClick={() => setSportFilter("all")}>All Sports</FilterChip>
+        <FilterChip active={sportFilter === "*"} onClick={() => setSportFilter("*")}>All Sports</FilterChip>
         {SPORTS.map((s) => (
           <FilterChip key={s} active={sportFilter === s} onClick={() => setSportFilter(s)}>
             {SPORT_LABEL[s]}
@@ -394,7 +399,7 @@ export default function AutoGenerationPage() {
                     )}
                     {!isTeam && (
                       <span className="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded-full bg-purple-500/15 text-purple-400 border border-purple-500/20">
-                        Sport-Wide
+                        {cfg.sport === "all" ? "Site-Wide" : "Sport-Wide"}
                       </span>
                     )}
                     {cfg.reasoning && cfg.reasoning !== "medium" && (
@@ -478,7 +483,15 @@ export default function AutoGenerationPage() {
             <ContentField label="Sport">
               <select
                 value={form.sport}
-                onChange={(e) => setForm({ ...form, sport: e.target.value as Sport })}
+                onChange={(e) => {
+                  const s = e.target.value as Sport;
+                  setForm({
+                    ...form,
+                    sport: s,
+                    scope_type: s === "all" ? "sport" : form.scope_type,
+                    team_id: s === "all" ? null : form.team_id,
+                  });
+                }}
                 className="w-full px-3 py-2 rounded-lg bg-black/40 border border-white/10 text-white text-sm focus:outline-none focus:border-earl-500"
               >
                 {SPORTS.map((s) => (
@@ -533,11 +546,18 @@ export default function AutoGenerationPage() {
               <ContentField label="Scope">
                 <select
                   value={form.scope_type}
-                  onChange={(e) => setForm({ ...form, scope_type: e.target.value as "sport" | "team" })}
-                  className="w-full px-3 py-2 rounded-lg bg-black/40 border border-white/10 text-white text-sm focus:outline-none focus:border-earl-500"
+                  onChange={(e) =>
+                    form.sport === "all"
+                      ? undefined
+                      : setForm({ ...form, scope_type: e.target.value as "sport" | "team" })
+                  }
+                  disabled={form.sport === "all"}
+                  className="w-full px-3 py-2 rounded-lg bg-black/40 border border-white/10 text-white text-sm focus:outline-none focus:border-earl-500 disabled:opacity-50"
                 >
-                  <option value="sport">Sport-Wide (general)</option>
-                  <option value="team">Team-Specific</option>
+                  <option value="sport">
+                    {form.sport === "all" ? "Site-wide (general)" : "Sport-Wide (general)"}
+                  </option>
+                  {form.sport !== "all" && <option value="team">Team-Specific</option>}
                 </select>
               </ContentField>
             </div>

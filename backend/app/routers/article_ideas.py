@@ -46,7 +46,7 @@ from app.routers.original_articles import (
 
 logger = logging.getLogger("article_ideas")
 
-SPORTS = ("mlb", "nfl", "nba")
+SPORTS = ("all", "mlb", "nfl", "nba")
 admin_router = APIRouter(prefix="/api/admin/article-ideas", tags=["article-ideas-admin"])
 
 
@@ -269,7 +269,12 @@ async def list_teams(sport: str, db: AsyncSession = Depends(get_db)):
 @admin_router.post("/{sport}/generate")
 async def generate_ideas(sport: str, req: GenerateIdeasRequest, db: AsyncSession = Depends(get_db)):
     sport = _validate_sport(sport)
-    sport_label = {"mlb": "MLB (baseball)", "nfl": "NFL (football)", "nba": "NBA (basketball)"}[sport]
+    sport_label = {
+        "all": "all sports (cross-league editorial)",
+        "mlb": "MLB (baseball)",
+        "nfl": "NFL (football)",
+        "nba": "NBA (basketball)",
+    }[sport]
 
     # Gather existing titles so the LLM avoids duplicates.
     existing = (

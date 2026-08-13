@@ -5,10 +5,10 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useSeo } from "@/components/Seo";
 
-const SPORTS = ["mlb", "nfl", "nba"] as const;
+const SPORTS = ["all", "mlb", "nfl", "nba"] as const;
 type Sport = (typeof SPORTS)[number];
 
-const SPORT_LABEL: Record<Sport, string> = { mlb: "MLB", nfl: "NFL", nba: "NBA" };
+const SPORT_LABEL: Record<Sport, string> = { all: "All Sports", mlb: "MLB", nfl: "NFL", nba: "NBA" };
 
 interface Article {
   id: number;
@@ -54,6 +54,7 @@ const DEFAULT_INSTRUCTIONS: Record<Sport, string> = {
   nfl: "Write an original NFL article previewing this week's slate of games. Cover marquee matchups, key storylines, injuries, and betting angles (spread/OU). Use research to back up your points.",
   nba: "Write an original NBA article previewing this week's slate of games. Cover marquee matchups, star players, injuries, and betting angles (spread/OU). Use research to back up your points.",
   mlb: "Write an original MLB article previewing this week's slate of games. Cover pitching matchups, hot/cold lineups, injuries, and betting angles (run line/OU). Use research to back up your points.",
+  all: "Write an original site-wide editorial article that cuts across the NFL, NBA, and MLB at once. Cover the biggest stories, marquee matchups, and what fans should be watching across all three leagues (e.g. upcoming games, play of the day, biggest stories in sports). Use the sport-prefixed research tools (mlb_, nfl_, nba_) to ground your claims in each league's data.",
 };
 
 type Tab = "create" | "edit" | "ideas";
