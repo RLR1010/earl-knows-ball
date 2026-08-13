@@ -359,7 +359,7 @@ Bullet lists work for key points. Keep it article-like — no blockquotes, no em
         logger.info("NBA props article: game %s has %d prop lines", game_id, len(props))
 
         research = research_brief or {}
-        summary = research.get("game_summary") or {}
+        summary = research.get("game_info") or {}
         home_abbr = (summary.get("home_team") or {}).get("abbreviation") or "HOME"
         away_abbr = (summary.get("away_team") or {}).get("abbreviation") or "AWAY"
         game_date = _format_title_date(summary.get("date"))
@@ -367,13 +367,21 @@ Bullet lists work for key points. Keep it article-like — no blockquotes, no em
 
         prop_players = nba_props.extract_prop_players(props)
 
-        # Build per-player context. NBA research brief has no rosters, so
-        # season stats come straight from nba.player_season_stats; recent
-        # form from nba.player_game_stats; splits from nba.player_splits.
+        # Season-stats lookup from the research brief's team rosters
+        # (nested under team_home.roster / team_away.roster), keys by
+        # accent-normalized name. Fall back to a direct DB query for any
+        # prop player not in the brief rotation.
+        season_lookup = nba_props.build_season_lookup(research)
+
+        # Build per-player context. Season stats come from the brief roster
+        # (or nba.player_season_stats as fallback); recent form from
+        # nba.player_game_stats; splits from nba.player_splits.
         player_context = []
         for name in prop_players:
             team_id = None
-            season = await nba_props.fetch_player_season_stats(db, name, team_id)
+            season = season_lookup.get(nba_props._norm(name))
+            if not season:
+                season = await nba_props.fetch_player_season_stats(db, name, team_id)
             recent = None
             player_id = season.get("player_id") if season else None
             if player_id is None:

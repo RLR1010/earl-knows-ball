@@ -399,6 +399,58 @@ async def _get_team_star_player(
     }
 
 
+async def _get_team_roster(
+    db: AsyncSession, team_id: int, season_year: int, limit: int = 15,
+) -> list[dict]:
+    """Fetch a team's rotation for a season (by minutes) with per-game stats.
+
+    Mirrors MLB's get_team_hitting_stats: a per-team, per-season player list
+    built from the stats table (no separate roster table). Ordered by minutes
+    played so the starters/rotation lead the list. Used to populate the
+    research brief's home_roster/away_roster.
+    """
+    result = await db.execute(
+        text("""
+            SELECT p.name, p.position,
+                   pss.games_played, pss.games_started, pss.minutes_played,
+                   pss.points_per_game, pss.rebounds_per_game, pss.assists_per_game,
+                   pss.steals, pss.blocks, pss.turnovers,
+                   pss.field_goal_pct, pss.three_point_pct, pss.free_throw_pct,
+                   pss.true_shooting_pct, pss.plus_minus, pss.efficiency
+            FROM nba.player_season_stats pss
+            JOIN nba.players p ON pss.player_id = p.id
+            JOIN nba.seasons s ON pss.season_id = s.id
+            WHERE pss.team_id = :tid AND s.year = :year AND pss.minutes_played > 0
+            ORDER BY pss.minutes_played DESC
+            LIMIT :limit
+        """),
+        {"tid": team_id, "year": season_year, "limit": limit},
+    )
+    rows = result.fetchall()
+    return [
+        {
+            "name": r[0],
+            "position": r[1] or "",
+            "games_played": r[2] or 0,
+            "games_started": r[3] or 0,
+            "minutes": float(r[4]) if r[4] else 0.0,
+            "ppg": float(r[5]) if r[5] else 0.0,
+            "rpg": float(r[6]) if r[6] else 0.0,
+            "apg": float(r[7]) if r[7] else 0.0,
+            "spg": float(r[8]) if r[8] else 0.0,
+            "bpg": float(r[9]) if r[9] else 0.0,
+            "tpg": float(r[10]) if r[10] else 0.0,
+            "fg_pct": float(r[11]) if r[11] else 0.0,
+            "three_pct": float(r[12]) if r[12] else 0.0,
+            "ft_pct": float(r[13]) if r[13] else 0.0,
+            "ts_pct": float(r[14]) if r[14] else 0.0,
+            "plus_minus": float(r[15]) if r[15] else 0.0,
+            "efficiency": float(r[16]) if r[16] else 0.0,
+        }
+        for r in rows
+    ]
+
+
 async def _get_team_recent_ats(
     db: AsyncSession, team_id: int, season_year: int, limit: int = 10,
 ) -> dict:
@@ -517,6 +569,10 @@ async def get_research_brief(
     home_star = await _get_team_star_player(db, home_team_id, season_year)
     away_star = await _get_team_star_player(db, away_team_id, season_year)
 
+    # --- Team rosters (rotation by minutes) ---
+    home_roster = await _get_team_roster(db, home_team_id, season_year)
+    away_roster = await _get_team_roster(db, away_team_id, season_year)
+
     # --- Betting lines ---
     betting = await _get_betting_lines(db, game_id)
 
@@ -562,6 +618,7 @@ async def get_research_brief(
             "stats": home_stats,
             "recent_form": home_form,
             "star_player": home_star,
+            "roster": home_roster,
             "ats_recent": home_ats,
         },
         "team_away": {
@@ -569,6 +626,7 @@ async def get_research_brief(
             "stats": away_stats,
             "recent_form": away_form,
             "star_player": away_star,
+            "roster": away_roster,
             "ats_recent": away_ats,
         },
         "betting_lines": betting,

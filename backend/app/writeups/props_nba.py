@@ -29,6 +29,47 @@ def _norm(name: str) -> str:
     return unicodedata.normalize("NFD", name or "").encode("ascii", "ignore").decode().lower()
 
 
+def build_season_lookup(research: dict) -> dict[str, dict]:
+    """Build {normalized player name: season stat dict} from the research brief.
+
+    NBA research brief nests rosters under ``team_home.roster`` /
+    ``team_away.roster`` (built by ``_get_team_roster``, ordered by minutes).
+    Returns a dict normalized to the same keys ``fetch_player_season_stats``
+    produces, so downstream prompt formatting is identical.
+    """
+    # map roster field name -> fetch_player_season_stats key
+    key_map = {
+        "games_played": "games_played",
+        "minutes": "minutes_played",
+        "ppg": "points_per_game",
+        "rpg": "rebounds_per_game",
+        "apg": "assists_per_game",
+        "spg": "steals",
+        "bpg": "blocks",
+        "tpg": "turnovers",
+        "fg_pct": "field_goal_pct",
+        "three_pct": "three_point_pct",
+        "ft_pct": "free_throw_pct",
+        "ts_pct": "true_shooting_pct",
+        "plus_minus": "plus_minus",
+    }
+    lookup: dict[str, dict] = {}
+    for team_key in ("team_home", "team_away"):
+        roster = (research.get(team_key) or {}).get("roster") or []
+        for player in roster:
+            if not isinstance(player, dict):
+                continue
+            name = player.get("name")
+            if not name:
+                continue
+            out = {"name": name}
+            for src_key, dst_key in key_map.items():
+                if src_key in player:
+                    out[dst_key] = player[src_key]
+            lookup.setdefault(_norm(name), out)
+    return lookup
+
+
 def extract_prop_players(props: list[dict]) -> dict[str, Optional[int]]:
     """Return a dict of unique prop player names -> player id (resolved later)."""
     names = {}
