@@ -149,6 +149,8 @@ CREATE TABLE IF NOT EXISTS nba.team_rolling_stats (
     -- star
     star_ppg_5                    DOUBLE PRECISION,
     star1_ppg_5                   DOUBLE PRECISION,
+    stars_active                  INTEGER,
+    star1_active                  INTEGER,
     PRIMARY KEY (game_id, team_side)
 );
 CREATE INDEX IF NOT EXISTS idx_team_rolling_stats_game
@@ -200,6 +202,7 @@ base AS (
     FROM nba.games g
     LEFT JOIN nba.betting_lines_consolidated blc ON blc.game_id = g.id
     WHERE g.home_team_id IS NOT NULL AND g.away_team_id IS NOT NULL
+      AND g.game_type IN ('REG','POST','PLAYIN')
 
     UNION ALL
 
@@ -237,6 +240,7 @@ base AS (
     FROM nba.games g
     LEFT JOIN nba.betting_lines_consolidated blc ON blc.game_id = g.id
     WHERE g.home_team_id IS NOT NULL AND g.away_team_id IS NOT NULL
+      AND g.game_type IN ('REG','POST','PLAYIN')
 ),
 
 pg_poss AS (
@@ -446,7 +450,13 @@ star_rolling AS (
             PARTITION BY sp.player_id, sp.season_id
             ORDER BY g.date, pgs.game_id
             ROWS BETWEEN 4 PRECEDING AND CURRENT ROW
-        ) AS ppg_r5
+        ) AS ppg_r5,
+        -- MINUTES>0 in THIS game => player is ACTIVE for availability
+        CASE WHEN pgs.minutes IS NOT NULL
+                  AND pgs.minutes <> ''
+                  AND (pgs.minutes ~ '^[0-9]+$'          -- "25"
+                       OR pgs.minutes ~ '^[0-9]+:[0-9]{2}$') -- "25:08" or "25:5"
+             THEN 1 ELSE 0 END AS active
     FROM star_prep sp
     JOIN nba.player_game_stats pgs
         ON pgs.player_id = sp.player_id
@@ -457,7 +467,11 @@ star_rolling AS (
 star_agg AS (
     SELECT game_id, team_id, season_id,
            MAX(CASE WHEN rk = 1 THEN ppg_r5 END) AS star1_ppg_5,
-           SUM(ppg_r5)                           AS star_ppg_5
+           SUM(ppg_r5)                           AS star_ppg_5,
+           -- count of top-3 scorers who PLAYED (minutes>0) in this game
+           SUM(active)                           AS stars_active,
+           -- rank-1 scorer active?
+           MAX(CASE WHEN rk = 1 THEN active END) AS star1_active
     FROM star_rolling
     GROUP BY game_id, team_id, season_id
 )
@@ -475,7 +489,8 @@ INSERT INTO nba.team_rolling_stats (
     cv10_net_rtg, cv10_ppg, cv20_ppg,
     recency_net_rtg, recency_ppg,
     adj_off_10, adj_def_10,
-    star_ppg_5, star1_ppg_5
+    star_ppg_5, star1_ppg_5,
+    stars_active, star1_active
 )
 SELECT
     r.game_id, r.team_id, r.team_side, r.season_id, r.game_date,
@@ -489,7 +504,8 @@ SELECT
     r.cv10_net_rtg, r.cv10_ppg, r.cv20_ppg,
     r.recency_net_rtg, r.recency_ppg,
     r.adj_off_10, r.adj_def_10,
-    sa.star_ppg_5, sa.star1_ppg_5
+    sa.star_ppg_5, sa.star1_ppg_5,
+    sa.stars_active, sa.star1_active
 FROM rolling r
 LEFT JOIN star_agg sa
     ON sa.game_id = r.game_id AND sa.team_id = r.team_id AND sa.season_id = r.season_id
@@ -539,7 +555,9 @@ DO UPDATE SET
     adj_off_10       = EXCLUDED.adj_off_10,
     adj_def_10       = EXCLUDED.adj_def_10,
     star_ppg_5       = EXCLUDED.star_ppg_5,
-    star1_ppg_5      = EXCLUDED.star1_ppg_5
+    star1_ppg_5      = EXCLUDED.star1_ppg_5,
+    stars_active     = EXCLUDED.stars_active,
+    star1_active     = EXCLUDED.star1_active
 """
 
 

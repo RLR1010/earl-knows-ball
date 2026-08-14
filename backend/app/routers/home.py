@@ -1,7 +1,7 @@
 """Home page router — upcoming games across all sports (or a single sport)."""
 
 import math
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import text
@@ -148,6 +148,7 @@ def _build_sql(schema: str, kind: str):
     {joins}
     WHERE g.status::text = 'SCHEDULED'
       AND g.date > :now
+      AND g.date <= :horizon
     ORDER BY g.date ASC
     LIMIT :limit
     """
@@ -156,18 +157,23 @@ def _build_sql(schema: str, kind: str):
 @router.get("/home/upcoming-games")
 async def upcoming_games(
     sport: str = Query("all", description="Filter by sport: all, mlb, nba, nfl"),
+    days: int = Query(5, description="Only show games within this many days from now"),
     db: AsyncSession = Depends(get_db),
 ):
-    """Return the next 6 scheduled games, sorted by date ascending.
+    """Return upcoming scheduled games, sorted by date ascending.
 
-    - sport=all (default): 6 games across MLB, NBA, and NFL combined (site home).
-    - sport=mlb|nba|nfl: 6 games from that sport only (sport home pages).
+    - sport=all (default): up to 6 games PER SPORT, for every sport that has
+      games within the next `days` days (site home). So the home page can show
+      e.g. 6 MLB + 6 NFL + 6 NBA side by side.
+    - sport=mlb|nba|nfl: up to 6 games from that sport only (sport home pages).
     """
     sport = (sport or "all").lower()
     if sport not in ("all", "mlb", "nba", "nfl"):
         sport = "all"
+    days = max(1, min(days, 14))
 
     now = datetime.now(timezone.utc)
+    horizon = now + timedelta(days=days)
     results = []
 
     specs = []
@@ -178,15 +184,13 @@ async def upcoming_games(
     if sport in ("all", "nfl"):
         specs.append(("nfl", "nfl"))
 
-    # When 'all', pull 12/sport so the top-6 across sports stays balanced.
-    per_sport_limit = 12 if sport == "all" else 6
-
     for schema, kind in specs:
         sql = _build_sql(schema, kind)
         rows = (
-            await db.execute(text(sql), {"now": now, "limit": per_sport_limit})
+            await db.execute(
+                text(sql), {"now": now, "horizon": horizon, "limit": 6}
+            )
         ).mappings().all()
         results.extend(_fix_decimals(dict(r)) for r in rows)
 
-    results.sort(key=lambda g: g["date"])
-    return results[:6]
+    return results

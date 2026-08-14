@@ -15,6 +15,29 @@ interface User {
   last_login_at: string | null;
   monthly_token_limit: number | null;
   tokens_used: number;
+  distinct_days: number;
+  distinct_ips: number;
+  total_hits: number;
+  last_active_at: string | null;
+  active_today: boolean;
+  active_last_7: boolean;
+  active_last_30: boolean;
+}
+
+interface ActivityDay {
+  activity_date: string;
+  ip_address: string;
+  first_seen: string | null;
+  last_seen: string | null;
+  hit_count: number;
+}
+
+interface ActivityDetail {
+  user_id: string;
+  total_days: number;
+  total_ips: number;
+  total_hits: number;
+  days: ActivityDay[];
 }
 
 const token = () => localStorage.getItem("earl_token");
@@ -26,6 +49,26 @@ export default function AdminUsers() {
   const [search, setSearch] = useState("");
   const [tierFilter, setTierFilter] = useState("");
   const [editingUser, setEditingUser] = useState<User | null>(null);
+  const [activityUser, setActivityUser] = useState<User | null>(null);
+  const [activity, setActivity] = useState<ActivityDetail | null>(null);
+  const [activityLoading, setActivityLoading] = useState(false);
+
+  const fetchActivity = useCallback(async (userId: string) => {
+    setActivityLoading(true);
+    setActivity(null);
+    try {
+      const res = await fetch(`/api/admin/users/${userId}/activity`, {
+        headers: { Authorization: `Bearer ${token()}` },
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setActivity(await res.json());
+    } catch (e: any) {
+      console.error("Failed to load activity:", e);
+      alert(`Failed to load activity: ${e.message}`);
+    } finally {
+      setActivityLoading(false);
+    }
+  }, []);
 
   const fetchUsers = useCallback(async () => {
     setLoading(true);
@@ -123,14 +166,28 @@ export default function AdminUsers() {
                 <th className="pb-3 pr-4 font-semibold">Status</th>
                 <th className="pb-3 pr-4 font-semibold">Admin</th>
                 <th className="pb-3 pr-4 font-semibold">Tokens</th>
-                <th className="pb-3 pr-4 font-semibold">Joined</th>
+                <th className="pb-3 pr-4 font-semibold">Days</th>
+                <th className="pb-3 pr-4 font-semibold">IPs</th>
+                <th className="pb-3 pr-4 font-semibold">Active</th>
+                <th className="pb-3 pr-4 font-semibold">Last Active</th>
                 <th className="pb-3 font-semibold">Actions</th>
               </tr>
             </thead>
             <tbody>
               {users.map((user) => (
-                <tr key={user.id} className="border-b border-white/5 hover:bg-white/[0.02]">
-                  <td className="py-3 pr-4 text-white">{user.email}</td>
+                <tr
+                  key={user.id}
+                  className="border-b border-white/5 hover:bg-white/[0.02] cursor-pointer"
+                  onClick={() => {
+                    setActivityUser(user);
+                    fetchActivity(user.id);
+                  }}
+                >
+                  <td className="py-3 pr-4 text-white">
+                    <span className="text-earl-400 underline decoration-dotted underline-offset-2 hover:text-earl-300">
+                      {user.email}
+                    </span>
+                  </td>
                   <td className="py-3 pr-4 text-gray-300">{user.display_name || "—"}</td>
                   <td className="py-3 pr-4">
                     <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${
@@ -152,19 +209,34 @@ export default function AdminUsers() {
                       {user.tokens_used}{user.monthly_token_limit ? ` / ${user.monthly_token_limit}` : ""}
                     </span>
                   </td>
-                  <td className="py-3 pr-4 text-gray-400 text-xs">
-                    {user.created_at ? new Date(user.created_at).toLocaleDateString() : "—"}
+                  <td className="py-3 pr-4 text-gray-300 text-xs font-medium">{user.distinct_days}</td>
+                  <td className="py-3 pr-4 text-gray-400 text-xs">{user.distinct_ips}</td>
+                  <td className="py-3 pr-4">
+                    <div className="flex gap-1">
+                      {user.active_today ? <span title="Active today" className="w-2 h-2 rounded-full bg-green-500" /> : <span className="w-2 h-2 rounded-full bg-transparent" />}
+                      <span className={`px-1.5 py-0.5 rounded text-[10px] leading-none font-semibold ${user.active_last_7 ? "bg-earl-600/20 text-earl-400" : "bg-white/5 text-gray-600"}`}>7D</span>
+                      <span className={`px-1.5 py-0.5 rounded text-[10px] leading-none font-semibold ${user.active_last_30 ? "bg-earl-600/20 text-earl-400" : "bg-white/5 text-gray-600"}`}>30D</span>
+                    </div>
+                  </td>
+                  <td className="py-3 pr-4 text-xs text-gray-400">
+                    {user.last_active_at ? new Date(user.last_active_at).toLocaleString() : "—"}
                   </td>
                   <td className="py-3">
                     <div className="flex gap-2">
                       <button
-                        onClick={() => setEditingUser(user)}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setEditingUser(user);
+                        }}
                         className="text-xs text-earl-400 hover:text-earl-300 transition"
                       >
                         Edit
                       </button>
                       <button
-                        onClick={() => handleDelete(user.id, user.email)}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDelete(user.id, user.email);
+                        }}
                         className="text-xs text-red-400 hover:text-red-300 transition"
                       >
                         Delete
@@ -256,6 +328,68 @@ export default function AdminUsers() {
                 Save
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Activity Drill-down Modal */}
+      {activityUser && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={() => setActivityUser(null)}>
+          <div
+            className="bg-[#1a1a2e] border border-white/10 rounded-xl p-6 w-[720px] max-w-full max-h-[85vh] overflow-y-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between mb-4">
+              <div>
+                <h2 className="text-lg font-semibold text-white">Usage Activity</h2>
+                <div className="text-sm text-gray-400 mt-0.5">{activityUser.email}</div>
+              </div>
+              <button onClick={() => setActivityUser(null)} className="text-gray-400 hover:text-white text-xl leading-none">&times;</button>
+            </div>
+
+            {/* Summary cards */}
+            <div className="grid grid-cols-4 gap-3 mb-5">
+              {[
+                { label: "Days Active", value: activity ? activity.total_days : activityUser.distinct_days },
+                { label: "Distinct IPs", value: activity ? activity.total_ips : activityUser.distinct_ips },
+                { label: "Total Hits", value: activity ? activity.total_hits : activityUser.total_hits },
+                { label: "Last Active", value: activityUser.last_active_at ? new Date(activityUser.last_active_at).toLocaleDateString() : "—" },
+              ].map((s) => (
+                <div key={s.label} className="bg-white/5 border border-white/10 rounded-lg p-3">
+                  <div className="text-[11px] uppercase tracking-wider text-gray-500 mb-1">{s.label}</div>
+                  <div className="text-lg font-semibold text-white">{s.value}</div>
+                </div>
+              ))}
+            </div>
+
+            {activityLoading ? (
+              <div className="text-gray-400 py-6 text-center">Loading activity...</div>
+            ) : !activity || activity.days.length === 0 ? (
+              <div className="text-gray-500 py-6 text-center">No activity recorded yet.</div>
+            ) : (
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-white/10 text-left text-gray-400 text-xs uppercase tracking-wider">
+                    <th className="pb-3 pr-4 font-semibold">Date</th>
+                    <th className="pb-3 pr-4 font-semibold">IP Address</th>
+                    <th className="pb-3 pr-4 font-semibold">First Seen</th>
+                    <th className="pb-3 pr-4 font-semibold">Last Seen</th>
+                    <th className="pb-3 font-semibold">Hits</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {activity.days.map((d, i) => (
+                    <tr key={i} className="border-b border-white/5">
+                      <td className="py-2.5 pr-4 text-gray-300">{new Date(d.activity_date).toLocaleDateString()}</td>
+                      <td className="py-2.5 pr-4 text-white font-mono text-xs">{d.ip_address}</td>
+                      <td className="py-2.5 pr-4 text-gray-400 text-xs">{d.first_seen ? new Date(d.first_seen).toLocaleString() : "—"}</td>
+                      <td className="py-2.5 pr-4 text-gray-400 text-xs">{d.last_seen ? new Date(d.last_seen).toLocaleString() : "—"}</td>
+                      <td className="py-2.5 text-gray-300 text-xs">{d.hit_count}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
           </div>
         </div>
       )}

@@ -45,6 +45,7 @@ interface Config {
   word_min: number | null;
   word_max: number | null;
   title_mode: "fixed" | "llm";
+  generate_time: string | null;
   last_generated_at: string | null;
   created_at: string;
   updated_at: string;
@@ -63,6 +64,7 @@ interface ConfigFormState {
   description: string;
   instructions: string;
   cadence: "daily" | "weekly";
+  generate_time: string;
   scope_type: "sport" | "team";
   team_id: number | null;
   section: "article" | "daily_picks";
@@ -80,6 +82,7 @@ const EMPTY_FORM: ConfigFormState = {
   description: "",
   instructions: "",
   cadence: "daily",
+  generate_time: "",
   scope_type: "sport",
   team_id: null,
   section: "article",
@@ -220,6 +223,7 @@ export default function AutoGenerationPage() {
       description: cfg.description || "",
       instructions: cfg.instructions || "",
       cadence: cfg.cadence,
+      generate_time: cfg.generate_time || "",
       scope_type: cfg.scope_type,
       section: cfg.section || "article",
       team_id: cfg.team_id,
@@ -247,6 +251,7 @@ export default function AutoGenerationPage() {
         description: form.description || null,
         instructions: form.instructions || null,
         cadence: form.cadence,
+        generate_time: form.generate_time || null,
         scope_type: form.sport === "all" ? "sport" : form.scope_type,
         section: form.section,
         team_id: form.sport === "all" ? null : form.scope_type === "team" ? form.team_id : null,
@@ -386,6 +391,14 @@ export default function AutoGenerationPage() {
                       {SPORT_LABEL[cfg.sport]}
                     </span>
                     <CadenceBadge cadence={cfg.cadence} />
+                    {cfg.generate_time && (
+                      <span
+                        className="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded-full bg-sky-500/15 text-sky-300 border border-sky-500/20"
+                        title="Generate time of day (America/Chicago)"
+                      >
+                        ⏰ {cfg.generate_time}
+                      </span>
+                    )}
                     <StatusBadge status={cfg.status} />
                     {cfg.section && cfg.section !== "article" && (
                       <span className="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded-full bg-amber-500/15 text-amber-400 border border-amber-500/20">
@@ -542,6 +555,17 @@ export default function AutoGenerationPage() {
                     <option key={c} value={c}>{c.charAt(0).toUpperCase() + c.slice(1)}</option>
                   ))}
                 </select>
+              </ContentField>
+              <ContentField
+                label="Generate Time"
+                hint={"Optional. When set, the article is due once per " + form.cadence + " cycle at this clock time (America/Chicago). Leave blank for a rolling " + (form.cadence === "daily" ? "24h" : "7d") + " window."}
+              >
+                <input
+                  type="time"
+                  value={form.generate_time}
+                  onChange={(e) => setForm({ ...form, generate_time: e.target.value })}
+                  className="w-full px-3 py-2 rounded-lg bg-black/40 border border-white/10 text-white text-sm focus:outline-none focus:border-earl-500 [color-scheme:dark]"
+                />
               </ContentField>
               <ContentField label="Scope">
                 <select
@@ -702,10 +726,12 @@ function FilterChip({
 function ContentField({
   label,
   required,
+  hint,
   children,
 }: {
   label: string;
   required?: boolean;
+  hint?: string;
   children: React.ReactNode;
 }) {
   return (
@@ -714,6 +740,7 @@ function ContentField({
         {label} {required && <span className="text-earl-400">*</span>}
       </label>
       {children}
+      {hint && <p className="mt-1 text-xs text-gray-500">{hint}</p>}
     </div>
   );
 }

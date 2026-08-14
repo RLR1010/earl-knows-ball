@@ -4,6 +4,7 @@ import Link from "next/link";
 import Image from "next/image";
 import { getTeamLogoUrl } from "@/lib/team_logos";
 import SchedulePicksFooter from "@/components/SchedulePicksFooter";
+import ChatCardLink from "@/components/ChatCardLink";
 
 /** Type of sport this card renders for. Determines logo set + MLB innings/duration extras. */
 export type CardSport = "nfl" | "nba" | "mlb";
@@ -46,6 +47,17 @@ function formatTime(iso: string) {
       timeZone: "America/New_York",
     }) + " ET"
   );
+}
+
+/** Short date, e.g. \"Wed, Aug 13\" (not year — upcoming games are current season). */
+function formatDate(iso: string) {
+  const d = new Date(iso);
+  return d.toLocaleDateString("en-US", {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    timeZone: "America/New_York",
+  });
 }
 
 function statusBadge(status: string): { label: string; cls: string } {
@@ -123,6 +135,49 @@ export function hasPicks(o: {
   return Boolean(o.spread || o.ou || o.ml);
 }
 
+/**
+ * Build a compact, self-contained "game brief" that is injected into every chat
+ * message from a card so Earl always knows exactly which game is being discussed
+ * (and stays consistent with our lines + picks). Used by the shared card and the
+ * schedule page cards.
+ */
+export function buildGameContext(
+  sport: CardSport,
+  game: ScheduleGameLike
+): string {
+  const lines: string[] = [];
+  if (game.spread != null) lines.push(`spread ${game.spread > 0 ? "+" : ""}${game.spread}`);
+  if (game.over_under != null) lines.push(`total ${game.over_under}`);
+  if (game.home_moneyline != null && game.away_moneyline != null)
+    lines.push(`${game.away_moneyline} / ${game.home_moneyline} ML`);
+
+  const picks: string[] = [];
+  const pickItems = buildPickItems({
+    spreadPick: game.pick_spread,
+    overUnder: game.pick_over_under,
+    mlPick: game.pick_moneyline,
+    atsEv: game.pick_ats_ev,
+    ouEv: game.pick_ou_ev,
+    mlEv: game.pick_ml_ev,
+    spreadResult: game.result_spread,
+    ouResult: game.result_over_under,
+    mlResult: game.result_moneyline,
+    home: game.home_team,
+    away: game.away_team,
+  });
+  for (const p of pickItems) {
+    const ev = typeof p.ev === "number" ? ` (EV ${p.ev.toFixed(3)})` : "";
+    picks.push(`${p.label}: ${p.pick}${ev}`);
+  }
+
+  const parts = [`Game being discussed: ${game.away_team ?? "Away"} @ ${game.home_team ?? "Home"} (${sport.toUpperCase()})`];
+  if (game.date) parts.push(`Scheduled: ${game.date} (ET)`);
+  if (lines.length) parts.push(`Current betting lines: ${lines.join(", ")}.`);
+  if (picks.length)
+    parts.push(`Earl's picks for THIS game (keep your answers consistent with these): ${picks.join("; ")}.`);
+  return `[GAME CONTEXT] ${parts.join(" ")}`;
+}
+
 export default function ScheduleGameCard({
   game,
   sport,
@@ -143,9 +198,15 @@ export default function ScheduleGameCard({
   const homeLogo = game.home_team ? getTeamLogoUrl(game.home_team, sport) : null;
 
   return (
-    <Link
+    <ChatCardLink
       href={href}
-      className="block border border-white/10 rounded-xl p-3 bg-white/5 hover:bg-white/10 transition text-center"
+      sport={sport}
+      homeTeam={game.home_team ?? ""}
+      awayTeam={game.away_team ?? ""}
+      date={game.date}
+      context={buildGameContext(sport, game)}
+      hideChat={isFinal}
+      className="border border-white/10 rounded-xl p-3"
     >
       <div className="flex items-center justify-center gap-1.5 text-lg">
         {awayLogo && (
@@ -204,8 +265,16 @@ export default function ScheduleGameCard({
           </span>
         )}
         {!isFinal && !isLive ? (
-          <div className="text-xs text-gray-500 mt-1">
-            {game.date ? formatTime(game.date) : ""}
+          <div className="text-xs text-gray-500 mt-1 flex items-center justify-center gap-1.5">
+            {game.date ? (
+              <>
+                <span className="text-gray-400">{formatDate(game.date)}</span>
+                <span className="text-gray-600">•</span>
+                <span>{formatTime(game.date)}</span>
+              </>
+            ) : (
+              ""
+            )}
           </div>
         ) : (
           <div className="h-4 mt-1" aria-hidden="true" />
@@ -214,6 +283,6 @@ export default function ScheduleGameCard({
 
       {/* Betting lines + premium picks (shared footer, identical across schedule cards) */}
       <SchedulePicksFooter game={game} />
-    </Link>
+    </ChatCardLink>
   );
 }

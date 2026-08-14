@@ -157,6 +157,7 @@ WITH team_games AS (
     FROM nba.games g
     WHERE g.status = 'FINAL'
       AND g.season_id IS NOT NULL
+      AND g.game_type IN ('REG','POST','PLAYIN')
 
     UNION ALL
 
@@ -196,6 +197,7 @@ WITH team_games AS (
     FROM nba.games g
     WHERE g.status = 'FINAL'
       AND g.season_id IS NOT NULL
+      AND g.game_type IN ('REG','POST','PLAYIN')
 )
 SELECT * FROM team_games
 ORDER BY season_id, team_id, game_date, game_id

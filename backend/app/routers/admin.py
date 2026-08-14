@@ -7,12 +7,13 @@ from fastapi import APIRouter, Depends, HTTPException, Header, Query, Request, s
 logger = logging.getLogger(__name__)
 from sqlalchemy import select, func, case, desc, text
 from sqlalchemy.ext.asyncio import AsyncSession
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 from typing import Optional
 from jose import jwt, JWTError
 
 from app.database import get_db
-from app.models import User, Article
+from app.models import User, Article, ChatHistory, CSMessage
+from app.models.user_activity import UserActivity
 from app.models.token_usage import UserTokenUsage
 from app.models.nba import NBAArticle
 from app.models.mlb import MLBArticle
@@ -110,6 +111,14 @@ class UserOut(BaseModel):
     last_login_at: datetime | None = None
     monthly_token_limit: int | None = None
     tokens_used: int = 0
+    # Activity/usage summary
+    distinct_days: int = 0
+    distinct_ips: int = 0
+    total_hits: int = 0
+    last_active_at: datetime | None = None
+    active_today: bool = False
+    active_last_7: bool = False
+    active_last_30: bool = False
 
     model_config = {"from_attributes": True}
 
@@ -231,6 +240,81 @@ class DashboardStats(BaseModel):
     plans_count: int
 
 
+# ── User Chats (admin, all users) ───────────────────────────────────
+
+class AdminChatMessage(BaseModel):
+    id: int
+    role: str
+    message: str
+    sport: str
+    tokens_used: int | None = None
+    model: str | None = None
+    created_at: datetime | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class AdminChatConversation(BaseModel):
+    conversation_id: str
+    user_id: str
+    user_email: str
+    user_name: str | None = None
+    user_tier: str
+    sport: str
+    message_count: int
+    turn_count: int
+    total_tokens: int
+    first_message_at: datetime | None = None
+    last_message_at: datetime | None = None
+    messages: list[AdminChatMessage] = []
+
+
+class ChatListResponse(BaseModel):
+    conversations: list[AdminChatConversation]
+    total: int
+
+
+# ── Customer Service (admin) ────────────────────────────────────────
+
+class CsAdminMessage(BaseModel):
+    id: int
+    role: str
+    content: str
+    tokens_used: int
+    model: str | None = None
+    created_at: datetime | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class CsAdminConversation(BaseModel):
+    user_id: str
+    user_email: str
+    user_name: str | None = None
+    user_tier: str
+    message_count: int
+    total_tokens: int
+    last_message_at: datetime | None = None
+    messages: list[CsAdminMessage] = []
+
+
+class CsAdminListResponse(BaseModel):
+    conversations: list[CsAdminConversation]
+    total: int
+
+
+class CsEmailRequest(BaseModel):
+    user_id: str
+    subject: str = Field(..., min_length=1, max_length=200)
+    body: str = Field(..., min_length=1, max_length=10000)
+
+
+class CsEmailResult(BaseModel):
+    sent: bool
+    to: str
+    message: str
+
+
 # ── Dashboard ───────────────────────────────────────────────────────
 
 @router.get("/stats", response_model=DashboardStats)
@@ -333,25 +417,307 @@ async def list_users(
 
     # Batch fetch token usage for the current month
     first_of_month = date.today().replace(day=1)
-    if users:
+    user_ids = [u.id for u in users] if users else []
+    if user_ids:
         tu_result = await db.execute(
             select(UserTokenUsage.user_id, UserTokenUsage.tokens_used)
             .where(
                 UserTokenUsage.month == first_of_month,
-                UserTokenUsage.user_id.in_([u.id for u in users]),
+                UserTokenUsage.user_id.in_(user_ids),
             )
         )
         token_map = {row[0]: row[1] for row in tu_result.fetchall()}
+
+        # Batch activity stats per user (lifetime + trailing windows)
+        activity_rows = (await db.execute(
+            select(
+                UserActivity.user_id,
+                func.count(func.distinct(UserActivity.activity_date)).label("distinct_days"),
+                func.count(func.distinct(UserActivity.ip_address)).label("distinct_ips"),
+                func.coalesce(func.sum(UserActivity.hit_count), 0).label("total_hits"),
+                func.max(UserActivity.last_seen).label("last_seen"),
+                func.max(case((UserActivity.activity_date == date.today(), 1), else_=0)).label("active_today"),
+                func.max(case((UserActivity.activity_date >= date.today() - timedelta(days=7), 1), else_=0)).label("active_7"),
+                func.max(case((UserActivity.activity_date >= date.today() - timedelta(days=30), 1), else_=0)).label("active_30"),
+            )
+            .where(UserActivity.user_id.in_(user_ids))
+            .group_by(UserActivity.user_id)
+        )).fetchall()
+        act_map: dict[str, dict] = {
+            a.user_id: {
+                "distinct_days": a.distinct_days,
+                "distinct_ips": a.distinct_ips,
+                "total_hits": a.total_hits,
+                "last_active_at": a.last_seen,
+                "active_today": bool(a.active_today),
+                "active_last_7": bool(a.active_7),
+                "active_last_30": bool(a.active_30),
+            }
+            for a in activity_rows
+        }
     else:
         token_map = {}
+        act_map = {}
 
     response = []
     for u in users:
         out = UserOut.model_validate(u)
         out.tokens_used = token_map.get(u.id, 0)
+        a = act_map.get(u.id, {})
+        out.distinct_days = a.get("distinct_days", 0)
+        out.distinct_ips = a.get("distinct_ips", 0)
+        out.total_hits = a.get("total_hits", 0)
+        out.last_active_at = a.get("last_active_at")
+        out.active_today = a.get("active_today", False)
+        out.active_last_7 = a.get("active_last_7", False)
+        out.active_last_30 = a.get("active_last_30", False)
         response.append(out)
 
     return response
+
+
+@router.get("/chats", response_model=ChatListResponse)
+async def list_user_chats(
+    admin: User = Depends(get_admin_user),
+    db: AsyncSession = Depends(get_db),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(25, ge=1, le=100),
+):
+    """List the latest chat conversations across all users, newest activity first.
+    Each conversation includes the full ordered message thread (user + assistant)
+    so admins can see what users asked and how Earl answered."""
+    # Per-conversation summary (most recent message time + counts)
+    summary = (
+        select(
+            ChatHistory.conversation_id.label("conversation_id"),
+            ChatHistory.user_id.label("user_id"),
+            func.count().label("message_count"),
+            func.count(
+                func.nullif(ChatHistory.role, "assistant")
+            ).label("turn_count"),
+            func.coalesce(func.sum(ChatHistory.tokens_used), 0).label("total_tokens"),
+            func.min(ChatHistory.created_at).label("first_message_at"),
+            func.max(ChatHistory.created_at).label("last_message_at"),
+        )
+        .group_by(ChatHistory.conversation_id, ChatHistory.user_id)
+        .subquery()
+    )
+
+    total = (
+        await db.execute(select(func.count()).select_from(summary))
+    ).scalar_one()
+
+    convs = (
+        await db.execute(
+            select(
+                summary.c.conversation_id.label("conversation_id"),
+                summary.c.user_id.label("user_id"),
+                summary.c.message_count.label("message_count"),
+                summary.c.turn_count.label("turn_count"),
+                summary.c.total_tokens.label("total_tokens"),
+                summary.c.first_message_at.label("first_message_at"),
+                summary.c.last_message_at.label("last_message_at"),
+                User.id.label("db_user_id"),
+                User.email.label("user_email"),
+                User.display_name.label("user_name"),
+                User.subscription_tier.label("user_tier"),
+            )
+            .join(User, User.id == summary.c.user_id)
+            .order_by(desc(summary.c.last_message_at))
+            .offset(skip)
+            .limit(limit)
+        )
+    ).mappings().all()
+
+    if not convs:
+        return ChatListResponse(conversations=[], total=total)
+
+    conv_ids = [c["conversation_id"] for c in convs]
+    msgs = (
+        await db.execute(
+            select(ChatHistory)
+            .where(ChatHistory.conversation_id.in_(conv_ids))
+            .order_by(ChatHistory.created_at.asc(), ChatHistory.id.asc())
+        )
+    ).scalars().all()
+
+    by_conv: dict[str, list[ChatHistory]] = {}
+    for m in msgs:
+        by_conv.setdefault(m.conversation_id, []).append(m)
+
+    # Pick the most common sport per conversation for a best-effort label.
+    sport_by_conv: dict[str, str] = {}
+    for cid, mlist in by_conv.items():
+        counts: dict[str, int] = {}
+        for m in mlist:
+            if m.sport:
+                counts[m.sport] = counts.get(m.sport, 0) + 1
+        sport_by_conv[cid] = max(counts, key=counts.get) if counts else ""
+
+    conversations: list[AdminChatConversation] = []
+    for c in convs:
+        cid = c["conversation_id"]
+        conversations.append(
+            AdminChatConversation(
+                conversation_id=cid,
+                user_id=str(c["user_id"]),
+                user_email=c["user_email"],
+                user_name=c["user_name"],
+                user_tier=c["user_tier"] or "free",
+                sport=sport_by_conv.get(cid, ""),
+                message_count=c["message_count"],
+                turn_count=c["turn_count"],
+                total_tokens=c["total_tokens"],
+                first_message_at=c["first_message_at"],
+                last_message_at=c["last_message_at"],
+                messages=[
+                    AdminChatMessage.model_validate(m) for m in by_conv.get(cid, [])
+                ],
+            )
+        )
+
+    return ChatListResponse(conversations=conversations, total=total)
+
+
+# ── Customer Service (admin-facing) ─────────────────────────────────
+
+@router.get("/cs/chats", response_model=CsAdminListResponse)
+async def list_cs_conversations(
+    admin: User = Depends(get_admin_user),
+    db: AsyncSession = Depends(get_db),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+):
+    """List all customer-service conversations, most recent activity first."""
+    summary = (
+        select(
+            CSMessage.user_id.label("user_id"),
+            func.count().label("message_count"),
+            func.coalesce(func.sum(CSMessage.tokens_used), 0).label("total_tokens"),
+            func.max(CSMessage.created_at).label("last_message_at"),
+        )
+        .group_by(CSMessage.user_id)
+        .subquery()
+    )
+    total = (await db.execute(select(func.count()).select_from(summary))).scalar_one()
+
+    convs = (
+        await db.execute(
+            select(
+                summary.c.user_id.label("user_id"),
+                summary.c.message_count.label("message_count"),
+                summary.c.total_tokens.label("total_tokens"),
+                summary.c.last_message_at.label("last_message_at"),
+                User.id.label("db_user_id"),
+                User.email.label("user_email"),
+                User.display_name.label("user_name"),
+                User.subscription_tier.label("user_tier"),
+            )
+            .join(User, User.id == summary.c.user_id)
+            .order_by(desc(summary.c.last_message_at))
+            .offset(skip)
+            .limit(limit)
+        )
+    ).mappings().all()
+
+    conversations = []
+    for c in convs:
+        conversations.append(
+            CsAdminConversation(
+                user_id=c["user_id"],
+                user_email=c["user_email"],
+                user_name=c["user_name"],
+                user_tier=c["user_tier"] or "free",
+                message_count=c["message_count"],
+                total_tokens=c["total_tokens"],
+                last_message_at=c["last_message_at"],
+                messages=[],
+            )
+        )
+    return CsAdminListResponse(conversations=conversations, total=total)
+
+
+@router.get("/cs/chats/{user_id}", response_model=CsAdminConversation)
+async def get_cs_conversation(
+    user_id: str,
+    admin: User = Depends(get_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Full customer-service thread for a single user."""
+    user = (
+        await db.execute(select(User).where(User.id == user_id))
+    ).scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    msgs = (
+        await db.execute(
+            select(CSMessage)
+            .where(CSMessage.user_id == user_id)
+            .order_by(CSMessage.created_at.asc(), CSMessage.id.asc())
+        )
+    ).scalars().all()
+
+    return CsAdminConversation(
+        user_id=str(user.id),
+        user_email=user.email,
+        user_name=user.display_name,
+        user_tier=user.subscription_tier or "free",
+        message_count=len(msgs),
+        total_tokens=sum(m.tokens_used for m in msgs),
+        last_message_at=msgs[-1].created_at if msgs else None,
+        messages=[CsAdminMessage.model_validate(m) for m in msgs],
+    )
+
+
+@router.post("/cs/emails", response_model=CsEmailResult)
+async def send_cs_email(
+    body: CsEmailRequest,
+    admin: User = Depends(get_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Send an email to a customer via Resend (e.g. as a follow-up to their CS chat)."""
+    user = (
+        await db.execute(select(User).where(User.id == body.user_id))
+    ).scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if not settings.resend_api_key or settings.resend_api_key.startswith("re_xxx"):
+        logger.warning(
+            "No Resend key configured — CS email for %s NOT sent. Body: %s",
+            user.email, body.body[:200],
+        )
+        return CsEmailResult(sent=False, to=user.email, message="Resend not configured (skipped)")
+
+    try:
+        import resend
+        resend.api_key = settings.resend_api_key
+        # HTML-escape the body for safe rendering.
+        import html as _html
+        safe_body = _html.escape(body.body).replace("\n", "<br/>")
+        sent = resend.Emails.send(
+            {
+                "from": "Earl Knows Ball Support <support@users.earlknowsball.com>",
+                "to": [user.email],
+                "subject": body.subject,
+                "html": (
+                    "<div style='font-family:sans-serif;max-width:560px;margin:0 auto;'>"
+                    f"<p>{safe_body}</p>"
+                    "<hr style='border:none;border-top:1px solid #eee;margin:24px 0;'/>"
+                    "<p style='color:#666;font-size:12px;'>— Earl Knows Ball Support</p>"
+                    "</div>"
+                ),
+            }
+        )
+        logger.info("CS email sent to %s: %s", user.email, sent)
+        return CsEmailResult(sent=True, to=user.email, message="Email sent")
+    except ImportError:
+        logger.warning("Resend SDK not installed — CS email to %s skipped", user.email)
+        return CsEmailResult(sent=False, to=user.email, message="Resend SDK not installed")
+    except Exception as e:
+        logger.warning("Failed to send CS email to %s: %s", user.email, e)
+        return CsEmailResult(sent=False, to=user.email, message=f"Send failed: {e}")
 
 
 @router.get("/users/{user_id}", response_model=UserOut)
@@ -360,11 +726,111 @@ async def get_user(
     admin: User = Depends(get_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
+    from datetime import date as _date
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-    return user
+
+    out = UserOut.model_validate(user)
+
+    # Current-month token usage
+    first_of_month = _date.today().replace(day=1)
+    tu = (await db.execute(
+        select(UserTokenUsage.tokens_used).where(
+            UserTokenUsage.user_id == user.id,
+            UserTokenUsage.month == first_of_month,
+        )
+    )).scalar_one_or_none()
+    out.tokens_used = tu or 0
+
+    # Lifetime + trailing-window activity summary
+    row = (await db.execute(
+        select(
+            func.count(func.distinct(UserActivity.activity_date)).label("distinct_days"),
+            func.count(func.distinct(UserActivity.ip_address)).label("distinct_ips"),
+            func.coalesce(func.sum(UserActivity.hit_count), 0).label("total_hits"),
+            func.max(UserActivity.last_seen).label("last_seen"),
+            func.max(case((UserActivity.activity_date == _date.today(), 1), else_=0)).label("active_today"),
+            func.max(case((UserActivity.activity_date >= _date.today() - timedelta(days=7), 1), else_=0)).label("active_7"),
+            func.max(case((UserActivity.activity_date >= _date.today() - timedelta(days=30), 1), else_=0)).label("active_30"),
+        ).where(UserActivity.user_id == user.id)
+    )).one()
+    out.distinct_days = row.distinct_days or 0
+    out.distinct_ips = row.distinct_ips or 0
+    out.total_hits = row.total_hits or 0
+    out.last_active_at = row.last_seen
+    out.active_today = bool(row.active_today)
+    out.active_last_7 = bool(row.active_7)
+    out.active_last_30 = bool(row.active_30)
+    return out
+
+
+class UserActivityDay(BaseModel):
+    activity_date: datetime
+    ip_address: str
+    first_seen: datetime | None = None
+    last_seen: datetime | None = None
+    hit_count: int = 0
+
+
+class UserActivityResponse(BaseModel):
+    user_id: str
+    total_days: int = 0
+    total_ips: int = 0
+    total_hits: int = 0
+    days: list[UserActivityDay] = []
+
+
+@router.get("/users/{user_id}/activity", response_model=UserActivityResponse)
+async def get_user_activity(
+    user_id: str,
+    admin: User = Depends(get_admin_user),
+    db: AsyncSession = Depends(get_db),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(365, ge=1, le=1000),
+):
+    """Drill-down: every (day, IP) activity row for a user, newest first.
+    Also returns lifetime totals for the header cards."""
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    rows = (await db.execute(
+        select(UserActivity)
+        .where(UserActivity.user_id == user_id)
+        .order_by(desc(UserActivity.activity_date), desc(UserActivity.last_seen))
+        .offset(skip)
+        .limit(limit)
+    )).scalars().all()
+
+    days = [
+        UserActivityDay(
+            activity_date=r.activity_date,
+            ip_address=r.ip_address,
+            first_seen=r.first_seen,
+            last_seen=r.last_seen,
+            hit_count=r.hit_count,
+        )
+        for r in rows
+    ]
+
+    totals = (await db.execute(
+        select(
+            func.count(func.distinct(UserActivity.activity_date)),
+            func.count(func.distinct(UserActivity.ip_address)),
+            func.coalesce(func.sum(UserActivity.hit_count), 0),
+        ).where(UserActivity.user_id == user_id)
+    )).one()
+
+    return UserActivityResponse(
+        user_id=user_id,
+        total_days=totals[0] or 0,
+        total_ips=totals[1] or 0,
+        total_hits=totals[2] or 0,
+        days=days,
+    )
 
 
 @router.patch("/users/{user_id}", response_model=UserOut)
@@ -3559,6 +4025,12 @@ async def data_loader_load_game(
         if df is None or df.empty:
             raise HTTPException(status_code=404, detail=f"No feature data for game {game_id}")
         row = df.iloc[0]
+        # NBA keeps pristine raw values in "<feat>_raw" twins (blended path). When a
+        # twin exists, show the RAW display value (in-season, else prior season); the
+        # blended "value" below is still exactly what the model consumes.
+        raw_key = None
+        if sport == "nba":
+            raw_key = lambda feat: (feat + "_raw") if (feat + "_raw") in row.index else feat
         feat_meta = {r[0]: r for r in _feat_rows}
 
         # ── Game summary (games/teams catalog read, NOT feature SQL) ──
@@ -3599,7 +4071,8 @@ async def data_loader_load_game(
             cur_ou = (m[4] if m and len(m) > 4 else None)
             pick_card = (m[5] if m and len(m) > 5 else None)
 
-            raw = _safe_val(row.get(feat))
+            raw_k = raw_key(feat) if raw_key is not None else feat
+            raw = _safe_val(row.get(raw_k))
             # Model-facing value = engine imputer (real value or reasoned prior)
             if feat in model_ats:
                 try:

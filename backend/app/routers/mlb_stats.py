@@ -1462,9 +1462,9 @@ async def mlb_game_boxscore(
                 # Derive ML pick from actual predicted score, not ATS margin alone
                 # (home/away runs combine both ATS + OU models and are the displayed values)
                 if pred.predicted_home_runs is not None and pred.predicted_away_runs is not None:
-                    pred.ml_pick = "home" if pred.predicted_home_runs > pred.predicted_away_runs else "away"
+                    pred.ml_pick = game_dict.get("home_team") if pred.predicted_home_runs > pred.predicted_away_runs else game_dict.get("away_team")
                 else:
-                    pred.ml_pick = "home" if predicted_margin > 0 else "away"
+                    pred.ml_pick = game_dict.get("home_team") if predicted_margin > 0 else game_dict.get("away_team")
 
             # Recompute all results from actual scores
             actual_margin = db_home - db_away

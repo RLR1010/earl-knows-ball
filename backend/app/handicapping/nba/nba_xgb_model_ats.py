@@ -46,17 +46,32 @@ NBA_PKL_DIR = Path("/home/rich/.openclaw/workspace/earl-knows-football/data/mode
 NBA_PKL_DIR.mkdir(parents=True, exist_ok=True)
 
 # ── Training constants ──────────────────────────────────────────────────────────
-DEFAULT_LEARNING_RATE = 0.05
-DEFAULT_MAX_DEPTH = 6
-DEFAULT_N_ESTIMATORS = 800
+# Hyperparameters aligned with the MLB trainers (mlb_xgb_model_ats/ou) so the
+# NBA models share the same boosting settings across sports.
+DEFAULT_LEARNING_RATE = 0.04
+DEFAULT_MAX_DEPTH = 5
+DEFAULT_N_ESTIMATORS = 600
 DEFAULT_EARLY_STOPPING = 50
 DEFAULT_SUBSAMPLE = 0.8
-DEFAULT_COL_SAMPLE = 0.8
+DEFAULT_COL_SAMPLE = 0.6
+DEFAULT_REG_LAMBDA = 1.0
+DEFAULT_GAMMA = 0.1
+DEFAULT_MIN_CHILD_WEIGHT = 3
+DEFAULT_TIME_DECAY = 0.96
 
 CURRENT_YEAR = datetime.now().year
 NBA_SCHEMA = "nba"
 # PSYCOPG2_DATABASE_URL already reflects .env DATABASE_URL (asyncpg suffix stripped)
 DB_DSN: str = PSYCOPG2_DATABASE_URL
+
+
+# ── Helper: decay sample weights (mirrors MLB trainers) ────────────────────────
+def _compute_decay_weights(
+    df: pd.DataFrame, last_year: int, decay: float = DEFAULT_TIME_DECAY
+) -> np.ndarray:
+    """Assign higher weight to more recent seasons (same as mlb_xgb_model_ats)."""
+    years_ago = last_year - df["season_year"]
+    return np.power(decay, years_ago)
 
 
 # ── Helper: ensure ATS feature columns exist ────────────────────────────────────
@@ -115,7 +130,11 @@ async def train_model(
     model_dir.mkdir(parents=True, exist_ok=True)
 
     dl = get_data_loader(ats_only=ats_only, ou_only=ou_only)
-    df = dl.load_data()
+    # Train from 2016 up through the latest test year; earlier seasons are never
+    # used by the train/test split (train starts at 2016) and prior-season stats
+    # come from nba.prior_team_stats, so 2007-2015 game rows are pure dead cost.
+    load_seasons = list(range(2016, max(TEST_YEARS) + 1))
+    df = dl.load_data(seasons=load_seasons)
 
     if df.empty:
         return {"error": "no data loaded"}
@@ -137,11 +156,14 @@ async def train_model(
     hp = hyperparams or {}
     params: Dict[str, Any] = {
         "objective": "reg:squarederror",
-        "eval_metric": "mae",
+        "eval_metric": "rmse",
         "learning_rate": hp.get("learning_rate", DEFAULT_LEARNING_RATE),
         "max_depth": hp.get("max_depth", DEFAULT_MAX_DEPTH),
         "subsample": hp.get("subsample", DEFAULT_SUBSAMPLE),
         "colsample_bytree": hp.get("colsample_bytree", DEFAULT_COL_SAMPLE),
+        "reg_lambda": hp.get("reg_lambda", DEFAULT_REG_LAMBDA),
+        "gamma": hp.get("gamma", DEFAULT_GAMMA),
+        "min_child_weight": hp.get("min_child_weight", DEFAULT_MIN_CHILD_WEIGHT),
         "seed": 42,
         "verbosity": 0,
     }
@@ -209,7 +231,15 @@ async def train_model(
         X_train = df_train[available].values
         y_train = df_train[target].values
 
-        dtrain = xgb.DMatrix(X_train, label=y_train, feature_names=available)
+        # Time-decay sample weights — more recent seasons matter more (same as MLB).
+        if "season_year" in df_train.columns:
+            sample_weights = _compute_decay_weights(df_train, train_seasons[-1])
+        else:
+            sample_weights = np.ones(len(df_train))
+
+        dtrain = xgb.DMatrix(
+            X_train, label=y_train, weight=sample_weights, feature_names=available
+        )
 
         model = xgb.train(params, dtrain, num_boost_round=n_estimators, verbose_eval=False)
 

@@ -46,8 +46,16 @@ export default function SiteChrome({ children }: { children: React.ReactNode }) 
   const activeSport = getActiveSport(pathname);
 
   const hideSportChrome =
-    ["/login", "/register", "/profile"].some((p) => pathname.startsWith(p)) ||
-    pathname.endsWith("/chat");
+    ["/login", "/register", "/profile"].some((p) => pathname.startsWith(p));
+
+  // The sport sub-nav (Home/Schedule/Analysis/...) is hidden on the standalone
+  // chat page (which has its own left-nav), but the sport pills and login/profile
+  // icon STAY in the header there on non-mobile.
+  const hideSportSubNav =
+    hideSportChrome || pathname.endsWith("/chat");
+  // The chat page manages its own width/padding/height (it's an app-style layout),
+  // so <main> should not add site padding there even though the header shows.
+  const paddedMain = activeSport && !hideSportChrome && !pathname.endsWith("/chat");
 
   return (
     <>
@@ -101,7 +109,7 @@ export default function SiteChrome({ children }: { children: React.ReactNode }) 
           </div>
 
           {/* ── Sport Sub-Nav ───────────────────────────────────── */}
-          {activeSport && !hideSportChrome && (
+          {activeSport && !hideSportSubNav && (
             <div className="border-b border-white/10 bg-black/40 backdrop-blur-sm">
               <div className="max-w-7xl mx-auto px-4 flex items-center">
                 {/* Scrollable main items (Chat With Earl is pinned separately) */}
@@ -158,7 +166,7 @@ export default function SiteChrome({ children }: { children: React.ReactNode }) 
         </header>
 
         {/* ── Main Content ───────────────────────────────────────── */}
-        <main className={`flex-1 w-full ${activeSport && !hideSportChrome ? "max-w-7xl mx-auto px-2 sm:px-4 py-6" : ""}`}>
+        <main className={`flex-1 w-full ${paddedMain ? "max-w-7xl mx-auto px-2 sm:px-4 py-6" : ""}`}>
           {children}
         </main>
         <Footer />

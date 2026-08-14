@@ -2,11 +2,12 @@
 import { useEffect, useState, useRef } from "react";
 import * as React from "react";
 import { useParams, useSearchParams, useRouter } from "next/navigation";
-import Link from "next/link";
 import Image from "next/image";
 import { api, Game, formatOverUnder } from "@/lib/api";
 import { getTeamLogoUrl } from "@/lib/team_logos";
 import GameCalendar from "@/components/GameCalendar";
+import ChatCardLink from "@/components/ChatCardLink";
+import { buildGameContext } from "@/components/ScheduleGameCard";
 import { useSeo } from "@/components/Seo";
 import EarlsPicksPanel, { type EarlsPickItem } from "@/components/EarlsPicksPanel";
 
@@ -457,10 +458,16 @@ function NBASchedule({ sport }: { sport: string }) {
             const awayWon = isFinal && g.away_score! > g.home_score!;
 
             return (
-              <Link
+              <ChatCardLink
                 key={g.id}
                 href={`/${sport}/games/${g.id}?year=${year}&date=${selectedDate}`}
-                className="block border border-white/10 rounded-xl p-3 bg-white/5 hover:bg-white/10 transition text-center"
+                sport={sport as "nfl" | "nba" | "mlb"}
+                homeTeam={g.home_team ?? ""}
+                awayTeam={g.away_team ?? ""}
+                date={g.date ?? null}
+                context={buildGameContext(sport as "mlb" | "nba" | "nfl", g)}
+                hideChat={(g.status ?? "").toLowerCase() === "final"}
+                className="block text-center border border-white/10 rounded-xl p-3"
               >
                 <div className="flex items-center justify-center gap-1.5 text-lg">
                   {g.away_team && getTeamLogoUrl(g.away_team, "nba") && <Image src={getTeamLogoUrl(g.away_team, "nba")!} alt={g.away_team} width={20} height={20} className="object-contain shrink-0" unoptimized />}
@@ -521,7 +528,7 @@ mlResult: g.result_moneyline,
                     />
                   </div>
                 )}
-              </Link>
+              </ChatCardLink>
             );
           })}
         </div>
@@ -752,8 +759,16 @@ function MLBSchedule({ sport }: { sport: string }) {
             const awayWon = isFinal && g.away_score! > g.home_score!;
 
             return (
-              <Link key={g.id} href={`/${sport}/games/${g.id}?year=${year}&date=${selectedDate}`}
-                className="block border border-white/10 rounded-xl p-3 bg-white/5 hover:bg-white/10 transition text-center"
+              <ChatCardLink
+                key={g.id}
+                href={`/${sport}/games/${g.id}?year=${year}&date=${selectedDate}`}
+                sport={sport as "nfl" | "nba" | "mlb"}
+                homeTeam={g.home_team ?? ""}
+                awayTeam={g.away_team ?? ""}
+                date={g.date ?? null}
+                context={buildGameContext(sport as "mlb" | "nba" | "nfl", g)}
+                hideChat={(g.status ?? "").toLowerCase() === "final"}
+                className="block text-center border border-white/10 rounded-xl p-3"
               >
                 {/* Matchup header: [logo] AWAY [score] @ [score] HOME [logo] */}
                 <div className="flex items-center justify-center gap-1.5 text-lg">
@@ -822,7 +837,7 @@ mlResult: g.result_moneyline,
                     />
                   </div>
                 )}
-              </Link>
+              </ChatCardLink>
             );
           })}
         </div>
@@ -956,8 +971,16 @@ function NFLSchedule({ sport }: { sport: string }) {
             const awayWon = isFinal && g.away_score! > g.home_score!;
 
             return (
-              <Link key={g.id} href={`/${sport}/games/${g.id}?year=${seasonYear}&week=${week}`}
-                className="block border border-white/10 rounded-xl p-3 bg-white/5 hover:bg-white/10 transition text-center"
+              <ChatCardLink
+                key={g.id}
+                href={`/${sport}/games/${g.id}?year=${seasonYear}&week=${week}`}
+                sport={sport as "nfl" | "nba" | "mlb"}
+                homeTeam={g.home_team ?? ""}
+                awayTeam={g.away_team ?? ""}
+                date={g.date ?? null}
+                context={buildGameContext(sport as "mlb" | "nba" | "nfl", g)}
+                hideChat={(g.status ?? "").toLowerCase() === "final"}
+                className="block text-center border border-white/10 rounded-xl p-3"
               >
                 {/* Matchup header: [logo] AWAY [score] @ [score] HOME [logo] */}
                 <div className="flex items-center justify-center gap-1.5 text-lg">
@@ -1020,7 +1043,7 @@ mlResult: g.result_moneyline,
                     />
                   </div>
                 )}
-              </Link>
+              </ChatCardLink>
             );
           })}
         </div>

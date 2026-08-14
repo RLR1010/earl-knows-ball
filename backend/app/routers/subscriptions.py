@@ -164,16 +164,18 @@ async def create_checkout_session(
                     "plan_id": plan.id,
                 },
                 "trial_period_days": plan.trial_days or None,
-                "payment_settings": {
-                    "statement_descriptor": "Earl Knows Ball",
-                },
             },
         }
 
         if req.ui_mode == "embedded_page":
-            # Embedded Checkout — renders in-page modal
+            # Embedded Checkout — renders in-page modal.
+            # Use the caller-supplied success_url (origin-correct) as the return
+            # URL so post-payment redirect lands back on the SAME host the user
+            # was browsing (www vs apex). Hardcoding settings.base_url here broke
+            # sessions when the user browsed on a different subdomain than
+            # BASE_URL, redirecting them to an origin with no logged-in session.
             session_kwargs["ui_mode"] = "embedded_page"
-            session_kwargs["return_url"] = f"{settings.base_url}/profile?subscription=success"
+            session_kwargs["return_url"] = req.success_url or f"{settings.base_url}/profile?subscription=success"
             session = stripe.checkout.Session.create(**session_kwargs)
             return CheckoutResponse(client_secret=session.client_secret)
         else:

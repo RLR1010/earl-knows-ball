@@ -117,6 +117,7 @@ JOIN nba.teams th ON th.id = g.home_team_id AND NULLIF(th.conference, '') IS NOT
 JOIN nba.teams ta ON ta.id = g.away_team_id AND NULLIF(ta.conference, '') IS NOT NULL
 LEFT JOIN closing c ON c.game_id = g.id
 WHERE g.status = 'FINAL'
+  AND g.game_type IN ('REG','POST','PLAYIN')
   AND g.home_score IS NOT NULL AND g.away_score IS NOT NULL
   AND g.home_team_id IS NOT NULL AND g.away_team_id IS NOT NULL
 """

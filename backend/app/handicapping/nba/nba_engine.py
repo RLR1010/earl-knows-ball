@@ -384,6 +384,17 @@ def _impute_feature(row: pd.Series, feat: str) -> Optional[float]:
     except Exception:
         pass
 
+    # ---- Star scorer PPG (top-3 / leading scorer, rolling 5): when a team has
+    #      no tracked prior games (early season) the star PPG is genuinely
+    #      missing. Fall back to a reasoned STAR-LEVEL prior (a scorer's PPG, not
+    #      the whole-team 0.0 and not league-average team totals ~111). This must
+    #      run BEFORE the NBA_AVG token loop below ("ppg" would otherwise match
+    #      and return a team total).
+    if "star1_ppg" in feat:                     # leading scorer PPG
+        return 26.0
+    if "star_ppg" in feat and "star1_ppg" not in feat:  # top-3 combined PPG
+        return 60.0
+
     # ---- League-average NBA team statistics (rate / per-game norms) ---------
     NBA_AVG = {
         "ppg": 111.0, "oppg": 111.0, "margin_pg": 0.0,
@@ -842,6 +853,32 @@ async def batch_predict_upcoming_games(
     first_date = games[0].get("game_date") or games[0].get("date", "")
     year = year or (_season_from_date(first_date) if first_date else CURRENT_SEASON)
 
+    # Enrich stripped game rows with the full data-loader feature row so the
+    # model gets real (blended) features and the pick card can show raw stats.
+    # Without this, _build_pick_card only saw 5 stripped columns and fell back
+    # to imputed defaults for every feature (pre-existing degradation).
+    try:
+        feature_df = NBADataLoader().load_inference_data(game_ids=game_ids)
+        if feature_df is not None and not feature_df.empty:
+            fmap = {int(r["game_id"]): r for _, r in feature_df.iterrows()}
+            for g in games:
+                fr = fmap.get(int(g.get("game_id")))
+                if fr is not None:
+                    for k, v in fr.items():
+                        # Do not clobber the joined team/date/season fields or
+                        # load NULL/NaN fillers over real values.
+                        if k in ("home_team", "away_team", "home_abbr",
+                                 "away_abbr", "game_date", "season"):
+                            continue
+                        if v is None:
+                            continue
+                        if isinstance(v, float) and pd.isna(v):
+                            continue
+                        g[k] = v
+            logger.info("  Enriched %d games with full feature rows (+__raw twins)", len(games))
+    except Exception as exc:  # never block prediction on enrichment failure
+        logger.warning("  Could not enrich game rows with features: %s", exc)
+
     # Load models for this season
     ats_model = _load_model_for_year(year, "ats")
     ou_model = _load_model_for_year(year, "ou")
@@ -900,15 +937,20 @@ async def _fetch_upcoming_games(
         stmt = text("""
             SELECT
                 g.id AS game_id,
-                g.home_team,
-                g.away_team,
-                g.game_date,
-                g.season
+                ht.name AS home_team,
+                ht.abbreviation AS home_abbr,
+                at.name AS away_team,
+                at.abbreviation AS away_abbr,
+                g.date AS game_date,
+                s.year AS season
             FROM nba.games g
-            WHERE g.game_date >= :now
-              AND g.game_date < :cutoff
+            JOIN nba.teams ht ON ht.id = g.home_team_id
+            JOIN nba.teams at ON at.id = g.away_team_id
+            JOIN nba.seasons s ON s.id = g.season_id
+            WHERE g.date >= :now
+              AND g.date < :cutoff
               AND g.status = 'scheduled'
-            ORDER BY g.game_date ASC
+            ORDER BY g.date ASC
         """)
         result = await session.execute(stmt, {
             "now": now,
@@ -933,11 +975,16 @@ async def _fetch_games_by_ids(
         stmt = text("""
             SELECT
                 g.id AS game_id,
-                g.home_team,
-                g.away_team,
-                g.game_date,
-                g.season
+                ht.name AS home_team,
+                ht.abbreviation AS home_abbr,
+                at.name AS away_team,
+                at.abbreviation AS away_abbr,
+                g.date AS game_date,
+                s.year AS season
             FROM nba.games g
+            JOIN nba.teams ht ON ht.id = g.home_team_id
+            JOIN nba.teams at ON at.id = g.away_team_id
+            JOIN nba.seasons s ON s.id = g.season_id
             WHERE g.id = ANY(:ids)
         """)
         result = await session.execute(stmt, {"ids": list(game_ids)})
@@ -1428,25 +1475,29 @@ async def _save_backtest_prediction(
 
 
 def _build_nba_home_stats(row: pd.Series) -> dict:
-    """Build home_stats dict for handicap info using NBA data loader columns."""
+    """Build home_stats dict for handicap info using NBA data loader columns.
+
+    Stat values read their RAW twin (via _raw_safe) so the pick card shows raw
+    in-season numbers, not the blended-to-model values.
+    """
     return {
         "team": _str_safe(row.get("home_team")),
         "abbreviation": _str_safe(row.get("home_abbr")),
-        "ortg_r10": _float_safe(row.get("h_ortg_r10")),
-        "drtg_r10": _float_safe(row.get("h_drtg_r10")),
-        "net_rtg_r10": _float_safe(row.get("h_net_rtg_r10")),
-        "pace_r10": _float_safe(row.get("h_pace_r10")),
-        "adj_off_r10": _float_safe(row.get("h_adj_off_10")),
-        "adj_def_r10": _float_safe(row.get("h_adj_def_10")),
-        "ats_wins_r10": _float_safe(row.get("h_ats_wins_10")),
-        "ats_margin_r10": _float_safe(row.get("h_ats_margin_10")),
-        "ats_pct_r10": _calc_pct(row.get("h_ats_wins_10"), 10),
-        "wins_r10": _float_safe(row.get("h_wins_10")),
-        "win_pct_r10": _calc_pct(row.get("h_wins_10"), 10),
-        "ou_wins_r10": _float_safe(row.get("h_ou_wins_10")),
-        "ou_pct_r10": _calc_pct(row.get("h_ou_wins_10"), 10),
-        "ou_margin_r5": _float_safe(row.get("h_ou_margin_5")),
-        "ft_rate_r10": _float_safe(row.get("h_ft_rate_r10")),
+        "ortg_r10": _float_safe(_raw_safe(row, "h_ortg_r10")),
+        "drtg_r10": _float_safe(_raw_safe(row, "h_drtg_r10")),
+        "net_rtg_r10": _float_safe(_raw_safe(row, "h_net_rtg_r10")),
+        "pace_r10": _float_safe(_raw_safe(row, "h_pace_r10")),
+        "adj_off_r10": _float_safe(_raw_safe(row, "h_adj_off_10")),
+        "adj_def_r10": _float_safe(_raw_safe(row, "h_adj_def_10")),
+        "ats_wins_r10": _float_safe(_raw_safe(row, "h_ats_wins_10")),
+        "ats_margin_r10": _float_safe(_raw_safe(row, "h_ats_margin_10")),
+        "ats_pct_r10": _calc_pct(_raw_safe(row, "h_ats_wins_10"), 10),
+        "wins_r10": _float_safe(_raw_safe(row, "h_wins_10")),
+        "win_pct_r10": _calc_pct(_raw_safe(row, "h_wins_10"), 10),
+        "ou_wins_r10": _float_safe(_raw_safe(row, "h_ou_wins_10")),
+        "ou_pct_r10": _calc_pct(_raw_safe(row, "h_ou_wins_10"), 10),
+        "ou_margin_r5": _float_safe(_raw_safe(row, "h_ou_margin_5")),
+        "ft_rate_r10": _float_safe(_raw_safe(row, "h_ft_rate_r10")),
         "three_in_four": bool(row.get("h_three_in_four", 0)),
         "implied_prob": _float_safe(row.get("h_implied")),
         "rest_days": _float_safe(row.get("rest_h")),
@@ -1455,25 +1506,29 @@ def _build_nba_home_stats(row: pd.Series) -> dict:
 
 
 def _build_nba_away_stats(row: pd.Series) -> dict:
-    """Build away_stats dict for handicap info using NBA data loader columns."""
+    """Build away_stats dict for handicap info using NBA data loader columns.
+
+    Stat values read their RAW twin (via _raw_safe) so the pick card shows raw
+    in-season numbers, not the blended-to-model values.
+    """
     return {
         "team": _str_safe(row.get("away_team")),
         "abbreviation": _str_safe(row.get("away_abbr")),
-        "ortg_r10": _float_safe(row.get("a_ortg_r10")),
-        "drtg_r10": _float_safe(row.get("a_drtg_r10")),
-        "net_rtg_r10": _float_safe(row.get("a_net_rtg_r10")),
-        "pace_r10": _float_safe(row.get("a_pace_r10")),
-        "adj_off_r10": _float_safe(row.get("a_adj_off_10")),
-        "adj_def_r10": _float_safe(row.get("a_adj_def_10")),
-        "ats_wins_r10": _float_safe(row.get("a_ats_wins_10")),
-        "ats_margin_r10": _float_safe(row.get("a_ats_margin_10")),
-        "ats_pct_r10": _calc_pct(row.get("a_ats_wins_10"), 10),
-        "wins_r10": _float_safe(row.get("a_wins_10")),
-        "win_pct_r10": _calc_pct(row.get("a_wins_10"), 10),
-        "ou_wins_r10": _float_safe(row.get("a_ou_wins_10")),
-        "ou_pct_r10": _calc_pct(row.get("a_ou_wins_10"), 10),
-        "ou_margin_r5": _float_safe(row.get("a_ou_margin_5")),
-        "ft_rate_r10": _float_safe(row.get("a_ft_rate_r10")),
+        "ortg_r10": _float_safe(_raw_safe(row, "a_ortg_r10")),
+        "drtg_r10": _float_safe(_raw_safe(row, "a_drtg_r10")),
+        "net_rtg_r10": _float_safe(_raw_safe(row, "a_net_rtg_r10")),
+        "pace_r10": _float_safe(_raw_safe(row, "a_pace_r10")),
+        "adj_off_r10": _float_safe(_raw_safe(row, "a_adj_off_10")),
+        "adj_def_r10": _float_safe(_raw_safe(row, "a_adj_def_10")),
+        "ats_wins_r10": _float_safe(_raw_safe(row, "a_ats_wins_10")),
+        "ats_margin_r10": _float_safe(_raw_safe(row, "a_ats_margin_10")),
+        "ats_pct_r10": _calc_pct(_raw_safe(row, "a_ats_wins_10"), 10),
+        "wins_r10": _float_safe(_raw_safe(row, "a_wins_10")),
+        "win_pct_r10": _calc_pct(_raw_safe(row, "a_wins_10"), 10),
+        "ou_wins_r10": _float_safe(_raw_safe(row, "a_ou_wins_10")),
+        "ou_pct_r10": _calc_pct(_raw_safe(row, "a_ou_wins_10"), 10),
+        "ou_margin_r5": _float_safe(_raw_safe(row, "a_ou_margin_5")),
+        "ft_rate_r10": _float_safe(_raw_safe(row, "a_ft_rate_r10")),
         "three_in_four": bool(row.get("a_three_in_four", 0)),
         "implied_prob": _float_safe(row.get("a_implied")),
         "rest_days": _float_safe(row.get("rest_a")),
@@ -1551,6 +1606,21 @@ def _float_safe(val) -> Optional[float]:
         return float(val)
     except (ValueError, TypeError):
         return None
+
+
+def _raw_safe(row: pd.Series, col: str):
+    """Return the RAW display value for a stat: prefer the "<col>_raw" twin
+    (in-season value, else prior-season fallback) produced by the data loader's
+    prior-season blend, falling back to the base column when no twin exists.
+
+    The model consumes the blended base column (h_net_rtg_r10, ...); the pick card
+    must show the raw value, so it reads the *_raw twin here.
+    """
+    base = row.get(col)
+    twin = row.get(col + "_raw")
+    if twin is not None and not (isinstance(twin, float) and pd.isna(twin)):
+        return twin
+    return base
 
 
 def _str_safe(val) -> str:

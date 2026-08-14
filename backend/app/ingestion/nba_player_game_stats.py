@@ -239,6 +239,40 @@ async def process_game(
                     if aid not in athlete_refs:
                         athlete_refs[aid] = stats_ref
 
+        # Full-roster augmentation: ESPN caps each stat-category's athletes[] to
+        # top-N, so players in no category's top-N (some stars + bench/rotation)
+        # get dropped from the statistics endpoint. The competitor's /roster
+        # endpoint lists EVERY athlete (active + didNotPlay) on the team, each
+        # with its own per-game statistics $ref (splits: general/offensive/
+        # defensive). Augment athlete_refs from it (dedup by playerId/aid) so
+        # those players are also fetched via fetch_athlete().
+        try:
+            roster_url = (
+                f"{CORE_BASE}/events/{espn_game_id}/competitions/{espn_game_id}"
+                f"/competitors/{comp_id}/roster"
+            )
+            box_r = await client.get(roster_url, timeout=15)
+            if box_r.status_code == 200:
+                for entry in (box_r.json().get("entries", []) or []):
+                    # Skip players who did NOT play (DNP/rest/injury/healthy-scratch):
+                    # Rich wants star rolling features to ONLY count games the
+                    # player actually played, so a no-show gets no pgs row (its
+                    # absence = 'did not play'), matching the existing semantics.
+                    if entry.get("didNotPlay"):
+                        continue
+                    stats_ref = (entry.get("statistics", {}) or {}).get("$ref", "")
+                    if not stats_ref:
+                        continue
+                    try:
+                        aid = int(stats_ref.split("/")[-3])
+                    except (ValueError, IndexError):
+                        aid = entry.get("playerId")
+                    if aid is not None and aid not in athlete_refs:
+                        athlete_refs[aid] = stats_ref
+        except Exception:
+            # Roster augment is best-effort; category refs already cover most players.
+            pass
+
         if not athlete_refs:
             continue
 
@@ -249,7 +283,7 @@ async def process_game(
                 if r.status_code == 200:
                     d = r.json()
                     all_cats = d.get("splits", {}).get("categories", [])
-                    merged = {"_athlete_name": ""}
+                    merged = {"_athlete_name": "", "_athlete_position": ""}
                     for cat in all_cats:
                         stats = cat.get("stats", [])
                         for s in stats:
@@ -263,6 +297,7 @@ async def process_game(
                             r2 = await client.get(ath_ref, timeout=10)
                             if r2.status_code == 200:
                                 merged["_athlete_name"] = r2.json().get("displayName", "")
+                                merged["_athlete_position"] = r2.json().get("position", {}).get("abbreviation", "") or ""
                         except Exception:
                             pass
                     return (pid, merged)
@@ -284,6 +319,38 @@ async def process_game(
                 db_player_id = match_and_save_espn_id(pid, athlete_name, db_conn)
                 if db_player_id:
                     espn_cache[pid] = db_player_id
+
+            if db_player_id is None:
+                # ESPN returned an athlete we have no DB row for (e.g. retired/
+                # historical players absent from nba.players). To keep game stats
+                # COMPLETE, auto-create a minimal player row and link the ESPN id
+                # instead of silently dropping this player's stats.
+                athlete_name = (stats.get("_athlete_name") or "").strip()
+                if athlete_name:
+                    pos = (stats.get("_athlete_position") or "").strip()[:4] or "F"
+                    try:
+                        ins = db_conn.execute(text("""
+                            INSERT INTO nba.players
+                                (name, position, team_id, espn_id, active)
+                            VALUES (:name, :pos, :team_id, :espn_id, 0)
+                            RETURNING id
+                        """), {
+                            "name": athlete_name,
+                            "pos": pos,
+                            "team_id": db_team_id,
+                            "espn_id": pid,
+                        })
+                        row = ins.fetchone()
+                        if row:
+                            db_player_id = row[0]
+                            espn_cache[pid] = db_player_id
+                            db_conn.commit()
+                            logger.info(
+                                f"  auto-created nba.players id={db_player_id} "
+                                f"'{athlete_name}' ({pos}, espn {pid})"
+                            )
+                    except Exception as e:
+                        logger.warning(f"  auto-create player failed for {athlete_name}: {e}")
 
             if db_player_id is None:
                 continue
@@ -357,8 +424,13 @@ async def process_game(
 
 # ── Orchestrator ─────────────────────────────────────────────────────────────
 
-async def ingest_season(season_year: int, game_type: str = "REG"):
-    """Ingest player game stats for all FINAL games of a given season."""
+async def ingest_season(season_year: int, game_type: str = "REG", gap_fill: bool = False):
+    """Ingest player game stats for all FINAL games of a given season.
+
+    gap_fill=True: skip the >24000 row gate AND skip the destructive DELETE,
+    relying on the per-player `ON CONFLICT (game_id, player_id) DO NOTHING`
+    upsert to fill only missing player rows (safe to re-run on final games).
+    """
     engine = create_engine(DB_URL)
 
     with engine.connect() as db_conn:
@@ -390,13 +462,14 @@ async def ingest_season(season_year: int, game_type: str = "REG"):
 
         logger.info(f"[{season_year} {game_type}] {len(games)} games, {len(espn_cache)} players with espn_id, {existing} existing player stats")
 
-        if existing > 24000:
-            logger.info(f"  ✅ Already has {existing} rows, skipping")
+        if existing > 24000 and not gap_fill:
+            logger.info(f"  ✅ Already has {existing} rows, skipping (use --gap-fill to re-process)")
             engine.dispose()
             return
 
-        # Clear existing partial stats
-        if existing > 0:
+        # Clear existing partial stats (only when NOT gap-filling, so a gap-fill
+        # run never deletes existing rows -- it fills missing ones via upsert)
+        if existing > 0 and not gap_fill:
             db_conn.execute(text("""
                 DELETE FROM nba.player_game_stats pgs
                 USING nba.games g, nba.seasons s
@@ -456,8 +529,23 @@ async def ingest_season(season_year: int, game_type: str = "REG"):
 
 
 async def main():
-    """Run for 2025-26 regular season."""
-    await ingest_season(2025, "REG")
+    """CLI: backfill NBA player game stats for given season(s)."""
+    import argparse
+    parser = argparse.ArgumentParser(description="NBA player game stats ingest")
+    parser.add_argument("--seasons", nargs="*", type=int,
+                        help="Calendar years to process (e.g. 2023 2024 2025). Default: [2025]")
+    parser.add_argument("--game-type", default="REG",
+                        help="game_type filter: REG (default), POST, PLAYIN")
+    parser.add_argument("--gap-fill", action="store_true",
+                        help="Fill missing player rows only (skip >24000 gate + skip DELETE). Safe on finals.")
+    args = parser.parse_args()
+
+    seasons = args.seasons or [2025]
+    total_all = 0
+    for yr in seasons:
+        logger.info(f"\n===== INGEST season {yr} ({args.game_type}) gap_fill={args.gap_fill} =====")
+        total_all += await ingest_season(yr, args.game_type, gap_fill=args.gap_fill)
+    logger.info(f"\nDONE: {total_all} rows across seasons {seasons}")
 
 
 if __name__ == "__main__":

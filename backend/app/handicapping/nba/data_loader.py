@@ -250,6 +250,8 @@ team_games AS (
         hrs.adj_def_10             AS h_adj_def_10,
         hrs.star_ppg_5             AS h_star_ppg_5,
         hrs.star1_ppg_5            AS h_star1_ppg_5,
+        hrs.stars_active           AS h_stars_active,
+        hrs.star1_active           AS h_star1_active,
 
         -- Away team cumulative stats (backward-looking, season-to-date)
         acs.games_played           AS a_games_played,
@@ -322,7 +324,151 @@ team_games AS (
         ars.adj_off_10             AS a_adj_off_10,
         ars.adj_def_10             AS a_adj_def_10,
         ars.star_ppg_5             AS a_star_ppg_5,
-        ars.star1_ppg_5            AS a_star1_ppg_5
+        ars.star1_ppg_5            AS a_star1_ppg_5,
+        ars.stars_active           AS a_stars_active,
+        ars.star1_active           AS a_star1_active,
+        -- prior-season (previous full season) home values for blending
+        pts_h.cum_ppg              AS h_prior_cum_ppg,
+        pts_h.cum_oppg             AS h_prior_cum_oppg,
+        pts_h.cum_margin_pg        AS h_prior_cum_margin_pg,
+        pts_h.cum_fg_pct           AS h_prior_cum_fg_pct,
+        pts_h.cum_fg3_pct          AS h_prior_cum_fg3_pct,
+        pts_h.cum_ft_pct           AS h_prior_cum_ft_pct,
+        pts_h.cum_reb_pg           AS h_prior_cum_reb_pg,
+        pts_h.cum_ast_pg           AS h_prior_cum_ast_pg,
+        pts_h.cum_stl_pg           AS h_prior_cum_stl_pg,
+        pts_h.cum_blk_pg           AS h_prior_cum_blk_pg,
+        pts_h.cum_tov_pg           AS h_prior_cum_tov_pg,
+        pts_h.cum_pf_pg            AS h_prior_cum_pf_pg,
+        pts_h.cum_ortg             AS h_prior_cum_ortg,
+        pts_h.cum_drtg             AS h_prior_cum_drtg,
+        pts_h.cum_net_ortg         AS h_prior_cum_net_ortg,
+        pts_h.cum_pace             AS h_prior_cum_pace,
+        pts_h.cum_efg_pct          AS h_prior_cum_efg_pct,
+        pts_h.cum_opp_efg_pct      AS h_prior_cum_opp_efg_pct,
+        pts_h.cum_tov_rate         AS h_prior_cum_tov_rate,
+        pts_h.cum_opp_tov_rate     AS h_prior_cum_opp_tov_rate,
+        pts_h.cum_ft_rate          AS h_prior_cum_ft_rate,
+        pts_h.cum_3pa_rate         AS h_prior_cum_3pa_rate,
+        pts_h.cum_ast_ratio        AS h_prior_cum_ast_ratio,
+        pts_h.cum_stl_rate         AS h_prior_cum_stl_rate,
+        pts_h.cum_blk_rate         AS h_prior_cum_blk_rate,
+        pts_h.cum_win_pct          AS h_prior_cum_win_pct,
+        pts_h.rw3_ppg              AS h_prior_rw3_ppg,
+        pts_h.rw5_ppg              AS h_prior_rw5_ppg,
+        pts_h.rw3_net_rtg          AS h_prior_rw3_net_rtg,
+        pts_h.rw5_net_rtg          AS h_prior_rw5_net_rtg,
+        pts_h.rw3_efg_pct          AS h_prior_rw3_efg_pct,
+        pts_h.rw5_efg_pct          AS h_prior_rw5_efg_pct,
+        pts_h.rw3_drtg             AS h_prior_rw3_drtg,
+        pts_h.rw5_drtg             AS h_prior_rw5_drtg,
+        pts_h.cv10_ppg             AS h_prior_cv10_ppg,
+        pts_h.cv20_ppg             AS h_prior_cv20_ppg,
+        pts_h.cv10_net_rtg         AS h_prior_cv10_net_rtg,
+        pts_h.recency_ppg          AS h_prior_recency_ppg,
+        pts_h.recency_net_rtg      AS h_prior_recency_net_rtg,
+        pts_h.net_rtg_r5           AS h_prior_net_rtg_r5,
+        pts_h.net_rtg_r10          AS h_prior_net_rtg_r10,
+        pts_h.ortg_r5              AS h_prior_ortg_r5,
+        pts_h.ortg_r10             AS h_prior_ortg_r10,
+        pts_h.drtg_r5              AS h_prior_drtg_r5,
+        pts_h.drtg_r10             AS h_prior_drtg_r10,
+        pts_h.efg_r5               AS h_prior_efg_r5,
+        pts_h.efg_r10              AS h_prior_efg_r10,
+        pts_h.pace_r5              AS h_prior_pace_r5,
+        pts_h.pace_r10             AS h_prior_pace_r10,
+        pts_h.ast_ratio_r5         AS h_prior_ast_ratio_r5,
+        pts_h.ast_ratio_r10        AS h_prior_ast_ratio_r10,
+        pts_h.ft_rate_r5           AS h_prior_ft_rate_r5,
+        pts_h.ft_rate_r10          AS h_prior_ft_rate_r10,
+        pts_h.threep_rate_r5       AS h_prior_threep_rate_r5,
+        pts_h.threep_rate_r10      AS h_prior_threep_rate_r10,
+        pts_h.ats_margin_5         AS h_prior_ats_margin_5,
+        pts_h.ats_margin_10        AS h_prior_ats_margin_10,
+        pts_h.ats_wins_5           AS h_prior_ats_wins_5,
+        pts_h.ats_wins_10          AS h_prior_ats_wins_10,
+        pts_h.ou_wins_5            AS h_prior_ou_wins_5,
+        pts_h.ou_wins_10           AS h_prior_ou_wins_10,
+        pts_h.ou_margin_5          AS h_prior_ou_margin_5,
+        pts_h.wins_5               AS h_prior_wins_5,
+        pts_h.wins_10              AS h_prior_wins_10,
+        pts_h.adj_off_10           AS h_prior_adj_off_10,
+        pts_h.adj_def_10           AS h_prior_adj_def_10,
+        pts_h.star_ppg_5           AS h_prior_star_ppg_5,
+        pts_h.star1_ppg_5          AS h_prior_star1_ppg_5,
+        pts_h.stars_active         AS h_prior_stars_active,
+        pts_h.star1_active         AS h_prior_star1_active,
+        -- prior-season (previous full season) away values for blending
+        pts_a.cum_ppg              AS a_prior_cum_ppg,
+        pts_a.cum_oppg             AS a_prior_cum_oppg,
+        pts_a.cum_margin_pg        AS a_prior_cum_margin_pg,
+        pts_a.cum_fg_pct           AS a_prior_cum_fg_pct,
+        pts_a.cum_fg3_pct          AS a_prior_cum_fg3_pct,
+        pts_a.cum_ft_pct           AS a_prior_cum_ft_pct,
+        pts_a.cum_reb_pg           AS a_prior_cum_reb_pg,
+        pts_a.cum_ast_pg           AS a_prior_cum_ast_pg,
+        pts_a.cum_stl_pg           AS a_prior_cum_stl_pg,
+        pts_a.cum_blk_pg           AS a_prior_cum_blk_pg,
+        pts_a.cum_tov_pg           AS a_prior_cum_tov_pg,
+        pts_a.cum_pf_pg            AS a_prior_cum_pf_pg,
+        pts_a.cum_ortg             AS a_prior_cum_ortg,
+        pts_a.cum_drtg             AS a_prior_cum_drtg,
+        pts_a.cum_net_ortg         AS a_prior_cum_net_ortg,
+        pts_a.cum_pace             AS a_prior_cum_pace,
+        pts_a.cum_efg_pct          AS a_prior_cum_efg_pct,
+        pts_a.cum_opp_efg_pct      AS a_prior_cum_opp_efg_pct,
+        pts_a.cum_tov_rate         AS a_prior_cum_tov_rate,
+        pts_a.cum_opp_tov_rate     AS a_prior_cum_opp_tov_rate,
+        pts_a.cum_ft_rate          AS a_prior_cum_ft_rate,
+        pts_a.cum_3pa_rate         AS a_prior_cum_3pa_rate,
+        pts_a.cum_ast_ratio        AS a_prior_cum_ast_ratio,
+        pts_a.cum_stl_rate         AS a_prior_cum_stl_rate,
+        pts_a.cum_blk_rate         AS a_prior_cum_blk_rate,
+        pts_a.cum_win_pct          AS a_prior_cum_win_pct,
+        pts_a.rw3_ppg              AS a_prior_rw3_ppg,
+        pts_a.rw5_ppg              AS a_prior_rw5_ppg,
+        pts_a.rw3_net_rtg          AS a_prior_rw3_net_rtg,
+        pts_a.rw5_net_rtg          AS a_prior_rw5_net_rtg,
+        pts_a.rw3_efg_pct          AS a_prior_rw3_efg_pct,
+        pts_a.rw5_efg_pct          AS a_prior_rw5_efg_pct,
+        pts_a.rw3_drtg             AS a_prior_rw3_drtg,
+        pts_a.rw5_drtg             AS a_prior_rw5_drtg,
+        pts_a.cv10_ppg             AS a_prior_cv10_ppg,
+        pts_a.cv20_ppg             AS a_prior_cv20_ppg,
+        pts_a.cv10_net_rtg         AS a_prior_cv10_net_rtg,
+        pts_a.recency_ppg          AS a_prior_recency_ppg,
+        pts_a.recency_net_rtg      AS a_prior_recency_net_rtg,
+        pts_a.net_rtg_r5           AS a_prior_net_rtg_r5,
+        pts_a.net_rtg_r10          AS a_prior_net_rtg_r10,
+        pts_a.ortg_r5              AS a_prior_ortg_r5,
+        pts_a.ortg_r10             AS a_prior_ortg_r10,
+        pts_a.drtg_r5              AS a_prior_drtg_r5,
+        pts_a.drtg_r10             AS a_prior_drtg_r10,
+        pts_a.efg_r5               AS a_prior_efg_r5,
+        pts_a.efg_r10              AS a_prior_efg_r10,
+        pts_a.pace_r5              AS a_prior_pace_r5,
+        pts_a.pace_r10             AS a_prior_pace_r10,
+        pts_a.ast_ratio_r5         AS a_prior_ast_ratio_r5,
+        pts_a.ast_ratio_r10        AS a_prior_ast_ratio_r10,
+        pts_a.ft_rate_r5           AS a_prior_ft_rate_r5,
+        pts_a.ft_rate_r10          AS a_prior_ft_rate_r10,
+        pts_a.threep_rate_r5       AS a_prior_threep_rate_r5,
+        pts_a.threep_rate_r10      AS a_prior_threep_rate_r10,
+        pts_a.ats_margin_5         AS a_prior_ats_margin_5,
+        pts_a.ats_margin_10        AS a_prior_ats_margin_10,
+        pts_a.ats_wins_5           AS a_prior_ats_wins_5,
+        pts_a.ats_wins_10          AS a_prior_ats_wins_10,
+        pts_a.ou_wins_5            AS a_prior_ou_wins_5,
+        pts_a.ou_wins_10           AS a_prior_ou_wins_10,
+        pts_a.ou_margin_5          AS a_prior_ou_margin_5,
+        pts_a.wins_5               AS a_prior_wins_5,
+        pts_a.wins_10              AS a_prior_wins_10,
+        pts_a.adj_off_10           AS a_prior_adj_off_10,
+        pts_a.adj_def_10           AS a_prior_adj_def_10,
+        pts_a.star_ppg_5           AS a_prior_star_ppg_5,
+        pts_a.star1_ppg_5          AS a_prior_star1_ppg_5,
+        pts_a.stars_active         AS a_prior_stars_active,
+        pts_a.star1_active         AS a_prior_star1_active
     FROM nba.games g
     JOIN nba.teams ht ON ht.id = g.home_team_id
     JOIN nba.teams at ON at.id = g.away_team_id
@@ -332,6 +478,8 @@ team_games AS (
         SELECT cgs.* FROM nba.cumulative_game_stats cgs
         WHERE cgs.team_id = g.home_team_id
           AND cgs.game_id != g.id
+          AND cgs.game_date < g.date::date
+          AND cgs.season_id = g.season_id
         ORDER BY cgs.game_date DESC, cgs.game_id DESC
         LIMIT 1
     ) hcs ON true
@@ -339,6 +487,8 @@ team_games AS (
         SELECT rs.* FROM nba.team_rolling_stats rs
         WHERE rs.team_id = g.home_team_id
           AND rs.game_id != g.id
+          AND rs.game_date < g.date::date
+          AND rs.season_id = g.season_id
         ORDER BY rs.game_date DESC, rs.game_id DESC
         LIMIT 1
     ) hrs ON true
@@ -346,6 +496,8 @@ team_games AS (
         SELECT cgs.* FROM nba.cumulative_game_stats cgs
         WHERE cgs.team_id = g.away_team_id
           AND cgs.game_id != g.id
+          AND cgs.game_date < g.date::date
+          AND cgs.season_id = g.season_id
         ORDER BY cgs.game_date DESC, cgs.game_id DESC
         LIMIT 1
     ) acs ON true
@@ -353,9 +505,15 @@ team_games AS (
         SELECT rs.* FROM nba.team_rolling_stats rs
         WHERE rs.team_id = g.away_team_id
           AND rs.game_id != g.id
+          AND rs.game_date < g.date::date
+          AND rs.season_id = g.season_id
         ORDER BY rs.game_date DESC, rs.game_id DESC
         LIMIT 1
     ) ars ON true
+    LEFT JOIN nba.prior_team_stats pts_h
+        ON pts_h.team_id = g.home_team_id AND pts_h.season_year = s.year - 1
+    LEFT JOIN nba.prior_team_stats pts_a
+        ON pts_a.team_id = g.away_team_id AND pts_a.season_year = s.year - 1
     WHERE g.status = 'FINAL'
       AND g.home_score IS NOT NULL
       AND g.away_score IS NOT NULL
@@ -495,6 +653,8 @@ COMPUTED_FEATURES_CATALOG: Dict[str, str] = {
     "over_implied_prob": "Vig-free over probability from over/under odds",
     "implied_margin": "Expected point margin from moneyline implied probability",
     "ml_spread_mismatch": "Disagreement between ML-implied margin and closing spread",
+    "h_implied_score": "Implied home points from closing total + spread ((OU-|spread|)/2)",
+    "a_implied_score": "Implied away points from closing total + spread ((OU+|spread|)/2)",
     "h_ats_wins_5": "Home team ATS wins in last 5 games",
     "a_ats_wins_5": "Away team ATS wins in last 5 games",
     "h_ats_margin_5": "Home team avg ATS cover margin last 5 games",
@@ -635,6 +795,8 @@ DISPLAY_NAMES: Dict[str, str] = {
     "over_implied_prob": "Over Implied Prob",
     "implied_margin": "Implied Margin",
     "ml_spread_mismatch": "ML-Spread Mismatch",
+    "h_implied_score": "Home Implied Score",
+    "a_implied_score": "Away Implied Score",
     "h_ats_wins_5": "Home ATS Wins L5",
     "a_ats_wins_5": "Away ATS Wins L5",
     "h_ats_margin_5": "Home ATS Margin L5",
@@ -981,12 +1143,19 @@ class NBADataLoader:
         self,
         seasons: Optional[List[int]] = None,
         limit: Optional[int] = None,
-        refresh_cumulative: bool = True,
+        refresh_cumulative: bool = False,
         force_rebuild_cumulative: bool = False,
     ) -> pd.DataFrame:
         """Load game data and apply full feature engineering.
 
         Main entry point for training pipelines.
+
+        ``refresh_cumulative`` defaults to ``False``: the
+        ``nba.cumulative_game_stats`` table is refreshed by a dedicated
+        scheduled task during the season, NOT by this loader.  Pass
+        ``refresh_cumulative=True`` explicitly to the task / manual run that
+        owns the wholesale refresh (or to force a rebuild via
+        ``force_rebuild_cumulative``).
 
         Parameters
         ----------
@@ -1088,6 +1257,14 @@ class NBADataLoader:
 
         known = set(list(FEATURES_CATALOG.keys()) + list(COMPUTED_FEATURES_CATALOG.keys()))
         keep = [c for c in df.columns if c in known]
+        # Add the non-trainable prior-season + raw display columns produced by
+        # build_features(). They are NOT in the catalogs (so they never become
+        # model features — trainability is gated by nba.features.is_trainable), but
+        # they must survive here so the pick card and admin loader can read them.
+        keep += [
+            c for c in df.columns
+            if c.startswith(("h_prior_", "a_prior_")) or c.endswith("_raw")
+        ]
         return df[keep].copy()
 
 
@@ -1388,101 +1565,13 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
     df["pace_diff_5"] = df["h_pace_r5"] - df["a_pace_r5"]
 
     # ═══════════════════════════════════════════════════════════════════════════
-    #  1c. Star player availability (CURRENT-GAME only)
-    #  star_ppg_5 / star1_ppg_5 (rolling) are precomputed in nba.team_rolling_stats
-    #  and read via GAME_QUERY. Only the per-game availability flags
-    #  (stars_active / star1_active) are computed here, as a lightweight per-game
-    #  join on nba.player_game_stats (who has minutes>0 in THIS game).
+    #  1c. Star player availability — NOW PRECOMPUTED (perf)
+    #  star_ppg_5 / star1_ppg_5 (rolling) AND the per-game availability flags
+    #  (stars_active / star1_active) are all precomputed in nba.team_rolling_stats
+    #  and read via GAME_QUERY (h_stars_active/h_star1_active/a_stars_active/a_star1_active).
+    #  Previously this block re-joined nba.player_game_stats (all 513k rows) + ran
+    #  a regex lambda on the VARCHAR minutes column every training run — removed.
     # ═══════════════════════════════════════════════════════════════════════════
-    _star_engine = create_engine(DEFAULT_DB_URL)
-    try:
-        # Identify top-3 scorers per team, per season
-        with _star_engine.connect() as _conn:
-            _players_df = pd.read_sql("""
-                SELECT pss.player_id, pss.team_id, pss.season_id, pss.points_per_game,
-                       ROW_NUMBER() OVER (
-                           PARTITION BY pss.team_id, pss.season_id ORDER BY pss.points_per_game DESC
-                       ) AS star_rank
-                FROM nba.player_season_stats pss
-                WHERE pss.games_played >= 10
-                  AND pss.team_id IS NOT NULL
-            """, _conn)
-
-        _star_players = _players_df[_players_df["star_rank"] <= 3].copy()
-
-        if len(_star_players) > 0:
-            _star_ids = list(_star_players["player_id"].unique())
-            with _star_engine.connect() as _conn:
-                _placeholders = ",".join([str(pid) for pid in _star_ids])
-                _game_logs = pd.read_sql(f"""
-                    SELECT pgs.player_id, pgs.game_id, pgs.team_id,
-                           pgs.minutes, g.date, g.season_id
-                    FROM nba.player_game_stats pgs
-                    JOIN nba.games g ON pgs.game_id = g.id
-                    WHERE pgs.player_id IN ({_placeholders})
-                """, _conn)
-
-            _gl = _game_logs.copy()
-            # minutes is VARCHAR — can be "32", "32:08" (MM:SS), "-", or NULL
-            _gl["minutes"] = (
-                _gl["minutes"]
-                .replace("-", None)
-                .fillna(0)
-                .astype(str)
-                .str.replace(r"^(\d+):(\d{2})$", lambda m: str(int(m.group(1)) + int(m.group(2)) / 60), regex=True)
-                .astype(float)
-            )
-            _gl["active"] = (_gl["minutes"] > 0).astype(int)
-
-            # Merge rank info — match by season so each game uses that season's top scorers
-            _gl = _gl.merge(
-                _star_players[["player_id", "team_id", "season_id", "star_rank"]],
-                on=["player_id", "team_id", "season_id"],
-                how="left",
-            )
-
-            # Top-3 scorers per team-game
-            _star_only = _gl[_gl["star_rank"].notna() & (_gl["star_rank"] <= 3)].copy()
-
-            if len(_star_only) > 0:
-                # Availability: count of top-3 active in this game
-                _game_summary = _star_only.groupby(["game_id", "team_id"]).agg(
-                    stars_active=("active", "sum"),
-                ).reset_index()
-
-                # Leading scorer availability
-                _top_star = _gl[_gl["star_rank"] == 1].copy()
-                _top_summary = _top_star.groupby(["game_id", "team_id"]).agg(
-                    star1_active=("active", "first"),
-                ).reset_index()
-
-                _game_star = _game_summary.merge(_top_summary, on=["game_id", "team_id"], how="left")
-
-                # Home side
-                _home = _game_star.rename(columns={
-                    "team_id": "home_team_id",
-                    "stars_active": "h_stars_active",
-                    "star1_active": "h_star1_active",
-                })
-                df = df.merge(
-                    _home[["game_id", "home_team_id", "h_stars_active", "h_star1_active"]],
-                    on=["game_id", "home_team_id"],
-                    how="left",
-                )
-
-                # Away side
-                _away = _game_star.rename(columns={
-                    "team_id": "away_team_id",
-                    "stars_active": "a_stars_active",
-                    "star1_active": "a_star1_active",
-                })
-                df = df.merge(
-                    _away[["game_id", "away_team_id", "a_stars_active", "a_star1_active"]],
-                    on=["game_id", "away_team_id"],
-                    how="left",
-                )
-    finally:
-        _star_engine.dispose()
 
     # ═══════════════════════════════════════════════════════════════════════════
     # ═══════════════════════════════════════════════════════════════════════════
@@ -1621,21 +1710,30 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
                 # prior anchor per row: (team_id, season_id - 1)
                 teams = df["home_team_id"] if side_team == "home" else df["away_team_id"]
                 prior = df["season_id"] - 1
-                anc = pd.Series(index=df.index, dtype="float64")
-                for i in df.index:
-                    v = np.nan
-                    try:
-                        _lv = anchor_df.loc[(teams[i], prior[i]), anchor_col]
-                        v = _lv if pd.notna(_lv) else np.nan
-                    except (KeyError, TypeError):
-                        v = np.nan
-                    if pd.isna(v) and career_df is not None:
-                        try:
-                            _cv = career_df.loc[teams[i], anchor_col]
-                            v = _cv if pd.notna(_cv) else np.nan
-                        except (KeyError, TypeError):
-                            v = np.nan
-                    anc.loc[i] = v
+                if anchor_df is not None and anchor_col in anchor_df.columns:
+                    # vectorized prior-season anchor via merge (handles duplicate team/season keys)
+                    _a = anchor_df.reset_index()
+                    _a_cols = [c for c in _a.columns if c in ("team_id", "season_id")]
+                    _m = pd.DataFrame({
+                        "_t": teams.values,
+                        "_s": prior.values,
+                        "_o": np.arange(len(df)),
+                    }).merge(
+                        _a[["team_id", "season_id", anchor_col]].rename(columns={"team_id": "_t", "season_id": "_s"}),
+                        on=["_t", "_s"], how="left",
+                    )
+                    anc = _m.sort_values("_o").set_index("_o")[anchor_col]
+                    anc.index = df.index
+                else:
+                    anc = pd.Series(np.nan, index=df.index)
+                if career_df is not None and anchor_col in career_df.columns:
+                    # where anchor missing, fall back to career split (per-team)
+                    miss = anc.isna()
+                    if miss.any():
+                        _car = career_df.loc[teams.values[miss.values], [anchor_col]]
+                        _car.index = df.index[miss.values]
+                        anc = anc.copy()
+                        anc.loc[miss] = _car[anchor_col].values
                 blended = anc * (1.0 - wt) + cur * wt
                 blended = blended.where(anc.notna(), cur)  # no anchor -> pure current
                 blended = blended.where(cur.notna(), anc)  # no current-season games yet -> pure anchor
@@ -1772,6 +1870,17 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
         (df["h_implied"] - df["a_implied"]).abs() * 50.0
     ) * np.sign(df["h_implied"] - df["a_implied"])
 
+    # ── Implied team scores from closing total + closing spread ───────────────
+    # home_implied = (OU - |spread|)/2 ; away_implied = (OU + |spread|)/2
+    # (spread quoted from home perspective). Fall back to splitting the OU
+    # evenly when the spread is unavailable.
+    _ou = df["closing_ou"].where(df["closing_ou"].notna(), df.get("opening_ou"))
+    _spr = df["closing_spread"].where(df["closing_spread"].notna(), df.get("opening_spread")).abs()
+    _spr = _spr.where(_spr.notna(), 0.0)
+    _implied_base = _ou / 2.0
+    df["h_implied_score"] = _implied_base - _spr / 2.0
+    df["a_implied_score"] = _implied_base + _spr / 2.0
+
     df["ml_spread_mismatch"] = df["implied_margin"] - df["closing_spread"].abs()
 
     # ── Over/under implied probability (vig-free) ────────────────────────────
@@ -1816,6 +1925,84 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
     #     value. We therefore do NOT blanket fillna(0) here — a missing stat
     #     must stay NaN so the card never shows a fabricated 0 (e.g. '0 PPG').
     # ═══════════════════════════════════════════════════════════════════════════
+
+    # ── Prior-season weighted blend (MLB-style w/ game 1-8 decay) ──
+    # The raw in-season value stays in the trainable column (h_cum_ppg, ...)
+    # UNLESS the current sample is NULL/small, in which case we blend with the
+    # prior full-season value from nba.prior_team_stats (via *_prior_* cols).
+    #   prior_w = 1 - min(games_played / BLEND_WINDOW, 1)
+    # so game 1 (games_played=0) is ~100% prior, decaying to ~0% prior by
+    # game 9+ (>=8 games played).  We also emit parallel *_raw columns holding
+    # the raw in-season value (falling back to prior when in-season is null) so
+    # the PICK CARD can always show the real underlying stat.
+    #
+    # The MODEL reads the blended h_cum_ppg (trainable, is_trainable=TRUE).
+    # The PICK CARD reads h_cum_ppg_raw (is_trainable=FALSE, pick_card=TRUE).
+    BLEND_WINDOW = 8
+
+    def _prior_weight(games_played):
+        if games_played is None or pd.isna(games_played):
+            return 1.0  # no in-season sample -> fully prior
+        return float(np.clip(1.0 - games_played / BLEND_WINDOW, 0.0, 1.0))
+
+    def _blend_series(train, prior, w):
+        """Weighted blend, NaN-safe."""
+        train = pd.to_numeric(train, errors="coerce")
+        prior = pd.to_numeric(prior, errors="coerce")
+        blended = w * prior + (1.0 - w) * train
+        # Where train is missing, fall back to the (weighted) prior only.
+        blended = blended.where(train.notna(), w * prior)
+        # Where BOTH are missing, leave NaN for the model imputer / blank card.
+        return blended
+
+    # Collect all prior columns present (home + away).
+    prior_cols = sorted(c for c in df.columns if c.startswith(("h_prior_", "a_prior_")))
+
+    # Build all new raw + blended columns up front, then assign once (avoids
+    # DataFrame fragmentation from one-by-one inserts).
+    new_raw = {}
+    new_blend = {}
+    for side, gcol in (("h", "h_games_played"), ("a", "a_games_played")):
+        gp = df.get(gcol)
+        prefix = f"{side}_prior_"
+        for pc in prior_cols:
+            if not pc.startswith(prefix):
+                continue
+            suffix = pc[len(prefix):]
+            train_col = f"{side}_{suffix}"
+            if train_col not in df.columns:
+                continue
+            # prior weight per row (vector, since games_played varies)
+            if gp is not None:
+                w = gp.apply(_prior_weight)
+            else:
+                w = 1.0
+            raw_col = f"{train_col}_raw"
+            in_season_raw = pd.to_numeric(df[train_col], errors="coerce")
+            prior = pd.to_numeric(df[pc], errors="coerce")
+            # raw display column (pick card): raw in-season, else prior
+            new_raw[raw_col] = in_season_raw.where(in_season_raw.notna(), prior)
+            # blend into the trainable column
+            new_blend[train_col] = _blend_series(in_season_raw, prior, w)
+
+    if new_raw:
+        df = pd.concat([df, pd.DataFrame(new_raw, index=df.index)], axis=1)
+    if new_blend:
+        for col, s in new_blend.items():
+            df[col] = s
+
+    # Recompute head-to-head differential features from the BLENDED rolling
+    # values (they were computed earlier from the pre-blend, possibly NULL,
+    # values). E.g. net_rtg_diff_5 = blended h_net_rtg_r5 - blended a_net_rtg_r5.
+    for diff, hcol, acol in [
+        ("net_rtg_diff_5", "h_net_rtg_r5", "a_net_rtg_r5"),
+        ("net_rtg_diff_10", "h_net_rtg_r10", "a_net_rtg_r10"),
+        ("pace_diff_5", "h_pace_r5", "a_pace_r5"),
+    ]:
+        if diff in df.columns and hcol in df.columns and acol in df.columns:
+            df[diff] = pd.to_numeric(df[hcol], errors="coerce") - pd.to_numeric(
+                df[acol], errors="coerce"
+            )
 
     drop_cols = [
         c for c in df.columns

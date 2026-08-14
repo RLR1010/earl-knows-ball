@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.models import User
 from app.core.config import settings
+from app.services.activity import record_activity
 
 logger = logging.getLogger(__name__)
 
@@ -202,14 +203,18 @@ async def get_current_user(request: Request, db: AsyncSession = Depends(get_db))
     # Check cookie first
     token = request.cookies.get(COOKIE_NAME)
     if token:
-        return await get_user_from_token(token, db)
+        user = await get_user_from_token(token, db)
+        record_activity(request, user.id)
+        return user
 
     # Fall back to Authorization header (legacy support for admin pages)
     auth_header = request.headers.get("authorization", "")
     if auth_header.startswith("Bearer "):
         token = auth_header.replace("Bearer ", "", 1).strip()
         if token:
-            return await get_user_from_token(token, db)
+            user = await get_user_from_token(token, db)
+            record_activity(request, user.id)
+            return user
 
     raise HTTPException(status_code=401, detail="Not authenticated")
 

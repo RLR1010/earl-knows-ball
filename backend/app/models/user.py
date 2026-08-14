@@ -28,3 +28,4 @@ class User(Base):
 
     # Relationships
     token_usage = relationship("UserTokenUsage", back_populates="user", cascade="all, delete-orphan")
+    activity = relationship("UserActivity", back_populates="user", cascade="all, delete-orphan")

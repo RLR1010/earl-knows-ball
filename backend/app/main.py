@@ -85,6 +85,7 @@ from app.routers import (
     chat_nba,
     chat_mlb,
     conversations,
+    customer_service,
     games,
     home,
     ingest,
@@ -123,6 +124,7 @@ _LEGACY_USER_FACING = [
     subscriptions,
     teams,
     token_usage,
+    customer_service,
 ]
 
 _COMPUTE_FACING = [

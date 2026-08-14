@@ -12,6 +12,7 @@ const NAV_GROUPS = [
       { label: "Subscriptions", path: "/admin/subscriptions" },
       { label: "Plans", path: "/admin/plans" },
       { label: "Payments", path: "/admin/payments" },
+      { label: "Customer Service", path: "/admin/customer-service" },
     ],
   },
   {
@@ -38,6 +39,7 @@ const NAV_GROUPS = [
       { label: "Data Loader", path: "/admin/data-loader" },
       { label: "Database", path: "/admin/database" },
       { label: "Structure", path: "/admin/structure" },
+      { label: "User Chats", path: "/admin/chats" },
     ],
   },
 ];

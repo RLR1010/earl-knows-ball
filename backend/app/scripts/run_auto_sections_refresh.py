@@ -27,6 +27,7 @@ import logging
 import os
 import sys
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 import httpx
 from sqlalchemy import text
@@ -69,7 +70,59 @@ def _is_due(cfg: dict, now: datetime) -> bool:
         return True  # never run -> catch up
     if last_gen.tzinfo is None:
         last_gen = last_gen.replace(tzinfo=timezone.utc)
+
+    # A per-config generate_time (HH:MM) gives calendar-day semantics: the
+    # config is due once per local day, at/after that clock time, regardless
+    # of exactly when it last fired (so a "daily 08:00" article lands each
+    # morning, not a rolling 24h after yesterday's run).
+    generate_time = (cfg.get("generate_time") or "").strip()
+    if cadence in ("daily", "weekly") and generate_time:
+        return _is_due_time_of_day(cfg, now, generate_time, weekly=(cadence == "weekly"))
+
     return (now - last_gen).total_seconds() >= period_seconds
+
+
+def _is_due_time_of_day(cfg: dict, now: datetime, generate_time: str, weekly: bool) -> bool:
+    """Calendar-ish due check for a config with a preferred generate_time.
+
+    The cadence window (24h daily / 7d weekly) still applies as a lower bound, but the
+    due boundary snaps to the generate_time on the target local day instead of the
+    exact instant of the previous run. This keeps cohorts anchored to a clean
+    clock time rather than drifting to the time of the prior generation.
+    """
+    try:
+        local = ZoneInfo("America/Chicago")
+        local_now = now.astimezone(local)
+        hh, mm = (int(x) for x in generate_time.split(":"))
+        target_time = local_now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+    except Exception:
+        # Malformed generate_time — fall back to rolling window.
+        cadence = cfg.get("cadence") or "daily"
+        period_seconds = (7 * 24 * 60 * 60) if cadence == "weekly" else (24 * 60 * 60)
+        last_gen = cfg.get("last_generated_at")
+        if last_gen.tzinfo is None:
+            last_gen = last_gen.replace(tzinfo=timezone.utc)
+        return (now - last_gen).total_seconds() >= period_seconds
+
+    # A weekly config is due only on its target weekday (the weekday it last ran).
+    if weekly:
+        last_gen = cfg.get("last_generated_at")
+        if last_gen.tzinfo is None:
+            last_gen = last_gen.replace(tzinfo=timezone.utc)
+        if last_gen.astimezone(local).weekday() != local_now.weekday():
+            return False
+
+    # Only after the target clock time has been reached on the Windows day.
+    if local_now < target_time:
+        return False
+
+    # Due if the last run was before this day's target boundary (or how never ran).
+    last_gen = cfg.get("last_generated_at")
+    if last_gen is None:
+        return True
+    if last_gen.tzinfo is None:
+        last_gen = last_gen.replace(tzinfo=timezone.utc)
+    return last_gen.astimezone(local) < target_time
 
 
 async def _load_active_configs() -> list[dict]:
@@ -78,7 +131,7 @@ async def _load_active_configs() -> list[dict]:
             text(
                 """
                 SELECT id, sport, title, description, instructions, cadence,
-                       scope_type, team_id, team_abbr, team_name,
+                       generate_time, scope_type, team_id, team_abbr, team_name,
                        template_article_id, section, status,
                        reasoning, visibility, word_min, word_max, title_mode,
                        last_generated_at

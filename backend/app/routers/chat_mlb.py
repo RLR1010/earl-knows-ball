@@ -98,6 +98,7 @@ class ChatMLBRequest(BaseModel):
     conversation_id: str | None = None
     include_enrichment: bool = True
     request_id: str | None = Field(None, description="Client-generated ID used to poll live status via GET /chat/status/{request_id}")
+    system_context: str | None = Field(None, description="Optional game context (matchup, lines, Earl picks) injected into the LLM prompt without storing it in chat history.")
 
 
 class ChatMLBResponse(BaseModel):
@@ -170,6 +171,15 @@ async def chat_mlb(
                 "content": f"[Central US time: {time_context}]\n\n{request.message}",
             })
 
+            # Optional game context (from a game-card chat): inject as a system
+            # instruction so Earl knows the matchup/lines/picks — the stored user
+            # message stays clean (no [GAME CONTEXT] prefix) in chat history.
+            if getattr(request, "system_context", None):
+                messages.append({
+                    "role": "system",
+                    "content": request.system_context,
+                })
+
             user_id = current_user.id
 
             logger.info(
@@ -195,6 +205,8 @@ async def chat_mlb(
                     answer = data
 
             # --- Step 3: Enrichment (if enabled) ---
+            refinement_tokens = 0
+            enrichment_tokens = 0
             if request.include_enrichment:
                 if request.request_id:
                     await set_chat_status(request.request_id, "Searching for relevant articles...")
@@ -233,6 +245,8 @@ async def chat_mlb(
                             max_tokens=2048,
                         )
                         refined = final_response.choices[0].message.content or ""
+                        if final_response.usage:
+                            refinement_tokens = final_response.usage.total_tokens or 0
                         if refined:
                             answer = refined
                             logger.info("Enrichment refinement completed successfully")
@@ -240,6 +254,8 @@ async def chat_mlb(
                             logger.warning("Enrichment refinement returned empty")
                     except Exception as enrich_err:
                         logger.exception("Enrichment final generation failed: %s", enrich_err)
+
+            total_tokens += refinement_tokens + enrichment_tokens
 
             # --- Step 4: Save conversation history ---
             now = datetime.now(timezone.utc)
@@ -257,6 +273,7 @@ async def chat_mlb(
                 sport="mlb",
                 role="assistant",
                 message=answer,
+                tokens_used=total_tokens,
                 created_at=now,
             ))
             await db.commit()

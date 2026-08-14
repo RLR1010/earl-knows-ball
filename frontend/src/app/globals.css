@@ -75,6 +75,29 @@ body {
   color: #e5e5e5;
 }
 
+/* Make standard interactive elements show a pointer cursor */
+a,
+button,
+[role="button"],
+summary,
+label,
+select,
+input[type="button"],
+input[type="submit"],
+input[type="reset"],
+input[type="checkbox"],
+input[type="radio"],
+input[type="range"],
+[data-cursor="pointer"]
+{
+  cursor: pointer;
+}
+
+/* Explicit opt-out for any element that should keep the default arrow */
+[data-cursor="default"] {
+  cursor: default;
+}
+
 .font-display {
   font-family: "Oswald", system-ui, sans-serif;
 }

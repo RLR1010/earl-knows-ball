@@ -585,6 +585,7 @@ async def update_prediction_results(pg_conn) -> int:
                gp.run_line_pick, gp.ou_pick, gp.ml_pick,
                gp.rl_conf, gp.ml_conf, gp.ou_conf,
                g.home_score, g.away_score,
+               ht.abbreviation AS home_abbrev, at.abbreviation AS away_abbrev,
                blc.closing_spread,
                blc.closing_spread_home_odds, blc.closing_spread_away_odds,
                blc.closing_ou,
@@ -592,6 +593,8 @@ async def update_prediction_results(pg_conn) -> int:
                blc.closing_home_ml, blc.closing_away_ml
         FROM mlb.game_predictions gp
         JOIN mlb.games g ON gp.game_id = g.id
+        JOIN mlb.teams ht ON ht.id = g.home_team_id
+        JOIN mlb.teams at ON at.id = g.away_team_id
         LEFT JOIN mlb.betting_lines_consolidated blc ON gp.game_id = blc.game_id
         WHERE g.status = 'FINAL'
           AND g.home_score IS NOT NULL
@@ -648,6 +651,9 @@ async def update_prediction_results(pg_conn) -> int:
                 ou_result = "Win" if actual_total < float(vegas_ou) else "Loss"
 
         # --- Moneyline result ---
+        # ml_pick is stored as the TEAM abbreviation (e.g. 'LAD') for MLB — not the
+        # generic 'home'/'away' placeholder — so resolve it against the game's
+        # home/away team abbreviations to decide which side was picked.
         ml_result = None
         ml_pick = r["ml_pick"]
         if ml_pick and actual_margin is not None:
@@ -657,6 +663,18 @@ async def update_prediction_results(pg_conn) -> int:
                 ml_result = "Win" if actual_margin > 0 else "Loss"
             elif ml_pick in ("away", "Away"):
                 ml_result = "Win" if actual_margin < 0 else "Loss"
+            else:
+                # Team abbreviation (e.g. 'LAD', 'BOS'). Compare case-insensitively.
+                pick = (ml_pick or "").strip().upper()
+                home_a = (r["home_abbrev"] or "").strip().upper()
+                away_a = (r["away_abbrev"] or "").strip().upper()
+                if pick and pick == home_a:
+                    ml_result = "Win" if actual_margin > 0 else "Loss"
+                elif pick and pick == away_a:
+                    ml_result = "Win" if actual_margin < 0 else "Loss"
+                elif pick and home_a and away_a:
+                    # Doesn't match either team — safe fallback.
+                    ml_result = None
 
         # --- Profit calculations ---
         def _calc_profit(result: str | None, odds: float | None) -> float | None:
@@ -684,13 +702,20 @@ async def update_prediction_results(pg_conn) -> int:
             elif pick_lower.startswith("under"):
                 ou_odds = float(r["closing_under_odds"]) if r["closing_under_odds"] is not None else None
 
-        # ML odds
+        # ML odds: use the side we picked (resolve home/away or team abbreviation)
         ml_odds = None
         if ml_pick:
             if ml_pick in ("home", "Home"):
                 ml_odds = float(r["closing_home_ml"]) if r["closing_home_ml"] is not None else None
             elif ml_pick in ("away", "Away"):
                 ml_odds = float(r["closing_away_ml"]) if r["closing_away_ml"] is not None else None
+            else:
+                pick = (ml_pick or "").strip().upper()
+                home_a = (r["home_abbrev"] or "").strip().upper()
+                if pick == home_a:
+                    ml_odds = float(r["closing_home_ml"]) if r["closing_home_ml"] is not None else None
+                else:
+                    ml_odds = float(r["closing_away_ml"]) if r["closing_away_ml"] is not None else None
 
         rl_profit = _calc_profit(rl_result, rl_odds)
         ou_profit = _calc_profit(ou_result, ou_odds)

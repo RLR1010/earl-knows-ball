@@ -22,6 +22,7 @@ Endpoints (all under /api/admin, so they live on the compute machine):
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -67,6 +68,7 @@ class CreateConfigRequest(BaseModel):
     description: Optional[str] = None
     instructions: Optional[str] = None
     cadence: str = "daily"
+    generate_time: Optional[str] = None
     scope_type: str = "sport"
     team_id: Optional[int] = None
     team_abbr: Optional[str] = None
@@ -90,6 +92,7 @@ class FromArticleRequest(BaseModel):
     description: Optional[str] = None
     instructions: Optional[str] = None
     cadence: str = "daily"
+    generate_time: Optional[str] = None
     scope_type: str = "sport"
     team_id: Optional[int] = None
     team_abbr: Optional[str] = None
@@ -107,6 +110,7 @@ class UpdateConfigRequest(BaseModel):
     description: Optional[str] = None
     instructions: Optional[str] = None
     cadence: Optional[str] = None
+    generate_time: Optional[str] = None
     scope_type: Optional[str] = None
     team_id: Optional[int] = None
     team_abbr: Optional[str] = None
@@ -153,6 +157,36 @@ def _validate_enum(value: str, allowed: tuple, field: str, default: str = None) 
     if v not in allowed:
         raise HTTPException(status_code=400, detail=f"Invalid {field} '{value}'. Expected one of: {', '.join(allowed)}.")
     return v
+
+
+def _normalize_generate_time(value) -> Optional[str]:
+    """Validate and normalize a per-config generation time-of-day (HH:MM).
+
+    Accepts 'HH:MM', 'HH:MM:SS', or 'HH:MM AM/PM'. Returns a canonical 'HH:MM'
+    (24-hour) string, or None when value is empty/None (cleared). Raises a 400
+    for malformed input.
+    """
+    if value is None:
+        return None
+    s = (value or "").strip()
+    if not s:
+        return None
+    m = re.fullmatch(r"(\d{1,2}):(\d{2})(?::(\d{2}))?(?:\s*([AaPp][Mm]))?", s)
+    if not m:
+        raise HTTPException(status_code=400, detail=f"Invalid generate_time '{value}'. Expected HH:MM (24-hour).")
+    hh, mm, ss, meridiem = m.groups()
+    hh = int(hh)
+    mm = int(mm)
+    if mm > 59:
+        raise HTTPException(status_code=400, detail=f"Invalid generate_time '{value}': minutes out of range.")
+    if meridiem:
+        if hh < 1 or hh > 12:
+            raise HTTPException(status_code=400, detail=f"Invalid generate_time '{value}': hour out of range for 12-hour.")
+        hh = hh % 12 + (12 if meridiem.lower() == "pm" else 0)
+    else:
+        if hh > 23:
+            raise HTTPException(status_code=400, detail=f"Invalid generate_time '{value}': hour out of range.")
+    return f"{hh:02d}:{mm:02d}"
 
 
 async def _lookup_article_section(db: AsyncSession, article_id: Any) -> str:
@@ -243,13 +277,13 @@ async def create_config(req: CreateConfigRequest, db: AsyncSession = Depends(get
         text(
             """
             INSERT INTO public.auto_generation_configs
-                (sport, title, description, instructions, cadence, scope_type,
+                (sport, title, description, instructions, cadence, generate_time, scope_type,
                  team_id, team_abbr, team_name, template_article_id, section, status,
                  reasoning, visibility, word_min, word_max,
                  title_mode,
                  created_at, updated_at)
             VALUES
-                (:sport, :title, :description, :instructions, :cadence, :scope_type,
+                (:sport, :title, :description, :instructions, :cadence, :generate_time, :scope_type,
                  :team_id, :team_abbr, :team_name, :template_article_id, :section, :status,
                  :reasoning, :visibility, :word_min, :word_max,
                  :title_mode,
@@ -263,6 +297,7 @@ async def create_config(req: CreateConfigRequest, db: AsyncSession = Depends(get
             "description": req.description,
             "instructions": req.instructions,
             "cadence": cadence,
+            "generate_time": _normalize_generate_time(req.generate_time),
             "scope_type": scope_type,
             "team_id": req.team_id if scope_type == "team" else None,
             "team_abbr": team_abbr if scope_type == "team" else None,
@@ -318,13 +353,13 @@ async def create_from_article(req: FromArticleRequest, db: AsyncSession = Depend
         text(
             """
             INSERT INTO public.auto_generation_configs
-                (sport, title, description, instructions, cadence, scope_type,
+                (sport, title, description, instructions, cadence, generate_time, scope_type,
                  team_id, team_abbr, team_name, template_article_id, section, status,
                  reasoning, visibility, word_min, word_max,
                  title_mode,
                  created_at, updated_at)
             VALUES
-                (:sport, :title, :description, :instructions, :cadence, :scope_type,
+                (:sport, :title, :description, :instructions, :cadence, :generate_time, :scope_type,
                  :team_id, :team_abbr, :team_name, :template_article_id, :section, 'active',
                  :reasoning, :visibility, :word_min, :word_max,
                  :title_mode,
@@ -338,6 +373,7 @@ async def create_from_article(req: FromArticleRequest, db: AsyncSession = Depend
             "description": req.description,
             "instructions": req.instructions,
             "cadence": cadence,
+            "generate_time": _normalize_generate_time(getattr(req, "generate_time", None)),
             "scope_type": scope_type,
             "team_id": req.team_id if scope_type == "team" else None,
             "team_abbr": team_abbr if scope_type == "team" else None,
@@ -370,6 +406,8 @@ async def update_config(config_id: int, req: UpdateConfigRequest, db: AsyncSessi
 
     if req.cadence is not None:
         cur["cadence"] = _validate_enum(req.cadence, CADENCES, "cadence", cur["cadence"])
+    if req.generate_time is not None:
+        cur["generate_time"] = _normalize_generate_time(req.generate_time) or None
     if req.scope_type is not None:
         cur["scope_type"] = _validate_enum(req.scope_type, SCOPES, "scope_type", cur["scope_type"])
     # 'all' is a site-wide editorial scope — never team-scoped.
@@ -421,7 +459,7 @@ async def update_config(config_id: int, req: UpdateConfigRequest, db: AsyncSessi
             """
             UPDATE public.auto_generation_configs
             SET title=:title, description=:description, instructions=:instructions,
-                cadence=:cadence, scope_type=:scope_type, team_id=:team_id,
+                cadence=:cadence, generate_time=:generate_time, scope_type=:scope_type, team_id=:team_id,
                 team_abbr=:team_abbr, team_name=:team_name, status=:status, section=:section,
                 reasoning=:reasoning, visibility=:visibility,
                 word_min=:word_min, word_max=:word_max, title_mode=:title_mode,
@@ -435,6 +473,7 @@ async def update_config(config_id: int, req: UpdateConfigRequest, db: AsyncSessi
             "description": req.description if req.description is not None else cur["description"],
             "instructions": req.instructions if req.instructions is not None else cur["instructions"],
             "cadence": cur["cadence"],
+            "generate_time": cur.get("generate_time"),
             "scope_type": cur["scope_type"],
             "team_id": cur["team_id"],
             "team_abbr": cur["team_abbr"],

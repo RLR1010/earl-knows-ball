@@ -198,6 +198,23 @@ TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
+            "name": "get_game_writeup",
+            "description": "Get Earl's published write-up for a specific game: the matchup/date, the public analysis (public_content), the PREMIUM analysis (premium_content), and the premium Prop Bets article (prop_title + prop_content) if one exists. Use this to reference Earl's own full write-up / premium analysis or prop picks for a game and stay consistent with them.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "game_id": {
+                        "type": "integer",
+                        "description": "Game ID from get_todays_games or other query.",
+                    },
+                },
+                "required": ["game_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "get_head_to_head",
             "description": "Get head-to-head results between two NBA teams: recent meetings and scores.",
             "parameters": {
@@ -1398,12 +1415,49 @@ def _normalize_tool_name(name: str) -> str:
     return _TOOL_ALIASES.get(name.strip(), name.strip())
 
 
+
+
+async def _get_game_writeup(db: AsyncSession, args: dict) -> dict:
+    """Return Earl's published write-up (public + premium + props) for a game."""
+    gid = args.get("game_id")
+    if not gid:
+        return {"error": "game_id required"}
+
+    sql = text("""
+        SELECT w.title, w.status, g.date,
+               ht.name AS home_team, at2.name AS away_team,
+               w.public_content, w.premium_content,
+               w.prop_title, w.prop_content, w.published_at
+        FROM nba.game_writeups w
+        JOIN nba.games g ON g.id = w.game_id
+        JOIN nba.teams ht ON ht.id = g.home_team_id
+        JOIN nba.teams at2 ON at2.id = g.away_team_id
+        WHERE w.game_id = :gid
+    """)
+    row = (await db.execute(sql, {"gid": gid})).mappings().first()
+    if not row:
+        return {"error": f"No write-up found for game {gid}"}
+    return {
+        "game_id": gid,
+        "home_team": row.home_team,
+        "away_team": row.away_team,
+        "date": str(row.date) if row.date else None,
+        "title": row.title,
+        "status": row.status,
+        "published_at": str(row.published_at) if row.published_at else None,
+        "public_content": row.public_content,
+        "premium_content": row.premium_content,
+        "prop_title": row.prop_title,
+        "prop_content": row.prop_content,
+    }
+
 _TOOL_HANDLERS = {
     "get_team_info": _get_team_info,
     "get_team_stats": _get_team_stats,
     "get_standings": _get_standings,
     "get_todays_games": _get_todays_games,
     "get_game_info": _get_game_info,
+    "get_game_writeup": _get_game_writeup,
     "get_head_to_head": _get_head_to_head,
     "get_player_stats": _get_player_stats,
     "get_player_game_logs": _get_player_game_logs,

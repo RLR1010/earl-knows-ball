@@ -7,9 +7,11 @@ import { useAuth } from "@/lib/auth-context";
 interface LoginModalProps {
   open: boolean;
   onClose: () => void;
+  /** Optional: called after a successful code verification (defaults to onClose). */
+  onSuccess?: () => void;
 }
 
-export default function LoginModal({ open, onClose }: LoginModalProps) {
+export default function LoginModal({ open, onClose, onSuccess }: LoginModalProps) {
   const { sendCode, verifyCode } = useAuth();
   const [email, setEmail] = useState("");
   const [code, setCode] = useState("");
@@ -61,7 +63,7 @@ export default function LoginModal({ open, onClose }: LoginModalProps) {
     setBusy(true);
     try {
       await verifyCode(email, code);
-      onClose();
+      (onSuccess ?? onClose)();
     } catch (err: any) {
       setError(err?.message || "Invalid or expired code.");
     } finally {

@@ -94,6 +94,7 @@ class ChatNFLRequest(BaseModel):
     conversation_id: str | None = Field(None, description="Conversation ID for follow-ups")
     include_enrichment: bool = Field(False, description="Whether to include article enrichment")
     request_id: str | None = Field(None, description="Client-generated ID used to poll live status via GET /chat/status/{request_id}")
+    system_context: str | None = Field(None, description="Optional game context (matchup, lines, Earl picks) injected into the LLM prompt without storing it in chat history.")
 
 
 class ChatNFLResponse(BaseModel):
@@ -169,6 +170,15 @@ async def chat_nfl(
                 "content": f"[Central US time: {time_context}]\n\n{request.message}",
             })
 
+            # Optional game context (from a game-card chat): inject as a system
+            # instruction so Earl knows the matchup/lines/picks — the stored user
+            # message stays clean (no [GAME CONTEXT] prefix) in chat history.
+            if getattr(request, "system_context", None):
+                messages.append({
+                    "role": "system",
+                    "content": request.system_context,
+                })
+
             user_id = current_user.id
 
             logger.info(
@@ -192,6 +202,8 @@ async def chat_nfl(
                     continue
                 elif event_type == "answer":
                     answer = data
+
+            enrichment_tokens = 0
 
             # --- Enrichment phase ---
             if request.include_enrichment:
@@ -218,11 +230,14 @@ async def chat_nfl(
                             "to provide the most up-to-date response."
                         ),
                     })
-                    enriched_answer = await nfl_chat_engine.research_and_answer(
+                    enriched_answer, enriched_tokens = await nfl_chat_engine.research_and_answer(
                         db, enriched_messages, max_turns=2,
                     )
+                    total_tokens += enriched_tokens
                     if enriched_answer and len(enriched_answer) > len(answer):
                         answer = enriched_answer
+
+            total_tokens += enrichment_tokens
 
             # --- Save conversation history ---
             await db.rollback()
@@ -244,6 +259,7 @@ async def chat_nfl(
                 sport="nfl",
                 role="assistant",
                 message=answer,
+                tokens_used=total_tokens,
                 created_at=now,
             ))
             await db.commit()
