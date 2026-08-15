@@ -101,8 +101,28 @@ CREATE TABLE IF NOT EXISTS mlb.team_rolling_stats (
     win_pct15        DOUBLE PRECISION,
     over_pct15       DOUBLE PRECISION,
 
+    -- Season expanding averages + last-10 W/L (entering this game, leak-safe)
+    rf_avg           DOUBLE PRECISION,
+    ra_avg           DOUBLE PRECISION,
+    wins             INTEGER,
+    losses           INTEGER,
+    wins_l10         INTEGER,
+    losses_l10       INTEGER,
+    bullpen_ip_l5    INTEGER,
+    bullpen_er_l5    DOUBLE PRECISION,
+
     PRIMARY KEY (game_id, team_side)
 );
+
+-- Ensure the expanding/l10 columns exist (idempotent for existing tables)
+ALTER TABLE mlb.team_rolling_stats ADD COLUMN IF NOT EXISTS rf_avg       DOUBLE PRECISION;
+ALTER TABLE mlb.team_rolling_stats ADD COLUMN IF NOT EXISTS ra_avg       DOUBLE PRECISION;
+ALTER TABLE mlb.team_rolling_stats ADD COLUMN IF NOT EXISTS wins         INTEGER;
+ALTER TABLE mlb.team_rolling_stats ADD COLUMN IF NOT EXISTS losses       INTEGER;
+ALTER TABLE mlb.team_rolling_stats ADD COLUMN IF NOT EXISTS wins_l10     INTEGER;
+ALTER TABLE mlb.team_rolling_stats ADD COLUMN IF NOT EXISTS losses_l10   INTEGER;
+ALTER TABLE mlb.team_rolling_stats ADD COLUMN IF NOT EXISTS bullpen_ip_l5 INTEGER;
+ALTER TABLE mlb.team_rolling_stats ADD COLUMN IF NOT EXISTS bullpen_er_l5 DOUBLE PRECISION;
 
 CREATE INDEX IF NOT EXISTS idx_trs_team_season
     ON mlb.team_rolling_stats (team_id, season_id, game_date);

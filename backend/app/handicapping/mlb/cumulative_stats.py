@@ -339,6 +339,14 @@ def _populate(
             "game_timestamp": row_vals["game_timestamp"],
         }
 
+        # !============================================================================================!
+        # !  GAME ROWS INCLUDE THE RESULT OF THE GAME! (POST-game / through-game)                      !
+        # !  Each mlb.cumulative_game_stats row stores season-to-date totals THAT INCLUDE this game's   !
+        # !  own result (the running accumulators below have already added this game). Matches the      !
+        # !  through-game convention in mlb.team_rolling_stats: the data_loader reads the PREVIOUS      !
+        # !  Final row, so the model sees the record ENTERING the target game — correct AND leak-safe.  !
+        # !  Do NOT shift/exclude the current game here — that would create an off-by-one error.        !
+        # !============================================================================================!
         # Raw accumulators (running totals now include this game = POST-game)
         for alias in BAT_COL_MAP:
             cum_row[f"bat_{alias}"] = int(run.get(alias, 0))

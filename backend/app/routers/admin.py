@@ -4015,9 +4015,21 @@ async def data_loader_load_game(
         else:  # mlb
             from app.handicapping.mlb.data_loader import MLBDataLoader, build_features as mlb_build_features
             from app.handicapping.mlb import mlb_engine as _eng
+            import pandas as _pd
             dl = MLBDataLoader(db_url=db_url)
             _impute = _eng._impute_feature
-            gdf = dl.load_games(game_ids=[game_id], status=None)
+            # build_features computes the L10 / expanding-mean features (h_rf_avg, h_ra_avg,
+            # a_rf_avg, a_ra_avg, h/a_winpct_l10, h/a_form_l10, winpct_l10_diff) from the stacked
+            # game-log present in the DataFrame (groupby(team).shift(1).rolling/expanding).
+            # Loading ONLY the target game leaves a 1-row-per-team frame => those all become NaN/blank.
+            # Load the target game + its season's prior FINAL games so the game-log context exists.
+            target = dl.load_games(game_ids=[game_id], status=None)
+            if target is not None and not target.empty and "season_year" in target.columns:
+                _sy = int(target.iloc[0]["season_year"]) if target.iloc[0]["season_year"] is not None else 2026
+            else:
+                _sy = 2026
+            prior = dl.load_games(seasons=[_sy], status="FINAL", include_upcoming=False)
+            gdf = _pd.concat([prior, target], ignore_index=True)
             bdf = mlb_build_features(gdf.copy())
             df = bdf[bdf["game_id"] == game_id] if "game_id" in bdf.columns else bdf
             model_ats = set(_eng._get_features().get("ats", [])) | set(_eng._get_features().get("ou", []))
@@ -4073,16 +4085,24 @@ async def data_loader_load_game(
 
             raw_k = raw_key(feat) if raw_key is not None else feat
             raw = _safe_val(row.get(raw_k))
-            # Model-facing value = engine imputer (real value or reasoned prior)
+            # Model-facing value: mirror the engine's _extract_feature_vector logic.
+            # Use the RAW value when it is present (non-None, non-NaN); only fall
+            # back to the engine imputer when the raw value is truly missing.
+            # (This prevents the panel from showing an imputed fallback like
+            # season ERA for a day/night split the row actually HAS.)
+            is_raw_missing = (
+                raw is None
+                or (isinstance(raw, float) and raw != raw)  # NaN
+            )
             if feat in model_ats:
                 try:
-                    model_value = _impute(row, feat)
+                    if not is_raw_missing:
+                        model_value = raw
+                    else:
+                        model_value = _impute(row, feat)
                 except Exception:
                     model_value = raw
-                is_imputed = (
-                    (model_value is not None and raw is None)
-                    or (raw is not None and model_value is not None and raw != model_value)
-                )
+                is_imputed = is_raw_missing and (model_value is not None)
                 value = model_value if model_value is not None else raw
             else:
                 is_imputed = False

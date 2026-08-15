@@ -1,6 +1,17 @@
 """
 Populate mlb.team_rolling_stats and mlb.pitcher_rolling_stats.
 
+!=======================================================================================!
+!  GAME ROWS INCLUDE THE RESULT OF THE GAME!                                            !
+!=======================================================================================!
+!  EACH row in team_rolling_stats stores stats THROUGH that game (its own result        !
+!  IS included): e.g. a team entering game X at 73-49 that wins X stores 74-49.         !
+!  The data_loader (trs_h/trs_a LATERALs) reads the PREVIOUS Final row, so the model    !
+!  sees the record entering the target game — correct AND leak-safe.                    !
+!  Do NOT change the windows back to "... AND 1 PRECEDING" — that causes an off-by-one   !
+!  (the previous-row read would double-subtract the most recent game).
+!=======================================================================================!
+
 Computes per-game team/pitcher stats and rolling window averages using
 PostgreSQL window functions, then bulk-upserts into the optimized tables.
 The rolling stats include per-game team and pitcher metrics derived from
@@ -79,10 +90,18 @@ WITH games_with_status AS (
         cgs.pitch_strikeouts, cgs.pitch_home_runs_allowed,
         g.venue_id,
         g.home_score, g.away_score,
+        -- 1 if this team won this game (leak-safe: only used in 1 PRECEDING windows)
+        CASE WHEN (g.home_team_id = cgs.team_id AND g.home_score > g.away_score)
+                  OR (g.away_team_id = cgs.team_id AND g.away_score > g.home_score)
+             THEN 1 ELSE 0 END AS won,
         blc.closing_ou,
         cgs.cum_avg, cgs.cum_obp, cgs.cum_slg, cgs.cum_ops,
         cgs.cum_era, cgs.cum_whip, cgs.cum_k9, cgs.cum_bb9,
         cgs.cum_babip, cgs.cum_k_rate, cgs.cum_bb_rate,
+
+        -- Per-game bullpen relief IP-outs + ER for THIS team in THIS game
+        bp.bp_ip_outs,
+        bp.bp_er,
 
         ROW_NUMBER() OVER (
             PARTITION BY cgs.team_id, cgs.season_id
@@ -112,6 +131,15 @@ WITH games_with_status AS (
     FROM mlb.cumulative_game_stats cgs
     JOIN mlb.games g ON g.id = cgs.game_id
     LEFT JOIN mlb.betting_lines_consolidated blc ON blc.game_id = cgs.game_id
+    -- Per-game bullpen (relief) IP-outs + ER for THIS team in THIS game, from
+    -- bullpen_game_stats (one row per game,team). NULL when no relief logged.
+    LEFT JOIN (
+        SELECT bg.game_id, bg.team_id,
+               SUM(bg.bullpen_ip_outs) AS bp_ip_outs,
+               SUM(bg.bullpen_er)    AS bp_er
+        FROM mlb.bullpen_game_stats bg
+        GROUP BY bg.game_id, bg.team_id
+    ) bp ON bp.game_id = cgs.game_id AND bp.team_id = cgs.team_id
     WINDOW w AS (PARTITION BY cgs.team_id, cgs.season_id
                  ORDER BY cgs.game_timestamp, cgs.game_id)
 )
@@ -128,7 +156,12 @@ WITH games_with_status AS (
 
         -- Per-game pitching deltas
         CASE WHEN is_final THEN (pitch_ip - COALESCE(prev_pitch_ip, 0)) END AS ip_outs,
-        CASE WHEN is_final THEN (pitch_er - COALESCE(prev_pitch_er, 0)) END AS ra,
+        -- ra = RUNS ALLOWED (total, incl. unearned) this game — defense matters.
+        -- Equals the OPPONENT's score: home team allows away_score, away team
+        -- allows home_score. (ERA stays earned-based via era_this / pitch_er.)
+        CASE WHEN is_final
+             THEN CASE WHEN is_home THEN away_score ELSE home_score END
+        END AS ra,
         CASE WHEN is_final THEN (pitch_hits_allowed - COALESCE(prev_pitch_h, 0)) END AS hits_allowed,
         CASE WHEN is_final THEN (pitch_walks_allowed - COALESCE(prev_pitch_bb, 0)) END AS walks_allowed,
         CASE WHEN is_final THEN (pitch_strikeouts - COALESCE(prev_pitch_k, 0)) END AS k_allowed,
@@ -159,7 +192,9 @@ WITH games_with_status AS (
     FROM per_game
 )
 SELECT *,
-    -- 5-game rolling averages (ROWS BETWEEN excludes current game = no lookahead)
+    -- 5-game rolling averages THROUGH this game (w5 = 4 PRECEDING..CURRENT ROW).
+    -- data_loader reads the PREVIOUS Final row, so the model sees the last 5 games
+    -- entering the target game (leak-safe). w_bp5 is the same width for bullpen.
     AVG(rf)  OVER w5 AS rf5,
     AVG(ra)  OVER w5 AS ra5,
     AVG(avg_this)  OVER w5 AS avg5,
@@ -254,20 +289,50 @@ SELECT *,
         END) OVER w15     AS win_pct15,
     AVG(CASE WHEN is_final AND closing_ou IS NOT NULL THEN
             ((home_score + away_score) > closing_ou)::int
-        END) OVER w15     AS over_pct15
+        END) OVER w15     AS over_pct15,
+
+    -- Season expanding averages (through this game: w_full includes CURRENT ROW;)
+    -- reader looks back to the PREVIOUS Final row so scheduled games stay leak-safe)
+    AVG(rf) OVER w_full  AS rf_avg,
+    AVG(ra) OVER w_full  AS ra_avg,
+
+    -- Season-total W/L record THROUGH this game (w_full includes CURRENT ROW).
+    -- The data_loader reads the PREVIOUS Final row, so the value the model sees
+    -- is the record entering the target game (leak-safe). Only FINAL games count.
+    SUM(CASE WHEN is_final AND won=1 THEN 1 ELSE 0 END) OVER w_full AS wins,
+    SUM(CASE WHEN is_final AND won=0 THEN 1 ELSE 0 END) OVER w_full AS losses,
+
+    -- Last-10 win / loss counts (through this game: w10 includes CURRENT ROW;
+    -- reader uses the PREVIOUS Final row. Only FINAL games count so scheduled
+    -- games never inflate the denominators)
+    SUM(CASE WHEN is_final THEN won ELSE 0 END)   OVER w10 AS wins_l10,
+    SUM(CASE WHEN is_final THEN 1 - won ELSE 0 END) OVER w10 AS losses_l10,
+
+    -- Last-5 bullpen relief IP-outs + ER (through this game: w_bp5 includes
+    -- CURRENT ROW; reader uses the PREVIOUS Final row = the bullpen's last 5
+    -- appearances entering the target game). NULL/gated so scheduled+no-relief
+    -- games don't inflate the window.
+    SUM(CASE WHEN is_final THEN COALESCE(bp_ip_outs,0) ELSE 0 END) OVER w_bp5 AS bullpen_ip_l5,
+    SUM(CASE WHEN is_final THEN COALESCE(bp_er,0)     ELSE 0 END) OVER w_bp5 AS bullpen_er_l5
 
 FROM per_game_rate pgr
 WINDOW
     w_full AS (PARTITION BY team_id, season_id ORDER BY game_date, game_id
-               ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),
+               ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW),
+    -- w5/w10/w15/w20 are N-game windows THROUGH the current row (N-1 preceding +
+    -- current). This matches the documented "through this game" convention and
+    -- w_bp5 (4 PRECEDING..CURRENT = 5 games). The data_loader reads the PREVIOUS
+    -- Final row, so these equal the team's last N games entering the target game.
     w5     AS (PARTITION BY team_id, season_id ORDER BY game_date, game_id
-               ROWS BETWEEN 5 PRECEDING AND 1 PRECEDING),
+               ROWS BETWEEN 4 PRECEDING AND CURRENT ROW),
+    w_bp5  AS (PARTITION BY team_id, season_id ORDER BY game_date, game_id
+               ROWS BETWEEN 4 PRECEDING AND CURRENT ROW),
     w10    AS (PARTITION BY team_id, season_id ORDER BY game_date, game_id
-               ROWS BETWEEN 10 PRECEDING AND 1 PRECEDING),
+               ROWS BETWEEN 9 PRECEDING AND CURRENT ROW),
     w15    AS (PARTITION BY team_id, season_id ORDER BY game_date, game_id
-               ROWS BETWEEN 15 PRECEDING AND 1 PRECEDING),
+               ROWS BETWEEN 14 PRECEDING AND CURRENT ROW),
     w20    AS (PARTITION BY team_id, season_id ORDER BY game_date, game_id
-               ROWS BETWEEN 20 PRECEDING AND 1 PRECEDING)
+               ROWS BETWEEN 19 PRECEDING AND CURRENT ROW)
 ORDER BY team_id, season_id, game_date, game_id
 ;
 """
@@ -354,7 +419,8 @@ def populate_team_rolling(engine=None, incremental=False) -> int:
     return _bulk_upsert(
         sql=sql,
         table="mlb.team_rolling_stats",
-        exclude_cols={"is_home", "is_final", "game_n", "side_game_n", 
+        exclude_cols={"is_home", "is_final", "game_n", "side_game_n", "won", 
+                     "bp_ip_outs", "bp_er",
                      "bat_runs", "bat_hits", "bat_at_bats", "bat_walks",
                      "bat_strikeouts", "bat_home_runs", "bat_total_bases",
                      "pitch_ip", "pitch_er",

@@ -114,10 +114,6 @@ SELECT
     g.roof_type,
     g.surface,
     g.venue,
-    g.home_wins,
-    g.home_losses,
-    g.away_wins,
-    g.away_losses,
     g.home_pitcher_name,
     g.away_pitcher_name,
     g.game_number,
@@ -174,6 +170,7 @@ SELECT
     -- From: mlb.cumulative_game_stats
     -- ──────────────────────────────────────────────────────────────────────
     cgs_h.bat_runs         AS h_cum_runs,
+    runfg_h.h_home_runs_per_game AS h_home_runs_per_game,
     cgs_h.bat_hits         AS h_cum_hits,
     cgs_h.bat_at_bats      AS h_cum_at_bats,
     cgs_h.cum_avg          AS h_cum_avg,
@@ -189,6 +186,7 @@ SELECT
     cgs_h.cum_bb9          AS h_cum_bb9,
 
     cgs_a.bat_runs         AS a_cum_runs,
+    runfg_a.a_away_runs_per_game AS a_away_runs_per_game,
     cgs_a.bat_hits         AS a_cum_hits,
     cgs_a.bat_at_bats      AS a_cum_at_bats,
     cgs_a.cum_avg          AS a_cum_avg,
@@ -257,6 +255,15 @@ SELECT
     trs_h.slg10           AS h_slg_l10,
     trs_h.slg20           AS h_slg_l20,
     trs_h.ops20           AS h_ops_l20,
+    trs_h.rf_avg          AS h_rf_avg,
+    trs_h.ra_avg          AS h_ra_avg,
+    trs_h.wins            AS h_wins,
+    trs_h.losses          AS h_losses,
+    trs_h.wins_l10        AS h_wins_l10,
+    trs_h.losses_l10      AS h_losses_l10,
+
+    trs_h.bullpen_ip_l5   AS h_bullpen_ip_l5,
+    trs_h.bullpen_er_l5   AS h_bullpen_er_l5,
 
     trs_a.rf              AS a_rf,
     trs_a.ra              AS a_ra,
@@ -295,6 +302,15 @@ SELECT
     trs_a.slg10           AS a_slg_l10,
     trs_a.slg20           AS a_slg_l20,
     trs_a.ops20           AS a_ops_l20,
+    trs_a.rf_avg          AS a_rf_avg,
+    trs_a.ra_avg          AS a_ra_avg,
+    trs_a.wins            AS a_wins,
+    trs_a.losses          AS a_losses,
+    trs_a.wins_l10        AS a_wins_l10,
+    trs_a.losses_l10      AS a_losses_l10,
+
+    trs_a.bullpen_ip_l5   AS a_bullpen_ip_l5,
+    trs_a.bullpen_er_l5   AS a_bullpen_er_l5,
 
     -- ──────────────────────────────────────────────────────────────────────
     -- PRIOR SEASON STATS (for early-season blending)
@@ -382,12 +398,12 @@ SELECT
 
     -- ──────────────────────────────────────────────────────────────────────
     -- PLATOON / L·R FEATURES (team OPS + runs-per-game vs each arm) + SP hand
-    -- From: mlb.team_splits (vs_lhp/vs_rhp) + resolved starter hand + game log
+    -- From: through-date team OPS vs each arm (plato_*) + starter hand + game log
     -- ──────────────────────────────────────────────────────────────────────
-    ts_h_lhp.ops          AS h_ops_vs_lhp,
-    ts_h_rhp.ops          AS h_ops_vs_rhp,
-    ts_a_lhp.ops          AS a_ops_vs_lhp,
-    ts_a_rhp.ops          AS a_ops_vs_rhp,
+    plato_h_lhp.ops       AS h_ops_vs_lhp,
+    plato_h_rhp.ops       AS h_ops_vs_rhp,
+    plato_a_lhp.ops       AS a_ops_vs_lhp,
+    plato_a_rhp.ops       AS a_ops_vs_rhp,
     (SELECT ROUND(AVG(g2.home_score)::numeric, 2)
        FROM mlb.games g2
        JOIN mlb.seasons s2 ON s2.id = g2.season_id
@@ -422,8 +438,8 @@ SELECT
     -- RESOLVED platoon feats: the offense's value vs the OPPOSING starter's arm.
     -- Home offense faces the AWAY pitcher; away offense faces the HOME pitcher.
     -- (Inline source exprs: PG can't reference sibling output aliases in SQL.)
-    CASE WHEN ph_a.a_pitcher_hand = 'L' THEN ts_h_lhp.ops ELSE ts_h_rhp.ops END AS h_ops_vs_opp_hand,
-    CASE WHEN ph_h.h_pitcher_hand = 'L' THEN ts_a_lhp.ops ELSE ts_a_rhp.ops END AS a_ops_vs_opp_hand,
+    CASE WHEN ph_a.a_pitcher_hand = 'L' THEN plato_h_lhp.ops ELSE plato_h_rhp.ops END AS h_ops_vs_opp_hand,
+    CASE WHEN ph_h.h_pitcher_hand = 'L' THEN plato_a_lhp.ops ELSE plato_a_rhp.ops END AS a_ops_vs_opp_hand,
     CASE WHEN ph_a.a_pitcher_hand = 'L'
          THEN (SELECT ROUND(AVG(g2.home_score)::numeric, 2) FROM mlb.games g2
                 JOIN mlb.seasons s2 ON s2.id = g2.season_id
@@ -530,11 +546,56 @@ LEFT JOIN LATERAL (
     WHERE pl.name = g.away_pitcher_name
     LIMIT 1
 ) ph_a ON TRUE
--- Team OPS vs each arm (current season) for home + away
-LEFT JOIN mlb.team_splits ts_h_lhp ON ts_h_lhp.team_id = ht.id AND ts_h_lhp.split_type = 'vs_lhp' AND ts_h_lhp.season_id = s.id
-LEFT JOIN mlb.team_splits ts_h_rhp ON ts_h_rhp.team_id = ht.id AND ts_h_rhp.split_type = 'vs_rhp' AND ts_h_rhp.season_id = s.id
-LEFT JOIN mlb.team_splits ts_a_lhp ON ts_a_lhp.team_id = at.id AND ts_a_lhp.split_type = 'vs_lhp' AND ts_a_lhp.season_id = s.id
-LEFT JOIN mlb.team_splits ts_a_rhp ON ts_a_rhp.team_id = at.id AND ts_a_rhp.split_type = 'vs_rhp' AND ts_a_rhp.season_id = s.id
+-- Team OPS vs each arm, computed THROUGH-DATE from batting_game_stats + the
+-- opposing starter's hand (players.throws on the rostered starter name). These
+-- REPLACE the old mlb.team_splits season-aggregate values, which leaked games
+-- played after the target date (team_splits.vs_lhp/vs_rhp was a full-season API
+-- aggregate with no game-date bound). Leak-safe here: only FINAL games strictly
+-- before the target, same season. Team OPS = (H+BB+HBP+TB)/(AB+BB+HBP+SF).
+LEFT JOIN LATERAL (
+    SELECT ROUND((SUM(bg.hits + bg.base_on_balls + bg.hit_by_pitch + bg.total_bases)
+              ::numeric) / NULLIF(SUM(bg.at_bats + bg.base_on_balls + bg.hit_by_pitch + bg.sacrifice_flies), 0), 4) AS ops
+    FROM mlb.batting_game_stats bg
+    JOIN mlb.games g2 ON g2.id = bg.game_id
+    LEFT JOIN mlb.players pl2 ON pl2.name = g2.away_pitcher_name
+    WHERE bg.team_side = 'home' AND g2.home_team_id = ht.id
+      AND g2.status = 'FINAL' AND g2.season_id = g.season_id
+      AND g2.date < g.date - INTERVAL '30 minutes'
+      AND pl2.throws = 'L'
+) plato_h_lhp ON TRUE
+LEFT JOIN LATERAL (
+    SELECT ROUND((SUM(bg.hits + bg.base_on_balls + bg.hit_by_pitch + bg.total_bases)
+              ::numeric) / NULLIF(SUM(bg.at_bats + bg.base_on_balls + bg.hit_by_pitch + bg.sacrifice_flies), 0), 4) AS ops
+    FROM mlb.batting_game_stats bg
+    JOIN mlb.games g2 ON g2.id = bg.game_id
+    LEFT JOIN mlb.players pl2 ON pl2.name = g2.away_pitcher_name
+    WHERE bg.team_side = 'home' AND g2.home_team_id = ht.id
+      AND g2.status = 'FINAL' AND g2.season_id = g.season_id
+      AND g2.date < g.date - INTERVAL '30 minutes'
+      AND pl2.throws = 'R'
+) plato_h_rhp ON TRUE
+LEFT JOIN LATERAL (
+    SELECT ROUND((SUM(bg.hits + bg.base_on_balls + bg.hit_by_pitch + bg.total_bases)
+              ::numeric) / NULLIF(SUM(bg.at_bats + bg.base_on_balls + bg.hit_by_pitch + bg.sacrifice_flies), 0), 4) AS ops
+    FROM mlb.batting_game_stats bg
+    JOIN mlb.games g2 ON g2.id = bg.game_id
+    LEFT JOIN mlb.players pl2 ON pl2.name = g2.home_pitcher_name
+    WHERE bg.team_side = 'away' AND g2.away_team_id = at.id
+      AND g2.status = 'FINAL' AND g2.season_id = g.season_id
+      AND g2.date < g.date - INTERVAL '30 minutes'
+      AND pl2.throws = 'L'
+) plato_a_lhp ON TRUE
+LEFT JOIN LATERAL (
+    SELECT ROUND((SUM(bg.hits + bg.base_on_balls + bg.hit_by_pitch + bg.total_bases)
+              ::numeric) / NULLIF(SUM(bg.at_bats + bg.base_on_balls + bg.hit_by_pitch + bg.sacrifice_flies), 0), 4) AS ops
+    FROM mlb.batting_game_stats bg
+    JOIN mlb.games g2 ON g2.id = bg.game_id
+    LEFT JOIN mlb.players pl2 ON pl2.name = g2.home_pitcher_name
+    WHERE bg.team_side = 'away' AND g2.away_team_id = at.id
+      AND g2.status = 'FINAL' AND g2.season_id = g.season_id
+      AND g2.date < g.date - INTERVAL '30 minutes'
+      AND pl2.throws = 'R'
+) plato_a_rhp ON TRUE
 
 -- ──────────────────────────────────────────────────────────────────────
 -- REST DAYS (find each team's last game before this one)
@@ -575,6 +636,30 @@ LEFT JOIN LATERAL (
     ORDER BY cgs_prev.game_timestamp DESC
     LIMIT 1
 ) cgs_a ON TRUE
+
+-- Home/away runs-per-game computed DIRECTLY from box scores (side-correct & leak-safe).
+-- h_home_rf = home team's runs scored when playing AT HOME = AVG(away_score) over its
+--   FINAL home games this season (the away_score is the home team's own score).
+-- a_away_rf = away team's runs scored when playing AWAY = AVG(home_score) over its
+--   FINAL away games this season (the home_score is the away team's own score).
+-- Only FINAL games strictly before the target are counted (30-min safety margin), so
+-- these are true through-previous-game averages — no CGS shared-season-total muddle.
+LEFT JOIN LATERAL (
+    SELECT ROUND(AVG(gg.away_score)::numeric, 4) AS h_home_runs_per_game
+    FROM mlb.games gg
+    WHERE gg.home_team_id   = ht.id
+      AND gg.season_id      = g.season_id
+      AND gg.status         = 'FINAL'
+      AND gg.date           < g.date - INTERVAL '30 minutes'
+) runfg_h ON TRUE
+LEFT JOIN LATERAL (
+    SELECT ROUND(AVG(gg.home_score)::numeric, 4) AS a_away_runs_per_game
+    FROM mlb.games gg
+    WHERE gg.away_team_id   = at.id
+      AND gg.season_id      = g.season_id
+      AND gg.status         = 'FINAL'
+      AND gg.date           < g.date - INTERVAL '30 minutes'
+) runfg_a ON TRUE
 
 -- Team rolling stats (home / away) — LATERAL finds most recent completed game for this team side
 LEFT JOIN LATERAL (
@@ -1267,6 +1352,16 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
         if col in result.columns and prior_col in result.columns:
             result[col] = result[col].fillna(result[prior_col])
 
+    # ── 2b. Platoon OPS prior fill (LEAK-FREE) ────────────────────────────
+    # h_ops_vs_opp_hand / a_ops_vs_opp_hand come from plato_* which are
+    # through-date OPS vs the opposing starter's hand. Early in the season a
+    # team may not have faced that arm yet -> plato_* is NULL there. Impute to
+    # the team's cumulative/overall OPS (h_cum_ops/a_cum_ops, which themselves
+    # blend to prior-season OPS) so the model never sees a false 0.000 platoon.
+    for h_col, h_cum in (("h_ops_vs_opp_hand", "h_cum_ops"), ("a_ops_vs_opp_hand", "a_cum_ops")):
+        if h_col in result.columns and h_cum in result.columns:
+            result[h_col] = result[h_col].fillna(result[h_cum])
+
     # ── 3. Cumulative difference from rolling ─────────────────────────────
     # The old build_features computed "cum_avg_vs_l5" type columns which
     # are "last N games average" derived from cumulative. We mostly have
@@ -1374,26 +1469,18 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
         has_5  = result["h_rf5"].notna() & ~has_10
         rookie = ~has_10 & ~has_5  # very early season
         
-        result["home_wins"] = result.get("g.home_wins",
-            pd.Series([0]*len(result))).fillna(0).astype(int)
-        result["home_losses"] = result.get("g.home_losses",
-            pd.Series([0]*len(result))).fillna(0).astype(int)
-        result["away_wins"] = result.get("g.away_wins",
-            pd.Series([0]*len(result))).fillna(0).astype(int)
-        result["away_losses"] = result.get("g.away_losses",
-            pd.Series([0]*len(result))).fillna(0).astype(int)
-        
-        # Fallback: if games table has NULLs, try to use rolling stats
-        for side, team_side in [('home', 'home'), ('away', 'away')]:
-            w_col = f'{side}_wins'
-            l_col = f'{side}_losses'
-            if result[w_col].sum() == 0 and result[l_col].sum() == 0:
-                # Estimate from cumulative stats: total games from cgs
-                # Use 10-game rolling as estimate
-                rf_col = f'h_rf10' if side == 'home' else f'a_rf10'
-                if rf_col in result.columns:
-                    result[w_col] = result[rf_col].notna().astype(int) * 5
-                    result[l_col] = result[rf_col].notna().astype(int) * 5
+        # LEAK-SAFE W/L record: read the season-total win/loss ENTERING this game
+        # from the pre-computed mlb.team_rolling_stats table (trs_h/trs_a -> h_wins/
+        # h_losses/...). DO NOT use mlb.games.home_wins/away_wins etc. — that table
+        # stores the record INCLUDING the current game's result (data leak).
+        def _wos(src):  # wins-or-losses series w/ int cast + 0 default
+            if src in result.columns and result[src].notna().any():
+                return pd.to_numeric(result[src], errors="coerce").fillna(0).astype(int)
+            return pd.Series([0]*len(result))
+        result["home_wins"]   = _wos("h_wins")
+        result["home_losses"] = _wos("h_losses")
+        result["away_wins"]   = _wos("a_wins")
+        result["away_losses"] = _wos("a_losses")
 
     # Rest days — computed in query as h_rest, a_rest (or 0 placeholder)
     if "h_rest" in result.columns:
@@ -1504,80 +1591,34 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
 
     result["winpct_diff"] = result["h_winpct"] - result["a_winpct"]
 
-    # ── Rolling L10 W/L via stacked team-game-log ──────────────────────
-    # Build a long-form (stacked) table: one row per (game, team) so we can
-    # roll up wins/losses per team over the preceding 10 games.
-    if "home_score" in result.columns and "away_score" in result.columns:
-        home_wins = (result["home_score"] > result["away_score"]).astype(int)
-        away_wins = (result["away_score"] > result["home_score"]).astype(int)
+    # ── Rolling L10 W/L + season expanding avg (from pre-computed team_rolling_stats) ──
+    # These are computed at ingest time (backward-looking, shift-1 style: only games BEFORE
+    # this one) and stored in mlb.team_rolling_stats. Reading them from the table ensures
+    # live and backtest see IDENTICAL values regardless of the DataFrame's game-log snapshot,
+    # and avoids blanks when only a single game is loaded.
+    l10_cols = [
+        "h_rf_avg", "a_rf_avg", "h_ra_avg", "a_ra_avg",
+        "h_wins_l10", "a_wins_l10", "h_losses_l10", "a_losses_l10",
+    ]
+    missing = [c for c in l10_cols if c not in result.columns]
+    if missing:
+        # Fallback (no pre-computed cols): fill defaults so the model never sees NaN.
+        for c in l10_cols:
+            result[c] = result.get(c, None)
 
-        # Stacked: home-team games
-        home_df = result[["game_id", "game_date", "home_team_id", "home_score", "away_score"]].copy()
-        home_df.columns = ["game_id", "game_date", "team_id", "rf", "ra"]
-        home_df["win"] = home_wins.values
-        home_df["loss"] = (1 - home_wins.values)
+    # L10 win percentages from pre-computed W/L counts
+    def _winpct(w, l):
+        denom = (w + l).clip(lower=1)
+        return (w / denom).where((w.notna() & l.notna()), None)
 
-        # Stacked: away-team games
-        away_df = result[["game_id", "game_date", "away_team_id", "away_score", "home_score"]].copy()
-        away_df.columns = ["game_id", "game_date", "team_id", "rf", "ra"]
-        away_df["win"] = away_wins.values
-        away_df["loss"] = (1 - away_wins.values)
+    result["h_winpct_l10"] = _winpct(result["h_wins_l10"], result["h_losses_l10"])
+    result["a_winpct_l10"] = _winpct(result["a_wins_l10"], result["a_losses_l10"])
 
-        team_games = (
-            pd.concat([home_df, away_df], ignore_index=True)
-            .sort_values(["team_id", "game_date", "game_id"])
-            .reset_index(drop=True)
-        )
+    result["winpct_l10_diff"] = result["h_winpct_l10"] - result["a_winpct_l10"]
 
-        # Per-team rolling 10-game W/L, lagged by 1 (exclude current game)
-        team_games["wins_l10"] = team_games.groupby("team_id")["win"].transform(
-            lambda x: x.shift(1).rolling(10, min_periods=1).sum()
-        )
-        team_games["losses_l10"] = team_games.groupby("team_id")["loss"].transform(
-            lambda x: x.shift(1).rolling(10, min_periods=1).sum()
-        )
-
-        # Per-team expanding mean of runs for/against, lagged by 1
-        team_games["rf_avg"] = team_games.groupby("team_id")["rf"].transform(
-            lambda x: x.shift(1).expanding(min_periods=1).mean()
-        )
-        team_games["ra_avg"] = team_games.groupby("team_id")["ra"].transform(
-            lambda x: x.shift(1).expanding(min_periods=1).mean()
-        )
-
-        # Join home-team stats back
-        home_l10 = team_games[["game_id", "team_id", "wins_l10", "losses_l10", "rf_avg", "ra_avg"]]\
-            .rename(columns={"team_id": "home_team_id", "wins_l10": "h_wins_l10",
-                            "losses_l10": "h_losses_l10",
-                            "rf_avg": "h_rf_avg", "ra_avg": "h_ra_avg"})
-        result = result.merge(home_l10, on=["game_id", "home_team_id"], how="left")
-
-        # Join away-team stats back
-        away_l10 = team_games[["game_id", "team_id", "wins_l10", "losses_l10", "rf_avg", "ra_avg"]]\
-            .rename(columns={"team_id": "away_team_id", "wins_l10": "a_wins_l10",
-                            "losses_l10": "a_losses_l10",
-                            "rf_avg": "a_rf_avg", "ra_avg": "a_ra_avg"})
-        result = result.merge(away_l10, on=["game_id", "away_team_id"], how="left")
-
-        # Compute L10 win percentages
-        denom_h = (result["h_wins_l10"] + result["h_losses_l10"]).clip(lower=1)
-        result["h_winpct_l10"] = result["h_wins_l10"] / denom_h
-
-        denom_a = (result["a_wins_l10"] + result["a_losses_l10"]).clip(lower=1)
-        result["a_winpct_l10"] = result["a_wins_l10"] / denom_a
-
-        result["winpct_l10_diff"] = result["h_winpct_l10"] - result["a_winpct_l10"]
-
-        # Form = L10 winpct for now (can be refined to EMA later)
-        result["h_form_l10"] = result["h_winpct_l10"]
-        result["a_form_l10"] = result["a_winpct_l10"]
-    else:
-        # Fallback if home_score/away_score not available
-        result["h_winpct_l10"] = result.get("h_winpct", 0.5)
-        result["a_winpct_l10"] = result.get("a_winpct", 0.5)
-        result["winpct_l10_diff"] = result.get("winpct_diff", 0.0)
-        result["h_form_l10"] = result["h_winpct_l10"]
-        result["a_form_l10"] = result["a_winpct_l10"]
+    # Form = L10 winpct for now (can be refined to EMA later)
+    result["h_form_l10"] = result["h_winpct_l10"]
+    result["a_form_l10"] = result["a_winpct_l10"]
 
     # Over frequency — from team_rolling_stats.over_pct (season-level) / over_pct5 (L5).
     if "h_over_pct" in result.columns and "a_over_pct" in result.columns:
@@ -1816,24 +1857,22 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     else:
         result["rest_diff_hours"] = 0
 
-    # ── h_home_rf / a_away_rf (per-game averages from CGS / game count) ──────
+    # ── h_home_rf / a_away_rf (per-game averages from mlb.games box scores) ────
     # h_home_rf = home team's avg runs scored when playing at home
     # a_away_rf = away team's avg runs scored when playing on the road
-    # Always a real value: current-season runs/game when the team has played
-    # there; else fall back to PRIOR-SEASON rf_home/rf_away (only the very first
-    # home/away game of the season has no current-season sample). Never 0.
-    if "h_cum_runs" in result.columns and "h_home_games" in result.columns:
-        hg = result["h_home_games"]
-        cur = result["h_cum_runs"] / hg.where(hg.gt(0))
-        # use prior-season home RF whenever current-season home sample is missing
+    # Computed directly from FINAL box scores (runfg_h / runfg_a LATERALs) —
+    # side-correct and leak-safe (only games strictly before the target).
+    # Fall back to PRIOR-SEASON rf_home/rf_away only when the team has not yet
+    # logged a home/away game this season (AVG over zero rows = NULL).
+    if "h_home_runs_per_game" in result.columns:
+        cur = result["h_home_runs_per_game"]
         if "h_prior_rf_home" in result.columns:
             cur = cur.fillna(result["h_prior_rf_home"])
         result["h_home_rf"] = cur
     else:
         result["h_home_rf"] = result["h_prior_rf_home"] if "h_prior_rf_home" in result.columns else np.nan
-    if "a_cum_runs" in result.columns and "a_away_games" in result.columns:
-        ag = result["a_away_games"]
-        cur = result["a_cum_runs"] / ag.where(ag.gt(0))
+    if "a_away_runs_per_game" in result.columns:
+        cur = result["a_away_runs_per_game"]
         if "a_prior_rf_away" in result.columns:
             cur = cur.fillna(result["a_prior_rf_away"])
         result["a_away_rf"] = cur
@@ -1889,56 +1928,26 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     # Build per-team rolling L5 of bullpen ER and IP outs using grouped rolling
     # on a long-form DataFrame.  No shift needed — the LATERAL join in the
     # GAME_QUERY already resolves to the most recent completed game.
+    # The L5 columns come from mlb.team_rolling_stats (via trs_h/trs_a LATERAL,
+    # bullpen_ip_l5/bullpen_er_l5). Guard on them being present; do NOT zero-fill
+    # them here (that would clobber the leak-safe table values).
     bp_ready = all(c in result.columns for c in [
-        "h_bullpen_er", "h_bullpen_ip", "a_bullpen_er", "a_bullpen_ip",
-        "home_team_id", "away_team_id", "game_id"
+        "h_bullpen_er_l5", "h_bullpen_ip_l5",
+        "a_bullpen_er_l5", "a_bullpen_ip_l5",
     ])
-    result = result.assign(
-        h_bullpen_er_l5=0, h_bullpen_ip_l5=0,
-        a_bullpen_er_l5=0, a_bullpen_ip_l5=0,
-    )
 
     if bp_ready:
-        # Build long-form with side marker: side=0 for home, side=1 for away
-        h_bp = result[["game_id", "home_team_id", "h_bullpen_er", "h_bullpen_ip"]].copy()
-        h_bp.columns = ["game_id", "team_id", "bp_er", "bp_ip"]
-        h_bp["side"] = 0
-        a_bp = result[["game_id", "away_team_id", "a_bullpen_er", "a_bullpen_ip"]].copy()
-        a_bp.columns = ["game_id", "team_id", "bp_er", "bp_ip"]
-        a_bp["side"] = 1
-        long_bp = pd.concat([h_bp, a_bp], ignore_index=True)
-        long_bp["bp_er"] = long_bp["bp_er"].fillna(0)
-        long_bp["bp_ip"] = long_bp["bp_ip"].fillna(0)
-        long_bp = long_bp.sort_values(["team_id", "game_id"])
-        
-        # Rolling L5 per team — no shift needed, LATERAL already gives prior game
-        long_bp["er_l5"] = (
-            long_bp.groupby("team_id")["bp_er"]
-            .transform(lambda x: x.rolling(5, min_periods=1).sum())
-        )
-        long_bp["ip_l5"] = (
-            long_bp.groupby("team_id")["bp_ip"]
-            .transform(lambda x: x.rolling(5, min_periods=1).sum())
-        )
-        
-        # Index by (game_id, side) for efficient lookup
-        bp_indexed = long_bp.set_index(["game_id", "side"])[["er_l5", "ip_l5"]]
-        
-        # Map back: home side=0, away side=1
-        for side, pfx, l5er, l5ip, side_idx in [
-            (0, "h_", "h_bullpen_er_l5", "h_bullpen_ip_l5", 0),
-            (1, "a_", "a_bullpen_er_l5", "a_bullpen_ip_l5", 1),
-        ]:
-            vals_er = result["game_id"].map(
-                lambda gid: bp_indexed.loc[(gid, side_idx), "er_l5"]
-                if (gid, side_idx) in bp_indexed.index else 0
-            )
-            vals_ip = result["game_id"].map(
-                lambda gid: bp_indexed.loc[(gid, side_idx), "ip_l5"]
-                if (gid, side_idx) in bp_indexed.index else 0
-            )
-            result[l5er] = vals_er
-            result[l5ip] = vals_ip
+        # LEAK-SAFE table-driven bullpen L5 (last-5-games ER + IP-outs, THROUGH -
+        # game convention, stored in mlb.team_rolling_stats). The trs_h/trs_a
+        # LATERALs already read the PREVIOUS Final row, so h/a_bullpen_*_l5 give
+        # the bullpen's last 5 appearances ENTERING the target game — correct,
+        # leak-safe, and identical regardless of the frame size passed in.
+        # (This replaces the old ad-hoc Pandas .rolling(5) over the frame, which
+        # was frame-order-dependent and produced blanks/wrong sums.)
+        for col in ["h_bullpen_er_l5", "h_bullpen_ip_l5",
+                    "a_bullpen_er_l5", "a_bullpen_ip_l5"]:
+            if col in result.columns:
+                result[col] = pd.to_numeric(result[col], errors="coerce")
     
     # Convert L5 sums to bullpen ERA rate.
     # RAW truth: era from actual bullpen innings when the team has thrown any
@@ -1966,6 +1975,10 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
             # Preserve the trained model's innings scale (//3), but a genuinely
             # missing window stays NULL (never fabricate innings a team didn't pitch).
             ip_out_ser = result[ip_l5]
+            # Defensive: ensure numeric (the L5 cols come from a .map(); if any
+            # future path yields object dtype, .gt(0) throws an ambiguous error).
+            if not pd.api.types.is_numeric_dtype(ip_out_ser):
+                ip_out_ser = pd.to_numeric(ip_out_ser, errors="coerce").fillna(0.0)
             result[ip_outs] = (ip_out_ser.where(ip_out_ser.gt(0)) / 3.0)
         else:
             result[era] = result[prior_era] if prior_era in result.columns else np.nan
