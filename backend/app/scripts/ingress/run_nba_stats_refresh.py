@@ -94,6 +94,34 @@ async def run(started_at=None):
         logger.error(f"  player_game_stats failed: {e}")
         step_failures.append(f"player_game_stats: {e}")
 
+    # Step 2.5: nba.games team box-score stats (ESPN team-statistics endpoint)
+    # Fill the new team-level columns (real ORB/DRB, estimatedPossessions,
+    # pointsInPaint, fastBreakPoints, turnoverPoints, team/total turnovers,
+    # lead/flow, fouling detail, advanced ratios/ratings, VORP...). Authoritative
+    # from ESPN's team-statistics endpoint — NOT derivable by summing players.
+    logger.info("[Step 2.5] Ingesting nba.games team box-score stats from ESPN...")
+    try:
+        from sqlalchemy import create_engine as _create_engine, text as _text
+        from app.db_urls import PSYCOPG2_DATABASE_URL as _PDU
+        from app.ingestion.nba_team_stats_espn import run_for_games as _run_team_stats
+        _eng = _create_engine(_PDU.replace("+asyncpg", "+psycopg2"))
+        with _eng.connect() as _conn:
+            _need = _conn.execute(_text(
+                "SELECT g.nba_game_id, g.id FROM nba.games g "
+                "WHERE g.nba_game_id IS NOT NULL AND g.home_estimated_possessions IS NULL "
+                "AND g.season_id = :s",
+            ), {"s": season}).fetchall()
+        _games = {int(r[0]): int(r[1]) for r in _need}
+        if _games:
+            logger.info(f"  fetching team stats for {len(_games)} {season} games...")
+            _upd, _err = await _run_team_stats(_games, throttle=0.12)
+            logger.info(f"  team-stats: {_upd} sides updated, {_err} errors")
+        else:
+            logger.info("  no games need team-stats backfill (all covered)")
+    except Exception as e:
+        logger.error(f"  team-stats failed: {e}")
+        step_failures.append(f"team_stats: {e}")
+
     # Step 3: nba.cumulative_game_stats — sync script on worker thread
     logger.info("[Step 3] Refreshing nba.cumulative_game_stats...")
     try:

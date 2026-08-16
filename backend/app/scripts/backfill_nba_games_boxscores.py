@@ -34,6 +34,8 @@ PGS_TO_GAME = {
     "free_throws_made": "free_throws_made",
     "free_throws_attempted": "free_throws_attempted",
     "rebounds_total": "rebounds",
+    "rebounds_offensive": "offensive_rebounds",
+    "rebounds_defensive": "defensive_rebounds",
     "assists": "assists",
     "steals": "steals",
     "blocks": "blocks",

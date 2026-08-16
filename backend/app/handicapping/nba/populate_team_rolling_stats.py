@@ -183,6 +183,8 @@ base AS (
         g.home_free_throws_made            AS ftm,
         g.home_free_throws_attempted       AS fta,
         g.home_rebounds                    AS reb,
+        g.home_offensive_rebounds          AS orb,
+        g.home_estimated_possessions       AS espn_poss,
         g.home_assists                     AS ast,
         g.home_steals                      AS stl,
         g.home_blocks                      AS blk,
@@ -193,6 +195,8 @@ base AS (
         g.away_three_points_attempted      AS opp_fga3,
         g.away_free_throws_attempted       AS opp_fta,
         g.away_rebounds                   AS opp_reb,
+        g.away_offensive_rebounds          AS opp_orb,
+        g.away_estimated_possessions       AS opp_espn_poss,
         g.away_turnovers                   AS opp_tov,
         g.away_score                       AS opp_score,
         COALESCE(blc.closing_spread, blc.opening_spread) AS closing_spread,
@@ -221,6 +225,8 @@ base AS (
         g.away_free_throws_made            AS ftm,
         g.away_free_throws_attempted       AS fta,
         g.away_rebounds                    AS reb,
+        g.away_offensive_rebounds          AS orb,
+        g.away_estimated_possessions       AS espn_poss,
         g.away_assists                     AS ast,
         g.away_steals                      AS stl,
         g.away_blocks                      AS blk,
@@ -231,6 +237,8 @@ base AS (
         g.home_three_points_attempted      AS opp_fga3,
         g.home_free_throws_attempted       AS opp_fta,
         g.home_rebounds                   AS opp_reb,
+        g.home_offensive_rebounds          AS opp_orb,
+        g.home_estimated_possessions       AS opp_espn_poss,
         g.home_turnovers                   AS opp_tov,
         g.home_score                       AS opp_score,
         COALESCE(blc.closing_spread, blc.opening_spread) AS closing_spread,
@@ -272,13 +280,17 @@ pg_poss AS (
              WHEN b.points + b.points_allowed > b.closing_ou THEN 1
              WHEN b.points + b.points_allowed < b.closing_ou THEN 0
              ELSE NULL END AS ou_won,
-        -- per-game possessions (exact formula):
-        --   poss   = fga - oreb_est + 0.44*fta   (oreb_est = reb*0.245; TOV omitted)
-        --   opp_pos = opp_fga - opp_oreb_est + 0.44*opp_fta
-        CASE WHEN (b.fga IS NULL OR b.fta IS NULL OR b.reb IS NULL) THEN NULL
-             ELSE b.fga - b.reb * 0.245 + 0.44 * b.fta END              AS poss,
-        CASE WHEN (b.opp_fga IS NULL OR b.opp_fta IS NULL OR b.opp_reb IS NULL) THEN NULL
-             ELSE b.opp_fga - b.opp_reb * 0.245 + 0.44 * b.opp_fta END  AS opp_poss
+        -- per-game possessions, preferring ESPN's authoritative estimated
+        -- possession count when available. Fallback (exact Dean-Oliver):
+        --   poss = fga - oreb + 0.44*fta + tov   (oreb real; tov included)
+        -- Legacy code used oreb proxy (reb*0.245) and omitted TOV, which both
+        -- inflated possessions and compressed ORTG/DRTG toward ~100.
+        CASE WHEN b.espn_poss IS NOT NULL AND b.espn_poss > 0 THEN b.espn_poss
+             WHEN (b.fga IS NULL OR b.fta IS NULL OR b.reb IS NULL) THEN NULL
+             ELSE b.fga - COALESCE(b.orb, b.reb * 0.245) + 0.44 * b.fta + COALESCE(b.tov, 0) END AS poss,
+        CASE WHEN b.opp_espn_poss IS NOT NULL AND b.opp_espn_poss > 0 THEN b.opp_espn_poss
+             WHEN (b.opp_fga IS NULL OR b.opp_fta IS NULL OR b.opp_reb IS NULL) THEN NULL
+             ELSE b.opp_fga - COALESCE(b.opp_orb, b.opp_reb * 0.245) + 0.44 * b.opp_fta + COALESCE(b.opp_tov, 0) END AS opp_poss
     FROM base b
 ),
 pg AS (

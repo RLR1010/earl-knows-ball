@@ -136,6 +136,7 @@ WITH team_games AS (
         g.home_free_throws_made        AS ftm,
         g.home_free_throws_attempted   AS fta,
         g.home_rebounds                AS reb,
+        g.home_offensive_rebounds      AS off_reb,
         g.home_assists                 AS ast,
         COALESCE(g.home_steals, 0)     AS stl,
         COALESCE(g.home_blocks, 0)     AS blk,
@@ -148,11 +149,13 @@ WITH team_games AS (
         g.away_free_throws_made        AS opp_ftm,
         g.away_free_throws_attempted   AS opp_fta,
         g.away_rebounds                AS opp_reb,
+        g.away_offensive_rebounds      AS opp_off_reb,
         g.away_assists                 AS opp_ast,
         COALESCE(g.away_steals, 0)     AS opp_stl,
         COALESCE(g.away_blocks, 0)     AS opp_blk,
         COALESCE(g.away_turnovers, 0)  AS opp_tov,
         COALESCE(g.away_fouls, 0)      AS opp_pf,
+        g.home_estimated_possessions  AS poss_est,
         (g.home_score - g.away_score)  AS margin
     FROM nba.games g
     WHERE g.status = 'FINAL'
@@ -176,6 +179,7 @@ WITH team_games AS (
         g.away_free_throws_made        AS ftm,
         g.away_free_throws_attempted   AS fta,
         g.away_rebounds                AS reb,
+        g.away_offensive_rebounds      AS off_reb,
         g.away_assists                 AS ast,
         COALESCE(g.away_steals, 0)     AS stl,
         COALESCE(g.away_blocks, 0)     AS blk,
@@ -188,11 +192,13 @@ WITH team_games AS (
         g.home_free_throws_made        AS opp_ftm,
         g.home_free_throws_attempted   AS opp_fta,
         g.home_rebounds                AS opp_reb,
+        g.home_offensive_rebounds      AS opp_off_reb,
         g.home_assists                 AS opp_ast,
         COALESCE(g.home_steals, 0)     AS opp_stl,
         COALESCE(g.home_blocks, 0)     AS opp_blk,
         COALESCE(g.home_turnovers, 0)  AS opp_tov,
         COALESCE(g.home_fouls, 0)      AS opp_pf,
+        g.away_estimated_possessions  AS poss_est,
         (g.away_score - g.home_score)  AS margin
     FROM nba.games g
     WHERE g.status = 'FINAL'
@@ -209,9 +215,11 @@ CUM_SUM_COLS = [
     "points", "points_allowed", "margin",
     "fgm", "fga", "fgm3", "fga3", "ftm", "fta",
     "reb", "ast", "stl", "blk", "tov", "pf",
+    "off_reb", "poss_est",
     "opp_fgm", "opp_fga", "opp_fgm3", "opp_fga3",
     "opp_ftm", "opp_fta", "opp_reb", "opp_ast",
     "opp_stl", "opp_blk", "opp_tov", "opp_pf",
+    "opp_off_reb",
 ]
 
 # ── Derived rate formulas (applied per-row after cumulative sums) ───────────
@@ -272,18 +280,25 @@ def _compute_tier3(gs: int, row: dict) -> dict:
     opp_tov = row.get("cum_opp_tov", 0) or 0
     opp_reb = row.get("cum_opp_reb", 0) or 0
 
-    # Estimated possessions (team = offensive half of the formula)
-    # Poss = FGA + 0.44*FTA - ORB + TOV
-    # Without ORB, approximate: FGA + 0.44*FTA + TOV
-    # For opponent: opp_FGA + 0.44*opp_FTA + opp_TOV
-    poss = fga + 0.44 * fta + tov
-    opp_poss = opp_fga + 0.44 * opp_fta + opp_tov
+    # Estimated possessions. ESPN's authoritative team possession count is
+    # stored per-game (home_estimated_possessions / away_estimated_possessions)
+    # and summed into cum_poss_est here. When present it fixes the historical
+    # bug where possessions used FGA + 0.44*FTA + TOV (no offensive-rebound
+    # subtraction), which inflated possessions ~14% and compressed ORTG/DRTG
+    # toward ~100. Fall back to the corrected Dean-Oliver form if missing.
+    cum_poss = row.get("cum_poss_est", 0) or 0
+    cum_orb = row.get("cum_off_reb", 0) or 0
+    cum_opp_orb = row.get("cum_opp_off_reb", 0) or 0
+    if cum_poss > 0:
+        poss = cum_poss
+        # Opponent pace mirrors our own (NBA pacing convention).
+        opp_poss = cum_poss
+    else:
+        poss = max(fga + 0.44 * fta + tov - cum_orb, 1)
+        opp_poss = max(opp_fga + 0.44 * opp_fta + opp_tov - cum_opp_orb, 1)
     avg_poss = (poss + opp_poss) / 2.0 if gs > 0 else 0
 
-    # Pace = average team possessions per game. The standard NBA pace formula
-    # is 48 * (poss + opp_poss) / (2 * games * minutes). Without actual game
-    # minutes, use (poss + opp_poss) / (2 * games) — a simplified per-team
-    # proxy. Standard NBA: ~100 possessions/game ≈ ORTG of ~110.
+    # Pace = average team possessions per game.
     est_pace = _div(poss + opp_poss, 2 * gs, 2)
 
     ortg = _div(pts, _div(poss, 100, 2))
@@ -498,20 +513,32 @@ def _populate(
 
     def _per_game_ortg(r):
         r_pts = r.get("points", 0) or 0
-        r_fga = r.get("fga", 0) or 0
-        r_fta = r.get("fta", 0) or 0
-        r_tov = r.get("tov", 0) or 0
-        r_poss = max(r_fga + 0.44 * r_fta + r_tov, 1)
+        # ESPN's authoritative estimated possessions for the team, when present.
+        r_poss = r.get("poss_est", 0) or 0
+        if r_poss <= 0:
+            # Fallback: Dean-Oliver possessions (subtract offensive rebounds so
+            # offensive boards don't inflate the count).
+            r_fga = r.get("fga", 0) or 0
+            r_fta = r.get("fta", 0) or 0
+            r_tov = r.get("tov", 0) or 0
+            r_orb = r.get("off_reb", 0) or 0
+            r_poss = max(r_fga + 0.44 * r_fta + r_tov - r_orb, 1)
         return r_pts / r_poss * 100
 
     df_raw["pg_ortg"] = df_raw.apply(_per_game_ortg, axis=1)
 
     def _per_game_drtg(r):
         r_pts = r.get("points_allowed", 0) or 0
-        r_opp_fga = r.get("opp_fga", 0) or 0
-        r_opp_fta = r.get("opp_fta", 0) or 0
-        r_opp_tov = r.get("opp_tov", 0) or 0
-        r_poss = max(r_opp_fga + 0.44 * r_opp_fta + r_opp_tov, 1)
+        # Defensive possessions use the team's own (opponent-mirrored) estimated
+        # possessions, matching the standard NBA pacing convention.
+        r_poss = r.get("poss_est", 0) or 0
+        if r_poss <= 0:
+            # Fallback via opponent box-score possessions.
+            r_opp_fga = r.get("opp_fga", 0) or 0
+            r_opp_fta = r.get("opp_fta", 0) or 0
+            r_opp_tov = r.get("opp_tov", 0) or 0
+            r_opp_orb = r.get("opp_off_reb", 0) or 0
+            r_poss = max(r_opp_fga + 0.44 * r_opp_fta + r_opp_tov - r_opp_orb, 1)
         return r_pts / r_poss * 100
 
     df_raw["pg_drtg"] = df_raw.apply(_per_game_drtg, axis=1)
@@ -571,7 +598,13 @@ def _populate(
             "games_played":        gs,
         }
         for col in cum_sum_cols:
-            r[f"cum_{col}"] = int(row[col]) if col in row else 0
+            val = row[col] if col in row else 0
+            # Possessions is fractional; keep it float. Everything else rounds
+            # to int (count-based stats).
+            if col in ("poss_est",):
+                r[f"cum_{col}"] = float(val) if val is not None else 0.0
+            else:
+                r[f"cum_{col}"] = int(val) if val is not None else 0
 
         tier2 = _compute_tier2(gs, r)
         tier3 = _compute_tier3(gs, r)

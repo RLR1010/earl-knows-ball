@@ -182,16 +182,32 @@ export default function RecentContent({ sport }: { sport: string }) {
               <Link
                 key={a.id}
                 href={`/${sport}/articles/${a.slug || a.id}`}
-                className="block border border-white/10 rounded-xl p-4 bg-white/5 hover:bg-white/10 transition"
+                className="block border border-white/10 rounded-xl p-4 bg-white/5 hover:bg-white/10 transition group"
               >
-                <h3 className="font-semibold text-white line-clamp-2">{a.title}</h3>
+                {/* Team logos — horizontal row above the article, left to right */}
+                {Array.isArray(a.teams) && a.teams.length > 0 && (
+                  <div className="flex items-center gap-1.5 mb-2">
+                    {a.teams.slice(0, 4).map((abbr) => (
+                      <img
+                        key={abbr}
+                        src={getTeamLogoUrl(abbr, sport) || ""}
+                        alt={abbr}
+                        loading="lazy"
+                        className="h-7 w-7 object-contain"
+                      />
+                    ))}
+                  </div>
+                )}
+                <div className="text-xs text-gray-500 mt-1">
+                  {formatDate(a.published_at)}
+                  {a.author ? ` · by ${a.author}` : ""}
+                </div>
+                <h3 className="font-semibold text-white mt-1 line-clamp-2 group-hover:text-earl-400 transition">
+                  {a.title}
+                </h3>
                 {a.summary && (
                   <p className="text-sm text-gray-400 mt-1 line-clamp-2">{a.summary}</p>
                 )}
-                <div className="text-xs text-gray-500 mt-3">
-                  {formatDate(a.published_at)}
-                  {a.author ? ` · ${a.author}` : ""}
-                </div>
               </Link>
             ))}
           </div>
