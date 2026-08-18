@@ -252,6 +252,23 @@ async def run(started_at=None):
             logger.error(f"  Step 12 bullpen stats refresh failed: {e}")
             step_failures.append(f"Bullpen stats: {e}")
 
+        # Step 13: Refresh mlb.team_ops_vs_arm (cumulative team OPS/WINS vs arm)
+        # Cumulatives partition by season, so rebuild the current (in-progress)
+        # season fully each refresh — correct AND fast (~1s). Historical seasons
+        # are only corrected by an explicit full rebuild.
+        try:
+            from app.handicapping.mlb.populate_team_ops_vs_arm import \
+                populate_team_ops_vs_arm
+            from sqlalchemy import text
+            cur_season = (await db.execute(
+                text("SELECT MAX(season_id) FROM mlb.games WHERE status = 'FINAL'")
+            )).scalar()
+            logger.info(f"  Step 13: team_ops_vs_arm rebuild for season {cur_season}...")
+            populate_team_ops_vs_arm(season=cur_season)
+        except Exception as e:
+            logger.error(f"  Step 13 team_ops_vs_arm refresh failed: {e}")
+            step_failures.append(f"team_ops_vs_arm: {e}")
+
         await pconn.close()
 
         # Commit all changes (lineups, pitchers, picks)
