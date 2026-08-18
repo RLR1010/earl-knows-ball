@@ -561,55 +561,52 @@ LEFT JOIN LATERAL (
     WHERE pl.name = g.away_pitcher_name
     LIMIT 1
 ) ph_a ON TRUE
--- Team OPS vs each arm, computed THROUGH-DATE from batting_game_stats + the
--- opposing starter's hand (players.throws on the rostered starter name). These
--- REPLACE the old mlb.team_splits season-aggregate values, which leaked games
--- played after the target date (team_splits.vs_lhp/vs_rhp was a full-season API
--- aggregate with no game-date bound). Leak-safe here: only FINAL games strictly
--- before the target, same season. Team OPS = (H+BB+HBP+TB)/(AB+BB+HBP+SF).
+-- Team OPS vs each arm, computed THROUGH-DATE and precomputed cumulatively in
+-- mlb.team_ops_vs_arm (owned/refreshed by mlb-stats-refresh). These REPLACE the
+-- old per-row platoon LATERALs (and the pre-2026-08 team_splits season aggregates,
+-- which leaked games after the target date). Leak-safe here: we read ONLY the
+-- PREVIOUS Final row for this (team, side, arm) strictly before the target
+-- (g_prev.date < g.date - 30min), so the model sees the through-date OPS entering
+-- the target game — never the target's own or later stats. OPS=(H+BB+HBP+TB)/(AB+BB+HBP+SF).
 LEFT JOIN LATERAL (
-    SELECT ROUND((SUM(bg.hits + bg.base_on_balls + bg.hit_by_pitch + bg.total_bases)
-              ::numeric) / NULLIF(SUM(bg.at_bats + bg.base_on_balls + bg.hit_by_pitch + bg.sacrifice_flies), 0), 4) AS ops
-    FROM mlb.batting_game_stats bg
-    JOIN mlb.games g2 ON g2.id = bg.game_id
-    LEFT JOIN mlb.players pl2 ON pl2.name = g2.away_pitcher_name
-    WHERE bg.team_side = 'home' AND g2.home_team_id = ht.id
-      AND g2.status = 'FINAL' AND g2.season_id = g.season_id
-      AND g2.date < g.date - INTERVAL '30 minutes'
-      AND pl2.throws = 'L'
+    SELECT tvo.ops_vs_arm AS ops
+    FROM mlb.team_ops_vs_arm tvo
+    JOIN mlb.games g_prev ON g_prev.id = tvo.game_id
+    WHERE tvo.team_id = ht.id AND tvo.team_side = 'home' AND tvo.arm = 'L'
+      AND tvo.season_id = g.season_id AND g_prev.status = 'FINAL'
+      AND g_prev.date < g.date - INTERVAL '30 minutes'
+    ORDER BY g_prev.date DESC, g_prev.id DESC
+    LIMIT 1
 ) plato_h_lhp ON TRUE
 LEFT JOIN LATERAL (
-    SELECT ROUND((SUM(bg.hits + bg.base_on_balls + bg.hit_by_pitch + bg.total_bases)
-              ::numeric) / NULLIF(SUM(bg.at_bats + bg.base_on_balls + bg.hit_by_pitch + bg.sacrifice_flies), 0), 4) AS ops
-    FROM mlb.batting_game_stats bg
-    JOIN mlb.games g2 ON g2.id = bg.game_id
-    LEFT JOIN mlb.players pl2 ON pl2.name = g2.away_pitcher_name
-    WHERE bg.team_side = 'home' AND g2.home_team_id = ht.id
-      AND g2.status = 'FINAL' AND g2.season_id = g.season_id
-      AND g2.date < g.date - INTERVAL '30 minutes'
-      AND pl2.throws = 'R'
+    SELECT tvo.ops_vs_arm AS ops
+    FROM mlb.team_ops_vs_arm tvo
+    JOIN mlb.games g_prev ON g_prev.id = tvo.game_id
+    WHERE tvo.team_id = ht.id AND tvo.team_side = 'home' AND tvo.arm = 'R'
+      AND tvo.season_id = g.season_id AND g_prev.status = 'FINAL'
+      AND g_prev.date < g.date - INTERVAL '30 minutes'
+    ORDER BY g_prev.date DESC, g_prev.id DESC
+    LIMIT 1
 ) plato_h_rhp ON TRUE
 LEFT JOIN LATERAL (
-    SELECT ROUND((SUM(bg.hits + bg.base_on_balls + bg.hit_by_pitch + bg.total_bases)
-              ::numeric) / NULLIF(SUM(bg.at_bats + bg.base_on_balls + bg.hit_by_pitch + bg.sacrifice_flies), 0), 4) AS ops
-    FROM mlb.batting_game_stats bg
-    JOIN mlb.games g2 ON g2.id = bg.game_id
-    LEFT JOIN mlb.players pl2 ON pl2.name = g2.home_pitcher_name
-    WHERE bg.team_side = 'away' AND g2.away_team_id = at.id
-      AND g2.status = 'FINAL' AND g2.season_id = g.season_id
-      AND g2.date < g.date - INTERVAL '30 minutes'
-      AND pl2.throws = 'L'
+    SELECT tvo.ops_vs_arm AS ops
+    FROM mlb.team_ops_vs_arm tvo
+    JOIN mlb.games g_prev ON g_prev.id = tvo.game_id
+    WHERE tvo.team_id = at.id AND tvo.team_side = 'away' AND tvo.arm = 'L'
+      AND tvo.season_id = g.season_id AND g_prev.status = 'FINAL'
+      AND g_prev.date < g.date - INTERVAL '30 minutes'
+    ORDER BY g_prev.date DESC, g_prev.id DESC
+    LIMIT 1
 ) plato_a_lhp ON TRUE
 LEFT JOIN LATERAL (
-    SELECT ROUND((SUM(bg.hits + bg.base_on_balls + bg.hit_by_pitch + bg.total_bases)
-              ::numeric) / NULLIF(SUM(bg.at_bats + bg.base_on_balls + bg.hit_by_pitch + bg.sacrifice_flies), 0), 4) AS ops
-    FROM mlb.batting_game_stats bg
-    JOIN mlb.games g2 ON g2.id = bg.game_id
-    LEFT JOIN mlb.players pl2 ON pl2.name = g2.home_pitcher_name
-    WHERE bg.team_side = 'away' AND g2.away_team_id = at.id
-      AND g2.status = 'FINAL' AND g2.season_id = g.season_id
-      AND g2.date < g.date - INTERVAL '30 minutes'
-      AND pl2.throws = 'R'
+    SELECT tvo.ops_vs_arm AS ops
+    FROM mlb.team_ops_vs_arm tvo
+    JOIN mlb.games g_prev ON g_prev.id = tvo.game_id
+    WHERE tvo.team_id = at.id AND tvo.team_side = 'away' AND tvo.arm = 'R'
+      AND tvo.season_id = g.season_id AND g_prev.status = 'FINAL'
+      AND g_prev.date < g.date - INTERVAL '30 minutes'
+    ORDER BY g_prev.date DESC, g_prev.id DESC
+    LIMIT 1
 ) plato_a_rhp ON TRUE
 
 -- ──────────────────────────────────────────────────────────────────────
