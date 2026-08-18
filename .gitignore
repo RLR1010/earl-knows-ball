@@ -27,3 +27,6 @@ compare_params.py
 
 # Local DB backups (never commit — large data dumps)
 backups/
+
+# Scratch/ad-hoc diagnostic scripts (never commit)
+backend/app/scripts/_*.py

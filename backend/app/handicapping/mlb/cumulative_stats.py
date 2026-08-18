@@ -487,15 +487,26 @@ UPSERT_COLS = [c for c in ALL_COLS if c not in ("game_id", "team_side")]
 
 
 def _sanitize(val):
-    """Replace NaN/Inf/NaT with None and convert Timestamps to date."""
+    """Replace NaN/Inf/NaT with None."""
     # IEEE 754: NaN != NaN
     if val is not None and val != val:
         return None
     if isinstance(val, float) and math.isinf(val):
         return None
+    if val is None:  # pd.NaT is a Timestamp subclass of None -> handled below too
+        return None
     if isinstance(val, pd.Timestamp):
+        # Preserve the FULL datetime (incl. time of day). We must NOT call
+        # .date() here: that strips time-of-day, which made every
+        # cumulative_game_stats.game_timestamp a midnight stamp and broke the
+        # data loader's "read the previous FINAL cumulative row" LATERAL
+        # (scheduled/final games resolved to the wrong cumulative row, causing
+        # stat leakage and identical season stats across the doubleheader).
+        # NaT -> None.
+        if pd.isna(val):
+            return None
         try:
-            return val.date()
+            return val.to_pydatetime()
         except Exception:
             return str(val)
     return val

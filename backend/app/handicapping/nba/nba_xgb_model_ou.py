@@ -121,7 +121,10 @@ async def train_model(
     # Train from 2016 up through the latest test year only (earlier seasons are
     # never used; prior-season stats come from nba.prior_team_stats).
     load_seasons = list(range(2016, max(TEST_YEARS) + 1))
-    df = dl.load_data(seasons=load_seasons)
+    # Train ONLY on regular-season games. Playoff/play-in games have different
+    # pace/tempo/restr contexts that skew the OU margin target; fit the model on
+    # REG games only. (Playoff inference still works via load_inference_data.)
+    df = dl.load_data(seasons=load_seasons, game_types=['REG'])
 
     if df.empty:
         return {"error": "no data loaded"}

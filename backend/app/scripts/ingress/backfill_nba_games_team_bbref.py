@@ -170,6 +170,7 @@ def _gap_games(db_conn, seasons, limit):
 def _parse_args(argv):
     seasons = []
     limit = 0
+    throttle = 3.5
     i = 0
     while i < len(argv):
         a = argv[i]
@@ -181,12 +182,16 @@ def _parse_args(argv):
             limit = int(argv[i + 1]); i += 1
         elif a.startswith("--limit="):
             limit = int(a.split("=", 1)[1])
+        elif a == "--throttle" and i + 1 < len(argv):
+            throttle = float(argv[i + 1]); i += 1
+        elif a.startswith("--throttle="):
+            throttle = float(a.split("=", 1)[1])
         i += 1
-    return seasons, limit
+    return seasons, limit, throttle
 
 
 def main(argv):
-    seasons, limit = _parse_args(argv)
+    seasons, limit, throttle = _parse_args(argv)
 
     engine = create_engine(PSYCOPG2_DATABASE_URL.replace("+asyncpg", "+psycopg2"))
     with engine.connect() as conn:
@@ -207,7 +212,7 @@ def main(argv):
             if idx % 10 == 0 or idx == len(games):
                 conn.commit()
                 logger.info(f"  {idx}/{len(games)} games, {total} teams updated, {errors} empty")
-            time.sleep(8)  # BBRef polite rate
+            time.sleep(throttle)  # BBRef crawl-delay policy (robots.txt: 3s)
         conn.commit()
         logger.info(f"DONE: {total} teams updated, {errors} games with no data")
         return {"games": len(games), "teams": total, "errors": errors}

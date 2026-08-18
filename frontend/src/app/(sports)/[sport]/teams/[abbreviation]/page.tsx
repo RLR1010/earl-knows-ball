@@ -4,10 +4,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import * as React from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import GameCalendar from "@/components/GameCalendar";
-import Image from "next/image";
 import Link from "next/link";
 import { api, Team, Game, DepthChartEntry, BoxScore } from "@/lib/api";
-import { getTeamLogoUrl } from "@/lib/team_logos";
+import TeamLogo from "@/components/TeamLogo";
 import { useSeo } from "@/components/Seo";
 import SchedulePicksFooter from "@/components/SchedulePicksFooter";
 
@@ -451,13 +450,7 @@ export default function TeamDetailPage() {
       {/* Team Header */}
       <div className="rounded-2xl p-6 md:p-8 border" style={{ borderColor: teamColor + "40", background: `linear-gradient(135deg, ${teamColor}20 0%, transparent 80%)` }}>
         <div className="flex items-center gap-4">
-          <div className="w-14 h-14 rounded-xl flex items-center justify-center shrink-0 bg-white/10 p-1.5">
-            {sport === "nfl" ? (
-              <Image src={`/logos/${abbrUpper}.png`} alt={meta.name} width={56} height={56} className="object-contain w-full h-full" />
-            ) : (
-              <img src={getTeamLogoUrl(abbrUpper, sport) || undefined} alt={meta.name} width={56} height={56} className="object-contain w-full h-full" style={{ filter: 'brightness(1.1)' }} />
-            )}
-          </div>
+          <TeamLogo abbr={abbrUpper} sport={sport} size={56} />
           <div>
             <h1 className="font-display text-3xl md:text-4xl font-bold">{meta.name}</h1>
             <p className="text-sm text-gray-400 mt-1">
@@ -1334,15 +1327,8 @@ function NBATeamSchedule({ sport, abbrUpper, formatGameDate, formatGameTime }: N
               >
                 {/* Teams row with logos, names, and scores */}
                 <div className="flex items-center justify-center gap-1.5 text-lg">
-                  {awayTeam && getTeamLogoUrl(awayTeam, "nba") && (
-                    <Image
-                      src={getTeamLogoUrl(awayTeam, "nba")!}
-                      alt={awayTeam}
-                      width={20}
-                      height={20}
-                      className="object-contain shrink-0"
-                      unoptimized
-                    />
+                  {awayTeam && (
+                    <TeamLogo abbr={awayTeam} sport="nba" size={20} />
                   )}
                   <div className={`font-semibold ${awayWon ? "text-earl-400" : "text-gray-300"}`}>{awayTeam}</div>
                   {isFinal && awayScore !== null && <span className="font-bold text-white">{awayScore}</span>}
@@ -1351,15 +1337,8 @@ function NBATeamSchedule({ sport, abbrUpper, formatGameDate, formatGameTime }: N
                   {isFinal && homeScore !== null && <span className="font-bold text-white">{homeScore}</span>}
                   {isLive && homeScore !== null && <span className="font-bold text-red-400">{homeScore}</span>}
                   <div className={`font-semibold ${homeWon ? "text-earl-400" : "text-gray-300"}`}>{homeTeam}</div>
-                  {homeTeam && getTeamLogoUrl(homeTeam, "nba") && (
-                    <Image
-                      src={getTeamLogoUrl(homeTeam, "nba")!}
-                      alt={homeTeam}
-                      width={20}
-                      height={20}
-                      className="object-contain shrink-0"
-                      unoptimized
-                    />
+                  {homeTeam && (
+                    <TeamLogo abbr={homeTeam} sport="nba" size={20} />
                   )}
                 </div>
 
@@ -1457,7 +1436,7 @@ function NFLMLBTeamSchedule({ games, sport, abbrUpper, seasonYear, formatGameDat
 
                   {/* Opponent */}
                   <div className="flex items-center justify-center gap-2 mt-2">
-                    <img src={getTeamLogoUrl(opponent, sport) || undefined} alt={opponent} width={24} height={24} className="object-contain shrink-0" style={{ filter: "brightness(1.1)" }} />
+                    <TeamLogo abbr={opponent} sport={sport} size={24} />
                     <span className="text-sm font-semibold text-gray-200">{opponent}</span>
                   </div>
 
@@ -1514,7 +1493,7 @@ function NFLMLBTeamSchedule({ games, sport, abbrUpper, seasonYear, formatGameDat
 
             {/* Opponent */}
             <div className="flex items-center justify-center gap-2 mt-2">
-              <img src={"/logos/" + opponent + ".png"} alt={opponent} width={24} height={24} className="object-contain shrink-0" />
+              <TeamLogo abbr={opponent} sport="nfl" size={24} />
               <span className="text-sm font-semibold text-gray-200">{opponent}</span>
             </div>
 
@@ -1762,13 +1741,7 @@ function TeamArticles({ sport, abbreviation, teamName }: {
                   {logos.length > 0 && (
                     <div className="flex items-center gap-1.5 mb-2">
                       {logos.slice(0, 4).map((abbr) => (
-                        <img
-                          key={abbr}
-                          src={getTeamLogoUrl(abbr, sport) || ""}
-                          alt={abbr}
-                          loading="lazy"
-                          className="h-7 w-7 object-contain"
-                        />
+                        <TeamLogo key={abbr} abbr={abbr} sport={sport} size={26} />
                       ))}
                     </div>
                   )}

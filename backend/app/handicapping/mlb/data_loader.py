@@ -161,9 +161,24 @@ SELECT
     g.temperature,
     
 
-    -- Rest days (calendar days since each team's last game)
-    COALESCE((g.date::date - h_last_game.h_prev_game_date::date)::integer, 90) AS h_rest,
-    COALESCE((g.date::date - a_last_game.a_prev_game_date::date)::integer, 90) AS a_rest,
+    -- Rest days (calendar days since each team's last game).
+    -- Computed on LOCAL calendar dates: each game is converted to its OWN venue's
+    -- timezone (target uses the target venue, prev game uses the prev game's venue)
+    -- BEFORE casting to date. Fixes off-by-one on evening games whose UTC date rolls
+    -- into the next day (e.g. a 7:10pm CDT game stored as 00:10 UTC next day was
+    -- previously counted as +1 rest day vs. the true local-calendar gap).
+    COALESCE(
+        ((g.date AT TIME ZONE COALESCE(v.timezone, 'UTC'))::date
+         - (h_last_game.h_prev_game_date AT TIME ZONE COALESCE(h_last_game.h_prev_game_tz, 'UTC'))::date)
+        , 90) AS h_rest,
+    COALESCE(
+        ((g.date AT TIME ZONE COALESCE(v.timezone, 'UTC'))::date
+         - (a_last_game.a_prev_game_date AT TIME ZONE COALESCE(a_last_game.a_prev_game_tz, 'UTC'))::date)
+        , 90) AS a_rest,
+    -- Raw UTC timestamps of each team's most recent prior game (used to compute
+    -- true elapsed rest hours in build_features; NOT rest-day values themselves).
+    h_last_game.h_prev_game_date AS h_prev_game_date,
+    a_last_game.a_prev_game_date AS a_prev_game_date,
 
     -- ──────────────────────────────────────────────────────────────────────
     -- CUMULATIVE STATS (season-to-date entering this game)
@@ -601,8 +616,10 @@ LEFT JOIN LATERAL (
 -- REST DAYS (find each team's last game before this one)
 -- ──────────────────────────────────────────────────────────────────────
 LEFT JOIN LATERAL (
-    SELECT g_prev.date AS h_prev_game_date
+    SELECT g_prev.date AS h_prev_game_date,
+           v_prev.timezone AS h_prev_game_tz
     FROM mlb.games g_prev
+    LEFT JOIN mlb.venues v_prev ON v_prev.mlb_venue_id = g_prev.venue_id
     WHERE (g_prev.home_team_id = g.home_team_id OR g_prev.away_team_id = g.home_team_id)
       AND g_prev.date < g.date - INTERVAL '30 minutes'
       AND g_prev.status = 'FINAL'
@@ -610,8 +627,10 @@ LEFT JOIN LATERAL (
     LIMIT 1
 ) h_last_game ON TRUE
 LEFT JOIN LATERAL (
-    SELECT g_prev.date AS a_prev_game_date
+    SELECT g_prev.date AS a_prev_game_date,
+           v_prev.timezone AS a_prev_game_tz
     FROM mlb.games g_prev
+    LEFT JOIN mlb.venues v_prev ON v_prev.mlb_venue_id = g_prev.venue_id
     WHERE (g_prev.home_team_id = g.away_team_id OR g_prev.away_team_id = g.away_team_id)
       AND g_prev.date < g.date - INTERVAL '30 minutes'
       AND g_prev.status = 'FINAL'
@@ -661,13 +680,16 @@ LEFT JOIN LATERAL (
       AND gg.date           < g.date - INTERVAL '30 minutes'
 ) runfg_a ON TRUE
 
--- Team rolling stats (home / away) — LATERAL finds most recent completed game for this team side
+-- Team rolling stats — LATERAL finds most recent completed game for this team (venue-agnostic).
+-- NOTE: team_rolling_stats has ONE row per (team, game) with team_side == that game's venue.
+-- Filtering by team_side here would skip a team's recent games at the OTHER venue and read a
+-- stale row (e.g. an away bullpen_ip_l5 over last-5-AWAY games instead of last-5-ACTUAL games).
+-- Workload/form stats fed by trs_* are venue-agnostic by design (see commit f09e5e6 ed1989d 90ab40f).
 LEFT JOIN LATERAL (
     SELECT trs.*
     FROM mlb.team_rolling_stats trs
     JOIN mlb.games gp ON gp.id = trs.game_id
     WHERE trs.team_id = g.home_team_id
-      AND trs.team_side = 'home'
       AND gp.date < g.date - INTERVAL '30 minutes'
       AND gp.status = 'FINAL'
     ORDER BY gp.date DESC, gp.id DESC
@@ -678,7 +700,6 @@ LEFT JOIN LATERAL (
     FROM mlb.team_rolling_stats trs
     JOIN mlb.games gp ON gp.id = trs.game_id
     WHERE trs.team_id = g.away_team_id
-      AND trs.team_side = 'away'
       AND gp.date < g.date - INTERVAL '30 minutes'
       AND gp.status = 'FINAL'
     ORDER BY gp.date DESC, gp.id DESC
@@ -719,7 +740,21 @@ LEFT JOIN LATERAL (
 
 -- Pitcher rolling stats (home / away: cumulative stats for the CURRENT game's pitcher, from that pitcher's most recent completed start)
 LEFT JOIN LATERAL (
-    SELECT prs.*
+    SELECT prs.game_id, prs.player_id, prs.team_id, prs.team_abbr, prs.season_id,
+           prs.game_date, prs.is_starter, prs.ip_outs, prs.er, prs.hits_allowed,
+           prs.walks_allowed, prs.strikeouts, prs.home_runs_allowed,
+           prs.era_this_start, prs.whip_this_start, prs.k9_this_start, prs.bb9_this_start,
+           prs.is_quality_start, prs.era_ytd, prs.whip_ytd, prs.k9_ytd, prs.bb9_ytd,
+           prs.kbb_ytd, prs.fip_ytd, prs.qs_rate_ytd, prs.starts_ytd,
+           prs.era_5, prs.whip_5, prs.k9_5, prs.bb9_5, prs.kbb_5,
+           prs.era_10, prs.whip_10, prs.k9_10, prs.bb9_10, prs.kbb_10,
+           prs.era_15, prs.whip_15, prs.k9_15, prs.bb9_15,
+           prs.era_20, prs.whip_20, prs.k9_20, prs.bb9_20, prs.kbb_20,
+           prs.home_era_ytd, prs.road_era_ytd, prs.day_era_ytd, prs.night_era_ytd,
+           -- Rest = days from THIS pitcher's most recent completed start to the
+           -- TARGET game date (NOT the stored per-start rest_days, which is the
+           -- gap to the pitcher's PRIOR start and is wrong for a scheduled game).
+           EXTRACT(DAY FROM (g.date - prs.game_date))::int AS rest_days
     FROM mlb.pitcher_rolling_stats prs
     JOIN mlb.games gp ON gp.id = prs.game_id
     WHERE prs.player_id = pgs_h.pitcher_mlb_id
@@ -730,7 +765,18 @@ LEFT JOIN LATERAL (
     LIMIT 1
 ) prs_h ON TRUE
 LEFT JOIN LATERAL (
-    SELECT prs.*
+    SELECT prs.game_id, prs.player_id, prs.team_id, prs.team_abbr, prs.season_id,
+           prs.game_date, prs.is_starter, prs.ip_outs, prs.er, prs.hits_allowed,
+           prs.walks_allowed, prs.strikeouts, prs.home_runs_allowed,
+           prs.era_this_start, prs.whip_this_start, prs.k9_this_start, prs.bb9_this_start,
+           prs.is_quality_start, prs.era_ytd, prs.whip_ytd, prs.k9_ytd, prs.bb9_ytd,
+           prs.kbb_ytd, prs.fip_ytd, prs.qs_rate_ytd, prs.starts_ytd,
+           prs.era_5, prs.whip_5, prs.k9_5, prs.bb9_5, prs.kbb_5,
+           prs.era_10, prs.whip_10, prs.k9_10, prs.bb9_10, prs.kbb_10,
+           prs.era_15, prs.whip_15, prs.k9_15, prs.bb9_15,
+           prs.era_20, prs.whip_20, prs.k9_20, prs.bb9_20, prs.kbb_20,
+           prs.home_era_ytd, prs.road_era_ytd, prs.day_era_ytd, prs.night_era_ytd,
+           EXTRACT(DAY FROM (g.date - prs.game_date))::int AS rest_days
     FROM mlb.pitcher_rolling_stats prs
     JOIN mlb.games gp ON gp.id = prs.game_id
     WHERE prs.player_id = pgs_a.pitcher_mlb_id
@@ -1844,11 +1890,21 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
         result["a_combo_era_r15"] = 4.5
 
     # ── Group 11 — Rest hours ──────────────────────────────────────────────────
-    if "h_rest" in result.columns:
+    # True elapsed hours between the target game's first pitch and each team's last
+    # game (UTC timestamps subtracted directly). This replaces the old flat `rest*24`
+    # approximation, which overstated hours for any gap that isn't a whole day.
+    _gd = pd.to_datetime(result["game_date"], errors="coerce") if "game_date" in result.columns else None
+    if _gd is not None and "h_prev_game_date" in result.columns:
+        _hp = pd.to_datetime(result["h_prev_game_date"], errors="coerce")
+        result["rest_h_hours"] = (_gd - _hp).dt.total_seconds() / 3600.0
+    elif "h_rest" in result.columns:
         result["rest_h_hours"] = result["h_rest"] * 24
     else:
         result["rest_h_hours"] = 0
-    if "a_rest" in result.columns:
+    if _gd is not None and "a_prev_game_date" in result.columns:
+        _ap = pd.to_datetime(result["a_prev_game_date"], errors="coerce")
+        result["rest_a_hours"] = (_gd - _ap).dt.total_seconds() / 3600.0
+    elif "a_rest" in result.columns:
         result["rest_a_hours"] = result["a_rest"] * 24
     else:
         result["rest_a_hours"] = 0
@@ -2157,7 +2213,14 @@ class MLBDataLoader:
         pd.DataFrame
             One row per game, with all columns from GAME_QUERY.
         """
-        engine = create_engine(self._db_url)
+        engine = create_engine(
+            self._db_url,
+            # ``jit=off`` scoped to THIS loader's connection only: MLB's
+            # GAME_QUERY (via _query below) pays a large JIT compile tax to
+            # run modest row counts. Disabling JIT here avoids that overhead
+            # without affecting other workloads on the instance.
+            connect_args={"options": "-c jit=off"},
+        )
         try:
             return self._query(engine, seasons=seasons, status=status,
                                limit=limit, include_upcoming=include_upcoming,

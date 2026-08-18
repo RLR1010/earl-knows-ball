@@ -41,7 +41,7 @@ def main():
         print("=== REBUILDING nba.team_splits ===")
         import asyncio
         from app.ingestion.nba_team_splits import build_team_splits
-        from backend.app.database import async_session
+        from app.database import async_session
 
         async def _splits():
             async with async_session() as db:

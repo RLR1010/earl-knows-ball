@@ -6,7 +6,7 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useSeo } from "@/components/Seo";
 import { useAuth } from "@/lib/auth-context";
 import LoginModal from "@/components/LoginModal";
-import { getTeamLogoUrl } from "@/lib/team_logos";
+import TeamLogo from "@/components/TeamLogo";
 
 interface GamePreview {
   writeup_id: number;
@@ -325,21 +325,11 @@ function AnalysisItem({ preview, sport, isPremium, loggedIn, onOpenLogin }: Anal
         {showLogos && (
           <>
             {preview.away_abbr && (
-              <img
-                src={getTeamLogoUrl(preview.away_abbr, sport) || ""}
-                alt={preview.away_abbr}
-                loading="lazy"
-                className="h-8 w-8 sm:h-9 sm:w-9 object-contain"
-              />
+              <TeamLogo abbr={preview.away_abbr} sport={sport} size={34} />
             )}
             <span className="text-sm font-bold text-gray-400">vs</span>
             {preview.home_abbr && (
-              <img
-                src={getTeamLogoUrl(preview.home_abbr, sport) || ""}
-                alt={preview.home_abbr}
-                loading="lazy"
-                className="h-8 w-8 sm:h-9 sm:w-9 object-contain"
-              />
+              <TeamLogo abbr={preview.home_abbr} sport={sport} size={34} />
             )}
           </>
         )}

@@ -105,6 +105,8 @@ export default function AdminOriginalArticles() {
   const [includeResearch, setIncludeResearch] = useState(true);
   const [reediting, setReediting] = useState(false);
   const [regenerating, setRegenerating] = useState(false);
+  const [rechecking, setRechecking] = useState(false);
+  const [recheckingId, setRecheckingId] = useState<number | null>(null);
 
   // --- research panel state ---
   const [openResearchId, setOpenResearchId] = useState<number | null>(null);
@@ -352,6 +354,90 @@ export default function AdminOriginalArticles() {
       alert(`Title regeneration failed: ${e.message}`);
     } finally {
       setRegenerating(false);
+    }
+  };
+
+  const handleRecheckAccuracy = async () => {
+    if (!editing) return;
+    setRechecking(true);
+    try {
+      const res = await fetch(
+        `/api/admin/original-articles/${editing.sport}/${editing.id}/recheck`,
+        {
+          method: "POST",
+          headers: authHeaders(),
+          body: JSON.stringify({}),
+        }
+      );
+      if (!res.ok) {
+        let detail = `HTTP ${res.status}`;
+        try {
+          const e = await res.json();
+          detail = e.detail || detail;
+        } catch {}
+        throw new Error(detail);
+      }
+      const data = await res.json();
+      // Refresh the accuracy panel + published content in the modal.
+      setEditAccuracyCheck(data.accuracy_check ?? null);
+      if (data.content) setEditContent(data.content);
+      if (data.title) setEditTitle(data.title);
+      const passed = data.passed;
+      if (passed) {
+        alert("✅ Re-run passed — article is accurate and verified.");
+      } else if (data.verification_error) {
+        alert(`⚠️ Re-run could not produce a verdict (verification error). ${
+          data.detail || "Try again in a moment."
+        }`);
+      } else {
+        const n = Array.isArray(data.findings) ? data.findings.length : 0;
+        alert(`❌ Re-run still found ${n} issue(s)${data.corrected ? " (applied corrections)" : ""}.`);
+        await fetchArticles();
+      }
+    } catch (e: any) {
+      alert(`Accuracy re-check failed: ${e.message}`);
+    } finally {
+      setRechecking(false);
+    }
+  };
+
+  // List-level re-check (no modal open needed). Re-verifies in place, then
+  // refreshes the row list so the accuracy badge immediately reflects the result.
+  const handleRecheckAccuracyFor = async (a: any) => {
+    setRecheckingId(a.id);
+    try {
+      const res = await fetch(
+        `/api/admin/original-articles/${a.sport}/${a.id}/recheck`,
+        {
+          method: "POST",
+          headers: authHeaders(),
+          body: JSON.stringify({}),
+        }
+      );
+      if (!res.ok) {
+        let detail = `HTTP ${res.status}`;
+        try {
+          const e = await res.json();
+          detail = e.detail || detail;
+        } catch {}
+        throw new Error(detail);
+      }
+      const data = await res.json();
+      if (data.passed) {
+        alert(`✅ ${data.title || a.title} re-checked — accurate and verified.`);
+      } else if (data.verification_error) {
+        alert(`⚠️ Re-check could not produce a verdict (verification error). Try again in a moment.`);
+      } else {
+        const n = Array.isArray(data.findings) ? data.findings.length : 0;
+        alert(`❌ ${data.title || a.title} still has ${n} unresolved issue(s)${
+          data.corrected ? " (applied corrections)" : ""
+        }.`);
+      }
+      await fetchArticles();
+    } catch (e: any) {
+      alert(`Accuracy re-check failed: ${e.message}`);
+    } finally {
+      setRecheckingId(null);
     }
   };
 
@@ -786,6 +872,14 @@ Manage it under Admin → Auto Generation.`);
                         Research
                       </button>
                       <button
+                        onClick={() => handleRecheckAccuracyFor(a)}
+                        disabled={recheckingId === a.id}
+                        className="text-xs text-amber-400 hover:text-amber-300 disabled:opacity-50"
+                        title="Re-run the accuracy check on this article (corrects in place + re-verifies)"
+                      >
+                        {recheckingId === a.id ? "Re-checking…" : "↻ Re-check"}
+                      </button>
+                      <button
                         onClick={() => handleToggleStatus(a)}
                         className="text-xs text-yellow-400 hover:text-yellow-300"
                         title={a.status === "published" ? "Move to draft" : "Publish"}
@@ -963,6 +1057,15 @@ Manage it under Admin → Auto Generation.`);
                                   {typeof editAccuracyCheck.retries_used === "number" && (
                                     <span className="text-gray-500">retries: {editAccuracyCheck.retries_used}</span>
                                   )}
+                                  <button
+                                    type="button"
+                                    onClick={handleRecheckAccuracy}
+                                    disabled={rechecking}
+                                    title="Re-run the accuracy verification on this article (from its stored research) — corrects in place and re-verifies"
+                                    className="ml-auto shrink-0 rounded-md border border-amber-400/40 bg-amber-400/10 px-2 py-0.5 text-[11px] font-medium text-amber-300 hover:bg-amber-400/20 disabled:opacity-50"
+                                  >
+                                    {rechecking ? "Re-checking…" : "↻ Re-check"}
+                                  </button>
                                 </div>
                                 {Array.isArray(editAccuracyCheck.findings) &&
                                   editAccuracyCheck.findings.length > 0 && (

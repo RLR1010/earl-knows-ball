@@ -836,7 +836,13 @@ async def _verify_original_accuracy(
                     {"role": "user", "content": user_content},
                 ],
                 temperature=0.0,
-                max_tokens=4000,
+                # ACCURACY IS NON-NEGOTIABLE (Rich, 2026-08-17): this was 4000,
+                # and with thinking enabled DeepSeek repeatedly burned the whole
+                # completion budget on reasoning, returning EMPTY verdicts that
+                # got mis-flagged as inaccuracies with 0 retries. Raised to 16000
+                # so there's always room for reasoning + the full JSON verdict.
+                # Never lower this back below ~12000 without Rich's approval.
+                max_tokens=16000,
                 response_format={"type": "json_object"},
                 extra_body={"thinking": {"type": "enabled"}, "reasoning_effort": "minimal"},
             )
@@ -858,7 +864,7 @@ async def _verify_original_accuracy(
             await _asyncio.sleep(1.0)
     if not raw.strip() and last_err and "empty-verdict" not in str(last_err):
         logger.warning("Original-article accuracy check failed: %s", last_err)
-        return ({"passed": False, "error": str(last_err)[:300]}, 0)
+        return ({"passed": False, "error": str(last_err)[:300], "verification_error": True}, 0)
 
     if usage_log is not None:
         try:
@@ -911,8 +917,20 @@ async def _verify_original_accuracy(
                 passed,
             )
             passed = False
+    # ACCURACY = NON-NEGOTIABLE (2026-08-17): an EMPTY verdict after the
+    # empty-content retries means verification itself failed — the content was
+    # NOT verified. That is a verification_error (unknown), NOT a hard
+    # inaccuracy. The caller must set has_inaccuracy=False for this case so a
+    # transient model failure doesn't false-flag an article and leave it stuck.
+    verification_error = not raw.strip()
     return (
-        {"passed": passed, "findings": findings, "raw": raw, "tokens": tokens},
+        {
+            "passed": passed,
+            "findings": findings,
+            "raw": raw,
+            "tokens": tokens,
+            "verification_error": verification_error,
+        },
         tokens,
     )
 
@@ -1008,7 +1026,9 @@ async def _correct_original_article(
                 },
             ],
             temperature=0.0,
-            max_tokens=6000,
+            # Accuracy = non-negotiable (2026-08-17): raised 6000 -> 16000 so a
+            # correction pass with many findings on a long article never truncates.
+            max_tokens=16000,
             # Corrections apply the listed fixes in place — no chain-of-thought.
             extra_body={"thinking": {"type": "disabled"}},
         )
@@ -1171,10 +1191,16 @@ async def generate_original_article(
     summary = _guess_summary(answer)
     max_passes = int(getattr(settings, "MAX_ORIGINAL_CORRECTION_PASSES", 2) or 2)
     has_findings = bool(accuracy_check.get("findings")) and not accuracy_check.get("skipped")
-    # A check that did NOT pass (real findings OR a failed/empty verification
-    # verdict) is an inaccuracy — never silently report an unverified article
-    # as accurate just because the findings list happened to be empty.
+    # A check that did NOT pass because of REAL findings (or a failed/empty
+    # verification verdict) is an inaccuracy — never silently report an
+    # unverified article as accurate just because the findings list was empty.
     check_failed = (not accuracy_check.get("passed")) and not accuracy_check.get("skipped")
+    # ACCURACY = NON-NEGOTIABLE (2026-08-17): when the verifier returned NO
+    # usable verdict (verification_error), the content is UNKNOWN — it must NOT
+    # be flagged as a hard inaccuracy (has_inaccuracy=False, no false positive)
+    # and must NOT enter the correction loop (findings is empty anyway). The
+    # article is still held as not-passed so it can be manually re-checked.
+    verification_error = bool(accuracy_check.get("verification_error")) and not accuracy_check.get("skipped")
     while has_findings and retries_used < max_passes:
         rejection_history.append({
             "attempt": retries_used + 1,
@@ -1199,8 +1225,11 @@ async def generate_original_article(
         )
         has_findings = bool(accuracy_check.get("findings")) and not accuracy_check.get("skipped")
     accuracy_check["retries_used"] = retries_used
-    accuracy_check["has_inaccuracy"] = bool(has_findings or check_failed)
-    accuracy_check["accuracy_pass"] = not bool(has_findings or check_failed)
+    accuracy_check["has_inaccuracy"] = bool((has_findings or check_failed) and not verification_error)
+    # accuracy_pass: False when real inaccuracies exist, when verification failed
+    # (error/unknown), or when the check never ran/skipped. Only True when a real
+    # verdict passed with no findings.
+    accuracy_check["accuracy_pass"] = not bool((has_findings or check_failed)) and not verification_error
 
     # Build SEO meta for the final (post-correction) article and persist it now,
     # so every generated article has seo_description/seo_keywords saved (not just
@@ -1688,6 +1717,167 @@ async def regenerate_original_article_title(
         raise HTTPException(status_code=502, detail="The model returned an empty title.")
 
     return {"article_id": article_id, "sport": sport, "title": title}
+
+
+@admin_router.post("/original-articles/{sport}/{article_id}/recheck")
+async def recheck_original_article_accuracy(
+    sport: str,
+    article_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """Re-run the accuracy verification on an existing article WITHOUT
+    regenerating its content.
+
+    ACCURACY = NON-NEGOTIABLE (2026-08-17): empty/failed verification verdicts
+    are transient — a later retry usually succeeds. This endpoint reloads the
+    stored research trace and re-verifies the already-written content with the
+    same deep-research verifier, then persists an updated accuracy_check.
+    If the re-check passes, the article transitions draft -> published.
+    """
+    sport = _validate_sport(sport)
+    engine = ENGINES[sport]
+
+    result = await db.execute(
+        text(
+            """
+            SELECT id, sport, title, content, summary, research_json, visibility, status
+            FROM public.original_articles
+            WHERE id = :id AND sport = :sport
+            """
+        ),
+        {"id": article_id, "sport": sport},
+    )
+    row = result.mappings().first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Article not found.")
+
+    # The stored research_json is the flat tool-call trace built by
+    # _capture_research(): [ {tool, arguments, result}, ... ].
+    research_trace: list[dict] = []
+    if row["research_json"]:
+        rj = row["research_json"]
+        if isinstance(rj, str):
+            try:
+                rj = json.loads(rj)
+            except (json.JSONDecodeError, TypeError):
+                rj = None
+        if isinstance(rj, list):
+            research_trace = [s for s in rj if isinstance(s, dict)]
+    research_brief = _deterministic_research_brief(research_trace) if research_trace else None
+
+    title = (row["title"] or "").strip()
+    content = (row["content"] or "").strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="This article has no content to verify.")
+    summary = (row["summary"] or "").strip()
+    visibility = row["visibility"] or "public"
+
+    try:
+        accuracy_check, accuracy_tokens = await _verify_original_accuracy(
+            title,
+            content,
+            research_trace,
+            visibility,
+            research_brief=research_brief,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.exception("Article accuracy re-check failed for %s/%s", sport, article_id)
+        raise HTTPException(status_code=502, detail=f"Accuracy re-check failed: {e}")
+
+    # When the re-check surfaces REAL findings, run the in-place correction loop
+    # exactly like generate does (correct -> re-verify -> repeat) so a live
+    # article with inaccuracies gets actually fixed, not just re-flagged.
+    # ACCURACY = NON-NEGOTIABLE (2026-08-17): never spend tokens and store a
+    # verdict that was never produced — verification_error means unknown and is
+    # kept as not-passed (no false inaccuracy), but no corrections are attempted
+    # on an empty verdict either (there is nothing actionable).
+    usage_log: list[dict[str, Any]] = []
+    findings = accuracy_check.get("findings") or []
+    retries_used = 0
+    # Corrections are iterative — one pass often fixes only some findings, so
+    # allow up to 3 correct->re-verify cycles until clean (ACCURACY priority,
+    # 2026-08-17). Empty/failed verdicts never enter this loop.
+    max_passes = 3
+    verification_error = bool(accuracy_check.get("verification_error")) and not accuracy_check.get("skipped")
+    while findings and not verification_error and retries_used < max_passes and not accuracy_check.get("skipped"):
+        corrected, corrected_tokens = await _correct_original_article(
+            title,
+            content,
+            summary,
+            research_trace,
+            findings,
+            visibility,
+            research_brief=research_brief,
+            usage_log=usage_log,
+        )
+        accuracy_tokens += corrected_tokens
+        retries_used += 1
+        if not corrected:
+            break
+        title = (corrected["title"] or "").strip()
+        content = (corrected["content"] or "").strip()
+        summary = (corrected["summary"] or "").strip()
+        accuracy_check, accuracy_tokens2 = await _verify_original_accuracy(
+            title,
+            content,
+            research_trace,
+            visibility,
+            research_brief=research_brief,
+            usage_log=usage_log,
+        )
+        accuracy_tokens += accuracy_tokens2
+        verification_error = bool(accuracy_check.get("verification_error")) and not accuracy_check.get("skipped")
+        findings = accuracy_check.get("findings") or []
+
+    findings = accuracy_check.get("findings") or []
+    verification_error = bool(accuracy_check.get("verification_error")) and not accuracy_check.get("skipped")
+    passed = bool(accuracy_check.get("passed")) and not verification_error
+    has_inaccuracy = bool(findings) and not accuracy_check.get("skipped")
+
+    accuracy_check["retries_used"] = retries_used if retries_used else 0
+    accuracy_check["has_inaccuracy"] = has_inaccuracy
+    accuracy_check["accuracy_pass"] = passed
+    new_status = "published" if passed and row["status"] == "draft" else row["status"]
+
+    await db.execute(
+        text(
+            """
+            UPDATE public.original_articles
+            SET accuracy_check = :acc,
+                accuracy_check_tokens = :tokens,
+                title = :title,
+                content = :content,
+                summary = :summary,
+                status = :status,
+                updated_at = NOW()
+            WHERE id = :id AND sport = :sport
+            """
+        ),
+        {
+            "acc": json.dumps(accuracy_check),
+            "tokens": int(accuracy_tokens or 0),
+            "title": title,
+            "content": content,
+            "summary": summary,
+            "status": new_status,
+            "id": article_id,
+            "sport": sport,
+        },
+    )
+    await db.commit()
+
+    return {
+        "article_id": article_id,
+        "sport": sport,
+        "status": new_status,
+        "passed": bool(passed),
+        "has_inaccuracy": bool(has_inaccuracy),
+        "verification_error": bool(verification_error),
+        "retries_used": retries_used,
+        "corrected": bool(retries_used > 0),
+        "findings": [f.get("type") for f in findings][:20],
+        "accuracy_check": accuracy_check,
+    }
 
 
 

@@ -1,6 +1,5 @@
-import Image from "next/image";
 import Link from "next/link";
-import { getTeamLogoUrl } from "@/lib/team_logos";
+import TeamLogo from "@/components/TeamLogo";
 
 const NFL_TEAMS = [
   { abbr: "ARI", name: "Cardinals", conf: "NFC", div: "West" },
@@ -113,17 +112,16 @@ function groupBy<T>(items: T[], key: (item: T) => string): Record<string, T[]> {
   return groups;
 }
 
-const LOGO_SUFFIX: Record<string, string> = {
-  // MLB teams with different logo naming
-  CHC: "CHC", CWS: "CWS", LAA: "LAA", LAD: "LAD",
-  NYM: "NYM", NYY: "NYY", OAK: "OAK", SD: "SD",
-  SF: "SF", STL: "STL", TB: "TB", TEX: "TEX",
-  TOR: "TOR", WAS: "WAS",
-  // NBA/NFL use same abbreviation pattern
-};
-
-export default async function TeamsPage({ params }: { params: Promise<{ sport: string }> }) {
+export default async function TeamsPage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ sport: string }>;
+  searchParams?: Promise<{ logo?: string }>;
+}) {
   const { sport } = await params;
+  const sp = await searchParams;
+  const chipMode = sp?.logo === "chip";
 
   let teams: { abbr: string; name: string; conf: string; div: string }[];
   let order: string[];
@@ -171,30 +169,13 @@ export default async function TeamsPage({ params }: { params: Promise<{ sport: s
                     href={`/${sport}/teams/${t.abbr.toLowerCase()}`}
                     className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-white/10 transition group"
                   >
-                    <span className="w-8 h-8 rounded-full bg-white/10 flex items-center justify-center overflow-hidden">
-                      {sport === "nfl" ? (
-                        <Image
-                          src={`/logos/${t.abbr}.png`}
-                          alt={t.name}
-                          width={32}
-                          height={32}
-                          className="object-contain"
-                        />
-                      ) : (() => {
-                        const logoUrl = getTeamLogoUrl(t.abbr, sport);
-                        if (!logoUrl) return null;
-                        return (
-                          <img
-                            src={logoUrl}
-                            alt={t.name}
-                            width={32}
-                            height={32}
-                            className="object-contain"
-                            style={{ filter: 'brightness(1.1)' }}
-                          />
-                        );
-                      })()}
-                    </span>
+                    <TeamLogo
+                      abbr={t.abbr}
+                      sport={sport}
+                      name={t.name}
+                      chip={chipMode}
+                      size={22}
+                    />
                     <span className="font-medium group-hover:text-earl-400 transition">
                       {t.name}
                     </span>

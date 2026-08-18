@@ -140,7 +140,7 @@ WITH team_games AS (
         g.home_assists                 AS ast,
         COALESCE(g.home_steals, 0)     AS stl,
         COALESCE(g.home_blocks, 0)     AS blk,
-        COALESCE(g.home_turnovers, 0)  AS tov,
+        COALESCE(g.home_total_turnovers, 0)  AS tov,
         COALESCE(g.home_fouls, 0)      AS pf,
         g.away_field_goals_made        AS opp_fgm,
         g.away_field_goals_attempted   AS opp_fga,
@@ -153,7 +153,7 @@ WITH team_games AS (
         g.away_assists                 AS opp_ast,
         COALESCE(g.away_steals, 0)     AS opp_stl,
         COALESCE(g.away_blocks, 0)     AS opp_blk,
-        COALESCE(g.away_turnovers, 0)  AS opp_tov,
+        COALESCE(g.away_total_turnovers, 0)  AS opp_tov,
         COALESCE(g.away_fouls, 0)      AS opp_pf,
         g.home_estimated_possessions  AS poss_est,
         (g.home_score - g.away_score)  AS margin
@@ -183,7 +183,7 @@ WITH team_games AS (
         g.away_assists                 AS ast,
         COALESCE(g.away_steals, 0)     AS stl,
         COALESCE(g.away_blocks, 0)     AS blk,
-        COALESCE(g.away_turnovers, 0)  AS tov,
+        COALESCE(g.away_total_turnovers, 0)  AS tov,
         COALESCE(g.away_fouls, 0)      AS pf,
         g.home_field_goals_made        AS opp_fgm,
         g.home_field_goals_attempted   AS opp_fga,
@@ -196,7 +196,7 @@ WITH team_games AS (
         g.home_assists                 AS opp_ast,
         COALESCE(g.home_steals, 0)     AS opp_stl,
         COALESCE(g.home_blocks, 0)     AS opp_blk,
-        COALESCE(g.home_turnovers, 0)  AS opp_tov,
+        COALESCE(g.home_total_turnovers, 0)  AS opp_tov,
         COALESCE(g.home_fouls, 0)      AS opp_pf,
         g.away_estimated_possessions  AS poss_est,
         (g.away_score - g.home_score)  AS margin
@@ -289,7 +289,12 @@ def _compute_tier3(gs: int, row: dict) -> dict:
     cum_poss = row.get("cum_poss_est", 0) or 0
     cum_orb = row.get("cum_off_reb", 0) or 0
     cum_opp_orb = row.get("cum_opp_off_reb", 0) or 0
-    if cum_poss > 0:
+    # Only trust ESPN's estimated possessions if they actually cover ~all of the
+    # team's games. A sparse per-game value (2016-17-era ESPN gaps) makes the
+    # summed cum_poss_est far too small -> absurd ORTG/DRTG. Fall back to the
+    # corrected Dean-Oliver form (which has real ORB everywhere) otherwise.
+    poss_est_games = int(row.get("poss_est_games", 0) or 0)
+    if cum_poss > 0 and poss_est_games >= 0.9 * max(gs, 1):
         poss = cum_poss
         # Opponent pace mirrors our own (NBA pacing convention).
         opp_poss = cum_poss
@@ -577,6 +582,16 @@ def _populate(
     df[cum_sum_cols] = grouped[cum_sum_cols].cumsum()
     df["games_played"] = grouped.cumcount() + 1
 
+    # Running count of games with a REAL ESPN possession value, per team-season.
+    # Computed from df_raw (raw poss_est still has NaN for uncovered games,
+    # since df at this point has had poss_est filled to 0). Used to gate
+    # ESPN-possession-preference in _compute_tier3: if ESPN only covered a
+    # fraction of a team's games, the summed cum_poss_est is far too small and
+    # yields absurd ORTG/DRTG. Must cover ~all games to trust it.
+    df["poss_est_games"] = df_raw.groupby(["team_id", "season_id"], sort=False)["poss_est"].transform(
+        lambda s: s.notna().astype(int).cumsum()
+    )
+
     # ── Define Tier 4/5 column names for merge (cumulative only; rolling
     #    stats live in nba.team_rolling_stats) ──
     tier45_cols = [
@@ -605,6 +620,8 @@ def _populate(
                 r[f"cum_{col}"] = float(val) if val is not None else 0.0
             else:
                 r[f"cum_{col}"] = int(val) if val is not None else 0
+
+        r["poss_est_games"] = int(row["poss_est_games"]) if "poss_est_games" in row else gs
 
         tier2 = _compute_tier2(gs, r)
         tier3 = _compute_tier3(gs, r)

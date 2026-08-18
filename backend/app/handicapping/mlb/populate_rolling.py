@@ -448,9 +448,10 @@ WITH per_start AS (
         g.date AS game_date,
         pgs.is_starter,
 
-        -- IP in outs
-        (COALESCE(NULLIF(SPLIT_PART(pgs.ip::TEXT, '.', 1), ''), '0')::INTEGER * 3
-         + COALESCE(NULLIF(SPLIT_PART(pgs.ip::TEXT, '.', 2), ''), '0')::INTEGER) AS ip_outs,
+        -- IP in outs. pgs.ip is DECIMAL INNINGS (6.333 = 6 1/3 IP, 0.333 = 1 out).
+        -- outs = ROUND(ip * 3): 6.333*3=19, 0.333*3=1. Do NOT split on '.' (that
+        -- assumed baseball notation 6.1=6 1/3, mis-parses decimal rows → inflated IP).
+        ROUND(pgs.ip * 3) AS ip_outs,
         pgs.er,
         pgs.h AS hits_allowed,
         pgs.bb AS walks_allowed,
@@ -489,7 +490,9 @@ SELECT *,
         THEN walks_allowed::DOUBLE PRECISION * 9 / ip_outs::DOUBLE PRECISION END AS bb9_this_start,
     CASE WHEN ip_outs >= 18 AND er <= 3 THEN TRUE ELSE FALSE END AS is_quality_start,
 
-    -- Cumulative (season to date, before this start)
+    -- Cumulative (season to date, THROUGH this start). Match the team tables'
+    -- CURRENT ROW convention (see header warning): the data loader reads the
+    -- PREVIOUS Final row, so each row must include its own start's line.
     CASE WHEN SUM(ip_outs) OVER w > 0
         THEN 9.0 * SUM(er) OVER w::DOUBLE PRECISION / (SUM(ip_outs) OVER w::DOUBLE PRECISION / 3) END AS era_ytd,
     CASE WHEN SUM(ip_outs) OVER w > 0
@@ -583,15 +586,15 @@ SELECT *,
 FROM per_start
 WINDOW
     w   AS (PARTITION BY player_id, season_id ORDER BY game_date, game_id
-            ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),
+            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW),
     w5  AS (PARTITION BY player_id, season_id ORDER BY game_date, game_id
-            ROWS BETWEEN 5 PRECEDING AND 1 PRECEDING),
+            ROWS BETWEEN 5 PRECEDING AND CURRENT ROW),
     w10 AS (PARTITION BY player_id, season_id ORDER BY game_date, game_id
-            ROWS BETWEEN 10 PRECEDING AND 1 PRECEDING),
+            ROWS BETWEEN 10 PRECEDING AND CURRENT ROW),
     w15 AS (PARTITION BY player_id, season_id ORDER BY game_date, game_id
-            ROWS BETWEEN 15 PRECEDING AND 1 PRECEDING),
+            ROWS BETWEEN 15 PRECEDING AND CURRENT ROW),
     w20 AS (PARTITION BY player_id, season_id ORDER BY game_date, game_id
-            ROWS BETWEEN 20 PRECEDING AND 1 PRECEDING)
+            ROWS BETWEEN 20 PRECEDING AND CURRENT ROW)
 ORDER BY player_id, season_id, game_date, game_id
 ;
 """

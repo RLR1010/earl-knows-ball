@@ -10,6 +10,7 @@ most-recent team (by game date) is kept to satisfy the unique constraint
 on (player_id, season_id).
 """
 
+import os
 import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import logging

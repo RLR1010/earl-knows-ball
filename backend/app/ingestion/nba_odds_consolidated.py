@@ -199,6 +199,25 @@ def run(game_ids_filter=None):
             _set("closing_spread_away_odds", close_row["spread_away_odds"])
             _set("closing_home_implied_probability", close_row["home_implied_probability"])
             _set("closing_away_implied_probability", close_row["away_implied_probability"])
+        elif open_row is not None:
+            # No closing snapshot captured (game went final before a close line was
+            # stored). Fall back to the opening line so every final game still gets a
+            # valid closing_spread — the DATA_LOADER + DB CHECK depend on it being
+            # non-null. Same sportsbook applies to both open and close columns.
+            logger.warning(
+                f"  {meta['home_team']} vs {meta['away_team']} ({meta['game_id']}): "
+                f"no closing line — falling back to opening spread {open_row['spread']}"
+            )
+            _set("closing_spread", open_row["spread"])
+            _set("closing_ou", open_row["over_under"])
+            _set("closing_home_ml", open_row["home_moneyline"])
+            _set("closing_away_ml", open_row["away_moneyline"])
+            _set("closing_over_odds", open_row["over_odds"])
+            _set("closing_under_odds", open_row["under_odds"])
+            _set("closing_spread_home_odds", open_row["spread_home_odds"])
+            _set("closing_spread_away_odds", open_row["spread_away_odds"])
+            _set("closing_home_implied_probability", open_row["home_implied_probability"])
+            _set("closing_away_implied_probability", open_row["away_implied_probability"])
 
         if open_row is not None:
             _set("opening_spread", open_row["spread"])
@@ -288,6 +307,15 @@ def run(game_ids_filter=None):
 
     # Set status = "final" for all rows
     insert_df["status"] = "final"
+
+    # NaN guard: never write an actual NaN numeric to the DB (a NaN in e.g.
+    # closing_spread poisons every downstream aggregate). Convert NaN -> NULL;
+    # the close-row fallback above already guarantees a real closing_spread for
+    # final games, so a NULL here signals genuine missing data (not corruption).
+    nan_before = int(np.isnan(insert_df.select_dtypes(include=[np.number]).to_numpy()).sum())
+    if nan_before:
+        logger.warning(f"  Scrubbing {nan_before} NaN value(s) to NULL before write")
+    insert_df = insert_df.where(pd.notna(insert_df), None)
 
     if DROP_AND_REPLACE and not game_ids_filter:
         logger.info("  Dropping and replacing table contents (full rebuild)...")

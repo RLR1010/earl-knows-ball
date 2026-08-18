@@ -1,8 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import Image from "next/image";
-import { getTeamLogoUrl } from "@/lib/team_logos";
+import TeamLogo from "@/components/TeamLogo";
 import SchedulePicksFooter from "@/components/SchedulePicksFooter";
 import ChatCardLink from "@/components/ChatCardLink";
 
@@ -194,9 +193,6 @@ export default function ScheduleGameCard({
   const awayWon = isFinal && (game.away_score ?? 0) > (game.home_score ?? 0);
   const isMlb = sport === "mlb";
 
-  const awayLogo = game.away_team ? getTeamLogoUrl(game.away_team, sport) : null;
-  const homeLogo = game.home_team ? getTeamLogoUrl(game.home_team, sport) : null;
-
   return (
     <ChatCardLink
       href={href}
@@ -209,15 +205,8 @@ export default function ScheduleGameCard({
       className="border border-white/10 rounded-xl p-3"
     >
       <div className="flex items-center justify-center gap-1.5 text-lg">
-        {awayLogo && (
-          <Image
-            src={awayLogo}
-            alt={game.away_team ?? ""}
-            width={20}
-            height={20}
-            className="object-contain shrink-0"
-            unoptimized
-          />
+        {game.away_team && (
+          <TeamLogo abbr={game.away_team} sport={sport} size={20} />
         )}
         <div className={`font-semibold ${awayWon ? "text-earl-400" : "text-gray-300"}`}>
           {game.away_team ?? ""}
@@ -238,15 +227,8 @@ export default function ScheduleGameCard({
         <div className={`font-semibold ${homeWon ? "text-earl-400" : "text-gray-300"}`}>
           {game.home_team ?? ""}
         </div>
-        {homeLogo && (
-          <Image
-            src={homeLogo}
-            alt={game.home_team ?? ""}
-            width={20}
-            height={20}
-            className="object-contain shrink-0"
-            unoptimized
-          />
+        {game.home_team && (
+          <TeamLogo abbr={game.home_team} sport={sport} size={20} />
         )}
       </div>
 

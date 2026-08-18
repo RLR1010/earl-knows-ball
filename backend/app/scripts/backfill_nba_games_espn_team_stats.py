@@ -33,19 +33,30 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelna
 logger = logging.getLogger("nba-team-stats-backfill")
 
 
-def pick_games(engine, season=None, recent=None):
+def pick_games(engine, season=None, recent=None, fouls=False):
     """Return {espn_game_id: db_game_id} for games needing backfill.
 
     Filters to games that have an nba_game_id AND whose team-stats have not yet
     been filled (home_estimated_possessions IS NULL). Optionally scoped by
     --season (integer season_id) or --recent (N most recent games).
+    With --fouls, selects games missing home/away fouls instead
+    (for backfilling 2018+ fouls where possessions are already present).
     """
-    base = """
-        SELECT g.nba_game_id, g.id
-        FROM nba.games g
-        WHERE g.nba_game_id IS NOT NULL
-          AND g.home_estimated_possessions IS NULL
-    """
+    if fouls:
+        base = """
+            SELECT g.nba_game_id, g.id
+            FROM nba.games g
+            WHERE g.nba_game_id IS NOT NULL
+              AND (g.home_fouls IS NULL OR g.away_fouls IS NULL)
+              AND g.season_id >= 28
+        """
+    else:
+        base = """
+            SELECT g.nba_game_id, g.id
+            FROM nba.games g
+            WHERE g.nba_game_id IS NOT NULL
+              AND g.home_estimated_possessions IS NULL
+        """
     # Newest-first so live/current seasons are covered before deep history.
     base += " ORDER BY g.date DESC"
     params = {}
@@ -76,10 +87,11 @@ def main():
     ap.add_argument("--recent", type=int, default=None, help="Only backfill N most recent games")
     ap.add_argument("--throttle", type=float, default=0.15, help="Seconds between ESPN game fetches")
     ap.add_argument("--dry-run", action="store_true", help="Print selected games without fetching")
+    ap.add_argument("--fouls", action="store_true", help="Backfill games missing fouls (2018+)")
     args = ap.parse_args()
 
     engine = create_engine(PSYCOPG2_DATABASE_URL.replace("+asyncpg", "+psycopg2"))
-    games = pick_games(engine, season=args.season, recent=args.recent)
+    games = pick_games(engine, season=args.season, recent=args.recent, fouls=args.fouls)
 
     if not games:
         logger.info("Nothing to backfill.")

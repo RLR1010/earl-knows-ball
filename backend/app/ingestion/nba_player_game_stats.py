@@ -80,45 +80,49 @@ def match_and_save_espn_id(espn_id: int, athlete_name: str, db_conn) -> Optional
         db_conn.commit()
         return pid
 
-    # Try by last name only
-    parts = athlete_name.split()
-    if len(parts) < 2:
+    # STRICT normalized exact-name match only.
+    # NO last-name-only or first-initial matching: those collapsed distinct players
+    # (e.g. assigned a star's espn_id onto every same-last-name player) and caused the
+    # espn_cache collisions / phantom statlines that were cleaned in the 2026-08-16 rebuild.
+    target = _normalize_name(athlete_name)
+    if not target:
         return None
-    last_name = parts[-1]
-    first_name = parts[0]
-
-    candidates = db_conn.execute(
+    cands = db_conn.execute(
         text("""
-            SELECT id, name FROM nba.players
-            WHERE LOWER(name) LIKE LOWER(:patt)
-            ORDER BY LENGTH(name) LIMIT 5
+            SELECT id FROM nba.players
+            WHERE lower(regexp_replace(name, '\\s+.*', '')) = :first
+               OR name ILIKE :target
+            ORDER BY LENGTH(name) LIMIT 50
         """),
-        {"patt": f"%{last_name}%"},
+        {"first": target.split()[0] if target.split() else '', "target": f"%{target}%"},
     ).fetchall()
-
-    if len(candidates) == 1:
-        pid = candidates[0][0]
-        db_conn.execute(
-            text("UPDATE nba.players SET espn_id = :eid WHERE id = :pid AND espn_id IS NULL"),
-            {"eid": espn_id, "pid": pid},
-        )
-        db_conn.commit()
-        return pid
-
-    # Multiple candidates: try first+last initial or full name match
-    for cid, cname in candidates:
-        cparts = cname.lower().split()
-        if len(cparts) >= 2:
-            # Check if first name starts with same letter
-            if cparts[0][0] == first_name.lower()[0] and cparts[-1] == last_name.lower():
-                db_conn.execute(
-                    text("UPDATE nba.players SET espn_id = :eid WHERE id = :pid AND espn_id IS NULL"),
-                    {"eid": espn_id, "pid": cid},
-                )
-                db_conn.commit()
-                return cid
-
+    for (pid,) in cands:
+        cname = db_conn.execute(text("SELECT name FROM nba.players WHERE id=:p"), {"p": pid}).fetchone()[0]
+        if _normalize_name(cname) == target:
+            db_conn.execute(
+                text("UPDATE nba.players SET espn_id = :eid WHERE id = :pid AND espn_id IS NULL"),
+                {"eid": espn_id, "pid": pid},
+            )
+            db_conn.commit()
+            return pid
+    # No exact match: do NOT auto-assign to a same-last-name player. Return None so the
+    # caller can decide (skip or create a dedicated row) rather than mis-attribute.
     return None
+
+
+def _normalize_name(name: str) -> str:
+    """Normalize a player name for exact comparison: lowercase, strip accents,
+    punctuation, suffixes (Jr/Sr/II/III/IV) and collapse whitespace."""
+    if not name:
+        return ""
+    import unicodedata as _uc
+    n = _uc.normalize("NFKD", str(name)).encode("ascii", "ignore").decode("ascii")
+    n = n.lower()
+    for suffix in (" jr", " sr", " ii", " iii", " iv"):
+        if n.endswith(suffix):
+            n = n[: -len(suffix)]
+    n = "".join(c for c in n if c.isalnum() or c.isspace())
+    return " ".join(n.split())
 
 
 # ── Athlete Info ─────────────────────────────────────────────────────────────
@@ -246,32 +250,57 @@ async def process_game(
         # with its own per-game statistics $ref (splits: general/offensive/
         # defensive). Augment athlete_refs from it (dedup by playerId/aid) so
         # those players are also fetched via fetch_athlete().
-        try:
-            roster_url = (
-                f"{CORE_BASE}/events/{espn_game_id}/competitions/{espn_game_id}"
-                f"/competitors/{comp_id}/roster"
+        # 🔴 ACCURACY: this must NEVER silently drop players. If the roster call
+        # fails, log a loud warning so an incomplete boxscore is never accepted.
+        roster_error = None
+        box_r = None
+        for attempt in range(3):
+            try:
+                roster_url = (
+                    f"{CORE_BASE}/events/{espn_game_id}/competitions/{espn_game_id}"
+                    f"/competitors/{comp_id}/roster"
+                )
+                box_r = await client.get(roster_url, timeout=30)
+                if box_r.status_code == 200:
+                    break
+                roster_error = f"roster HTTP {box_r.status_code}"
+            except Exception as e:
+                roster_error = f"roster fetch error: {e}"
+            if attempt < 2:
+                await asyncio.sleep(1.5 * (attempt + 1))
+        else:
+            # All retries failed -> LOUD, never silent.
+            logger.error(
+                "[ACCURACY] Failed to fetch full roster for event=%s comp=%s after 3 tries (%s). "
+                "pgs boxscore may be INCOMPLETE. retry event to backfill.",
+                espn_game_id, comp_id, roster_error,
             )
-            box_r = await client.get(roster_url, timeout=15)
-            if box_r.status_code == 200:
-                for entry in (box_r.json().get("entries", []) or []):
-                    # Skip players who did NOT play (DNP/rest/injury/healthy-scratch):
-                    # Rich wants star rolling features to ONLY count games the
-                    # player actually played, so a no-show gets no pgs row (its
-                    # absence = 'did not play'), matching the existing semantics.
-                    if entry.get("didNotPlay"):
-                        continue
-                    stats_ref = (entry.get("statistics", {}) or {}).get("$ref", "")
-                    if not stats_ref:
-                        continue
-                    try:
-                        aid = int(stats_ref.split("/")[-3])
-                    except (ValueError, IndexError):
-                        aid = entry.get("playerId")
-                    if aid is not None and aid not in athlete_refs:
-                        athlete_refs[aid] = stats_ref
-        except Exception:
-            # Roster augment is best-effort; category refs already cover most players.
-            pass
+        if box_r is not None and box_r.status_code == 200:
+            for entry in (box_r.json().get("entries", []) or []):
+                # 🔴 ACCURACY (2026-08-16): do NOT skip didNotPlay players here.
+                # A DNP/rest/injury/healthy-scratch player still gets a pgs row
+                # (minutes=0, points=0) so the roster row EXISTS and the boxscore
+                # is complete/verifiable. Dropping them makes boxes never sum to
+                # game totals and hides whether a "star" was active or not. The
+                # minutes=0 is what star features/algorithms use to treat them as
+                # not-playing.
+                stats_ref = (entry.get("statistics", {}) or {}).get("$ref", "")
+                if not stats_ref:
+                    # keep the athlete anyway (no stats ref yet) via a placeholder
+                    # so they are NOT silently dropped; fetch_athlete will handle
+                    # missing stats gracefully.
+                    stats_ref = (
+                        f"{CORE_BASE}/events/{espn_game_id}/competitions/"
+                        f"{espn_game_id}/competitors/{comp_id}/athletes/"
+                        f"{entry.get('playerId')}"
+                    )
+                try:
+                    aid = int(stats_ref.split("/")[-3])
+                except (ValueError, IndexError):
+                    aid = entry.get("playerId")
+                if aid is not None and aid not in athlete_refs:
+                    athlete_refs[aid] = stats_ref
+
 
         if not athlete_refs:
             continue

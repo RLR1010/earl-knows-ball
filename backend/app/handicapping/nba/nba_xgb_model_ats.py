@@ -134,7 +134,11 @@ async def train_model(
     # used by the train/test split (train starts at 2016) and prior-season stats
     # come from nba.prior_team_stats, so 2007-2015 game rows are pure dead cost.
     load_seasons = list(range(2016, max(TEST_YEARS) + 1))
-    df = dl.load_data(seasons=load_seasons)
+    # Train ONLY on regular-season games. Playoff/play-in games distort the
+    # ATS/OU margin targets (different pace, intensity, and rest context), so
+    # the margin regression model is fit on REG wins only. Inference still
+    # scores playoff/play-in games (via load_inference_data, unfiltered).
+    df = dl.load_data(seasons=load_seasons, game_types=['REG'])
 
     if df.empty:
         return {"error": "no data loaded"}

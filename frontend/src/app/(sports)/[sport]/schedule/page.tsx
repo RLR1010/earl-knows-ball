@@ -2,9 +2,8 @@
 import { useEffect, useState, useRef } from "react";
 import * as React from "react";
 import { useParams, useSearchParams, useRouter } from "next/navigation";
-import Image from "next/image";
 import { api, Game, formatOverUnder } from "@/lib/api";
-import { getTeamLogoUrl } from "@/lib/team_logos";
+import TeamLogo from "@/components/TeamLogo";
 import GameCalendar from "@/components/GameCalendar";
 import ChatCardLink from "@/components/ChatCardLink";
 import { buildGameContext } from "@/components/ScheduleGameCard";
@@ -470,7 +469,7 @@ function NBASchedule({ sport }: { sport: string }) {
                 className="block text-center border border-white/10 rounded-xl p-3"
               >
                 <div className="flex items-center justify-center gap-1.5 text-lg">
-                  {g.away_team && getTeamLogoUrl(g.away_team, "nba") && <Image src={getTeamLogoUrl(g.away_team, "nba")!} alt={g.away_team} width={20} height={20} className="object-contain shrink-0" unoptimized />}
+                  {g.away_team && <TeamLogo abbr={g.away_team} sport="nba" size={20} />}
                   <div className={`font-semibold ${awayWon ? "text-earl-400" : "text-gray-300"}`}>{g.away_team ?? ""}</div>
 
                   {isFinal && <span className="font-bold text-white">{g.away_score}</span>}
@@ -482,7 +481,7 @@ function NBASchedule({ sport }: { sport: string }) {
                   {isLive && g.home_score !== null && <span className="font-bold text-red-400">{g.home_score}</span>}
 
                   <div className={`font-semibold ${homeWon ? "text-earl-400" : "text-gray-300"}`}>{g.home_team ?? ""}</div>
-                  {g.home_team && getTeamLogoUrl(g.home_team, "nba") && <Image src={getTeamLogoUrl(g.home_team, "nba")!} alt={g.home_team} width={20} height={20} className="object-contain shrink-0" unoptimized />}
+                  {g.home_team && <TeamLogo abbr={g.home_team} sport="nba" size={20} />}
                 </div>
 
                 <div className="mt-1.5">
@@ -772,7 +771,7 @@ function MLBSchedule({ sport }: { sport: string }) {
               >
                 {/* Matchup header: [logo] AWAY [score] @ [score] HOME [logo] */}
                 <div className="flex items-center justify-center gap-1.5 text-lg">
-                  {g.away_team && getTeamLogoUrl(g.away_team, "mlb") && <Image src={getTeamLogoUrl(g.away_team, "mlb")!} alt={g.away_team} width={20} height={20} className="object-contain shrink-0" unoptimized />}
+                  {g.away_team && <TeamLogo abbr={g.away_team} sport="mlb" size={20} />}
                   <div className={`font-semibold ${awayWon ? "text-earl-400" : "text-gray-300"}`}>{g.away_team ?? ""}</div>
 
                   {isFinal && <span className="font-bold text-white">{g.away_score}</span>}
@@ -784,7 +783,7 @@ function MLBSchedule({ sport }: { sport: string }) {
                   {isLive && g.home_score !== null && <span className="font-bold text-red-400">{g.home_score}</span>}
 
                   <div className={`font-semibold ${homeWon ? "text-earl-400" : "text-gray-300"}`}>{g.home_team ?? ""}</div>
-                  {g.home_team && getTeamLogoUrl(g.home_team, "mlb") && <Image src={getTeamLogoUrl(g.home_team, "mlb")!} alt={g.home_team} width={20} height={20} className="object-contain shrink-0" unoptimized />}
+                  {g.home_team && <TeamLogo abbr={g.home_team} sport="mlb" size={20} />}
                 </div>
 
                 {/* Status/time */}
@@ -984,7 +983,7 @@ function NFLSchedule({ sport }: { sport: string }) {
               >
                 {/* Matchup header: [logo] AWAY [score] @ [score] HOME [logo] */}
                 <div className="flex items-center justify-center gap-1.5 text-lg">
-                  {g.away_team && getTeamLogoUrl(g.away_team, "nfl") && <Image src={getTeamLogoUrl(g.away_team, "nfl")!} alt={g.away_team} width={20} height={20} className="object-contain shrink-0" unoptimized />}
+                  {g.away_team && <TeamLogo abbr={g.away_team} sport="nfl" size={20} />}
                   <div className={`font-semibold ${awayWon ? "text-earl-400" : "text-gray-300"}`}>{g.away_team ?? ""}</div>
 
                   {isFinal && <span className="font-bold text-white">{g.away_score}</span>}
@@ -996,7 +995,7 @@ function NFLSchedule({ sport }: { sport: string }) {
                   {isLive && g.home_score !== null && <span className="font-bold text-red-400">{g.home_score}</span>}
 
                   <div className={`font-semibold ${homeWon ? "text-earl-400" : "text-gray-300"}`}>{g.home_team ?? ""}</div>
-                  {g.home_team && getTeamLogoUrl(g.home_team, "nfl") && <Image src={getTeamLogoUrl(g.home_team, "nfl")!} alt={g.home_team} width={20} height={20} className="object-contain shrink-0" unoptimized />}
+                  {g.home_team && <TeamLogo abbr={g.home_team} sport="nfl" size={20} />}
                 </div>
 
                 {/* Status/time */}

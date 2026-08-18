@@ -651,8 +651,8 @@ COMPUTED_FEATURES_CATALOG: Dict[str, str] = {
     "spread_movement": "Spread movement: opening - closing",
     "ou_movement": "OU movement: closing - opening",
     "over_implied_prob": "Vig-free over probability from over/under odds",
-    "implied_margin": "Expected point margin from moneyline implied probability",
-    "ml_spread_mismatch": "Disagreement between ML-implied margin and closing spread",
+    "implied_margin": "Home minus away ML-implied win probability, scaled to points (x14.0) so it matches the closing-spread scale; positive = home favored",
+    "ml_spread_mismatch": "Disagreement between ML-implied point margin and closing spread (implied_margin - |closing_spread|)",
     "h_implied_score": "Implied home points from closing total + spread ((OU-|spread|)/2)",
     "a_implied_score": "Implied away points from closing total + spread ((OU+|spread|)/2)",
     "h_ats_wins_5": "Home team ATS wins in last 5 games",
@@ -959,7 +959,16 @@ class NBADataLoader:
         """Lazy-initialized SQLAlchemy engine."""
         if self._engine is None:
             from sqlalchemy import create_engine
-            self._engine = create_engine(self.db_url, pool_pre_ping=True)
+            # ``jit=off`` scoped to THIS loader's pooled connections only:
+            # the GAME_QUERY is wide-but-modest (23k rows), so Postgres spends
+            # ~11.8s compiling JIT expressions (118 fns) that dwarf the ~1.5s
+            # of actual execution. Disabling JIT here cuts load from ~13-23s
+            # to ~2-3s. Not applied instance-wide (other workloads benefit).
+            self._engine = create_engine(
+                self.db_url,
+                pool_pre_ping=True,
+                connect_args={"options": "-c jit=off"},
+            )
         return self._engine
 
     def __repr__(self) -> str:
@@ -1082,6 +1091,7 @@ class NBADataLoader:
         limit: Optional[int] = None,
         include_upcoming: bool = False,
         game_ids: Optional[List[int]] = None,
+        game_types: Optional[List[str]] = None,
     ) -> pd.DataFrame:
         """Load NBA games from the database.
 
@@ -1110,7 +1120,14 @@ class NBADataLoader:
         # Preseason games must never feed stats/training. NBA's PRE games can
         # carry a FINAL status with results, so excluding purely by status is
         # not enough — always drop them here.
-        where_parts.append("game_type != 'PRE'")
+        if game_types:
+            # Explicit game_type allow-list (e.g. traffic only REG). When set,
+            # this REPLACES the broad "!= 'PRE'" filter so callers can restrict
+            # training/inference to specific game types (e.g. regular season only).
+            type_list = ", ".join(f"'{t}'" for t in game_types)
+            where_parts.append(f"game_type IN ({type_list})")
+        else:
+            where_parts.append("game_type != 'PRE'")
         if status:
             where_parts.append(f"status = '{status}'")
         if seasons:
@@ -1145,6 +1162,7 @@ class NBADataLoader:
         limit: Optional[int] = None,
         refresh_cumulative: bool = False,
         force_rebuild_cumulative: bool = False,
+        game_types: Optional[List[str]] = None,
     ) -> pd.DataFrame:
         """Load game data and apply full feature engineering.
 
@@ -1169,7 +1187,7 @@ class NBADataLoader:
             self.refresh_cumulative_stats(
                 force_rebuild=force_rebuild_cumulative,
             )
-        df = self.load_games(seasons=seasons, limit=limit)
+        df = self.load_games(seasons=seasons, limit=limit, game_types=game_types)
         if df.empty:
             logger.warning("No NBA games found for seasons=%s", seasons)
             return df
@@ -1866,9 +1884,16 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
     df["h_implied"] = _implied_prob(df["home_moneyline"])
     df["a_implied"] = _implied_prob(df["away_moneyline"])
 
-    df["implied_margin"] = (
-        (df["h_implied"] - df["a_implied"]).abs() * 50.0
-    ) * np.sign(df["h_implied"] - df["a_implied"])
+    # ── Implied point margin from ML win-probability edge ────────────────────
+    # implied_margin = (h_implied - a_implied) * K, in points, positive = home
+    # favored. K is calibrated empirically on 23.7k NBA games (2026-08-16):
+    #   |closing_spread| ≈ K * |h_implied - a_implied|,   K ≈ 14.0
+    # OLS through the origin, R²≈0.96 (spread is ~linear in the ML edge), stable
+    # across seasons (13.0–16.0). This puts implied_margin on the SAME scale as
+    # closing_spread so ml_spread_mismatch below is a real point-vs-point signal.
+    # (Formerly a magic *50.0 scale — uncalibrated.)
+    _IMPLIED_MARGIN_K = 14.0
+    df["implied_margin"] = (df["h_implied"] - df["a_implied"]) * _IMPLIED_MARGIN_K
 
     # ── Implied team scores from closing total + closing spread ───────────────
     # home_implied = (OU - |spread|)/2 ; away_implied = (OU + |spread|)/2

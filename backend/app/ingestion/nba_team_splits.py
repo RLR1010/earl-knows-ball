@@ -104,12 +104,12 @@ SELECT
     g.home_three_points_made, g.home_three_points_attempted,
     g.home_free_throws_made, g.home_free_throws_attempted,
     g.home_rebounds, g.home_assists, g.home_steals, g.home_blocks,
-    g.home_turnovers, g.home_fouls,
+    g.home_total_turnovers, g.home_fouls,
     g.away_field_goals_made, g.away_field_goals_attempted,
     g.away_three_points_made, g.away_three_points_attempted,
     g.away_free_throws_made, g.away_free_throws_attempted,
     g.away_rebounds, g.away_assists, g.away_steals, g.away_blocks,
-    g.away_turnovers, g.away_fouls,
+    g.away_total_turnovers, g.away_fouls,
     th.conference AS home_conf, ta.conference AS away_conf,
     c.spread, c.total
 FROM nba.games g
@@ -166,7 +166,7 @@ async def build_team_splits(
             "ast": g.get("home_assists") or 0,
             "stl": g.get("home_steals") or 0,
             "blk": g.get("home_blocks") or 0,
-            "tov": g.get("home_turnovers") or 0,
+            "tov": g.get("home_total_turnovers") or 0,
             "fouls": g.get("home_fouls") or 0,
         }
         pace_home = _possession(home_agg_fields["fga"], home_agg_fields["fta"],
@@ -191,7 +191,7 @@ async def build_team_splits(
             "ast": g.get("away_assists") or 0,
             "stl": g.get("away_steals") or 0,
             "blk": g.get("away_blocks") or 0,
-            "tov": g.get("away_turnovers") or 0,
+            "tov": g.get("away_total_turnovers") or 0,
             "fouls": g.get("away_fouls") or 0,
         }
         pace_away = _possession(away_agg_fields["fga"], away_agg_fields["fta"],
@@ -243,6 +243,10 @@ async def build_team_splits(
                     to_insert = []
     if to_insert:
         await _bulk_insert(db, to_insert)
+
+    # Persist the full-replace rebuild; without a commit the inserts are
+    # silently rolled back (callers don't always commit).
+    await db.commit()
 
     return {"teams": len(team_set), "rows_written": n, "season_ids": all_seasons}
 

@@ -7,7 +7,7 @@ const MLB_TEAMS: Record<string, number> = {
   HOU: 117, KC: 118, LAA: 108, LAD: 119, MIA: 146,
   MIL: 158, MIN: 142, NYM: 121, NYY: 147, OAK: 133,
   PHI: 143, PIT: 134, SD: 135, SEA: 136, SF: 137,
-  STL: 138, TB: 139, TEX: 140, TOR: 141, WSH: 120,
+  STL: 138, TB: 139, TEX: 140, TOR: 141, WAS: 120, WSH: 120,
 };
 
 // NBA: stats.nba.com team IDs → abbreviation
@@ -31,10 +31,24 @@ const NBA_ABBR_MAP: Record<string, string> = {
   GSW: "GSW", NYK: "NYK", SAS: "SAS", NOP: "NOP", WAS: "WAS", UTA: "UTA",
 };
 
+// Normalize NFL abbreviations (e.g. ESPN uses WSH for Washington) to the
+// canonical logo-file abbreviations (WAS).
+const NFL_ABBR_MAP: Record<string, string> = {
+  WSH: "WAS",
+  // self-maps for safety
+  WAS: "WAS", ARI: "ARI", ATL: "ATL", BAL: "BAL", BUF: "BUF", CAR: "CAR",
+  CHI: "CHI", CIN: "CIN", CLE: "CLE", DAL: "DAL", DEN: "DEN", DET: "DET",
+  GB: "GB", HOU: "HOU", IND: "IND", JAX: "JAX", KC: "KC", LAC: "LAC",
+  LAR: "LAR", LV: "LV", MIA: "MIA", MIN: "MIN", NE: "NE", NO: "NO",
+  NYG: "NYG", NYJ: "NYJ", PHI: "PHI", PIT: "PIT", SEA: "SEA", SF: "SF",
+  TB: "TB", TEN: "TEN",
+};
+
 export function getTeamLogoUrl(abbr: string, sport: string): string | null {
   const upper = abbr.toUpperCase();
   if (sport === "nfl") {
-    return `/logos/${upper}.png`;
+    const key = NFL_ABBR_MAP[upper] ?? upper;
+    return `/logos/${key}.png`;
   }
   if (sport === "mlb") {
     const id = MLB_TEAMS[upper];

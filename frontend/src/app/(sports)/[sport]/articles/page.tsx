@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useSeo } from "@/components/Seo";
-import { getTeamLogoUrl } from "@/lib/team_logos";
+import TeamLogo from "@/components/TeamLogo";
 
 interface PublicArticle {
   id: number;
@@ -321,13 +321,7 @@ export default function SportArticlesPage({ params }: { params: Promise<{ sport:
                   {Array.isArray(a.teams) && a.teams.length > 0 && (
                     <div className="flex items-center gap-1.5 mb-2">
                       {a.teams.slice(0, 4).map((abbr) => (
-                        <img
-                          key={abbr}
-                          src={getTeamLogoUrl(abbr, sport) || ""}
-                          alt={abbr}
-                          loading="lazy"
-                          className="h-7 w-7 object-contain"
-                        />
+                        <TeamLogo key={abbr} abbr={abbr} sport={sport} size={26} />
                       ))}
                     </div>
                   )}
@@ -397,21 +391,11 @@ export default function SportArticlesPage({ params }: { params: Promise<{ sport:
                         {(p.away_abbr || p.home_abbr) && (
                           <>
                             {p.away_abbr && (
-                              <img
-                                src={getTeamLogoUrl(p.away_abbr, sport) || ""}
-                                alt={p.away_abbr}
-                                loading="lazy"
-                                className="h-8 w-8 sm:h-9 sm:w-9 object-contain"
-                              />
+                              <TeamLogo abbr={p.away_abbr} sport={sport} size={34} />
                             )}
                             <span className="text-sm font-bold text-gray-400">vs</span>
                             {p.home_abbr && (
-                              <img
-                                src={getTeamLogoUrl(p.home_abbr, sport) || ""}
-                                alt={p.home_abbr}
-                                loading="lazy"
-                                className="h-8 w-8 sm:h-9 sm:w-9 object-contain"
-                              />
+                              <TeamLogo abbr={p.home_abbr} sport={sport} size={34} />
                             )}
                           </>
                         )}

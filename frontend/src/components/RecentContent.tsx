@@ -1,9 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import Image from "next/image";
 import Link from "next/link";
-import { getTeamLogoUrl } from "@/lib/team_logos";
+import TeamLogo from "@/components/TeamLogo";
 
 interface PublicArticle {
   id: number;
@@ -188,13 +187,7 @@ export default function RecentContent({ sport }: { sport: string }) {
                 {Array.isArray(a.teams) && a.teams.length > 0 && (
                   <div className="flex items-center gap-1.5 mb-2">
                     {a.teams.slice(0, 4).map((abbr) => (
-                      <img
-                        key={abbr}
-                        src={getTeamLogoUrl(abbr, sport) || ""}
-                        alt={abbr}
-                        loading="lazy"
-                        className="h-7 w-7 object-contain"
-                      />
+                      <TeamLogo key={abbr} abbr={abbr} sport={sport} size={26} />
                     ))}
                   </div>
                 )}
@@ -230,8 +223,6 @@ export default function RecentContent({ sport }: { sport: string }) {
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {previews.map((p) => {
-              const awayLogo = p.away_abbr ? getTeamLogoUrl(p.away_abbr, sport) : null;
-              const homeLogo = p.home_abbr ? getTeamLogoUrl(p.home_abbr, sport) : null;
               return (
                 <Link
                   key={p.writeup_id}
@@ -239,26 +230,12 @@ export default function RecentContent({ sport }: { sport: string }) {
                   className="block border border-white/10 rounded-xl p-4 bg-white/5 hover:bg-white/10 transition"
                 >
                   <div className="flex items-center gap-3">
-                    <div className="flex -space-x-2">
-                      {awayLogo && (
-                        <Image
-                          src={awayLogo}
-                          alt={p.away_abbr ?? ""}
-                          width={28}
-                          height={28}
-                          className="object-contain rounded-full bg-white/10 border border-white/10"
-                          unoptimized
-                        />
+                    <div className="flex items-center gap-1">
+                      {p.away_abbr && (
+                        <TeamLogo abbr={p.away_abbr} sport={sport} size={28} />
                       )}
-                      {homeLogo && (
-                        <Image
-                          src={homeLogo}
-                          alt={p.home_abbr ?? ""}
-                          width={28}
-                          height={28}
-                          className="object-contain rounded-full bg-white/10 border border-white/10"
-                          unoptimized
-                        />
+                      {p.home_abbr && (
+                        <TeamLogo abbr={p.home_abbr} sport={sport} size={28} />
                       )}
                     </div>
                     <div className="text-sm font-semibold text-white">

@@ -43,8 +43,11 @@ WITH bullpen_totals AS (
         t.id AS team_id,
         COALESCE(SUM(pgs.er), 0) AS bullpen_er,
         COALESCE(SUM(
-            -- Convert baseball IP (6.1 = 6 1/3) to outs
-            FLOOR(pgs.ip) * 3 + ROUND((pgs.ip - FLOOR(pgs.ip)) * 10)
+            -- pgs.ip is DECIMAL INNINGS (6.333 = 6 1/3 IP, 0.333 = 1 out).
+            -- Convert to outs by ROUND(ip * 3): 6.333*3=19 outs, 0.333*3=1 out.
+            -- (Do NOT use FLOOR*3 + ROUND(frac*10) — that assumed baseball notation
+            --  6.1 = 6 1/3 and mis-parses decimal rows, inflating bullpen IP.)
+            ROUND(pgs.ip * 3)
         ), 0) AS bullpen_ip_outs,
         COUNT(*) AS num_pitchers
     FROM mlb.pitcher_game_stats pgs

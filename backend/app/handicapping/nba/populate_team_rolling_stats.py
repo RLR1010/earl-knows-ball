@@ -188,7 +188,7 @@ base AS (
         g.home_assists                     AS ast,
         g.home_steals                      AS stl,
         g.home_blocks                      AS blk,
-        g.home_turnovers                   AS tov,
+        g.home_total_turnovers             AS tov,
         g.home_fouls                       AS pf,
         g.away_field_goals_attempted       AS opp_fga,
         g.away_field_goals_made            AS opp_fgm,
@@ -197,7 +197,7 @@ base AS (
         g.away_rebounds                   AS opp_reb,
         g.away_offensive_rebounds          AS opp_orb,
         g.away_estimated_possessions       AS opp_espn_poss,
-        g.away_turnovers                   AS opp_tov,
+        g.away_total_turnovers             AS opp_tov,
         g.away_score                       AS opp_score,
         COALESCE(blc.closing_spread, blc.opening_spread) AS closing_spread,
         COALESCE(blc.closing_ou, blc.opening_ou)         AS closing_ou,
@@ -207,6 +207,8 @@ base AS (
     LEFT JOIN nba.betting_lines_consolidated blc ON blc.game_id = g.id
     WHERE g.home_team_id IS NOT NULL AND g.away_team_id IS NOT NULL
       AND g.game_type IN ('REG','POST','PLAYIN')
+      AND g.status = 'FINAL'
+      AND g.home_score > 0 AND g.away_score > 0
 
     UNION ALL
 
@@ -230,7 +232,7 @@ base AS (
         g.away_assists                     AS ast,
         g.away_steals                      AS stl,
         g.away_blocks                      AS blk,
-        g.away_turnovers                   AS tov,
+        g.away_total_turnovers             AS tov,
         g.away_fouls                       AS pf,
         g.home_field_goals_attempted       AS opp_fga,
         g.home_field_goals_made            AS opp_fgm,
@@ -239,7 +241,7 @@ base AS (
         g.home_rebounds                   AS opp_reb,
         g.home_offensive_rebounds          AS opp_orb,
         g.home_estimated_possessions       AS opp_espn_poss,
-        g.home_turnovers                   AS opp_tov,
+        g.home_total_turnovers             AS opp_tov,
         g.home_score                       AS opp_score,
         COALESCE(blc.closing_spread, blc.opening_spread) AS closing_spread,
         COALESCE(blc.closing_ou, blc.opening_ou)         AS closing_ou,
@@ -249,6 +251,8 @@ base AS (
     LEFT JOIN nba.betting_lines_consolidated blc ON blc.game_id = g.id
     WHERE g.home_team_id IS NOT NULL AND g.away_team_id IS NOT NULL
       AND g.game_type IN ('REG','POST','PLAYIN')
+      AND g.status = 'FINAL'
+      AND g.home_score > 0 AND g.away_score > 0
 ),
 
 pg_poss AS (
