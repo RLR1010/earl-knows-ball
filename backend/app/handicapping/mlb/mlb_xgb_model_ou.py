@@ -133,7 +133,7 @@ async def run_backtest(
         eval_metric="rmse",
         random_state=42,
         verbosity=0,
-        early_stopping_rounds=50,
+        early_stopping_rounds=30,
     )
 
     if "game_date" in train_feats.columns and len(train_feats) >= 200:
