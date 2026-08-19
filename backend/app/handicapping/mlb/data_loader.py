@@ -327,6 +327,19 @@ SELECT
     trs_a.bullpen_ip_l5   AS a_bullpen_ip_l5,
     trs_a.bullpen_er_l5   AS a_bullpen_er_l5,
 
+    -- ── Opponent-adjusted season-cumulative metrics (overall; added 2026-08-19) ──
+    -- Difference-based runs + multiplicative SOS wins (Rich's chosen defaults).
+    -- Direction is SOS-consistent: facing STRONGER opposition underrates a team,
+    -- so adjusted values are RAISED when the opponent is above league-average and
+    -- lowered when below. trs_h/trs_a both read strictly-prior FINAL rows (leak-free).
+    -- League constants from live data: ~4.47 runs/game/team, 0.500 = .500 win pct.
+    -- Registered in mlb.features as trainable + pick_card (current/live = FALSE) until
+    -- validated, so the running models are unaffected.
+    trs_h.rf_avg + (4.47 - trs_a.ra_avg)            AS h_adj_rf_avg,
+    trs_h.win_pct * (trs_a.win_pct / 0.500)         AS h_adj_win_pct,
+    trs_a.rf_avg + (4.47 - trs_h.ra_avg)            AS a_adj_rf_avg,
+    trs_a.win_pct * (trs_h.win_pct / 0.500)         AS a_adj_win_pct,
+
     -- Venue-conditional rolling + season splits (home team at home / away team on road)
     -- Rolling (last 10 at that venue): from trs_hv/trs_av LATERALs.
     -- Season (venue-scoped season win pct): from cgs_hv/cgs_av LATERALs.
