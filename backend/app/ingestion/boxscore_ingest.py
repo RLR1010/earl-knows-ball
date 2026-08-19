@@ -40,7 +40,7 @@ API_BASE = "https://statsapi.mlb.com/api/v1/game"
 
 
 async def create_table_if_not_exists(conn):
-    """Ensure the batting_game_stats table exists."""
+    """Ensure the batting_game_stats + boxscore_mismatch tables exist."""
     await conn.execute("""
         CREATE TABLE IF NOT EXISTS mlb.batting_game_stats (
             id SERIAL PRIMARY KEY,
@@ -94,6 +94,26 @@ async def create_table_if_not_exists(conn):
     await conn.execute("CREATE INDEX IF NOT EXISTS idx_bgs_game ON mlb.batting_game_stats(game_id)")
     await conn.execute("CREATE INDEX IF NOT EXISTS idx_bgs_player ON mlb.batting_game_stats(player_id)")
     logger.info("Table mlb.batting_game_stats ready")
+
+    # Boxscore completeness audit table: records any team-side where the stored
+    # batting boxscore does NOT sum to the actual final score in mlb.games.
+    # Written by process_game() on every ingest so incomplete boxscores are
+    # loud + queryable instead of silently corrupting run-derived features.
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS mlb.boxscore_mismatch (
+            id SERIAL PRIMARY KEY,
+            game_id INTEGER REFERENCES mlb.games(id) ON DELETE CASCADE NOT NULL,
+            mlb_game_id INTEGER,
+            team_side VARCHAR(4) NOT NULL,
+            box_runs INTEGER,
+            actual_runs INTEGER,
+            delta INTEGER,
+            detected_at TIMESTAMP DEFAULT NOW(),
+            UNIQUE(game_id, team_side)
+        )
+    """)
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_bsm_game ON mlb.boxscore_mismatch(game_id)")
+    logger.info("Table mlb.boxscore_mismatch ready")
 
 
 async def get_games_to_process(conn, from_year: Optional[int], fill_missing: bool) -> list[dict]:
@@ -199,6 +219,7 @@ async def process_game(conn, game: dict) -> int:
 
     teams = box.get("teams", {})
     rows_saved = 0
+    side_runs: dict[str, int] = {"home": 0, "away": 0}
 
     for side in ["home", "away"]:
         team_data = teams.get(side, {})
@@ -324,8 +345,47 @@ async def process_game(conn, game: dict) -> int:
                    go, ao, fo, lo, po, gidp, gitp, ci, pick,
                    avg, obp, slg, ops)
                 rows_saved += 1
+                side_runs[side] += int(runs or 0)
             except Exception as e:
                 logger.warning(f"  Insert error for game {our_gid} player {full_name}: {e}")
+
+    # ── Boxscore completeness validation (Rich's #1 priority) ──────────────
+    # After all batting rows are saved, verify each side's boxscore sums to the
+    # actual final score. If it doesn't, the boxscore is incomplete (a dropped
+    # pinch-runner / walk-only batter, a missed player, etc.) and silently
+    # corrupts every run-derived feature (rf, venue_rf_r10, ...). This guard
+    # makes such gaps LOUD instead of silent, and records them for follow-up.
+    try:
+        real = await conn.fetchrow(
+            "SELECT home_score, away_score FROM mlb.games WHERE id = $1", our_gid
+        )
+        expected = {"home": real["home_score"], "away": real["away_score"]}
+        for side in ("home", "away"):
+            box_runs = side_runs.get(side, 0)
+            exp = expected.get(side)
+            if exp is None:
+                continue
+            if box_runs != exp:
+                logger.error(
+                    f"BOXSCORE MISMATCH game {our_gid} (mlb {mlb_gid}) {side}: "
+                    f"boxscore={box_runs} actual={exp} delta={box_runs - exp}"
+                )
+                try:
+                    await conn.execute(
+                        """INSERT INTO mlb.boxscore_mismatch
+                               (game_id, mlb_game_id, team_side, box_runs, actual_runs, delta)
+                           VALUES ($1,$2,$3,$4,$5,$6)
+                           ON CONFLICT (game_id, team_side) DO UPDATE SET
+                               box_runs = EXCLUDED.box_runs,
+                               actual_runs = EXCLUDED.actual_runs,
+                               delta = EXCLUDED.delta,
+                               detected_at = now()""",
+                        our_gid, mlb_gid, side, box_runs, exp, box_runs - exp,
+                    )
+                except Exception as e2:
+                    logger.warning(f"  boxscore_mismatch record error game {our_gid}: {e2}")
+    except Exception as e:
+        logger.warning(f"  Boxscore validation skipped for game {our_gid}: {e}")
 
     return rows_saved
 
