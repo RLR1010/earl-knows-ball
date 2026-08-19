@@ -187,7 +187,7 @@ async def run_backtest(
         # XGB 3.x: early_stopping_rounds is a CONSTRUCTOR arg (removed from
         # fit()). Runs with eval_set stop when eval rmse plateaus -> avoids
         # burning all 600 trees on small/early train sets (overfit + slow).
-        early_stopping_rounds=50,
+        early_stopping_rounds=30,
     )
 
     if "game_date" in train_feats.columns and len(train_feats) >= 200:
