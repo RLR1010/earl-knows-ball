@@ -206,7 +206,15 @@ async def process_game(conn, game: dict) -> int:
 
         for pid_str, pdata in players.items():
             stats = pdata.get("stats", {}).get("batting", {})
-            if not stats or stats.get("atBats", 0) == 0:
+            # Only skip when the player truly did nothing at the plate. Do NOT
+            # skip on atBats==0 alone: a pinch-runner (PA=0, AB=0) who scored a
+            # run, or a batter who reached via walk/HBP/sac (AB=0 but PA>0),
+            # carries real counting stats that MUST be kept or the boxscore no
+            # longer sums to the final score (boxscore completeness is the #1
+            # priority). Skip only if they had no plate appearances AND no runs.
+            pa0 = (stats.get("plateAppearances", 0) or 0)
+            r0 = (stats.get("runs", 0) or 0)
+            if not stats or (pa0 == 0 and r0 == 0):
                 continue
 
             person = pdata.get("person", {})
