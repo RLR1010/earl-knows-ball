@@ -672,14 +672,18 @@ LEFT JOIN LATERAL (
 ) cgs_a ON TRUE
 
 -- Home/away runs-per-game computed DIRECTLY from box scores (side-correct & leak-safe).
--- h_home_rf = home team's runs scored when playing AT HOME = AVG(away_score) over its
---   FINAL home games this season (the away_score is the home team's own score).
--- a_away_rf = away team's runs scored when playing AWAY = AVG(home_score) over its
---   FINAL away games this season (the home_score is the away team's own score).
+-- h_home_rf = HOME TEAM'S OWN runs scored when playing AT HOME = AVG(gg.home_score) over
+--   its FINAL home games this season (gg.home_score is the home team's own score when
+--   gg.home_team_id = ht.id).
+-- a_away_rf = AWAY TEAM'S OWN runs scored when playing AWAY = AVG(gg.away_score) over its
+--   FINAL away games this season (gg.away_score is the away team's own score when
+--   gg.away_team_id = at.id).
 -- Only FINAL games strictly before the target are counted (30-min safety margin), so
 -- these are true through-previous-game averages — no CGS shared-season-total muddle.
+-- NOTE (2026-08-19): previously these used AVG(away_score)/AVG(home_score) respectively,
+-- which measured OPPONENT runs (runs-allowed) — fixed to own runs-for.
 LEFT JOIN LATERAL (
-    SELECT ROUND(AVG(gg.away_score)::numeric, 4) AS h_home_runs_per_game
+    SELECT ROUND(AVG(gg.home_score)::numeric, 4) AS h_home_runs_per_game
     FROM mlb.games gg
     WHERE gg.home_team_id   = ht.id
       AND gg.season_id      = g.season_id
@@ -687,7 +691,7 @@ LEFT JOIN LATERAL (
       AND gg.date           < g.date - INTERVAL '30 minutes'
 ) runfg_h ON TRUE
 LEFT JOIN LATERAL (
-    SELECT ROUND(AVG(gg.home_score)::numeric, 4) AS a_away_runs_per_game
+    SELECT ROUND(AVG(gg.away_score)::numeric, 4) AS a_away_runs_per_game
     FROM mlb.games gg
     WHERE gg.away_team_id   = at.id
       AND gg.season_id      = g.season_id
