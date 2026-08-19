@@ -429,34 +429,10 @@ SELECT
     plato_h_rhp.ops       AS h_ops_vs_rhp,
     plato_a_lhp.ops       AS a_ops_vs_lhp,
     plato_a_rhp.ops       AS a_ops_vs_rhp,
-    (SELECT ROUND(AVG(g2.home_score)::numeric, 2)
-       FROM mlb.games g2
-       JOIN mlb.seasons s2 ON s2.id = g2.season_id
-       LEFT JOIN mlb.players pl2 ON pl2.name = g2.away_pitcher_name
-      WHERE g2.home_team_id = ht.id AND g2.status = 'FINAL'
-        AND g2.date < g.date - INTERVAL '30 minutes' AND s2.id = s.id
-        AND pl2.throws = 'L') AS h_rpg_vs_lhp,
-    (SELECT ROUND(AVG(g2.home_score)::numeric, 2)
-       FROM mlb.games g2
-       JOIN mlb.seasons s2 ON s2.id = g2.season_id
-       LEFT JOIN mlb.players pl2 ON pl2.name = g2.away_pitcher_name
-      WHERE g2.home_team_id = ht.id AND g2.status = 'FINAL'
-        AND g2.date < g.date - INTERVAL '30 minutes' AND s2.id = s.id
-        AND pl2.throws = 'R') AS h_rpg_vs_rhp,
-    (SELECT ROUND(AVG(g2.away_score)::numeric, 2)
-       FROM mlb.games g2
-       JOIN mlb.seasons s2 ON s2.id = g2.season_id
-       LEFT JOIN mlb.players pl2 ON pl2.name = g2.home_pitcher_name
-      WHERE g2.away_team_id = at.id AND g2.status = 'FINAL'
-        AND g2.date < g.date - INTERVAL '30 minutes' AND s2.id = s.id
-        AND pl2.throws = 'L') AS a_rpg_vs_lhp,
-    (SELECT ROUND(AVG(g2.away_score)::numeric, 2)
-       FROM mlb.games g2
-       JOIN mlb.seasons s2 ON s2.id = g2.season_id
-       LEFT JOIN mlb.players pl2 ON pl2.name = g2.home_pitcher_name
-      WHERE g2.away_team_id = at.id AND g2.status = 'FINAL'
-        AND g2.date < g.date - INTERVAL '30 minutes' AND s2.id = s.id
-        AND pl2.throws = 'R') AS a_rpg_vs_rhp,
+    ROUND(rpgv_h_l.rpg, 2) AS h_rpg_vs_lhp,
+    ROUND(rpgv_h_r.rpg, 2) AS h_rpg_vs_rhp,
+    ROUND(rpgv_a_l.rpg, 2) AS a_rpg_vs_lhp,
+    ROUND(rpgv_a_r.rpg, 2) AS a_rpg_vs_rhp,
     ph_h.h_pitcher_hand    AS h_pitcher_hand,
     ph_a.a_pitcher_hand    AS a_pitcher_hand,
 
@@ -465,34 +441,10 @@ SELECT
     -- (Inline source exprs: PG can't reference sibling output aliases in SQL.)
     CASE WHEN ph_a.a_pitcher_hand = 'L' THEN plato_h_lhp.ops ELSE plato_h_rhp.ops END AS h_ops_vs_opp_hand,
     CASE WHEN ph_h.h_pitcher_hand = 'L' THEN plato_a_lhp.ops ELSE plato_a_rhp.ops END AS a_ops_vs_opp_hand,
-    CASE WHEN ph_a.a_pitcher_hand = 'L'
-         THEN (SELECT ROUND(AVG(g2.home_score)::numeric, 2) FROM mlb.games g2
-                JOIN mlb.seasons s2 ON s2.id = g2.season_id
-                LEFT JOIN mlb.players pl2 ON pl2.name = g2.away_pitcher_name
-               WHERE g2.home_team_id = ht.id AND g2.status = 'FINAL'
-                 AND g2.date < g.date - INTERVAL '30 minutes' AND s2.id = s.id
-                 AND pl2.throws = 'L')
-         ELSE (SELECT ROUND(AVG(g2.home_score)::numeric, 2) FROM mlb.games g2
-                JOIN mlb.seasons s2 ON s2.id = g2.season_id
-                LEFT JOIN mlb.players pl2 ON pl2.name = g2.away_pitcher_name
-               WHERE g2.home_team_id = ht.id AND g2.status = 'FINAL'
-                 AND g2.date < g.date - INTERVAL '30 minutes' AND s2.id = s.id
-                 AND pl2.throws = 'R')
-    END AS h_rpg_vs_opp_hand,
-    CASE WHEN ph_h.h_pitcher_hand = 'L'
-         THEN (SELECT ROUND(AVG(g2.away_score)::numeric, 2) FROM mlb.games g2
-                JOIN mlb.seasons s2 ON s2.id = g2.season_id
-                LEFT JOIN mlb.players pl2 ON pl2.name = g2.home_pitcher_name
-               WHERE g2.away_team_id = at.id AND g2.status = 'FINAL'
-                 AND g2.date < g.date - INTERVAL '30 minutes' AND s2.id = s.id
-                 AND pl2.throws = 'L')
-         ELSE (SELECT ROUND(AVG(g2.away_score)::numeric, 2) FROM mlb.games g2
-                JOIN mlb.seasons s2 ON s2.id = g2.season_id
-                LEFT JOIN mlb.players pl2 ON pl2.name = g2.home_pitcher_name
-               WHERE g2.away_team_id = at.id AND g2.status = 'FINAL'
-                 AND g2.date < g.date - INTERVAL '30 minutes' AND s2.id = s.id
-                 AND pl2.throws = 'R')
-    END AS a_rpg_vs_opp_hand,
+    CASE WHEN ph_a.a_pitcher_hand = 'L' THEN ROUND(rpgv_h_l.rpg, 2)
+         ELSE ROUND(rpgv_h_r.rpg, 2) END AS h_rpg_vs_opp_hand,
+    CASE WHEN ph_h.h_pitcher_hand = 'L' THEN ROUND(rpgv_a_l.rpg, 2)
+         ELSE ROUND(rpgv_a_r.rpg, 2) END AS a_rpg_vs_opp_hand,
 
     -- Pitcher VENUE ERA (real, from prior starts at this exact park)
     vph.venue_era_h AS h_pitcher_venue_era,
@@ -558,18 +510,29 @@ LEFT JOIN mlb.venues v ON v.mlb_venue_id = g.venue_id
 -- The platoon features: each offense's OPS / runs-per-game against righty
 -- and lefty starters, plus the starting pitcher's throwing hand (pick card).
 -- ──────────────────────────────────────────────────────────────────────
--- Starting pitcher throwing arm (resolved by starter name -> players.throws)
+-- Starting pitcher throwing arm — resolved by the UNAMBIGUOUS pitcher_mlb_id
+-- (via pgs) rather than pitcher name, which is ambiguous for the 45 names
+-- shared by two real players and was double-counting games. Fall back to name
+-- only when pgs has no mlb_id row for the starter.
 LEFT JOIN LATERAL (
-    SELECT pl.throws AS h_pitcher_hand
-    FROM mlb.players pl
-    WHERE pl.name = g.home_pitcher_name
-    LIMIT 1
+    SELECT COALESCE(
+        (SELECT pl.throws FROM mlb.players pl
+          JOIN mlb.pitcher_game_stats P_H ON P_H.pitcher_mlb_id = pl.mlb_id
+          WHERE P_H.game_id = g.id AND P_H.pitcher_name = g.home_pitcher_name
+            AND P_H.is_starter AND pl.throws IS NOT NULL LIMIT 1),
+        (SELECT pl2.throws FROM mlb.players pl2
+          WHERE pl2.name = g.home_pitcher_name AND pl2.throws IS NOT NULL LIMIT 1)
+    ) AS h_pitcher_hand
 ) ph_h ON TRUE
 LEFT JOIN LATERAL (
-    SELECT pl.throws AS a_pitcher_hand
-    FROM mlb.players pl
-    WHERE pl.name = g.away_pitcher_name
-    LIMIT 1
+    SELECT COALESCE(
+        (SELECT pl.throws FROM mlb.players pl
+          JOIN mlb.pitcher_game_stats P_A ON P_A.pitcher_mlb_id = pl.mlb_id
+          WHERE P_A.game_id = g.id AND P_A.pitcher_name = g.away_pitcher_name
+            AND P_A.is_starter AND pl.throws IS NOT NULL LIMIT 1),
+        (SELECT pl2.throws FROM mlb.players pl2
+          WHERE pl2.name = g.away_pitcher_name AND pl2.throws IS NOT NULL LIMIT 1)
+    ) AS a_pitcher_hand
 ) ph_a ON TRUE
 -- Team OPS vs each arm, computed THROUGH-DATE and precomputed cumulatively in
 -- mlb.team_ops_vs_arm (owned/refreshed by mlb-stats-refresh). These REPLACE the
@@ -618,6 +581,51 @@ LEFT JOIN LATERAL (
     ORDER BY g_prev.date DESC, g_prev.id DESC
     LIMIT 1
 ) plato_a_rhp ON TRUE
+
+-- rpg_vs_arm (runs scored vs opposing starter hand): from team_runs_vs_arm.
+-- Same LATERAL shape as plato_* above — reads the PREVIOUS arm-matched Final
+-- row, leak-safe. Replaces the old 8 correlated scalar subqueries (~21% of
+-- load_games time).
+LEFT JOIN LATERAL (
+    SELECT tvr.rpg_vs_arm AS rpg
+    FROM mlb.team_runs_vs_arm tvr
+    JOIN mlb.games g_prev ON g_prev.id = tvr.game_id
+    WHERE tvr.team_id = ht.id AND tvr.team_side = 'home' AND tvr.arm = 'L'
+      AND tvr.season_id = g.season_id AND g_prev.status = 'FINAL'
+      AND g_prev.date < g.date - INTERVAL '30 minutes'
+    ORDER BY g_prev.date DESC, g_prev.id DESC
+    LIMIT 1
+) rpgv_h_l ON TRUE
+LEFT JOIN LATERAL (
+    SELECT tvr.rpg_vs_arm AS rpg
+    FROM mlb.team_runs_vs_arm tvr
+    JOIN mlb.games g_prev ON g_prev.id = tvr.game_id
+    WHERE tvr.team_id = ht.id AND tvr.team_side = 'home' AND tvr.arm = 'R'
+      AND tvr.season_id = g.season_id AND g_prev.status = 'FINAL'
+      AND g_prev.date < g.date - INTERVAL '30 minutes'
+    ORDER BY g_prev.date DESC, g_prev.id DESC
+    LIMIT 1
+) rpgv_h_r ON TRUE
+LEFT JOIN LATERAL (
+    SELECT tvr.rpg_vs_arm AS rpg
+    FROM mlb.team_runs_vs_arm tvr
+    JOIN mlb.games g_prev ON g_prev.id = tvr.game_id
+    WHERE tvr.team_id = at.id AND tvr.team_side = 'away' AND tvr.arm = 'L'
+      AND tvr.season_id = g.season_id AND g_prev.status = 'FINAL'
+      AND g_prev.date < g.date - INTERVAL '30 minutes'
+    ORDER BY g_prev.date DESC, g_prev.id DESC
+    LIMIT 1
+) rpgv_a_l ON TRUE
+LEFT JOIN LATERAL (
+    SELECT tvr.rpg_vs_arm AS rpg
+    FROM mlb.team_runs_vs_arm tvr
+    JOIN mlb.games g_prev ON g_prev.id = tvr.game_id
+    WHERE tvr.team_id = at.id AND tvr.team_side = 'away' AND tvr.arm = 'R'
+      AND tvr.season_id = g.season_id AND g_prev.status = 'FINAL'
+      AND g_prev.date < g.date - INTERVAL '30 minutes'
+    ORDER BY g_prev.date DESC, g_prev.id DESC
+    LIMIT 1
+) rpgv_a_r ON TRUE
 
 -- ──────────────────────────────────────────────────────────────────────
 -- REST DAYS (find each team's last game before this one)

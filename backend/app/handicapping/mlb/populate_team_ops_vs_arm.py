@@ -89,7 +89,29 @@ def _build_sql(season: int | None, incremental: bool) -> str:
         tail = ""
 
     body = f"""
-WITH per_game AS (
+-- Resolve each game's opposing-starter arm via the UNAMBIGUOUS pitcher_mlb_id
+-- (pgs), falling back to name only when pgs has no mlb_id row for that starter.
+WITH pitcher_arms AS (
+    SELECT g2.id AS game_id,
+           COALESCE(
+               (SELECT pl.throws FROM mlb.players pl
+                 JOIN mlb.pitcher_game_stats P ON P.pitcher_mlb_id = pl.mlb_id
+                 WHERE P.game_id = g2.id AND P.pitcher_name = g2.away_pitcher_name
+                   AND P.is_starter AND pl.throws IS NOT NULL LIMIT 1),
+               (SELECT pl2.throws FROM mlb.players pl2
+                 WHERE pl2.name = g2.away_pitcher_name AND pl2.throws IS NOT NULL LIMIT 1)
+           ) AS home_arm,
+           COALESCE(
+               (SELECT pl.throws FROM mlb.players pl
+                 JOIN mlb.pitcher_game_stats P ON P.pitcher_mlb_id = pl.mlb_id
+                 WHERE P.game_id = g2.id AND P.pitcher_name = g2.home_pitcher_name
+                   AND P.is_starter AND pl.throws IS NOT NULL LIMIT 1),
+               (SELECT pl2.throws FROM mlb.players pl2
+                 WHERE pl2.name = g2.home_pitcher_name AND pl2.throws IS NOT NULL LIMIT 1)
+           ) AS away_arm
+    FROM mlb.games g2
+),
+per_game AS (
     -- One row per (game, offense side, opposing arm): this side's raw batting
     -- sums + win flag + whether the game counts toward the arm bucket.
     SELECT
@@ -98,7 +120,8 @@ WITH per_game AS (
              ELSE g2.away_team_id END                                AS team_id,
         g2.season_id                                                 AS season_id,
         bg.team_side                                                 AS team_side,
-        pl2.throws                                                   AS arm,
+        CASE WHEN bg.team_side = 'home' THEN pa.home_arm
+             ELSE pa.away_arm END                                    AS arm,
         SUM(bg.at_bats)                                              AS ab,
         SUM(bg.hits)                                                 AS h,
         SUM(bg.base_on_balls)                                        AS bb,
@@ -116,11 +139,10 @@ WITH per_game AS (
         g2.id                                                        AS game_id_ord
     FROM mlb.batting_game_stats bg
     JOIN mlb.games g2                 ON g2.id = bg.game_id
-    LEFT JOIN mlb.players pl2 ON pl2.name = CASE
-        WHEN bg.team_side = 'home' THEN g2.away_pitcher_name
-        ELSE g2.home_pitcher_name END
+    JOIN pitcher_arms pa              ON pa.game_id = g2.id
     WHERE g2.status = 'FINAL'
-      AND pl2.throws IN ('L','R')
+      AND (CASE WHEN bg.team_side = 'home' THEN pa.home_arm
+                ELSE pa.away_arm END) IN ('L','R')
       --SEASON_WHERE--
     GROUP BY
         g2.id,
@@ -128,7 +150,8 @@ WITH per_game AS (
              ELSE g2.away_team_id END,
         g2.season_id,
         bg.team_side,
-        pl2.throws,
+        CASE WHEN bg.team_side = 'home' THEN pa.home_arm
+             ELSE pa.away_arm END,
         g2.date
 ),
 accum AS (
