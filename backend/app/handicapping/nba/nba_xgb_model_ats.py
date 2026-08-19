@@ -241,11 +241,39 @@ async def train_model(
         else:
             sample_weights = np.ones(len(df_train))
 
-        dtrain = xgb.DMatrix(
-            X_train, label=y_train, weight=sample_weights, feature_names=available
-        )
-
-        model = xgb.train(params, dtrain, num_boost_round=n_estimators, verbose_eval=False)
+        # Early stopping (matches MLB): hold out the MOST RECENT ~15% of the
+        # training period as a time-ordered eval set (no leakage — the model
+        # predicts a later period). xgb.train (native API) still accepts
+        # early_stopping_rounds + evals even in XGB 3.x.
+        gd = "date" if "date" in df_train.columns else None
+        if gd is not None and len(df_train) >= 200:
+            _sort_idx = df_train[gd].argsort().to_numpy()
+            _tf = df_train.iloc[_sort_idx]
+            _X = _tf[available].values
+            _y = _tf[target].values
+            if "season_year" in _tf.columns:
+                _w = _compute_decay_weights(_tf, train_seasons[-1])
+            else:
+                _w = np.ones(len(_tf))
+            _n_eval = max(int(len(_X) * 0.15), 50)
+            dtrain = xgb.DMatrix(
+                _X[:-_n_eval], label=_y[:-_n_eval], weight=_w[:-_n_eval],
+                feature_names=available,
+            )
+            dvalid = xgb.DMatrix(
+                _X[-_n_eval:], label=_y[-_n_eval:], weight=_w[-_n_eval:],
+                feature_names=available,
+            )
+            model = xgb.train(
+                params, dtrain, num_boost_round=n_estimators, verbose_eval=False,
+                evals=[(dvalid, "valid")],
+                early_stopping_rounds=DEFAULT_EARLY_STOPPING,
+            )
+        else:
+            dtrain = xgb.DMatrix(
+                X_train, label=y_train, weight=sample_weights, feature_names=available
+            )
+            model = xgb.train(params, dtrain, num_boost_round=n_estimators, verbose_eval=False)
 
         # Training MAE
         y_pred_train = model.predict(dtrain)
