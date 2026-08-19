@@ -103,24 +103,20 @@ async def run_backtest(
     train_feats = train_feats[train_mask].copy()
     test_feats = test_feats[test_mask].copy()
 
-    X_train = train_feats[available].fillna(0).values
-    y_train = train_feats["actual_total"].values
-    X_test = test_feats[available].fillna(0).values
-    y_test = test_feats["actual_total"].values
-    ous = test_feats["over_under"].values
-
-    n_train = len(X_train)
-    n_test = len(X_test)
-
-    if n_train < 100 or n_test < 10:
-        log(f"    Skipping {test_year}: train={n_train}, test={n_test}")
+    # Skip if too little data (protects the early-stopping eval split + fit)
+    if len(train_feats) < 100 or len(test_feats) < 10:
+        log(f"    Skipping {test_year}: train={len(train_feats)}, test={len(test_feats)}")
         return None
 
-    # Time-decay sample weights — recent seasons matter more
-    last_train_year = max(train_years)
-    sample_weights = _compute_decay_weights(train_feats, last_train_year)
+    X_train_full = train_feats[available].fillna(0).values
+    y_train_full = train_feats["actual_total"].values
+    ew_full = _compute_decay_weights(train_feats, max(train_years))
 
-    # Train XGBoost
+    # Train XGBoost with early stopping (same approach as ATS): hold out the
+    # MOST RECENT ~15% of the training period as a time-ordered eval set (no
+    # leakage — the model predicts a later period than it trains on), and stop
+    # when rmse plateaus. XGB 3.x requires early_stopping_rounds in the
+    # CONSTRUCTOR (removed from fit()).
     model = xgb.XGBRegressor(
         n_estimators=500,
         max_depth=5,
@@ -134,8 +130,32 @@ async def run_backtest(
         eval_metric="rmse",
         random_state=42,
         verbosity=0,
+        early_stopping_rounds=50,
     )
-    model.fit(X_train, y_train, sample_weight=sample_weights)
+
+    if "game_date" in train_feats.columns and len(train_feats) >= 200:
+        idx = train_feats["game_date"].argsort().to_numpy()
+        tf = train_feats.iloc[idx]
+        X_f = tf[available].fillna(0).values
+        y_f = tf["actual_total"].values
+        ew_f = _compute_decay_weights(tf, max(train_years))
+        n_eval = max(int(len(X_f) * 0.15), 50)
+        model.fit(
+            X_f[:-n_eval], y_f[:-n_eval],
+            sample_weight=ew_f[:-n_eval],
+            eval_set=[(X_f[-n_eval:], y_f[-n_eval:])],
+            verbose=False,
+        )
+    else:
+        # Fallback: no game_date / too few rows -> plain fit
+        model.fit(X_train_full, y_train_full, sample_weight=ew_full)
+
+    # --- Prediction / metrics (unchanged from original, restored after early-stopping fit) ---
+    X_test = test_feats[available].fillna(0).values
+    y_test = test_feats["actual_total"].values
+    ous = test_feats["over_under"].values
+    n_train = len(train_feats)
+    n_test = len(test_feats)
 
     y_pred = model.predict(X_test)
     mae = float(np.mean(np.abs(y_pred - y_test)))
