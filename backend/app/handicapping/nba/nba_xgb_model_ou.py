@@ -223,9 +223,14 @@ async def train_model(
             else:
                 _w = np.ones(len(_tf))
             _n_eval = max(int(len(_X) * 0.15), 50)
+            # Rebind the full-set variables to the early-stopping subset so the
+            # downstream training-MAE metric (which uses y + dtrain) stays
+            # sample-consistent: train on _X/_y up to the eval boundary.
+            X = _X[:-_n_eval]
+            y = _y[:-_n_eval]
+            sample_weights = _w[:-_n_eval]
             dtrain = xgb.DMatrix(
-                _X[:-_n_eval], label=_y[:-_n_eval], weight=_w[:-_n_eval],
-                feature_names=available,
+                X, label=y, weight=sample_weights, feature_names=available,
             )
             dvalid = xgb.DMatrix(
                 _X[-_n_eval:], label=_y[-_n_eval:], weight=_w[-_n_eval:],
@@ -237,6 +242,12 @@ async def train_model(
                 early_stopping_rounds=DEFAULT_EARLY_STOPPING,
             )
         else:
+            X = df_train[available].values
+            y = df_train["total_points"].values
+            if "season_year" in df_train.columns:
+                sample_weights = _compute_decay_weights(df_train, train_seasons[-1])
+            else:
+                sample_weights = np.ones(len(df_train))
             dtrain = xgb.DMatrix(
                 X, label=y, weight=sample_weights, feature_names=available
             )
