@@ -2305,7 +2305,9 @@ class MLBDataLoader:
             # GAME_QUERY (via _query below) pays a large JIT compile tax to
             # run modest row counts. Disabling JIT here avoids that overhead
             # without affecting other workloads on the instance.
-            connect_args={"options": "-c jit=off"},
+            # statement_timeout=20min guards against orphaned backends when a
+            # client dies mid-load (longest legit query ~4 min).
+            connect_args={"options": "-c jit=off -c statement_timeout=1200000"},
         )
         try:
             return self._query(engine, seasons=seasons, status=status,

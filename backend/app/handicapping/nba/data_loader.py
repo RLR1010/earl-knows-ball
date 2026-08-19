@@ -1036,7 +1036,9 @@ class NBADataLoader:
             self._engine = create_engine(
                 self.db_url,
                 pool_pre_ping=True,
-                connect_args={"options": "-c jit=off"},
+                # statement_timeout=20min: guards against orphaned backends when
+                # a client dies mid-load (longest legit query ~4 min).
+                connect_args={"options": "-c jit=off -c statement_timeout=1200000"},
             )
         return self._engine
 
