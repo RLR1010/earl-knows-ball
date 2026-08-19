@@ -269,6 +269,21 @@ async def run(started_at=None):
             logger.error(f"  Step 13 team_ops_vs_arm refresh failed: {e}")
             step_failures.append(f"team_ops_vs_arm: {e}")
 
+        # Step 13b: Refresh mlb.team_runs_vs_arm (cumulative runs-scored-vs-arm)
+        # Powers the h/a rpg_vs_* loader features. Same season-scoped pattern.
+        try:
+            from app.handicapping.mlb.populate_team_runs_vs_arm import \
+                populate_team_runs_vs_arm
+            from sqlalchemy import text
+            cur_season = (await db.execute(
+                text("SELECT MAX(season_id) FROM mlb.games WHERE status = 'FINAL'")
+            )).scalar()
+            logger.info(f"  Step 13b: team_runs_vs_arm rebuild for season {cur_season}...")
+            populate_team_runs_vs_arm(season=cur_season)
+        except Exception as e:
+            logger.error(f"  Step 13b team_runs_vs_arm refresh failed: {e}")
+            step_failures.append(f"team_runs_vs_arm: {e}")
+
         await pconn.close()
 
         # Commit all changes (lineups, pitchers, picks)
