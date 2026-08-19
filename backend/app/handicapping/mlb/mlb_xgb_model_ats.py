@@ -161,13 +161,16 @@ async def run_backtest(
         log(f"  SKIP: insufficient data")
         return {}
 
-    # Train
-    X_train = train_feats[present].values
-    y_train = train_feats["actual_margin"].values
-
-    # Time-decay sample weights — recent seasons matter more
-    last_train_year = max(train_years)
-    sample_weights = _compute_decay_weights(train_feats, last_train_year)
+    # --- Early stopping ---
+    # Hold out the MOST RECENT ~15% of the training period as an eval set
+    # (time-ordered, so no leakage — the model must predict a later period than
+    # it trains on). Stop when rmse plateaus, which avoids burning all 600 trees
+    # on small/early train sets (those were ~90s wasted, and 600 trees on a few
+    # thousand rows overfits). XGBoost with early_stopping_rounds auto-selects
+    # best_iteration.
+    X_train_full = train_feats[present].values
+    y_train_full = train_feats["actual_margin"].values
+    ew_full = _compute_decay_weights(train_feats, max(train_years))
 
     model = xgb.XGBRegressor(
         n_estimators=600,
@@ -181,8 +184,34 @@ async def run_backtest(
         random_state=42,
         verbosity=0,
         eval_metric="rmse",
+        # XGB 3.x: early_stopping_rounds is a CONSTRUCTOR arg (removed from
+        # fit()). Runs with eval_set stop when eval rmse plateaus -> avoids
+        # burning all 600 trees on small/early train sets (overfit + slow).
+        early_stopping_rounds=50,
     )
-    model.fit(X_train, y_train, sample_weight=sample_weights)
+
+    if "game_date" in train_feats.columns and len(train_feats) >= 200:
+        idx = train_feats["game_date"].argsort().to_numpy()
+        train_feats_sorted = train_feats.iloc[idx]
+        X_f = train_feats_sorted[present].values
+        y_f = train_feats_sorted["actual_margin"].values
+        ew_f = _compute_decay_weights(train_feats_sorted, max(train_years))
+        n_eval = max(int(len(X_f) * 0.15), 50)
+        X_eval = X_f[-n_eval:]
+        y_eval = y_f[-n_eval:]
+        ew_eval = ew_f[-n_eval:]
+        X_train = X_f[:-n_eval]
+        y_train = y_f[:-n_eval]
+        ew_train = ew_f[:-n_eval]
+        model.fit(
+            X_train, y_train,
+            sample_weight=ew_train,
+            eval_set=[(X_eval, y_eval)],
+            verbose=False,
+        )
+    else:
+        # Fallback: no date column or too few rows -> plain fit
+        model.fit(X_train_full, y_train_full, sample_weight=ew_full)
 
     # Predict
     X_test = test_feats[present].values
