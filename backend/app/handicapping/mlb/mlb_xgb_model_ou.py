@@ -117,14 +117,17 @@ async def run_backtest(
     # leakage — the model predicts a later period than it trains on), and stop
     # when rmse plateaus. XGB 3.x requires early_stopping_rounds in the
     # CONSTRUCTOR (removed from fit()).
+    # NOTE (2026-08-19): hyperparameters aligned with the ATS model per Rich —
+    # the OU model previously used different settings (n_estimators=500,
+    # colsample_bytree=0.7, reg_lambda=1.5, reg_alpha=0.5) and ATS was
+    # outperforming it. Same params + same early-stopping pattern now.
     model = xgb.XGBRegressor(
-        n_estimators=500,
+        n_estimators=600,
         max_depth=5,
         learning_rate=0.04,
         subsample=0.8,
-        colsample_bytree=0.7,
-        reg_lambda=1.5,
-        reg_alpha=0.5,
+        colsample_bytree=0.6,
+        reg_lambda=1.0,
         gamma=0.1,
         min_child_weight=3,
         eval_metric="rmse",
