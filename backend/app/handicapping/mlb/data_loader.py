@@ -216,7 +216,7 @@ SELECT
     cgs_a.cum_k9           AS a_cum_k9,
     cgs_a.cum_bb9          AS a_cum_bb9,
 
-    -- Home/away game counts & venue win% (pre-computed in mlb.team_rolling_stats)
+    -- Home/away game counts & venue win pct (pre-computed in mlb.team_rolling_stats)
     COALESCE(trs_h.home_games_sofar, 0)       AS h_home_games,
     COALESCE(trs_a.away_games_sofar, 0)       AS a_away_games,
     COALESCE(trs_a.game_away_venue_pct, 0.5)   AS a_team_venue_winpct,
@@ -326,6 +326,16 @@ SELECT
 
     trs_a.bullpen_ip_l5   AS a_bullpen_ip_l5,
     trs_a.bullpen_er_l5   AS a_bullpen_er_l5,
+
+    -- Venue-conditional rolling + season splits (home team at home / away team on road)
+    -- Rolling (last 10 at that venue): from trs_hv/trs_av LATERALs.
+    -- Season (venue-scoped season win pct): from cgs_hv/cgs_av LATERALs.
+    trs_hv.venue_rf_r10       AS h_home_rf_r10,
+    trs_hv.venue_win_pct_r10  AS h_home_win_pct_r10,
+    trs_av.venue_rf_r10       AS a_away_rf_r10,
+    trs_av.venue_win_pct_r10  AS a_away_win_pct_r10,
+    cgs_hv.venue_win_pct_season AS h_home_win_pct_season,
+    cgs_av.venue_win_pct_season AS a_away_win_pct_season,
 
     -- ──────────────────────────────────────────────────────────────────────
     -- PRIOR SEASON STATS (for early-season blending)
@@ -703,6 +713,61 @@ LEFT JOIN LATERAL (
     LIMIT 1
 ) trs_a ON TRUE
 
+-- Venue-conditional reads: the most recent FINAL row for each team AT this
+-- target game's venue. trs_hv = home team's last HOME game (team_side='home');
+-- trs_av = away team's last ROAD game (team_side='away'). These feed the
+-- venue-scoped rolling/cumulative split features (h_home_* / a_away_*),
+-- which only exist in the row matching the team_side. Added separately from
+-- trs_h/trs_a so the venue-agnostic workload/main stats reads are untouched.
+LEFT JOIN LATERAL (
+    SELECT trs.venue_rf_r10, trs.venue_win_pct_r10
+    FROM mlb.team_rolling_stats trs
+    JOIN mlb.games gp ON gp.id = trs.game_id
+    WHERE trs.team_id = g.home_team_id
+      AND trs.team_side = 'home'
+      AND gp.date < g.date - INTERVAL '30 minutes'
+      AND gp.status = 'FINAL'
+    ORDER BY gp.date DESC, gp.id DESC
+    LIMIT 1
+) trs_hv ON TRUE
+LEFT JOIN LATERAL (
+    SELECT trs.venue_rf_r10, trs.venue_win_pct_r10
+    FROM mlb.team_rolling_stats trs
+    JOIN mlb.games gp ON gp.id = trs.game_id
+    WHERE trs.team_id = g.away_team_id
+      AND trs.team_side = 'away'
+      AND gp.date < g.date - INTERVAL '30 minutes'
+      AND gp.status = 'FINAL'
+    ORDER BY gp.date DESC, gp.id DESC
+    LIMIT 1
+) trs_av ON TRUE
+
+-- Venue-scoped season win pct from cumulative (expanding, through that row's
+-- venue). cgs_hv = home team's home win pct season-to-date; cgs_av = away team's
+-- road win pct season-to-date. Read leak-safe (previous FINAL, capped 30min).
+LEFT JOIN LATERAL (
+    SELECT cgs.venue_win_pct_season
+    FROM mlb.cumulative_game_stats cgs
+    JOIN mlb.games gp ON gp.id = cgs.game_id
+    WHERE cgs.team_id = g.home_team_id
+      AND cgs.team_side = 'home'
+      AND gp.date < g.date - INTERVAL '30 minutes'
+      AND gp.status = 'FINAL'
+    ORDER BY gp.date DESC, gp.id DESC
+    LIMIT 1
+) cgs_hv ON TRUE
+LEFT JOIN LATERAL (
+    SELECT cgs.venue_win_pct_season
+    FROM mlb.cumulative_game_stats cgs
+    JOIN mlb.games gp ON gp.id = cgs.game_id
+    WHERE cgs.team_id = g.away_team_id
+      AND cgs.team_side = 'away'
+      AND gp.date < g.date - INTERVAL '30 minutes'
+      AND gp.status = 'FINAL'
+    ORDER BY gp.date DESC, gp.id DESC
+    LIMIT 1
+) cgs_av ON TRUE
+
 -- Prior season stats (for early-season blending)
 LEFT JOIN mlb.prior_team_stats pts_h
     ON pts_h.team_abbr = ht.abbreviation
@@ -1074,6 +1139,12 @@ COMPUTED_FEATURES_CATALOG: Dict[str, str] = {
     "a_pitcher_venue_era": "Away pitcher ERA at this venue (expanding mean, shift(1), since 2021)",
     "h_pitcher_home_era": "Home pitcher ERA at home (expanding mean, shift(1), prev + current season)",
     "a_team_venue_winpct": "Away team win pct at this venue (expanding mean, shift(1), prev + current season)",
+    "h_home_rf_r10": "Home team avg runs scored in its last 10 HOME games (venue-conditional rolling)",
+    "a_away_rf_r10": "Away team avg runs scored in its last 10 ROAD games (venue-conditional rolling)",
+    "h_home_win_pct_r10": "Home team win% in its last 10 HOME games (venue-conditional rolling)",
+    "a_away_win_pct_r10": "Away team win% in its last 10 ROAD games (venue-conditional rolling)",
+    "h_home_win_pct_season": "Home team season win% in HOME games only (venue-scoped season)",
+    "a_away_win_pct_season": "Away team season win% in ROAD games only (venue-scoped season)",
     # ── Pitcher day/night & rest ──
     "h_pitcher_day_era": "Home pitcher ERA in day games (expanding mean, shift(1))",
     "h_pitcher_night_era": "Home pitcher ERA in night games (expanding mean, shift(1))",
@@ -1200,6 +1271,12 @@ DISPLAY_NAMES: Dict[str, str] = {
     "a_pitcher_venue_era": "Away Pitcher Venue ERA",
     "h_pitcher_home_era": "Home Pitcher Home ERA",
     "a_team_venue_winpct": "Away Team Venue Win Pct",
+    "h_home_rf_r10": "Home Team Runs in Last 10 Home Games",
+    "a_away_rf_r10": "Away Team Runs in Last 10 Road Games",
+    "h_home_win_pct_r10": "Home Team Win% in Last 10 Home Games",
+    "a_away_win_pct_r10": "Away Team Win% in Last 10 Road Games",
+    "h_home_win_pct_season": "Home Team Win% at Home (Season)",
+    "a_away_win_pct_season": "Away Team Win% on Road (Season)",
     "a_pitcher_road_era": "Away Pitcher Road ERA",
     "h_pitcher_rest": "Home Pitcher Rest (Days)",
     "a_pitcher_rest": "Away Pitcher Rest (Days)",

@@ -110,6 +110,10 @@ CREATE TABLE IF NOT EXISTS {CUM_TABLE} (
 
     -- ── Tier 5: Team quality ───────────────────────────────────────
     cum_win_pct            DOUBLE PRECISION,
+    -- Venue-scoped season win pct: this team's win pct playing AT this row's
+    -- venue (team_side). Read by the loader as h_home_win_pct_season
+    -- (home team at home) / a_away_win_pct_season (away team on road).
+    venue_win_pct_season   DOUBLE PRECISION,
 
     PRIMARY KEY (game_id, team_side)
 );
@@ -381,6 +385,7 @@ ALL_COLS = [
 
     # Tier 5: Team quality
     "cum_win_pct",
+    "venue_win_pct_season",
 ]
 
 UPSERT_COLS = [c for c in ALL_COLS if c not in ("game_id", "team_side")]
@@ -451,6 +456,13 @@ def _populate(
     # ── Ensure table exists ──
     with engine.begin() as conn:
         conn.execute(sa_text(CREATE_TABLE_SQL))
+        # Idempotent migration for venue-scoped season win pct on existing DBs
+        conn.execute(
+            sa_text(
+                "ALTER TABLE nba.cumulative_game_stats "
+                "ADD COLUMN IF NOT EXISTS venue_win_pct_season DOUBLE PRECISION"
+            )
+        )
         logger.info("Table %s ready.", CUM_TABLE)
 
     # ── Load per-game team box scores ──
@@ -568,6 +580,17 @@ def _populate(
     # Round to 4 decimals
     df_raw["cum_win_pct"] = df_raw["cum_win_pct"].round(4)
 
+    # ── Venue-scoped season win pct (win pct AT this row's venue) ──────────
+    # Same expanding mean as cum_win_pct, but partitioned by venue so it
+    # measures only home play (team_side='home') or only road play
+    # (team_side='away'). Loader projects this as h_home_win_pct_season /
+    # a_away_win_pct_season depending on the target game's home/away team.
+    grouped_venue = df_raw.groupby(["team_id", "season_id", "team_side"], sort=False)
+    df_raw["venue_win_pct_season"] = grouped_venue["won"].transform(
+        lambda s: s.expanding(min_periods=1).mean()
+    ).fillna(0.0)
+    df_raw["venue_win_pct_season"] = df_raw["venue_win_pct_season"].round(4)
+
     # ── Compute cumulative sums (post-game, includes current game) ──
     # Cumulative: for game N, cumsum() gives stats for games 1..N.
     # The LATERAL JOIN in GAME_QUERY excludes the current game (game_id != g.id)
@@ -596,6 +619,7 @@ def _populate(
     #    stats live in nba.team_rolling_stats) ──
     tier45_cols = [
         "cum_win_pct",
+        "venue_win_pct_season",
     ]
 
     # ── Build result rows ──

@@ -102,6 +102,13 @@ CREATE TABLE IF NOT EXISTS {CUM_TABLE} (
     cum_k9      DOUBLE PRECISION,
     cum_bb9     DOUBLE PRECISION,
 
+    -- Win result for this game's team at this venue (1 = won).
+    won                    INTEGER DEFAULT 0,
+    -- Venue-scoped season win pct: this team's win pct playing AT this row's
+    -- venue (team_side). Loader projects as h_home_win_pct_season (home
+    -- team at home) / a_away_win_pct_season (away team on road).
+    venue_win_pct_season   DOUBLE PRECISION,
+
     PRIMARY KEY (game_id, team_side)
 );
 """
@@ -115,7 +122,8 @@ SELECT
     sub.team_side,
     sub.season_id,
     sub.game_timestamp,
-    {', '.join(f'sub.{alias}' for alias in BAT_COL_MAP)}
+    {', '.join(f'sub.{alias}' for alias in BAT_COL_MAP)},
+    sub.won
 FROM (
     SELECT
         g.id           AS game_id,
@@ -125,12 +133,18 @@ FROM (
         bg.team_side   AS team_side,
         g.season_id    AS season_id,
         g.date         AS game_timestamp,
+        CASE WHEN g.home_score > g.away_score THEN
+                 CASE WHEN bg.team_side = 'home' THEN 1 ELSE 0 END
+             ELSE
+                 CASE WHEN bg.team_side = 'away' THEN 1 ELSE 0 END
+        END            AS won,
         {', '.join(f'SUM(bg.{db}) AS {alias}' for alias, db in BAT_COL_MAP.items())}
     FROM mlb.batting_game_stats bg
     JOIN mlb.games g ON g.id = bg.game_id
     WHERE g.status = 'FINAL'
       AND g.season_id IS NOT NULL
-    GROUP BY g.id, bg.team_side, g.season_id, g.date, g.home_team_id, g.away_team_id
+    GROUP BY g.id, bg.team_side, g.season_id, g.date,
+             g.home_team_id, g.away_team_id, g.home_score, g.away_score
 ) sub
 ORDER BY sub.season_id, sub.team_id, sub.game_timestamp, sub.game_id
 """
@@ -300,9 +314,15 @@ def _populate(
 
     bats_to_write: list[dict] = []
     running: dict[tuple[int, int], dict[str, float]] = {}
+    # Venue-scoped season win tracker: (team_id, season_id, team_side) -> wins
+    # and total games AT that venue. Used to compute venue_win_pct_season
+    # (like cum_win_pct but partitioned by venue so it measures only home
+    # play or only road play — replaces the old loader-level expanding mean).
+    running_venue: dict[tuple[int, int, str], list[int]] = {}
 
     for _, row in batting_df.iterrows():
         key = (int(row["team_id"]), int(row["season_id"]))
+        vkey = (int(row["team_id"]), int(row["season_id"]), str(row["team_side"]))
         gid = int(row["game_id"])
         side = str(row["team_side"])
 
@@ -311,6 +331,7 @@ def _populate(
             k: (0 if (v is not None and v != v) or (isinstance(v, float) and math.isinf(v)) else v)
             for k, v in row.items()
         }
+        won = int(row_vals.get("won", 0) or 0)
 
         if (gid, side) in existing:
             # Still update running totals for future games
@@ -318,6 +339,9 @@ def _populate(
             for alias in BAT_COL_MAP:
                 v = row_vals.get(alias, 0)
                 run[alias] = run.get(alias, 0) + float(v)
+            rv = running_venue.setdefault(vkey, [0, 0])
+            rv[0] += won
+            rv[1] += 1
             continue
 
         run = running.get(key)
@@ -337,6 +361,7 @@ def _populate(
             "team_side": side,
             "season_id": int(row_vals["season_id"]),
             "game_timestamp": row_vals["game_timestamp"],
+            "won": won,
         }
 
         # !============================================================================================!
@@ -350,6 +375,16 @@ def _populate(
         # Raw accumulators (running totals now include this game = POST-game)
         for alias in BAT_COL_MAP:
             cum_row[f"bat_{alias}"] = int(run.get(alias, 0))
+
+        # ── Venue-scoped season win pct (through this game) ──────────────
+        # Tracks wins/games AT this row's venue (team_side) via running_venue.
+        # Stored as venue_win_pct_season; the loader projects it as
+        # h_home_win_pct_season (home team at home) / a_away_win_pct_season
+        # (away team on road). Leak-safe: loader reads the PREVIOUS Final row.
+        rv = running_venue.setdefault(vkey, [0, 0])
+        rv[0] += won
+        rv[1] += 1
+        cum_row["venue_win_pct_season"] = round(rv[0] / rv[1], 4) if rv[1] else 0.0
 
         # Derived stats
         cum_row.update(_compute_cumulative_batting(cum_row))
@@ -478,6 +513,7 @@ def _all_columns() -> list[str]:
         "cum_babip", "cum_k_rate", "cum_bb_rate",
         "cum_era", "cum_whip", "cum_k9", "cum_bb9",
     ]
+    cols += ["won", "venue_win_pct_season"]
     return cols
 
 

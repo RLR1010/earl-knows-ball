@@ -236,6 +236,16 @@ SELECT *,
     AVG(era_this)  OVER w20 AS era20,
     AVG(whip_this) OVER w20 AS whip20,
 
+    -- Venue-conditional last-10 (only this team's games at this row's venue).
+    -- venue_rf_r10 = avg runs scored; venue_win_pct_r10 = win rate. Loader
+    -- projects h_home_rf_r10 / h_home_win_pct_r10 for the home team and
+    -- a_away_rf_r10 / a_away_win_pct_r10 for the away team.
+    AVG(rf)         OVER w10_venue AS venue_rf_r10,
+    AVG(CASE WHEN is_final THEN
+            CASE WHEN is_home THEN (home_score > away_score)::int
+                 ELSE (away_score > home_score)::int END
+        END)        OVER w10_venue AS venue_win_pct_r10,
+
     -- Pre-computed game counts (replaces correlated subqueries in GAME_QUERY)
     CASE WHEN team_side = 'home' THEN GREATEST(0, side_game_n - 1) END AS home_games_sofar,
     CASE WHEN team_side = 'away' THEN GREATEST(0, side_game_n - 1) END AS away_games_sofar,
@@ -332,7 +342,14 @@ WINDOW
     w15    AS (PARTITION BY team_id, season_id ORDER BY game_date, game_id
                ROWS BETWEEN 14 PRECEDING AND CURRENT ROW),
     w20    AS (PARTITION BY team_id, season_id ORDER BY game_date, game_id
-               ROWS BETWEEN 19 PRECEDING AND CURRENT ROW)
+               ROWS BETWEEN 19 PRECEDING AND CURRENT ROW),
+    -- Venue-conditional last-10: partitioned by team_side too, so it only sees
+    -- this team's games AT this row's venue (home-only on team_side='home',
+    -- road-only on team_side='away'). Loader projects as h_home_*.r10 for the
+    -- home team and a_away_*.r10 for the away team.
+    w10_venue AS (PARTITION BY team_id, season_id, team_side
+                  ORDER BY game_date, game_id
+                  ROWS BETWEEN 9 PRECEDING AND CURRENT ROW)
 ORDER BY team_id, season_id, game_date, game_id
 ;
 """

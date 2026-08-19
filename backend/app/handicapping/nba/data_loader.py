@@ -248,6 +248,9 @@ team_games AS (
         hrs.wins_10                AS h_wins_10,
         hrs.adj_off_10             AS h_adj_off_10,
         hrs.adj_def_10             AS h_adj_def_10,
+        hrs_hv.venue_pts_r10       AS h_home_pts_r10,
+        hrs_hv.venue_win_pct_r10   AS h_home_win_pct_r10,
+        cgs_hv.venue_win_pct_season AS h_home_win_pct_season,
         hrs.star_ppg_5             AS h_star_ppg_5,
         hrs.star1_ppg_5            AS h_star1_ppg_5,
         hrs.stars_active           AS h_stars_active,
@@ -323,6 +326,9 @@ team_games AS (
         ars.wins_10                AS a_wins_10,
         ars.adj_off_10             AS a_adj_off_10,
         ars.adj_def_10             AS a_adj_def_10,
+        ars_av.venue_pts_r10       AS a_away_pts_r10,
+        ars_av.venue_win_pct_r10   AS a_away_win_pct_r10,
+        cgs_av.venue_win_pct_season AS a_away_win_pct_season,
         ars.star_ppg_5             AS a_star_ppg_5,
         ars.star1_ppg_5            AS a_star1_ppg_5,
         ars.stars_active           AS a_stars_active,
@@ -510,6 +516,57 @@ team_games AS (
         ORDER BY rs.game_date DESC, rs.game_id DESC
         LIMIT 1
     ) ars ON true
+    -- Venue-conditional reads (home team's last HOME row / away team's last ROAD
+    -- row). These feed the venue-scoped split features (h_home_pts_r10,
+    -- h_home_win_pct_r10 / a_away_pts_r10, a_away_win_pct_r10). Since the
+    -- rolling table stores one row per (game, team_side), we filter team_side so
+    -- venue_* is read from the row matching the target venue. Leak-safe.
+    LEFT JOIN LATERAL (
+        SELECT rs.venue_pts_r10, rs.venue_win_pct_r10
+        FROM nba.team_rolling_stats rs
+        WHERE rs.team_id = g.home_team_id
+          AND rs.team_side = 'home'
+          AND rs.game_id != g.id
+          AND rs.game_date < g.date::date
+          AND rs.season_id = g.season_id
+        ORDER BY rs.game_date DESC, rs.game_id DESC
+        LIMIT 1
+    ) hrs_hv ON true
+    LEFT JOIN LATERAL (
+        SELECT rs.venue_pts_r10, rs.venue_win_pct_r10
+        FROM nba.team_rolling_stats rs
+        WHERE rs.team_id = g.away_team_id
+          AND rs.team_side = 'away'
+          AND rs.game_id != g.id
+          AND rs.game_date < g.date::date
+          AND rs.season_id = g.season_id
+        ORDER BY rs.game_date DESC, rs.game_id DESC
+        LIMIT 1
+    ) ars_av ON true
+    -- Venue-scoped season win pct from cumulative (home team's home win pct season-to-date
+    -- / away team's road win pct season-to-date). Leak-safe.
+    LEFT JOIN LATERAL (
+        SELECT cgs.venue_win_pct_season
+        FROM nba.cumulative_game_stats cgs
+        WHERE cgs.team_id = g.home_team_id
+          AND cgs.team_side = 'home'
+          AND cgs.game_id != g.id
+          AND cgs.game_date < g.date::date
+          AND cgs.season_id = g.season_id
+        ORDER BY cgs.game_date DESC, cgs.game_id DESC
+        LIMIT 1
+    ) cgs_hv ON true
+    LEFT JOIN LATERAL (
+        SELECT cgs.venue_win_pct_season
+        FROM nba.cumulative_game_stats cgs
+        WHERE cgs.team_id = g.away_team_id
+          AND cgs.team_side = 'away'
+          AND cgs.game_id != g.id
+          AND cgs.game_date < g.date::date
+          AND cgs.season_id = g.season_id
+        ORDER BY cgs.game_date DESC, cgs.game_id DESC
+        LIMIT 1
+    ) cgs_av ON true
     LEFT JOIN nba.prior_team_stats pts_h
         ON pts_h.team_id = g.home_team_id AND pts_h.season_year = s.year - 1
     LEFT JOIN nba.prior_team_stats pts_a
@@ -632,6 +689,12 @@ FEATURES_CATALOG: Dict[str, str] = {
     "a_recency_ppg": "Away % of PPG from last 3 games",
     "a_recency_net_rtg": "Away % of net rating from last 3 games",
     "a_cum_win_pct": "Away season-to-date win %",
+    "h_home_pts_r10": "Home team avg points in its last 10 HOME games (venue-conditional rolling)",
+    "a_away_pts_r10": "Away team avg points in its last 10 ROAD games (venue-conditional rolling)",
+    "h_home_win_pct_r10": "Home team win% in its last 10 HOME games (venue-conditional rolling)",
+    "a_away_win_pct_r10": "Away team win% in its last 10 ROAD games (venue-conditional rolling)",
+    "h_home_win_pct_season": "Home team season win% in HOME games only (venue-scoped season)",
+    "a_away_win_pct_season": "Away team season win% in ROAD games only (venue-scoped season)",
 }
 
 COMPUTED_FEATURES_CATALOG: Dict[str, str] = {
@@ -781,6 +844,12 @@ DISPLAY_NAMES: Dict[str, str] = {
     "h_adj_def_10": "Home Adj Def L10",
     "a_adj_off_10": "Away Adj Off L10",
     "a_adj_def_10": "Away Adj Def L10",
+    "h_home_pts_r10": "Home Teams Pts in Last 10 Home Games",
+    "a_away_pts_r10": "Away Team Pts in Last 10 Road Games",
+    "h_home_win_pct_r10": "Home Team Win% in Last 10 Home Games",
+    "a_away_win_pct_r10": "Away Team Win% in Last 10 Road Games",
+    "h_home_win_pct_season": "Home Team Win% at Home (Season)",
+    "a_away_win_pct_season": "Away Team Win% on Road (Season)",
 
     "rest_h": "Home Rest",
     "rest_a": "Away Rest",
@@ -1432,6 +1501,9 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
         "h_star_ppg_5": "star_ppg_5",
         "h_star1_ppg_5": "star1_ppg_5",
         "h_cum_win_pct": "cum_win_pct",
+        "h_home_pts_r10": "venue_pts_r10",
+        "h_home_win_pct_r10": "venue_win_pct_r10",
+        "h_home_win_pct_season": "venue_win_pct_season",
     }
     away_cols = {
         "game_id": "game_id",
@@ -1537,6 +1609,9 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
         "a_star_ppg_5": "star_ppg_5",
         "a_star1_ppg_5": "star1_ppg_5",
         "a_cum_win_pct": "cum_win_pct",
+        "a_away_pts_r10": "venue_pts_r10",
+        "a_away_win_pct_r10": "venue_win_pct_r10",
+        "a_away_win_pct_season": "venue_win_pct_season",
     }
 
     home_half = df[list(home_cols.keys())].rename(columns=home_cols).copy()

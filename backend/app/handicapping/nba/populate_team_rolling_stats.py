@@ -146,6 +146,12 @@ CREATE TABLE IF NOT EXISTS nba.team_rolling_stats (
     -- opponent-adjusted
     adj_off_10                    DOUBLE PRECISION,
     adj_def_10                    DOUBLE PRECISION,
+    -- venue-conditional r10 (last 10 at THIS row's venue, i.e. only home
+    -- play on team_side='home', only road play on team_side='away')
+    -- Loader projects as h_home_pts_r10 / h_home_win_pct_r10 for the home
+    -- team and a_away_pts_r10 / a_away_win_pct_r10 for the away team.
+    venue_pts_r10                 DOUBLE PRECISION,
+    venue_win_pct_r10             DOUBLE PRECISION,
     -- star
     star_ppg_5                    DOUBLE PRECISION,
     star1_ppg_5                   DOUBLE PRECISION,
@@ -157,6 +163,10 @@ CREATE INDEX IF NOT EXISTS idx_team_rolling_stats_game
     ON nba.team_rolling_stats (game_id);
 CREATE INDEX IF NOT EXISTS idx_team_rolling_stats_team
     ON nba.team_rolling_stats (team_id, season_id, game_date);
+
+-- Migration: venue-conditional rolling columns (idempotent)
+ALTER TABLE nba.team_rolling_stats ADD COLUMN IF NOT EXISTS venue_pts_r10 DOUBLE PRECISION;
+ALTER TABLE nba.team_rolling_stats ADD COLUMN IF NOT EXISTS venue_win_pct_r10 DOUBLE PRECISION;
 """
 
 
@@ -424,6 +434,10 @@ rolling AS (
         -- opponent-adjusted L10 (vs league rolling mean of per-game ortg/drtg)
         AVG(p.per_game_ortg) OVER w10 - AVG(p.per_game_ortg) OVER wlg10 AS adj_off_10,
         AVG(p.per_game_drtg) OVER w10 - AVG(p.per_game_drtg) OVER wlg10 AS adj_def_10,
+        -- venue-conditional r10: only games AT this row's venue (team_side).
+        -- AVG of points + win-rate over the venue-partitioned last-10 window.
+        AVG(p.points) OVER w10_venue AS venue_pts_r10,
+        AVG(p.won)     OVER w10_venue AS venue_win_pct_r10,
         -- row index for star-join matching
         p.points AS points
     FROM pg p
@@ -439,7 +453,10 @@ rolling AS (
         w3ord  AS (PARTITION BY p.team_id, p.season_id ORDER BY p.game_date, p.game_id),
         w5ord  AS (PARTITION BY p.team_id, p.season_id ORDER BY p.game_date, p.game_id),
         wlg10  AS (ORDER BY p.game_date, p.game_id
-                   ROWS BETWEEN 9 PRECEDING AND CURRENT ROW)
+                   ROWS BETWEEN 9 PRECEDING AND CURRENT ROW),
+        w10_venue AS (PARTITION BY p.team_id, p.season_id, p.team_side
+                      ORDER BY p.game_date, p.game_id
+                      ROWS BETWEEN 9 PRECEDING AND CURRENT ROW)
 ),
 
 -- Top-3 scorers per (team, season) by season PPG (games_played >= 10)
@@ -505,6 +522,7 @@ INSERT INTO nba.team_rolling_stats (
     cv10_net_rtg, cv10_ppg, cv20_ppg,
     recency_net_rtg, recency_ppg,
     adj_off_10, adj_def_10,
+    venue_pts_r10, venue_win_pct_r10,
     star_ppg_5, star1_ppg_5,
     stars_active, star1_active
 )
@@ -520,6 +538,7 @@ SELECT
     r.cv10_net_rtg, r.cv10_ppg, r.cv20_ppg,
     r.recency_net_rtg, r.recency_ppg,
     r.adj_off_10, r.adj_def_10,
+    r.venue_pts_r10, r.venue_win_pct_r10,
     sa.star_ppg_5, sa.star1_ppg_5,
     sa.stars_active, sa.star1_active
 FROM rolling r
@@ -570,6 +589,8 @@ DO UPDATE SET
     recency_ppg      = EXCLUDED.recency_ppg,
     adj_off_10       = EXCLUDED.adj_off_10,
     adj_def_10       = EXCLUDED.adj_def_10,
+    venue_pts_r10    = EXCLUDED.venue_pts_r10,
+    venue_win_pct_r10 = EXCLUDED.venue_win_pct_r10,
     star_ppg_5       = EXCLUDED.star_ppg_5,
     star1_ppg_5      = EXCLUDED.star1_ppg_5,
     stars_active     = EXCLUDED.stars_active,

@@ -110,6 +110,8 @@ CREATE TABLE IF NOT EXISTS mlb.team_rolling_stats (
     losses_l10       INTEGER,
     bullpen_ip_l5    INTEGER,
     bullpen_er_l5    DOUBLE PRECISION,
+    venue_rf_r10     DOUBLE PRECISION,
+    venue_win_pct_r10 DOUBLE PRECISION,
 
     PRIMARY KEY (game_id, team_side)
 );
@@ -123,6 +125,9 @@ ALTER TABLE mlb.team_rolling_stats ADD COLUMN IF NOT EXISTS wins_l10     INTEGER
 ALTER TABLE mlb.team_rolling_stats ADD COLUMN IF NOT EXISTS losses_l10   INTEGER;
 ALTER TABLE mlb.team_rolling_stats ADD COLUMN IF NOT EXISTS bullpen_ip_l5 INTEGER;
 ALTER TABLE mlb.team_rolling_stats ADD COLUMN IF NOT EXISTS bullpen_er_l5 DOUBLE PRECISION;
+-- Venue-conditional last-10 (only this team's games at this row's venue)
+ALTER TABLE mlb.team_rolling_stats ADD COLUMN IF NOT EXISTS venue_rf_r10       DOUBLE PRECISION;
+ALTER TABLE mlb.team_rolling_stats ADD COLUMN IF NOT EXISTS venue_win_pct_r10   DOUBLE PRECISION;
 
 CREATE INDEX IF NOT EXISTS idx_trs_team_season
     ON mlb.team_rolling_stats (team_id, season_id, game_date);
