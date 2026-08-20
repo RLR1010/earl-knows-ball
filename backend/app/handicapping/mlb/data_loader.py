@@ -149,6 +149,7 @@ SELECT
     v.name             AS venue_name,
     v.surface          AS venue_surface,
     v.roof_type        AS venue_roof,
+    v.park_factor_overall AS venue_park_factor,
     v.capacity         AS venue_capacity,
     v.latitude         AS venue_latitude,
     v.longitude        AS venue_longitude,
@@ -1686,13 +1687,19 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
             result["day_night"] = "N"  # default night
 
     # Stadium / park factors
-    if "venue_roof" in result.columns:
+    # USE the real venue park factor (v.park_factor_overall) instead of a constant.
+    # Previously park_factor was hardcoded to 100 (neutral) for every game, so it
+    # carried ZERO information for the OU model (Coors ~109 vs Petco ~90 were never
+    # differentiated). venues.park_factor_overall is already joined in GAME_QUERY as
+    # venue_park_factor (Rich 2026-08-19 accuracy audit).
+    if "venue_park_factor" in result.columns:
+        result["park_factor"] = result["venue_park_factor"].fillna(100.0).astype(float)
+        result["home_park_factor"] = result["venue_park_factor"].fillna(100.0).astype(float)
+        result["away_park_factor"] = result["venue_park_factor"].fillna(100.0).astype(float)
+    elif "venue_roof" in result.columns:
         result["park_factor"] = 100  # neutral default
         result["home_park_factor"] = 100
         result["away_park_factor"] = 100
-
-    # Park factor from venue (v.park_factor_overall exists in venues table)
-    # If not in query, use a lookup based on venue_name
 
     # Pitcher handiness vs LHP/RHP splits — use rolling stats as proxy
     # h_cum_avg vs same-team splits
