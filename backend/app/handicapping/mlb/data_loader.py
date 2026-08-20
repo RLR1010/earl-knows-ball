@@ -1941,6 +1941,7 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
         "minute maid park": (70.0, 82.0),      # Houston (roof almost always closed in TX heat)
         "daikin park": (70.0, 82.0),           # Houston (new name)
         "globe life field": (65.0, 85.0),      # Texas/Arlington
+        "globe life park in arlington": (65.0, 85.0),  # Texas (old name, roof_type often NULL)
         "chase field": (70.0, 95.0),           # Arizona (open only in moderate PHX temps)
         "t-mobile park": (50.0, 80.0),         # Seattle (often open)
         "american family field": (55.0, 80.0), # Milwaukee
@@ -1953,16 +1954,40 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
 
     roof_col = "roof_type" if "roof_type" in result.columns else "venue_roof"
     if roof_col in result.columns:
-        is_retractable = result[roof_col].str.lower() == "retractable"
+        # A game is RETRACTABLE if roof_type says so OR the venue is a known
+        # retractable park. roof_type is NULL for ~51% of retractable-park games
+        # (Minute Maid / Chase / Rogers / Miller / Globe Life etc.), so keying only
+        # on roof_type silently left those games un-neutralized. Match by venue name
+        # too (Rich 2026-08-19 accuracy audit).
+        roof_is_retr = result[roof_col].str.lower() == "retractable"
         name_col = "venue_name" if "venue_name" in result.columns else "venue"
         if name_col in result.columns:
+            _vkey = result[name_col].astype(str).str.lower()
+            # Match retractable parks by distinctive venue-name substrings (handles
+            # name variants like 'Globe Life Park in Arlington', 'loanDepot park'):
+            _retr_names = [
+                "minute maid", "daikin", "globe life", "chase field", "t-mobile",
+                "american family", "miller park", "rogers", "loan depot", "loandepot",
+            ]
+            venue_is_retr = pd.Series(False, index=result.index)
+            for _nm in _retr_names:
+                venue_is_retr = venue_is_retr | _vkey.str.contains(_nm, regex=False, na=False)
+        else:
+            venue_is_retr = pd.Series(False, index=result.index)
+        is_retractable = roof_is_retr | venue_is_retr
+        if name_col in result.columns:
             key = result[name_col].astype(str).str.lower()
-            lo = key.map(
-                {k: v[0] for k, v in RETRACTABLE_TEMP_BANDS.items()}
-            ).fillna(DEFAULT_RETRACTABLE_BAND[0]).astype(float)
-            hi = key.map(
-                {k: v[1] for k, v in RETRACTABLE_TEMP_BANDS.items()}
-            ).fillna(DEFAULT_RETRACTABLE_BAND[1]).astype(float)
+            # band lookup by nearest park name (handle 'Globe Life Park in Arlington'
+            # via substring against the same retractable key set)
+            _bandmap = {k: v for k, v in RETRACTABLE_TEMP_BANDS.items()}
+            lo = pd.Series(DEFAULT_RETRACTABLE_BAND[0], index=result.index, dtype=float)
+            hi = pd.Series(DEFAULT_RETRACTABLE_BAND[1], index=result.index, dtype=float)
+            for _nm, (_lo, _hi) in _bandmap.items():
+                _m = key.str.contains(_nm, regex=False, na=False)
+                lo = lo.where(~_m, _lo)
+                hi = hi.where(~_m, _hi)
+            lo = lo.astype(float)
+            hi = hi.astype(float)
             has_temp = result.get("temperature").notna() if "temperature" in result else pd.Series(False, index=result.index)
             temp_outside = pd.Series(False, index=result.index)
             if "temperature" in result:
