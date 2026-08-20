@@ -1577,6 +1577,20 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
         if src in result.columns and dst not in result.columns:
             result[dst] = result[src]
 
+    # ── 4b. Starter-sample gating: FIP untrusted until enough starts ────────
+    # fip_ytd is season-cumulative but swings on tiny denominators (a 1-appearance
+    # bulk reliever/opener yields meaningless FIP values e.g. 45-93). NULL out
+    # pitcher FIP until the starter has logged >= MIN_STARTS_FOR_FIP starts, so the
+    # model never sees 1-start garbage. (Rich 2026-08-19)
+    MIN_STARTS_FOR_FIP = 3
+    for side in ("h", "a"):
+        starts_col = f"{side}_p_starts_ytd"
+        fip_col = f"{side}_pitcher_fip_ytd"
+        if starts_col in result.columns and fip_col in result.columns:
+            low_starts = result[starts_col].isna() | (result[starts_col] < MIN_STARTS_FOR_FIP)
+            if low_starts.any():
+                result.loc[low_starts, fip_col] = None
+
     # ── 5. Combo features (interactions) ──────────────────────────────────
     # ERA differential
     if "h_era_10" in result.columns and "a_era_10" in result.columns:
