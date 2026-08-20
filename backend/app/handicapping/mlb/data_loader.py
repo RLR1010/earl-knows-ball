@@ -1578,19 +1578,26 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
         if src in result.columns and dst not in result.columns:
             result[dst] = result[src]
 
-    # ── 4b. Starter-sample gating: FIP untrusted until enough starts ────────
-    # fip_ytd is season-cumulative but swings on tiny denominators (a 1-appearance
-    # bulk reliever/opener yields meaningless FIP values e.g. 45-93). NULL out
-    # pitcher FIP until the starter has logged >= MIN_STARTS_FOR_FIP starts, so the
-    # model never sees 1-start garbage. (Rich 2026-08-19)
-    MIN_STARTS_FOR_FIP = 3
+    # ── 4b. Starter-sample gating: pitcher RATE stats untrusted until enough starts ──
+    # ERA/WHIP/K9/BB9/FIP are all season-cumulative or window-averages that swing on
+    # tiny denominators (a 1-appearance bulk reliever/opener yields meaningless values
+    # e.g. era_5=135, whip_20=21, fip=45-93). NULL out ALL pitcher rate features until
+    # the starter has logged >= MIN_STARTS_FOR_PITCHER starts, so the model never sees
+    # 1-start garbage. (Rich 2026-08-19 accuracy audit)
+    MIN_STARTS_FOR_PITCHER = 3
+    _P_RATE_SUFFIXES = ("_era_ytd", "_era_l5", "_era_l10", "_era_l20",
+                        "_whip_ytd", "_whip_l5", "_whip_l10", "_whip_l20",
+                        "_k9_ytd", "_k9_l5", "_k9_l10", "_k9_l20",
+                        "_bb9_ytd", "_fip_ytd")
     for side in ("h", "a"):
         starts_col = f"{side}_p_starts_ytd"
-        fip_col = f"{side}_pitcher_fip_ytd"
-        if starts_col in result.columns and fip_col in result.columns:
-            low_starts = result[starts_col].isna() | (result[starts_col] < MIN_STARTS_FOR_FIP)
-            if low_starts.any():
-                result.loc[low_starts, fip_col] = None
+        if starts_col not in result.columns:
+            continue
+        low_starts = result[starts_col].isna() | (result[starts_col] < MIN_STARTS_FOR_PITCHER)
+        for suffix in _P_RATE_SUFFIXES:
+            col = f"{side}_pitcher{suffix}"
+            if col in result.columns:
+                result.loc[low_starts, col] = None
 
     # ── 5. Combo features (interactions) ──────────────────────────────────
     # ERA differential
