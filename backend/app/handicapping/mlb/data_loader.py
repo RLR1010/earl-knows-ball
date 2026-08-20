@@ -1908,6 +1908,60 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     else:
         result["wind_calculated"] = 0
 
+    # ── 10b. Retractable-roof roof-state: per-stadium temp band ───────────
+    # Retractable parks (Houston/Texas/Arizona/etc.) usually play with the roof
+    # CLOSED; the outdoor temp/wind sensors still record raw values (e.g. Minute
+    # Maid 0-97F) that would incorrectly feed the model as if the game were
+    # open-air. Rule (Rich 2026-08-19): for a retractable park, the roof is only
+    # OPEN when the game-time temperature falls INSIDE that park's temp band.
+    # Outside the band (or missing temp) => roof CLOSED => neutralize weather:
+    # set is_dome=1, replace temperature with a neutral indoor 72F, and zero the
+    # wind (both wind_calculated and wind_speed). Inside the band => keep real weather.
+    NEUTRAL_INDOOR_TEMP = 72.0
+    # roof-open temp range [min, max] per retractable park (via venue_name or g.venue)
+    RETRACTABLE_TEMP_BANDS = {
+        "minute maid park": (70.0, 82.0),      # Houston (roof almost always closed in TX heat)
+        "daikin park": (70.0, 82.0),           # Houston (new name)
+        "globe life field": (65.0, 85.0),      # Texas/Arlington
+        "chase field": (70.0, 95.0),           # Arizona (open only in moderate PHX temps)
+        "t-mobile park": (50.0, 80.0),         # Seattle (often open)
+        "american family field": (55.0, 80.0), # Milwaukee
+        "miller park": (55.0, 80.0),           # Milwaukee (old name)
+        "rogers centre": (55.0, 80.0),         # Toronto
+        "loan deposit park": (70.0, 88.0),     # Miami
+        "loanDepot park".lower(): (70.0, 88.0),
+    }
+    DEFAULT_RETRACTABLE_BAND = (60.0, 85.0)
+
+    roof_col = "roof_type" if "roof_type" in result.columns else "venue_roof"
+    if roof_col in result.columns:
+        is_retractable = result[roof_col].str.lower() == "retractable"
+        name_col = "venue_name" if "venue_name" in result.columns else "venue"
+        if name_col in result.columns:
+            key = result[name_col].astype(str).str.lower()
+            lo = key.map(
+                {k: v[0] for k, v in RETRACTABLE_TEMP_BANDS.items()}
+            ).fillna(DEFAULT_RETRACTABLE_BAND[0]).astype(float)
+            hi = key.map(
+                {k: v[1] for k, v in RETRACTABLE_TEMP_BANDS.items()}
+            ).fillna(DEFAULT_RETRACTABLE_BAND[1]).astype(float)
+            has_temp = result.get("temperature").notna() if "temperature" in result else pd.Series(False, index=result.index)
+            temp_outside = pd.Series(False, index=result.index)
+            if "temperature" in result:
+                t = result["temperature"]
+                temp_outside = (t < lo) | (t > hi)
+            roof_closed = is_retractable & (temp_outside | (~has_temp))
+            # Neutralize temperature + wind where roof is closed
+            if roof_closed.any():
+                if "temperature" in result:
+                    result.loc[roof_closed, "temperature"] = NEUTRAL_INDOOR_TEMP
+                if "wind_calculated" in result:
+                    result.loc[roof_closed, "wind_calculated"] = 0.0
+                if "wind_speed" in result:
+                    result.loc[roof_closed, "wind_speed"] = 0.0
+                if "wind_direction" in result:
+                    result.loc[roof_closed, "wind_direction"] = ""
+
     # ── Group 7 — Calendar/Situational features ────────────────────────────────
     if "game_date" in result.columns:
         result["month"] = result["game_date"].dt.month
