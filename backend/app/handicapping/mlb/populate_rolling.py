@@ -269,7 +269,8 @@ SELECT *,
                  ELSE (away_score > home_score)::int END
         END) OVER w_full  AS win_pct,
     AVG(CASE WHEN is_final AND closing_ou IS NOT NULL THEN
-            ((home_score + away_score) > closing_ou)::int
+            CASE WHEN (home_score + away_score) > closing_ou THEN 1
+                 WHEN (home_score + away_score) < closing_ou THEN 0 END
         END) OVER w_full  AS over_pct,
     AVG(CASE WHEN is_final THEN
             CASE WHEN is_home THEN (home_score - away_score)::float
@@ -280,7 +281,8 @@ SELECT *,
                  ELSE (away_score > home_score)::int END
         END) OVER w5      AS win_pct5,
     AVG(CASE WHEN is_final AND closing_ou IS NOT NULL THEN
-            ((home_score + away_score) > closing_ou)::int
+            CASE WHEN (home_score + away_score) > closing_ou THEN 1
+                 WHEN (home_score + away_score) < closing_ou THEN 0 END
         END) OVER w5      AS over_pct5,
     AVG(CASE WHEN is_final THEN
             CASE WHEN is_home THEN (home_score - away_score)::float
@@ -291,14 +293,16 @@ SELECT *,
                  ELSE (away_score > home_score)::int END
         END) OVER w10     AS win_pct10,
     AVG(CASE WHEN is_final AND closing_ou IS NOT NULL THEN
-            ((home_score + away_score) > closing_ou)::int
+            CASE WHEN (home_score + away_score) > closing_ou THEN 1
+                 WHEN (home_score + away_score) < closing_ou THEN 0 END
         END) OVER w10     AS over_pct10,
     AVG(CASE WHEN is_final THEN
             CASE WHEN is_home THEN (home_score > away_score)::int
                  ELSE (away_score > home_score)::int END
         END) OVER w15     AS win_pct15,
     AVG(CASE WHEN is_final AND closing_ou IS NOT NULL THEN
-            ((home_score + away_score) > closing_ou)::int
+            CASE WHEN (home_score + away_score) > closing_ou THEN 1
+                 WHEN (home_score + away_score) < closing_ou THEN 0 END
         END) OVER w15     AS over_pct15,
 
     -- Season expanding averages (through this game: w_full includes CURRENT ROW;)

@@ -1780,9 +1780,13 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     result["a_form_l10"] = result["a_winpct_l10"]
 
     # Over frequency — from team_rolling_stats.over_pct (season-level) / over_pct5 (L5).
+    # over_pct is NULL whenever closing_ou is missing (~15% of rows), so backfill to a
+    # NEUTRAL 0.5 (no information) rather than leaving NaN (which would become 0 in the
+    # model input and falsely signal 'under-leaning'). over_freq5 already backfills; this
+    # makes over_freq consistent (Rich 2026-08-19 accuracy audit).
     if "h_over_pct" in result.columns and "a_over_pct" in result.columns:
-        result["h_over_freq"] = result["h_over_pct"]
-        result["a_over_freq"] = result["a_over_pct"]
+        result["h_over_freq"] = result["h_over_pct"].fillna(0.5)
+        result["a_over_freq"] = result["a_over_pct"].fillna(0.5)
         # over_freq5 — use L5 rolling over% if available, else fall back to season
         result["h_over_freq5"] = (
             result["h_over_pct5"] if "h_over_pct5" in result.columns else result["h_over_pct"]
