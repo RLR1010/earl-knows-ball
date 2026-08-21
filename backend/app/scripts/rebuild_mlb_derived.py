@@ -1,54 +1,60 @@
-"""Full clean rebuild of all MLB derived stat tables after the pgs.ip repair.
-
-Dependency order:
-  1. cumulative_game_stats   (source of per-game boxscore aggregates)  — force_rebuild (truncate)
-  2. bullpen_game_stats      (from pgs / game boxscores)               — full_backfill
-  3. pitcher_rolling_stats   (from cumulative/pgs)                     — non-incremental (truncate)
-  4. team_rolling_stats      (from cumulative)                          — non-incremental (truncate)
-
-Run: cd backend && PYTHONPATH=$PWD ../venv/bin/python app/scripts/rebuild_mlb_derived.py
 """
-import asyncio
+Rebuild MLB derived rolling/cumulative tables after the boxscore backfill.
+
+Order (dependency chain):
+  1. cumulative_game_stats      (team cumulative, from batting+pitcher boxscores)
+  2. team_rolling_stats         (from cumulative + bullpen)
+  3. pitcher_rolling_stats      (from pitcher_game_stats + cumulative)
+
+Run after a boxscore backfill so newly-added batting/pitching rows flow into the
+rollups the data_loader reads.
+
+Usage (non-login shell):
+    export XDG_RUNTIME_DIR=/run/user/$(id -u)
+    ./venv/bin/python app/scripts/rebuild_mlb_derived.py         # full rebuild all seasons
+    ./venv/bin/python app/scripts/rebuild_mlb_derived.py --skip-cumulative
+"""
+import argparse
+import sys
+import os
 import logging
 import time
 
-import sqlalchemy as sa
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from app.core.config import settings
-from app.database import async_session
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
-log = logging.getLogger("earl.mlb_rebuild")
+logger = logging.getLogger("earl.mlb_derived_rebuild")
+
+DB = settings.database_url_sync
 
 
-async def rebuild() -> None:
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--skip-cumulative", action="store_true",
+                    help="Skip rebuilding cumulative_game_stats (e.g. if already done)")
+    ap.add_argument("--incremental", action="store_true",
+                    help="Rolling rebuilds incremental instead of full")
+    args = ap.parse_args()
+
     t0 = time.time()
+    if not args.skip_cumulative:
+        logger.info("== Rebuilding cumulative_game_stats ==")
+        from app.handicapping.mlb.cumulative_stats import populate_cumulative_stats
+        summary = populate_cumulative_stats(db_url=DB, seasons=None, force_rebuild=True)
+        logger.info("cumulative_game_stats summary: %s", summary)
+    else:
+        logger.info("Skipping cumulative_game_stats (--skip-cumulative)")
 
-    # 1) Cumulative (sync path, force_rebuild truncates)
-    from app.handicapping.mlb.cumulative_stats import populate_cumulative_stats
-    s = time.time()
-    res = populate_cumulative_stats(settings.database_url_sync, force_rebuild=True)
-    log.info(f"[1/4] cumulative_game_stats rebuilt in {time.time()-s:.0f}s -> {res}")
-
-    # 2) Bullpen (full backfill truncates)
-    from app.handicapping.mlb.populate_bullpen_stats import populate_bullpen_stats
-    s = time.time()
-    engine = sa.create_engine(settings.database_url_sync)
-    rows = populate_bullpen_stats(engine, full_backfill=True)
-    engine.dispose()
-    log.info(f"[2/4] bullpen_game_stats rebuilt in {time.time()-s:.0f}s -> {rows} rows")
-
-    # 3+4) Pitcher + team rolling (non-incremental => each truncates its table)
-    from app.handicapping.mlb.populate_rolling import populate_team_rolling, populate_pitcher_rolling
-    s = time.time()
-    n = populate_team_rolling(incremental=False)
-    log.info(f"[3/4] team_rolling_stats rebuilt in {time.time()-s:.0f}s -> {n} rows")
-    s = time.time()
-    n = populate_pitcher_rolling(incremental=False)
-    log.info(f"[4/4] pitcher_rolling_stats rebuilt in {time.time()-s:.0f}s -> {n} rows")
-
-    log.info(f"ALL DONE in {(time.time()-t0)/60:.1f} min")
+    logger.info("== Rebuilding team_rolling_stats + pitcher_rolling_stats ==")
+    import importlib
+    pr = importlib.import_module("app.handicapping.mlb.populate_rolling")
+    n_team = pr.populate_team_rolling(engine=None, incremental=args.incremental)
+    n_pitch = pr.populate_pitcher_rolling(engine=None, incremental=args.incremental)
+    logger.info("team_rolling_stats rows=%s, pitcher_rolling_stats rows=%s", n_team, n_pitch)
+    logger.info("DONE in %.1fs", time.time() - t0)
 
 
 if __name__ == "__main__":
-    asyncio.run(rebuild())
+    main()

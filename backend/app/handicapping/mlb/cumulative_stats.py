@@ -27,6 +27,7 @@ BAT_COL_MAP = {
     "at_bats": "at_bats",
     "hits": "hits",
     "runs": "runs",
+    "rbi": "runs_batted_in",
     "doubles": "doubles",
     "triples": "triples",
     "home_runs": "home_runs",
@@ -65,6 +66,7 @@ CREATE TABLE IF NOT EXISTS {CUM_TABLE} (
     bat_at_bats              INTEGER DEFAULT 0,
     bat_hits                 INTEGER DEFAULT 0,
     bat_runs                 INTEGER DEFAULT 0,
+    bat_rbi                  INTEGER DEFAULT 0,
     bat_doubles              INTEGER DEFAULT 0,
     bat_triples              INTEGER DEFAULT 0,
     bat_home_runs            INTEGER DEFAULT 0,
@@ -267,6 +269,14 @@ def _populate(
     with engine.begin() as conn:
         conn.execute(sa_text(CREATE_TABLE_SQL))
         logger.info("Table %s ready.", CUM_TABLE)
+
+    # Idempotent column migration (existing DBs won't get new cols from
+    # CREATE TABLE IF NOT EXISTS)
+    with engine.begin() as conn:
+        conn.execute(sa_text(
+            f"ALTER TABLE {CUM_TABLE} ADD COLUMN IF NOT EXISTS bat_rbi INTEGER DEFAULT 0"
+        ))
+        logger.info("Ensured bat_rbi column present.")
 
     if force_rebuild:
         with engine.begin() as conn:

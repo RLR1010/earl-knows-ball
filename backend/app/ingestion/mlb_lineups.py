@@ -59,62 +59,59 @@ async def fetch_schedule(game_date: date) -> list[dict]:
 
 
 async def fetch_lineups(game_pk: int) -> dict:
-    """Fetch starting lineups for a game from the live feed."""
-    url = f"{STATS_API}/api/v1.1/game/{game_pk}/feed/live"
+    """Fetch starting lineups for a game from the authoritative boxscore endpoint.
+
+    Uses /api/v1/game/{id}/boxscore teams.{away,home}.battingOrder, which lists
+    EXACTLY the 9 starting position players in batting order (works for historical
+    completed games). Also resolves the starting pitcher per side (pitchers[0]).
+    Each returned lineup entry carries the real MLB Stats API player_id.
+    """
+    url = f"{STATS_API}/api/v1/game/{game_pk}/boxscore"
     async with httpx.AsyncClient(timeout=15.0) as client:
         resp = await client.get(url)
         if resp.status_code != 200:
             return {"error": f"HTTP {resp.status_code}"}
         data = resp.json()
 
-    gd = data.get("gameData", {})
-    ld = data.get("liveData", {})
-
-    # Probable pitchers
-    pp = gd.get("probablePitchers", {})
-    away_sp = pp.get("away", {})
-    home_sp = pp.get("home", {})
+    teams_box = data.get("teams", {})
 
     result = {
         "game_pk": game_pk,
-        "away_sp": {"id": away_sp.get("id"), "name": away_sp.get("fullName")},
-        "home_sp": {"id": home_sp.get("id"), "name": home_sp.get("fullName")},
+        "away_sp": {"id": None, "name": None},
+        "home_sp": {"id": None, "name": None},
         "away_lineup": [],
         "home_lineup": [],
     }
 
-    # Batting orders from boxscore
-    box = ld.get("boxscore", {})
-    for side_key, side_label in [("away", "away"), ("home", "home")]:
-        team_box = box.get("teams", {}).get(side_key, {})
-        batters = team_box.get("batters", [])
+    for side_key in ["away", "home"]:
+        team_box = teams_box.get(side_key, {})
+        batting_order = team_box.get("battingOrder", [])  # exactly the 9 starters
         players = team_box.get("players", {})
+        lineup = []
 
-        # Determine starter status: pitcher or position player
-        for pid in batters:
-            player_key = f"ID{pid}"
-            pdata = players.get(player_key, {})
+        # Starting pitcher = first in pitchers[] for side
+        pitchers = team_box.get("pitchers", [])
+        sp_pid = pitchers[0] if pitchers else None
+        if sp_pid is not None:
+            pdata = players.get(f"ID{sp_pid}", {})
+            result[f"{side_key}_sp"] = {
+                "id": sp_pid,
+                "name": pdata.get("person", {}).get("fullName"),
+            }
+
+        for idx, pid in enumerate(batting_order, start=1):
+            pdata = players.get(f"ID{pid}", {})
             name = pdata.get("person", {}).get("fullName", "?")
             pos = pdata.get("position", {}).get("abbreviation", "?")
-            raw_order = pdata.get("battingOrder", "")
-            # MLB Stats API returns batting_order as (position * 100) e.g. 100, 200...900
-            # or sometimes as 1-9 directly. Normalize to 1-9.
-            bo = int(raw_order) if raw_order else 0
-            if bo > 9:
-                bo = bo // 100
-            # Check if starting pitcher
-            is_pitcher = pdata.get("position", {}).get("abbreviation") == "1"
-
-            result[f"{side_label}_lineup"].append({
+            lineup.append({
                 "player_id": pid,
                 "name": name,
                 "position": pos,
-                "batting_order": bo,
-                "is_starting_pitcher": is_pitcher,
+                "batting_order": idx,
+                "is_starting_pitcher": bool(sp_pid == pid),
             })
 
-        # Sort by batting order
-        result[f"{side_label}_lineup"].sort(key=lambda x: x["batting_order"])
+        result[f"{side_key}_lineup"] = lineup
 
     return result
 
@@ -123,6 +120,21 @@ async def save_lineups(db: AsyncSession, game_id: int, away_lineup: list[dict], 
     """Save lineups to the mlb.lineups table."""
     from sqlalchemy import select, delete as sa_delete
     from app.models.mlb import MLBLineup
+    from app.models.mlb.player import MLBPlayer
+
+    # Resolve MLB Stats API player IDs -> our players.id via players.mlb_id.
+    # Cache by (api_id) -> players.id for the whole run.
+    mlb_to_db_id = {}
+    api_ids = [
+        e.get("player_id") for e in away_lineup + home_lineup
+        if e.get("player_id")
+    ]
+    if api_ids:
+        rows = (await db.execute(
+            select(MLBPlayer.id, MLBPlayer.mlb_id).where(MLBPlayer.mlb_id.in_(api_ids))
+        )).all()
+        for db_id, mlb_id in rows:
+            mlb_to_db_id[mlb_id] = db_id
 
     # Delete existing lineups for this game (we re-insert everything below)
     await db.execute(sa_delete(MLBLineup).where(MLBLineup.game_id == game_id))
@@ -134,7 +146,7 @@ async def save_lineups(db: AsyncSession, game_id: int, away_lineup: list[dict], 
             game_id=game_id,
             team_side=side,
             batting_order=order,
-            player_id=None,  # MLB API IDs don't match our DB player IDs
+            player_id=mlb_to_db_id.get(entry.get("player_id")),  # resolve to our player id
             player_name=entry.get("name", "?"),
             position=entry.get("position"),
             created_at=now,
@@ -236,18 +248,43 @@ async def update_lineups_for_date(db: AsyncSession, game_date: date) -> dict:
             existing_sides = {p.team_side for p in existing_pitchers}
             logger.info(f"  Existing pitcher rows: {existing_sides}")
             now = datetime.now(timezone.utc)
+
+            # Resolve probable-pitcher NAME -> players.id (accent-insensitive), so
+            # fallback SP rows get a real player_id (previously always NULL).
+            import unicodedata as _ud
+            def _norm(s: str) -> str:
+                return _ud.normalize("NFD", s).encode("ascii", "ignore").decode().strip().lower()
+            from sqlalchemy import or_
+            from app.models.mlb.player import MLBPlayer as _P
+            async def _resolve(name: str):
+                if not name:
+                    return None
+                rows = (await db.execute(
+                    select(_P.id).where(
+                        or_(_P.name == name, _P.name.ilike(f"{name}%"))
+                    ).limit(5)
+                )).scalars().all()
+                # prefer exact, accent-insensitive match
+                for pid in rows:
+                    pname = (await db.execute(select(_P.name).where(_P.id == pid))).scalar()
+                    if pname and _norm(pname) == _norm(name):
+                        return pid
+                return rows[0] if rows else None
+
             if db_game.home_pitcher_name and "home" not in existing_sides:
-                logger.info(f"  Inserting home SP: {db_game.home_pitcher_name}")
+                pid = await _resolve(db_game.home_pitcher_name)
+                logger.info(f"  Inserting home SP: {db_game.home_pitcher_name} (player_id={pid})")
                 db.add(MLBLineup(
                     game_id=db_game.id, team_side="home", batting_order=0,
-                    player_id=None, player_name=db_game.home_pitcher_name,
+                    player_id=pid, player_name=db_game.home_pitcher_name,
                     position="SP", created_at=now, updated_at=now,
                 ))
             if db_game.away_pitcher_name and "away" not in existing_sides:
-                logger.info(f"  Inserting away SP: {db_game.away_pitcher_name}")
+                pid = await _resolve(db_game.away_pitcher_name)
+                logger.info(f"  Inserting away SP: {db_game.away_pitcher_name} (player_id={pid})")
                 db.add(MLBLineup(
                     game_id=db_game.id, team_side="away", batting_order=0,
-                    player_id=None, player_name=db_game.away_pitcher_name,
+                    player_id=pid, player_name=db_game.away_pitcher_name,
                     position="SP", created_at=now, updated_at=now,
                 ))
 

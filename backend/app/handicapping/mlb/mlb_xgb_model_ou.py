@@ -235,10 +235,17 @@ async def run_all_years(
     test_until = CURRENT_YEAR
     test_years = [2021, 2022, 2023, 2024, 2025, 2026]
 
-    log(f"Loading MLB data (all seasons)...")
-    raw = get_data_loader().load_games(status="FINAL")
+    # Load ONLY the years in the training window (train_from..max test year) so
+    # changing train_from / the year range changes what is actually loaded instead
+    # of loading all seasons and slicing in-memory. run_backtest slices feats by
+    # season_year, so every usable year (train up to max_test-1 + max_test as test)
+    # must be present.
+    max_test_year = max(test_years) if test_years else CURRENT_YEAR
+    load_seasons = list(range(train_from, max_test_year + 1))
+    log(f"Loading MLB data ({len(load_seasons)} seasons: {load_seasons[0]}-{load_seasons[-1]})...")
+    raw = get_data_loader().load_games(seasons=load_seasons, status="FINAL")
     feats = mlb_build_features(raw)
-    log(f"  Loaded {len(feats)} game-days with {len(feats.columns)} columns")
+    log(f"  Loaded {len(raw)} games, {len(feats.columns)} columns")
 
     total_results = []
 

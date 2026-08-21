@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -341,6 +342,27 @@ SELECT
     trs_a.rf_avg + (4.47 - trs_h.ra_avg)            AS a_adj_rf_avg,
     trs_a.win_pct * (trs_h.win_pct / 0.500)         AS a_adj_win_pct,
 
+    -- Lineup OPS (trainable + pick_card; NOT current/live for ats/ou).
+    -- lineup_ops = avg of the 9 starters' season ytd_ops (leak-safe, each at
+    -- their most recent prior FINAL game). lineup_ops_n = how many resolved.
+    -- lineup_ops_minus_team = starter avg OPS minus the team's season OPS.
+    lops_h.lops             AS h_lineup_ops,
+    lops_h.lops_n           AS h_lineup_ops_n,
+    COALESCE(lops_h.lops - cgs_h.cum_ops, 0)   AS h_lineup_ops_minus_team,
+    lops_a.lops             AS a_lineup_ops,
+    lops_a.lops_n           AS a_lineup_ops_n,
+    COALESCE(lops_a.lops - cgs_a.cum_ops, 0)   AS a_lineup_ops_minus_team,
+
+    -- Lineup production totals + share-of-team runs/RBI
+    lpop_h.lpr_runs         AS h_lineup_runs,
+    lpop_h.lpr_rbi          AS h_lineup_rbi,
+    lpop_h.lpr_pct_runs     AS h_lineup_pct_runs,
+    lpop_h.lpr_pct_rbi      AS h_lineup_pct_rbi,
+    lpop_a.lpr_runs         AS a_lineup_runs,
+    lpop_a.lpr_rbi          AS a_lineup_rbi,
+    lpop_a.lpr_pct_runs     AS a_lineup_pct_runs,
+    lpop_a.lpr_pct_rbi      AS a_lineup_pct_rbi,
+
     -- Venue-conditional rolling + season splits (home team at home / away team on road)
     -- Rolling (last 10 at that venue): from trs_hv/trs_av LATERALs.
     -- Season (venue-scoped season win pct): from cgs_hv/cgs_av LATERALs.
@@ -520,6 +542,93 @@ JOIN mlb.teams at ON at.id = g.away_team_id
 LEFT JOIN mlb.venues v ON v.mlb_venue_id = g.venue_id
 
 -- ──────────────────────────────────────────────────────────────────────
+-- EFFECTIVE LINEUP GAME (prior-game fallback) — home & away
+-- Resolve the "lineup source game" for each team of g. If g already has a
+-- posted lineup for the side, use g itself. Otherwise fall back to the most
+-- recent prior FINAL game (>=30min before g, either venue) for that team that
+-- has lineups, so SCHEDULED games get a real expected lineup (read from the
+-- team's most recent completed game's batting order) instead of 0/NULL until
+-- actual lineups post ~2h pregame. Leak-safe: strictly prior, FINAL only.
+LEFT JOIN LATERAL (
+    -- Home team effective lineup game: g itself if it has home lineups posted,
+    -- else the most recent prior FINAL game (either venue) that has lineups.
+    SELECT
+        CASE WHEN EXISTS (SELECT 1 FROM mlb.lineups x
+                          WHERE x.game_id = g.id AND x.team_side = 'home' AND x.batting_order BETWEEN 1 AND 9)
+             THEN g.id
+             ELSE (
+                 SELECT lpg.game_id
+                 FROM mlb.lineups lpg
+                 JOIN mlb.games gp ON gp.id = lpg.game_id
+                 WHERE (gp.home_team_id = g.home_team_id OR gp.away_team_id = g.home_team_id)
+                   AND gp.status = 'FINAL'
+                   AND gp.date < g.date - INTERVAL '30 minutes'
+                   AND gp.id <> g.id
+                   AND lpg.batting_order BETWEEN 1 AND 9
+                 GROUP BY lpg.game_id, gp.date
+                 ORDER BY gp.date DESC, lpg.game_id DESC
+                 LIMIT 1
+             )
+        END AS eff_game_id,
+        CASE WHEN EXISTS (SELECT 1 FROM mlb.lineups x
+                          WHERE x.game_id = g.id AND x.team_side = 'home' AND x.batting_order BETWEEN 1 AND 9)
+             THEN 'home'
+             ELSE (
+                 SELECT CASE WHEN gp.home_team_id = g.home_team_id THEN 'home' ELSE 'away' END
+                 FROM mlb.lineups lpg
+                 JOIN mlb.games gp ON gp.id = lpg.game_id
+                 WHERE (gp.home_team_id = g.home_team_id OR gp.away_team_id = g.home_team_id)
+                   AND gp.status = 'FINAL'
+                   AND gp.date < g.date - INTERVAL '30 minutes'
+                   AND gp.id <> g.id
+                   AND lpg.batting_order BETWEEN 1 AND 9
+                 GROUP BY lpg.game_id, gp.date, gp.home_team_id
+                 ORDER BY gp.date DESC, lpg.game_id DESC
+                 LIMIT 1
+             )
+        END AS eff_side
+) h_lin ON TRUE
+LEFT JOIN LATERAL (
+    -- Away team effective lineup game: g itself if it has away lineups posted,
+    -- else the most recent prior FINAL game (either venue) that has lineups.
+    SELECT
+        CASE WHEN EXISTS (SELECT 1 FROM mlb.lineups x
+                          WHERE x.game_id = g.id AND x.team_side = 'away' AND x.batting_order BETWEEN 1 AND 9)
+             THEN g.id
+             ELSE (
+                 SELECT lpg.game_id
+                 FROM mlb.lineups lpg
+                 JOIN mlb.games gp ON gp.id = lpg.game_id
+                 WHERE (gp.home_team_id = g.away_team_id OR gp.away_team_id = g.away_team_id)
+                   AND gp.status = 'FINAL'
+                   AND gp.date < g.date - INTERVAL '30 minutes'
+                   AND gp.id <> g.id
+                   AND lpg.batting_order BETWEEN 1 AND 9
+                 GROUP BY lpg.game_id, gp.date
+                 ORDER BY gp.date DESC, lpg.game_id DESC
+                 LIMIT 1
+             )
+        END AS eff_game_id,
+        CASE WHEN EXISTS (SELECT 1 FROM mlb.lineups x
+                          WHERE x.game_id = g.id AND x.team_side = 'away' AND x.batting_order BETWEEN 1 AND 9)
+             THEN 'away'
+             ELSE (
+                 SELECT CASE WHEN gp.home_team_id = g.away_team_id THEN 'home' ELSE 'away' END
+                 FROM mlb.lineups lpg
+                 JOIN mlb.games gp ON gp.id = lpg.game_id
+                 WHERE (gp.home_team_id = g.away_team_id OR gp.away_team_id = g.away_team_id)
+                   AND gp.status = 'FINAL'
+                   AND gp.date < g.date - INTERVAL '30 minutes'
+                   AND gp.id <> g.id
+                   AND lpg.batting_order BETWEEN 1 AND 9
+                 GROUP BY lpg.game_id, gp.date, gp.home_team_id
+                 ORDER BY gp.date DESC, lpg.game_id DESC
+                 LIMIT 1
+             )
+        END AS eff_side
+) a_lin ON TRUE
+
+-- ──────────────────────────────────────────────────────────────────────
 -- STARTING PITCHER HAND + TEAM L/R OPS (vs RHP/LHP) + RPG vs arm
 -- The platoon features: each offense's OPS / runs-per-game against righty
 -- and lefty starters, plus the starting pitcher's throwing hand (pick card).
@@ -558,41 +667,41 @@ LEFT JOIN LATERAL (
 LEFT JOIN LATERAL (
     SELECT tvo.ops_vs_arm AS ops
     FROM mlb.team_ops_vs_arm tvo
-    JOIN mlb.games g_prev ON g_prev.id = tvo.game_id
+
     WHERE tvo.team_id = ht.id AND tvo.team_side = 'home' AND tvo.arm = 'L'
-      AND tvo.season_id = g.season_id AND g_prev.status = 'FINAL'
-      AND g_prev.date < g.date - INTERVAL '30 minutes'
-    ORDER BY g_prev.date DESC, g_prev.id DESC
+      AND tvo.season_id = g.season_id 
+      AND tvo.game_timestamp < g.date - INTERVAL '30 minutes'
+    ORDER BY tvo.game_timestamp DESC, tvo.game_id DESC
     LIMIT 1
 ) plato_h_lhp ON TRUE
 LEFT JOIN LATERAL (
     SELECT tvo.ops_vs_arm AS ops
     FROM mlb.team_ops_vs_arm tvo
-    JOIN mlb.games g_prev ON g_prev.id = tvo.game_id
+
     WHERE tvo.team_id = ht.id AND tvo.team_side = 'home' AND tvo.arm = 'R'
-      AND tvo.season_id = g.season_id AND g_prev.status = 'FINAL'
-      AND g_prev.date < g.date - INTERVAL '30 minutes'
-    ORDER BY g_prev.date DESC, g_prev.id DESC
+      AND tvo.season_id = g.season_id 
+      AND tvo.game_timestamp < g.date - INTERVAL '30 minutes'
+    ORDER BY tvo.game_timestamp DESC, tvo.game_id DESC
     LIMIT 1
 ) plato_h_rhp ON TRUE
 LEFT JOIN LATERAL (
     SELECT tvo.ops_vs_arm AS ops
     FROM mlb.team_ops_vs_arm tvo
-    JOIN mlb.games g_prev ON g_prev.id = tvo.game_id
+
     WHERE tvo.team_id = at.id AND tvo.team_side = 'away' AND tvo.arm = 'L'
-      AND tvo.season_id = g.season_id AND g_prev.status = 'FINAL'
-      AND g_prev.date < g.date - INTERVAL '30 minutes'
-    ORDER BY g_prev.date DESC, g_prev.id DESC
+      AND tvo.season_id = g.season_id 
+      AND tvo.game_timestamp < g.date - INTERVAL '30 minutes'
+    ORDER BY tvo.game_timestamp DESC, tvo.game_id DESC
     LIMIT 1
 ) plato_a_lhp ON TRUE
 LEFT JOIN LATERAL (
     SELECT tvo.ops_vs_arm AS ops
     FROM mlb.team_ops_vs_arm tvo
-    JOIN mlb.games g_prev ON g_prev.id = tvo.game_id
+
     WHERE tvo.team_id = at.id AND tvo.team_side = 'away' AND tvo.arm = 'R'
-      AND tvo.season_id = g.season_id AND g_prev.status = 'FINAL'
-      AND g_prev.date < g.date - INTERVAL '30 minutes'
-    ORDER BY g_prev.date DESC, g_prev.id DESC
+      AND tvo.season_id = g.season_id 
+      AND tvo.game_timestamp < g.date - INTERVAL '30 minutes'
+    ORDER BY tvo.game_timestamp DESC, tvo.game_id DESC
     LIMIT 1
 ) plato_a_rhp ON TRUE
 
@@ -603,41 +712,41 @@ LEFT JOIN LATERAL (
 LEFT JOIN LATERAL (
     SELECT tvr.rpg_vs_arm AS rpg
     FROM mlb.team_runs_vs_arm tvr
-    JOIN mlb.games g_prev ON g_prev.id = tvr.game_id
+
     WHERE tvr.team_id = ht.id AND tvr.team_side = 'home' AND tvr.arm = 'L'
-      AND tvr.season_id = g.season_id AND g_prev.status = 'FINAL'
-      AND g_prev.date < g.date - INTERVAL '30 minutes'
-    ORDER BY g_prev.date DESC, g_prev.id DESC
+      AND tvr.season_id = g.season_id 
+      AND tvr.game_timestamp < g.date - INTERVAL '30 minutes'
+    ORDER BY tvr.game_timestamp DESC, tvr.game_id DESC
     LIMIT 1
 ) rpgv_h_l ON TRUE
 LEFT JOIN LATERAL (
     SELECT tvr.rpg_vs_arm AS rpg
     FROM mlb.team_runs_vs_arm tvr
-    JOIN mlb.games g_prev ON g_prev.id = tvr.game_id
+
     WHERE tvr.team_id = ht.id AND tvr.team_side = 'home' AND tvr.arm = 'R'
-      AND tvr.season_id = g.season_id AND g_prev.status = 'FINAL'
-      AND g_prev.date < g.date - INTERVAL '30 minutes'
-    ORDER BY g_prev.date DESC, g_prev.id DESC
+      AND tvr.season_id = g.season_id 
+      AND tvr.game_timestamp < g.date - INTERVAL '30 minutes'
+    ORDER BY tvr.game_timestamp DESC, tvr.game_id DESC
     LIMIT 1
 ) rpgv_h_r ON TRUE
 LEFT JOIN LATERAL (
     SELECT tvr.rpg_vs_arm AS rpg
     FROM mlb.team_runs_vs_arm tvr
-    JOIN mlb.games g_prev ON g_prev.id = tvr.game_id
+
     WHERE tvr.team_id = at.id AND tvr.team_side = 'away' AND tvr.arm = 'L'
-      AND tvr.season_id = g.season_id AND g_prev.status = 'FINAL'
-      AND g_prev.date < g.date - INTERVAL '30 minutes'
-    ORDER BY g_prev.date DESC, g_prev.id DESC
+      AND tvr.season_id = g.season_id 
+      AND tvr.game_timestamp < g.date - INTERVAL '30 minutes'
+    ORDER BY tvr.game_timestamp DESC, tvr.game_id DESC
     LIMIT 1
 ) rpgv_a_l ON TRUE
 LEFT JOIN LATERAL (
     SELECT tvr.rpg_vs_arm AS rpg
     FROM mlb.team_runs_vs_arm tvr
-    JOIN mlb.games g_prev ON g_prev.id = tvr.game_id
+
     WHERE tvr.team_id = at.id AND tvr.team_side = 'away' AND tvr.arm = 'R'
-      AND tvr.season_id = g.season_id AND g_prev.status = 'FINAL'
-      AND g_prev.date < g.date - INTERVAL '30 minutes'
-    ORDER BY g_prev.date DESC, g_prev.id DESC
+      AND tvr.season_id = g.season_id 
+      AND tvr.game_timestamp < g.date - INTERVAL '30 minutes'
+    ORDER BY tvr.game_timestamp DESC, tvr.game_id DESC
     LIMIT 1
 ) rpgv_a_r ON TRUE
 
@@ -721,21 +830,21 @@ LEFT JOIN LATERAL (
 LEFT JOIN LATERAL (
     SELECT trs.*
     FROM mlb.team_rolling_stats trs
-    JOIN mlb.games gp ON gp.id = trs.game_id
+
     WHERE trs.team_id = g.home_team_id
-      AND gp.date < g.date - INTERVAL '30 minutes'
-      AND gp.status = 'FINAL'
-    ORDER BY gp.date DESC, gp.id DESC
+      AND trs.game_date < g.date - INTERVAL '30 minutes'
+      
+    ORDER BY trs.game_date DESC, trs.game_id DESC
     LIMIT 1
 ) trs_h ON TRUE
 LEFT JOIN LATERAL (
     SELECT trs.*
     FROM mlb.team_rolling_stats trs
-    JOIN mlb.games gp ON gp.id = trs.game_id
+
     WHERE trs.team_id = g.away_team_id
-      AND gp.date < g.date - INTERVAL '30 minutes'
-      AND gp.status = 'FINAL'
-    ORDER BY gp.date DESC, gp.id DESC
+      AND trs.game_date < g.date - INTERVAL '30 minutes'
+      
+    ORDER BY trs.game_date DESC, trs.game_id DESC
     LIMIT 1
 ) trs_a ON TRUE
 
@@ -748,23 +857,23 @@ LEFT JOIN LATERAL (
 LEFT JOIN LATERAL (
     SELECT trs.venue_rf_r10, trs.venue_win_pct_r10
     FROM mlb.team_rolling_stats trs
-    JOIN mlb.games gp ON gp.id = trs.game_id
+
     WHERE trs.team_id = g.home_team_id
       AND trs.team_side = 'home'
-      AND gp.date < g.date - INTERVAL '30 minutes'
-      AND gp.status = 'FINAL'
-    ORDER BY gp.date DESC, gp.id DESC
+      AND trs.game_date < g.date - INTERVAL '30 minutes'
+      
+    ORDER BY trs.game_date DESC, trs.game_id DESC
     LIMIT 1
 ) trs_hv ON TRUE
 LEFT JOIN LATERAL (
     SELECT trs.venue_rf_r10, trs.venue_win_pct_r10
     FROM mlb.team_rolling_stats trs
-    JOIN mlb.games gp ON gp.id = trs.game_id
+
     WHERE trs.team_id = g.away_team_id
       AND trs.team_side = 'away'
-      AND gp.date < g.date - INTERVAL '30 minutes'
-      AND gp.status = 'FINAL'
-    ORDER BY gp.date DESC, gp.id DESC
+      AND trs.game_date < g.date - INTERVAL '30 minutes'
+      
+    ORDER BY trs.game_date DESC, trs.game_id DESC
     LIMIT 1
 ) trs_av ON TRUE
 
@@ -774,25 +883,188 @@ LEFT JOIN LATERAL (
 LEFT JOIN LATERAL (
     SELECT cgs.venue_win_pct_season
     FROM mlb.cumulative_game_stats cgs
-    JOIN mlb.games gp ON gp.id = cgs.game_id
+
     WHERE cgs.team_id = g.home_team_id
       AND cgs.team_side = 'home'
-      AND gp.date < g.date - INTERVAL '30 minutes'
-      AND gp.status = 'FINAL'
-    ORDER BY gp.date DESC, gp.id DESC
+      AND cgs.game_timestamp < g.date - INTERVAL '30 minutes'
+      
+    ORDER BY cgs.game_timestamp DESC, cgs.game_id DESC
     LIMIT 1
 ) cgs_hv ON TRUE
 LEFT JOIN LATERAL (
     SELECT cgs.venue_win_pct_season
     FROM mlb.cumulative_game_stats cgs
-    JOIN mlb.games gp ON gp.id = cgs.game_id
+
     WHERE cgs.team_id = g.away_team_id
       AND cgs.team_side = 'away'
-      AND gp.date < g.date - INTERVAL '30 minutes'
-      AND gp.status = 'FINAL'
-    ORDER BY gp.date DESC, gp.id DESC
+      AND cgs.game_timestamp < g.date - INTERVAL '30 minutes'
+      
+    ORDER BY cgs.game_timestamp DESC, cgs.game_id DESC
     LIMIT 1
 ) cgs_av ON TRUE
+
+-- Lineup OPS (per-hitter season ytd_ops as of each starter's most recent FINAL
+-- game strictly before the target). Resolves the 9 starters from mlb.lineups
+-- for THIS game, reads each one's player_batting_rolling_stats.ytd_ops at their
+-- latest prior FINAL row (leak-safe, capped 30min), averages them, and counts
+-- how many of the 9 resolved. lineup_ops_minus_team is computed in the outer
+-- select vs trs_h.ops/trs_a.ops (which are already team season OPS, leak-safe).
+LEFT JOIN LATERAL (
+    SELECT AVG(plr.ytd_ops)                       AS lops,
+           COUNT(plr.ytd_ops)                     AS lops_n
+    FROM mlb.lineups lu
+    CROSS JOIN LATERAL (
+        SELECT COALESCE(pp.ops, fb.ops) AS ytd_ops
+        FROM (SELECT 1) _d
+        LEFT JOIN LATERAL (
+            SELECT prv.ytd_ops AS ops
+            FROM mlb.player_batting_rolling_stats prb2
+            JOIN mlb.player_batting_rolling_stats prv
+              ON prv.player_id = prb2.player_id AND prv.game_id = prb2.prev_game_id
+            WHERE prb2.player_id = lu.player_id AND prb2.game_id = lu.game_id
+              AND prv.game_date < g.date - INTERVAL '30 minutes'
+        ) pp ON TRUE
+        LEFT JOIN LATERAL (
+            SELECT prv.ytd_ops AS ops
+            FROM mlb.player_batting_rolling_stats prv
+
+            WHERE pp.ops IS NULL
+              AND prv.player_id = lu.player_id
+              AND prv.game_date < g.date - INTERVAL '30 minutes'
+              
+            ORDER BY prv.game_date DESC, prv.game_id DESC
+            LIMIT 1
+        ) fb ON TRUE
+    ) plr
+    WHERE lu.game_id = h_lin.eff_game_id
+      AND lu.team_side = h_lin.eff_side
+      AND lu.batting_order BETWEEN 1 AND 9
+) lops_h ON TRUE
+LEFT JOIN LATERAL (
+    SELECT AVG(plr.ytd_ops)                       AS lops,
+           COUNT(plr.ytd_ops)                     AS lops_n
+    FROM mlb.lineups lu
+    CROSS JOIN LATERAL (
+        SELECT COALESCE(pp.ops, fb.ops) AS ytd_ops
+        FROM (SELECT 1) _d
+        LEFT JOIN LATERAL (
+            SELECT prv.ytd_ops AS ops
+            FROM mlb.player_batting_rolling_stats prb2
+            JOIN mlb.player_batting_rolling_stats prv
+              ON prv.player_id = prb2.player_id AND prv.game_id = prb2.prev_game_id
+            WHERE prb2.player_id = lu.player_id AND prb2.game_id = lu.game_id
+              AND prv.game_date < g.date - INTERVAL '30 minutes'
+        ) pp ON TRUE
+        LEFT JOIN LATERAL (
+            SELECT prv.ytd_ops AS ops
+            FROM mlb.player_batting_rolling_stats prv
+
+            WHERE pp.ops IS NULL
+              AND prv.player_id = lu.player_id
+              AND prv.game_date < g.date - INTERVAL '30 minutes'
+              
+            ORDER BY prv.game_date DESC, prv.game_id DESC
+            LIMIT 1
+        ) fb ON TRUE
+    ) plr
+    WHERE lu.game_id = a_lin.eff_game_id
+      AND lu.team_side = a_lin.eff_side
+      AND lu.batting_order BETWEEN 1 AND 9
+) lops_a ON TRUE
+
+-- Lineup production (RBI / runs) + share-of-team. For each side, sums the 9
+-- starters' season runs + RBI from the pre-computed mlb.player_batting_rolling_stats
+-- (each starter's ytd_runs/ytd_rbi at their most recent FINAL game strictly before
+-- the target — leak-safe, capped 30min, identical framing to lops_*), plus the team's
+-- OWN season runs+RBI (sum of every batter on that team's ytd_runs/ytd_rbi).
+-- pct_runs = lineup_runs / team_runs, pct_rbi = lineup_rbi / team_rbi. Reads
+-- pre-computed columns — NO query-time re-summation of batting_game_stats.
+LEFT JOIN LATERAL (
+    SELECT COALESCE(SUM(plr.runs), 0) AS lpr_runs,
+           COALESCE(SUM(plr.rbi), 0)  AS lpr_rbi,
+           COALESCE((SUM(plr.runs)::numeric) / NULLIF(MAX(team_tot.floor_runs), 0), 0) AS lpr_pct_runs,
+           COALESCE((SUM(plr.rbi)::numeric) / NULLIF(MAX(team_tot.floor_rbi), 0), 0)   AS lpr_pct_rbi
+    FROM mlb.lineups lu
+    JOIN LATERAL (
+        SELECT COALESCE(pp.runs, fb.runs) AS runs,
+               COALESCE(pp.rbi, fb.rbi) AS rbi
+        FROM (SELECT 1) _d
+        LEFT JOIN LATERAL (
+            SELECT prv.ytd_runs AS runs, prv.ytd_rbi AS rbi
+            FROM mlb.player_batting_rolling_stats prb2
+            JOIN mlb.player_batting_rolling_stats prv
+              ON prv.player_id = prb2.player_id AND prv.game_id = prb2.prev_game_id
+            WHERE prb2.player_id = lu.player_id AND prb2.game_id = lu.game_id
+              AND prv.game_date < g.date - INTERVAL '30 minutes'
+        ) pp ON TRUE
+        LEFT JOIN LATERAL (
+            SELECT prv.ytd_runs AS runs, prv.ytd_rbi AS rbi
+            FROM mlb.player_batting_rolling_stats prv
+
+            WHERE pp.runs IS NULL AND pp.rbi IS NULL
+              AND prv.player_id = lu.player_id
+              AND prv.game_date < g.date - INTERVAL '30 minutes'
+              
+            ORDER BY prv.game_date DESC, prv.game_id DESC
+            LIMIT 1
+        ) fb ON TRUE
+    ) plr ON TRUE
+    CROSS JOIN LATERAL (
+        SELECT cg.bat_runs AS floor_runs,
+               cg.bat_rbi  AS floor_rbi
+        FROM mlb.cumulative_game_stats cg
+        WHERE cg.team_id = g.home_team_id
+          AND cg.game_timestamp < g.date - INTERVAL '30 minutes'
+        ORDER BY cg.game_timestamp DESC, cg.game_id DESC
+        LIMIT 1
+     ) team_tot
+    WHERE lu.game_id = h_lin.eff_game_id
+      AND lu.team_side = h_lin.eff_side
+      AND lu.batting_order BETWEEN 1 AND 9
+) lpop_h ON TRUE
+LEFT JOIN LATERAL (
+    SELECT COALESCE(SUM(plr.runs), 0) AS lpr_runs,
+           COALESCE(SUM(plr.rbi), 0)  AS lpr_rbi,
+           COALESCE((SUM(plr.runs)::numeric) / NULLIF(MAX(team_tot.floor_runs), 0), 0) AS lpr_pct_runs,
+           COALESCE((SUM(plr.rbi)::numeric) / NULLIF(MAX(team_tot.floor_rbi), 0), 0)   AS lpr_pct_rbi
+    FROM mlb.lineups lu
+    JOIN LATERAL (
+        SELECT COALESCE(pp.runs, fb.runs) AS runs,
+               COALESCE(pp.rbi, fb.rbi) AS rbi
+        FROM (SELECT 1) _d
+        LEFT JOIN LATERAL (
+            SELECT prv.ytd_runs AS runs, prv.ytd_rbi AS rbi
+            FROM mlb.player_batting_rolling_stats prb2
+            JOIN mlb.player_batting_rolling_stats prv
+              ON prv.player_id = prb2.player_id AND prv.game_id = prb2.prev_game_id
+            WHERE prb2.player_id = lu.player_id AND prb2.game_id = lu.game_id
+              AND prv.game_date < g.date - INTERVAL '30 minutes'
+        ) pp ON TRUE
+        LEFT JOIN LATERAL (
+            SELECT prv.ytd_runs AS runs, prv.ytd_rbi AS rbi
+            FROM mlb.player_batting_rolling_stats prv
+
+            WHERE pp.runs IS NULL AND pp.rbi IS NULL
+              AND prv.player_id = lu.player_id
+              AND prv.game_date < g.date - INTERVAL '30 minutes'
+              
+            ORDER BY prv.game_date DESC, prv.game_id DESC
+            LIMIT 1
+        ) fb ON TRUE
+    ) plr ON TRUE
+    CROSS JOIN LATERAL (
+        SELECT cg.bat_runs AS floor_runs,
+               cg.bat_rbi  AS floor_rbi
+        FROM mlb.cumulative_game_stats cg
+        WHERE cg.team_id = g.away_team_id
+          AND cg.game_timestamp < g.date - INTERVAL '30 minutes'
+        ORDER BY cg.game_timestamp DESC, cg.game_id DESC
+        LIMIT 1
+     ) team_tot
+    WHERE lu.game_id = a_lin.eff_game_id
+      AND lu.team_side = a_lin.eff_side
+      AND lu.batting_order BETWEEN 1 AND 9
+) lpop_a ON TRUE
 
 -- Prior season stats (for early-season blending)
 LEFT JOIN mlb.prior_team_stats pts_h
@@ -806,23 +1078,23 @@ LEFT JOIN mlb.prior_team_stats pts_a
 LEFT JOIN LATERAL (
     SELECT pgs.*
     FROM mlb.pitcher_game_stats pgs
-    JOIN mlb.games gp ON gp.id = pgs.game_id
+
     WHERE pgs.pitcher_name = g.home_pitcher_name
       AND pgs.is_starter = TRUE
-      AND gp.date < g.date - INTERVAL '30 minutes'
-      AND gp.status = 'FINAL'
-    ORDER BY gp.date DESC, gp.id DESC
+      AND pgs.game_timestamp < g.date - INTERVAL '30 minutes'
+      
+    ORDER BY pgs.game_timestamp DESC, pgs.game_id DESC
     LIMIT 1
 ) pgs_h ON TRUE
 LEFT JOIN LATERAL (
     SELECT pgs.*
     FROM mlb.pitcher_game_stats pgs
-    JOIN mlb.games gp ON gp.id = pgs.game_id
+
     WHERE pgs.pitcher_name = g.away_pitcher_name
       AND pgs.is_starter = TRUE
-      AND gp.date < g.date - INTERVAL '30 minutes'
-      AND gp.status = 'FINAL'
-    ORDER BY gp.date DESC, gp.id DESC
+      AND pgs.game_timestamp < g.date - INTERVAL '30 minutes'
+      
+    ORDER BY pgs.game_timestamp DESC, pgs.game_id DESC
     LIMIT 1
 ) pgs_a ON TRUE
 
@@ -844,12 +1116,12 @@ LEFT JOIN LATERAL (
            -- gap to the pitcher's PRIOR start and is wrong for a scheduled game).
            EXTRACT(DAY FROM (g.date - prs.game_date))::int AS rest_days
     FROM mlb.pitcher_rolling_stats prs
-    JOIN mlb.games gp ON gp.id = prs.game_id
+
     WHERE prs.player_id = pgs_h.pitcher_mlb_id
       AND prs.is_starter = TRUE
-      AND gp.date < g.date - INTERVAL '30 minutes'
-      AND gp.status = 'FINAL'
-    ORDER BY gp.date DESC, gp.id DESC
+      AND prs.game_date < g.date - INTERVAL '30 minutes'
+      
+    ORDER BY prs.game_date DESC, prs.game_id DESC
     LIMIT 1
 ) prs_h ON TRUE
 LEFT JOIN LATERAL (
@@ -866,12 +1138,12 @@ LEFT JOIN LATERAL (
            prs.home_era_ytd, prs.road_era_ytd, prs.day_era_ytd, prs.night_era_ytd,
            EXTRACT(DAY FROM (g.date - prs.game_date))::int AS rest_days
     FROM mlb.pitcher_rolling_stats prs
-    JOIN mlb.games gp ON gp.id = prs.game_id
+
     WHERE prs.player_id = pgs_a.pitcher_mlb_id
       AND prs.is_starter = TRUE
-      AND gp.date < g.date - INTERVAL '30 minutes'
-      AND gp.status = 'FINAL'
-    ORDER BY gp.date DESC, gp.id DESC
+      AND prs.game_date < g.date - INTERVAL '30 minutes'
+      
+    ORDER BY prs.game_date DESC, prs.game_id DESC
     LIMIT 1
 ) prs_a ON TRUE
 
@@ -908,21 +1180,21 @@ LEFT JOIN LATERAL (
 LEFT JOIN LATERAL (
     SELECT bg.bullpen_er, bg.bullpen_ip_outs, bg.num_pitchers
     FROM mlb.bullpen_game_stats bg
-    JOIN mlb.games g_prev ON g_prev.id = bg.game_id
+
     WHERE bg.team_id = g.home_team_id
-      AND g_prev.date < g.date - INTERVAL '30 minutes'
-      AND g_prev.status = 'FINAL'
-    ORDER BY g_prev.date DESC, g_prev.id DESC
+      AND bg.game_timestamp < g.date - INTERVAL '30 minutes'
+      
+    ORDER BY bg.game_timestamp DESC, bg.game_id DESC
     LIMIT 1
 ) bg_h ON TRUE
 LEFT JOIN LATERAL (
     SELECT bg.bullpen_er, bg.bullpen_ip_outs, bg.num_pitchers
     FROM mlb.bullpen_game_stats bg
-    JOIN mlb.games g_prev ON g_prev.id = bg.game_id
+
     WHERE bg.team_id = g.away_team_id
-      AND g_prev.date < g.date - INTERVAL '30 minutes'
-      AND g_prev.status = 'FINAL'
-    ORDER BY g_prev.date DESC, g_prev.id DESC
+      AND bg.game_timestamp < g.date - INTERVAL '30 minutes'
+      
+    ORDER BY bg.game_timestamp DESC, bg.game_id DESC
     LIMIT 1
 ) bg_a ON TRUE
 
@@ -1633,7 +1905,12 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     # If win_pct is available, compute games played from available rolling windows
     if "h_rf10" in result.columns:
         has_10 = result["h_rf10"].notna()
-        has_5  = result["h_rf5"].notna() & ~has_10
+        # h_rf5 may be absent if the load was projected down to only model
+        # features (training). Make it optional rather than hard-required.
+        if "h_rf5" in result.columns:
+            has_5 = result["h_rf5"].notna() & ~has_10
+        else:
+            has_5 = pd.Series([False] * len(result), index=result.index)
         rookie = ~has_10 & ~has_5  # very early season
         
         # LEAK-SAFE W/L record: read the season-total win/loss ENTERING this game
@@ -2021,6 +2298,7 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
 
     # ── Group 7 — Calendar/Situational features ────────────────────────────────
     if "game_date" in result.columns:
+        result["game_date"] = pd.to_datetime(result["game_date"])
         result["month"] = result["game_date"].dt.month
         result["is_summer"] = result["month"].isin([6, 7, 8]).astype(int)
     else:
@@ -2256,6 +2534,111 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
+# ── Column-projection helpers ────────────────────────────────────────────────
+# GAME_QUERY is a single SELECT over `FROM mlb.games g LEFT JOIN LATERAL (...)`
+# (NOT a CTE), so restricting the outer SELECT list lets Postgres skip computing
+# unselected LATERAL outputs (pruning) instead of materializing all 291 columns.
+# Parsing is exact-verified: 291 unique, non-duplicate aliases, every expr kept.
+
+def _split_select_top_level(sel_body: str):
+    """Split a SELECT column list into top-level segments (comma at paren-depth 0).
+
+    Multi-line expressions (GREATEST(a,b), nested parens) stay whole. Full-line
+    ``--`` comments are stripped BEFORE scanning so a comma inside a comment
+    (e.g. ``-- validated, so the running models are unaffected.``) cannot fake a
+    column boundary and corrupt the split. Inline trailing ``--`` comments are
+    left intact (stripped later by _parse_game_query_columns).
+    """
+    # Drop full-line comment lines: they carry commas at depth 0 that would
+    # otherwise split the SELECT in the wrong place.
+    filtered = "\n".join(
+        ln for ln in sel_body.splitlines() if not ln.lstrip().startswith("--")
+    )
+    parts = []
+    depth = 0
+    cur = ""
+    for ch in filtered:
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth = max(0, depth - 1)
+        if ch == "," and depth == 0:
+            parts.append(cur)
+            cur = ""
+        else:
+            cur += ch
+    if cur.strip():
+        parts.append(cur)
+    return parts
+
+
+def _parse_game_query_columns(gq: str):
+    """Return dict alias -> SQL expr for every SELECT output column in GAME_QUERY.
+
+    Correctness gate: every segment must end with `AS <alias>`; segments that
+    don't (continuation fragments split by commas inside function args at
+    depth 0 only) are merged into the previous segment. Comment-only lines are
+    stripped from each expr. Verified: 291 unique aliases, no duplicates.
+    """
+    sel_start = gq.index("SELECT") + len("SELECT")
+    sel_end = gq.index("FROM mlb.games g", sel_start)
+    segs = _split_select_top_level(gq[sel_start:sel_end])
+    merged = []
+    for seg in segs:
+        m = re.search(r'AS\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*$', seg.rstrip(), re.S)
+        if m:
+            merged.append((seg, m.group(1)))
+        else:
+            # No `AS` alias. Two cases:
+            #  1) a continuation fragment of the PREVIOUS segment (split by a
+            #     comma inside a function call / paren). Merge into previous.
+            #  2) a real unaliased output column like `g.home_score` or
+            #     `g.status` -> Postgres names it after the identifier, so the
+            #     result column = the trailing identifier (after the last dot).
+            bare = seg.rstrip()
+            stripped = "\n".join(l for l in bare.split("\n") if not l.lstrip().startswith("--"))
+            stripped = stripped.strip()
+            if re.fullmatch(r"[a-zA-Z_][\w]*", stripped):
+                merged.append((seg, stripped))
+            elif re.fullmatch(r"[a-zA-Z_][\w]*(?:\.[a-zA-Z_][\w]*)+", stripped):
+                merged.append((seg, stripped.rsplit(".", 1)[1]))
+            else:
+                if merged:
+                    prev_expr, alias = merged[-1]
+                    merged[-1] = (prev_expr + "," + seg, alias)
+                else:
+                    merged.append((seg, None))
+    out = {}
+    for expr, alias in merged:
+        expr_clean = "\n".join(l for l in expr.split("\n") if not l.lstrip().startswith("--")).strip()
+        if alias:
+            out[alias] = expr_clean
+    return out
+
+
+_GAME_QUERY_COLUMNS = _parse_game_query_columns(GAME_QUERY)
+
+
+def project_game_query(query: str, required: Optional[set]) -> str:
+    """Return GAME_QUERY's SELECT restricted to `required` output aliases.
+
+    Always keeps the full original SQL otherwise. If `required` is None or empty
+    of valid aliases, returns the query unchanged. Unknown requested names are
+    ignored (they may be build_features-derived, produced later in pandas).
+    """
+    if not required:
+        return query
+    fresh = _parse_game_query_columns(query)
+    keep = [a for a in fresh if a in required]
+    keep_exprs = [fresh[a] for a in keep]
+    if not keep_exprs:
+        return query
+    sel_start = query.index("SELECT") + len("SELECT")
+    sel_end = query.index("FROM mlb.games g", sel_start)
+    header = "\n    " + ",\n    ".join(keep_exprs) + "\n"
+    return query[:sel_start] + header + query[sel_end:]
+
+
 # ── Placeholder: rest of MLBDataLoader class ─────────────────────────────────
 # The class methods (load_games, _query, _build_query, get_model_features,
 # _save_backtest_prediction, etc.) remain structurally the same.
@@ -2400,6 +2783,7 @@ class MLBDataLoader:
         limit: Optional[int] = None,
         include_upcoming: bool = False,
         game_ids: Optional[List[int]] = None,
+        columns: Optional[List[str]] = None,
     ) -> pd.DataFrame:
         """Load game data as a pandas DataFrame (sync).
 
@@ -2417,11 +2801,18 @@ class MLBDataLoader:
             If True, include PREGAME / LIVE games too (for pick-card display).
         game_ids :
             If set, only load games with these DB ids.
+        columns :
+            If set, restrict GAME_QUERY's SELECT to ONLY these output aliases
+            (unknown names ignored). Since GAME_QUERY is a single SELECT over
+            LATERAL joins (not a CTE), Postgres skips computing unselected
+            LATERAL outputs — so load time tracks the number of requested
+            feature columns instead of all 291. Pass the exact feature set a
+            model needs to cut load dramatically. None = load everything.
 
         Returns
         -------
         pd.DataFrame
-            One row per game, with all columns from GAME_QUERY.
+            One row per game, with all columns from GAME_QUERY (or `columns` subset).
         """
         engine = create_engine(
             self._db_url,
@@ -2436,7 +2827,7 @@ class MLBDataLoader:
         try:
             return self._query(engine, seasons=seasons, status=status,
                                limit=limit, include_upcoming=include_upcoming,
-                               game_ids=game_ids)
+                               game_ids=game_ids, columns=columns)
         finally:
             engine.dispose()
 
@@ -2448,11 +2839,13 @@ class MLBDataLoader:
         limit: Optional[int] = None,
         include_upcoming: bool = False,
         game_ids: Optional[List[int]] = None,
+        columns: Optional[List[str]] = None,
     ) -> pd.DataFrame:
-        """Load game data as a pandas DataFrame (async, using an existing engine)."""
+        """Load game data as a pandas DataFrame (async, using an existing engine).
+        See load_games() for the `columns` projection semantics."""
         return await self._query_async(engine, seasons=seasons, status=status,
                                        limit=limit, include_upcoming=include_upcoming,
-                                       game_ids=game_ids)
+                                       game_ids=game_ids, columns=columns)
 
     def load_all_games(
         self,
@@ -2476,8 +2869,16 @@ class MLBDataLoader:
         limit: Optional[int],
         include_upcoming: bool,
         game_ids: Optional[List[int]] = None,
+        columns: Optional[List[str]] = None,
     ) -> str:
-        """Build the SQL query with filters."""
+        """Build the SQL query with filters.
+
+        If `columns` is given, the GAME_QUERY SELECT is projected down to only
+        those output aliases (plus any that don't exist are ignored). Because
+        GAME_QUERY is a single SELECT over LATERAL joins (not a CTE), Postgres
+        skips computing unselected LATERAL outputs → load is much faster when a
+        model only needs a subset of features. Use None to load everything.
+        """
         conditions: List[str] = []
 
         if seasons:
@@ -2501,6 +2902,9 @@ class MLBDataLoader:
         if limit:
             sql += f"\nLIMIT {limit}"
 
+        if columns:
+            sql = project_game_query(sql, set(columns))
+
         return sql
 
     def _query(
@@ -2511,11 +2915,13 @@ class MLBDataLoader:
         limit: Optional[int],
         include_upcoming: bool,
         game_ids: Optional[List[int]] = None,
+        columns: Optional[List[str]] = None,
     ) -> pd.DataFrame:
-        sql = self._build_query(seasons, status, limit, include_upcoming, game_ids=game_ids)
+        sql = self._build_query(seasons, status, limit, include_upcoming,
+                                game_ids=game_ids, columns=columns)
         logger.debug("Executing query:\n%s", sql)
         with engine.connect() as conn:
-            df = pd.read_sql(text(sql), conn)
+            df = pd.read_sql(text(sql), conn, parse_dates=["game_date"])
         logger.info("Loaded %d game rows", len(df))
         return df
 
@@ -2527,14 +2933,20 @@ class MLBDataLoader:
         limit: Optional[int],
         include_upcoming: bool,
         game_ids: Optional[List[int]] = None,
+        columns: Optional[List[str]] = None,
     ) -> pd.DataFrame:
-        sql = self._build_query(seasons, status, limit, include_upcoming, game_ids=game_ids)
+        sql = self._build_query(seasons, status, limit, include_upcoming,
+                                game_ids=game_ids, columns=columns)
         logger.debug("Executing async query:\n%s", sql)
         async with engine.connect() as conn:
             result = await conn.execute(text(sql))
             rows = result.fetchall()
             cols = result.keys()
         df = pd.DataFrame(rows, columns=cols)
+        # game_date arrives as TIMESTAMPTZ objects; coerce so downstream
+        # build_features .dt accessors work.
+        if "game_date" in df.columns:
+            df["game_date"] = pd.to_datetime(df["game_date"])
         logger.info("Loaded %d game rows (async)", len(df))
         return df
 

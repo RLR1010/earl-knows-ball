@@ -42,7 +42,9 @@ from app.handicapping.mlb.data_loader import (
     build_features as mlb_build_features,
     get_model_features,
     MLBDataLoader,
+    _GAME_QUERY_COLUMNS,
 )
+from app.handicapping.mlb.mlb_engine import _projection_columns
 
 # Feature list for the ATS model, sourced from the most recent
 # (is_current) training run's feature_importance.  Must stay in sync
@@ -316,12 +318,29 @@ async def run_all_years(
 
     total_results: list[dict] = []
 
-    raw = get_data_loader().load_games(status="FINAL")
-    feats = mlb_build_features(raw)
-    log(f"Loaded {len(raw)} games, {len(feats.columns)} features")
-
-    # Test years are the final 2 seasons; train_years is everything before each test year
+    # Test years are the final 2 seasons; train_years is everything before each
+    # test year. Declared here (before load) so the training window honors the
+    # script's declared test ceiling instead of loading all 11 seasons.
     test_years = [2021, 2022, 2023, 2024, 2025, 2026]
+    load_seasons = list(range(train_from, test_until + 1))
+    # Training loads ONLY the selected training features and ONLY the training
+    # years. Project the GAME_QUERY SELECT down to the raw model-feature columns
+    # (current_ats ∪ current_ou) + the build_features/context inputs, so Postgres
+    # skips computing the unused LATERALs (plato, lineups, rolling splits the ATS
+    # model doesn't need, etc.) — the main source of multi-year training load time.
+    # ADD the non-feature label/context columns build_features + run_backtest
+    # consume (targets & evaluation) — they live on the GAME_QUERY row but are
+    # NOT model features, so the lean projection above would drop them and
+    # training crashes on KeyError (h_rf5, actual_margin, ...). merge them in.
+    train_cols = _projection_columns(list(set(_ensure_ats_features() + get_model_features("ou", live=False)) | set([
+        "actual_margin", "actual_total",
+        "spread", "home_moneyline",
+        "home_score", "away_score",
+        "game_date", "season_year", "season_id",
+    ])))
+    raw = get_data_loader().load_games(seasons=load_seasons, status="FINAL", columns=train_cols)
+    feats = mlb_build_features(raw)
+    log(f"Loaded {len(raw)} games ({len(load_seasons)} seasons: {load_seasons[0]}-{load_seasons[-1]}), {len(feats.columns)} features")
 
     for feature_set in feature_sets:
         for year in test_years:

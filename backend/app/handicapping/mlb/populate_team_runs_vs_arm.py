@@ -46,13 +46,13 @@ def _build_sql(season: int | None, incremental: bool) -> str:
     season_where = "AND g2.season_id = :season" if season is not None else ""
 
     insert_cols = (
-        "game_id, team_id, season_id, team_side, arm,"
+        "game_id, team_id, season_id, team_side, arm, game_timestamp,"
         " runs_vs_arm, games_vs_arm, rpg_vs_arm"
     )
     if incremental:
         insert_stmt = (
             "INSERT INTO mlb.team_runs_vs_arm (" + insert_cols + ")\n"
-            "SELECT game_id, team_id, season_id, team_side, arm,"
+            "SELECT game_id, team_id, season_id, team_side, arm, game_timestamp,"
             " runs_vs_arm, games_vs_arm, rpg_vs_arm\n"
             "FROM (\n"
         )
@@ -122,7 +122,7 @@ accum AS (
     )
 )
 SELECT
-    game_id, team_id, season_id, team_side, arm,
+    game_id, team_id, season_id, team_side, arm, game_date AS game_timestamp,
     runs,
     games,
     ROUND(runs::numeric / NULLIF(games, 0), 4) AS rpg_vs_arm

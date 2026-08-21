@@ -1,0 +1,79 @@
+{
+  "experiment": "fusion_ats",
+  "test_years": [
+    2024
+  ],
+  "train_from": 2016,
+  "push_thresh": 1.5,
+  "ts": 1787242557.8381047,
+  "results": [
+    {
+      "test_year": 2024,
+      "rows_test": 2470,
+      "mae": 3.41,
+      "reg_iter": 45,
+      "clf_iter": 24,
+      "base": {
+        "ats": {
+          "total": 2470,
+          "correct": 1419,
+          "pct": 57.45
+        },
+        "ml": {
+          "total": 2470,
+          "correct": 1402,
+          "pct": 56.76
+        }
+      },
+      "f1": {
+        "ats": {
+          "total": 2470,
+          "correct": 1419,
+          "pct": 57.45
+        },
+        "ml": {
+          "total": 2470,
+          "correct": 1385,
+          "pct": 56.07
+        }
+      },
+      "f2": {
+        "ats": {
+          "total": 2470,
+          "correct": 1415,
+          "pct": 57.29
+        },
+        "ml": {
+          "total": 2470,
+          "correct": 1385,
+          "pct": 56.07
+        }
+      },
+      "f3": {
+        "ats": {
+          "total": 2470,
+          "correct": 1191,
+          "pct": 48.22
+        },
+        "ml": {
+          "total": 2470,
+          "correct": 1402,
+          "pct": 56.76
+        }
+      },
+      "near_push": {
+        "total": 2073,
+        "base_ats": {
+          "total": 2073,
+          "correct": 1171,
+          "pct": 56.49
+        },
+        "f3_ats": {
+          "total": 2073,
+          "correct": 943,
+          "pct": 45.49
+        }
+      }
+    }
+  ]
+}

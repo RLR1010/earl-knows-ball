@@ -266,8 +266,8 @@ async def process_game(conn, game: dict) -> int:
             sb = stats.get("stolenBases", 0) or 0
             cs = stats.get("caughtStealing", 0) or 0
             hbp = stats.get("hitByPitch", 0) or 0
-            sf = stats.get("sacrificeFlies", 0) or 0
-            sh = stats.get("sacrificeBunts", 0) or 0
+            sf = stats.get("sacFlies", 0) or 0   # MLB StatsAPI boxscore key (NOT "sacrificeFlies")
+            sh = stats.get("sacBunts", 0) or 0   # MLB StatsAPI boxscore key (NOT "sacrificeBunts")
             lob = stats.get("leftOnBase", 0) or 0
             tb = stats.get("totalBases", 0) or 0
 

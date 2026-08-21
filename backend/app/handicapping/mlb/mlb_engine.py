@@ -31,7 +31,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 # App helpers
 from app.database import async_session
-from app.handicapping.mlb.data_loader import MLBDataLoader, build_features, get_data_loader, get_model_features
+from app.handicapping.mlb.data_loader import (
+    MLBDataLoader, build_features, get_data_loader, get_model_features,
+    _GAME_QUERY_COLUMNS,
+)
 from app.handicapping.calibrate_confidence import calibrate, build_calibration
 from app.handicapping.shap_attribution import compute_attribution
 from app.models.mlb.consolidated import MLBBettingLineConsolidated
@@ -244,6 +247,89 @@ def _get_features() -> Dict[str, List[str]]:
     return _FEATURE_COLS
 
 
+# ── Column projection for load_games ───────────────────────────────────────
+# GAME_QUERY projects 291 columns and builds them all via LATERAL joins;
+# `load_games(columns=...)` now restricts the SELECT so Postgres skips the
+# unselected LATERALs — load time tracks the requested feature set instead of
+# all 291. These two helpers compute the exact raw GAME_QUERY aliases a given
+# path needs so we never load/build columns the model or pick-card won't touch.
+#
+# RAW_BUILDFEATURES_INPUTS: the raw GAME_QUERY columns that build_features()
+# reads as inputs for its derived columns (e.g. h_win_pct -> h_winpct, h_wins ->
+# home_wins, h_p_rest -> h_pitcher_rest). Kept ALWAYS so build_features can
+# regenerate every derived feature from the projected frame. Computed by
+# scanning build_features for result/df/frame[row] keys; stable — change with the
+# function if it starts reading a new raw column.
+
+_BUILDFEATURES_RAW_INPUTS = [
+    "h_win_pct", "a_win_pct", "h_win_pct_l10", "a_win_pct_l10",
+    "h_wins", "h_losses", "a_wins", "a_losses",
+    "h_wins_l10", "h_losses_l10", "a_wins_l10", "a_losses_l10",
+    "h_p_rest", "a_p_rest", "h_p_era_20", "a_p_era_20",
+    "h_p_era_5", "a_p_era_5", "h_over_count", "a_over_count",
+    "h_over_pct", "a_over_pct", "h_at_bats", "a_at_bats",
+    "h_prior_rf_home", "a_prior_rf_away", "h_rf", "a_rf",
+    "h_cum_ops", "a_cum_ops", "h_lineup_ops", "a_lineup_ops",
+    "h_lineup_ops_minus_team", "a_lineup_ops_minus_team",
+    "combo_era_r5", "combo_era_r10",
+    # raw inputs for build_features-derived features rest_diff (h_rest/a_rest)
+    # and is_div (home_abbr/away_abbr). Without these the derived features stay
+    # NaN and any lean projection silently drops them (model trains on fewer
+    # features than live inference -> Feature shape mismatch, expected: 101 got 103).
+    "h_rest", "a_rest", "home_abbr", "away_abbr",
+]
+
+# Context/target columns the prediction + pick-card pipeline reads directly off
+# the row (NOT registered as model features, but must always be present).
+_REQUIRED_ROW_COLUMNS = [
+    "game_id", "season_year", "season_id", "game_date",
+    "home_team_id", "away_team_id", "home_team", "away_team",
+    "home_score", "away_score",
+    "h_line_runline", "a_line_runline",
+    "closing_spread", "closing_ou", "over_under", "spread",
+    "h_implied_probability", "a_implied_probability",
+    "h_moneyline", "a_moneyline", "h_probability", "a_probability",
+    "status",
+]
+
+
+def _projection_columns(feature_names: list[str]) -> list:
+    """Reduce a feature-name list to the raw GAME_QUERY aliases to load.
+
+    ``feature_names`` may contain build_features-derived names that aren't raw
+    GAME_QUERY aliases (e.g. h_winpct) — those are produced later by
+    build_features from `_BUILDFEATURES_RAW_INPUTS`, so they are skipped here
+    and their inputs are loaded instead. Returns the union of: raw feature
+    aliases, the build_features raw inputs, and the required row/context cols,
+    restricted to aliases that actually exist in the query (unknowns ignored).
+    """
+    if not _GAME_QUERY_COLUMNS:
+        return None  # never restrict if we can't introspect the query
+    needed = set(feature_names) | set(_BUILDFEATURES_RAW_INPUTS) | set(_REQUIRED_ROW_COLUMNS)
+    keep = [c for c in _GAME_QUERY_COLUMNS if c in needed]
+    return keep if keep else None
+
+
+async def _inference_feature_names(db: AsyncSession) -> list:
+    """Raw GAME_QUERY columns the live inference + pick-card pipeline needs.
+
+    Live inference must load every feature the models consume (live_ats ∪
+    live_ou) AND every feature shown on the pick card (pick_card=true), per
+    Rich's spec. Only the current year's data is loaded; this helper computes
+    which columns to project so build_features + the feature extraction see
+    everything they need without materializing unused LATERALs.
+    """
+    names = set(_get_features()["ats"]) | set(_get_features()["ou"])
+    res = await db.execute(text("SELECT name FROM mlb.features WHERE pick_card = true"))
+    names |= {r for r in res.scalars().all() if r}
+    # Team-abbreviation columns are required downstream: build_features derives
+    # `ha`/`aa` from them, and _save_api_prediction needs those for ml_pick /
+    # run_line_pick (empty team names => blank picks). They aren't model or
+    # pick_card features, so always include them.
+    names |= {"home_abbr", "away_abbr"}
+    return _projection_columns(sorted(names))
+
+
 def _extract_feature_vector(row: pd.Series, model_type: str) -> Optional[np.ndarray]:
     """Extract the feature vector of ``model_type`` features from one row.
 
@@ -412,9 +498,38 @@ async def batch_predict_upcoming_games(
     )
 
     dl = get_data_loader()
-    all_historic = dl.load_games(status="FINAL", include_upcoming=False)
-    target_games = dl.load_games(status=None, include_upcoming=True, game_ids=game_ids)
-    combined = pd.concat([all_historic, target_games], ignore_index=True)
+    # Live inference: load ONLY the current year. Rolling/Prior-season/lineup-OPS
+    # features are computed PER ROW by the GAME_QUERY LATERALs (rolling stats scan
+    # the full DB history; prior-season averages come from `mlb.prior_team_stats`
+    # joined by s.year-1; lineup-OPS reads player_batting_rolling_stats per starter).
+    # Each target row is self-contained, so NO prior-season rows need to be loaded
+    # into the DataFrame. The loaded year follows the model's `year` param, so
+    # changing the year changes what is loaded.
+    load_seasons = [year]
+    # Live inference: load ONLY the current year, projected to just the raw
+    # GAME_QUERY columns the models + pick-card need (live_ats ∪ live_ou ∪
+    # pick_card=true) plus build_features/context inputs. Restricting the SELECT
+    # lets Postgres skip the unselected LATERALs -> inference load is fast.
+    infer_cols = await _inference_feature_names(db)
+    # Live inference: we ONLY need the target (upcoming) games. The GAME_QUERY
+    # LATERALs compute every rolling/prior/lineup feature PER ROW from the rolling
+    # tables + prior-season stats, so each target row is self-contained.
+    # Loading the full season's FINAL rows here did nothing but feed a
+    # 20-minute-statement-timeout GAME_QUERY (games ended up with NO picks).
+    # The picks loop below only ever uses df filtered to the target game_ids,
+    # so all_historic is dead weight - skip it entirely.
+    target_games = dl.load_games(
+        seasons=load_seasons, status=None, include_upcoming=True,
+        game_ids=game_ids, columns=infer_cols,
+    )
+    combined = pd.concat(
+        [pd.DataFrame(columns=target_games.columns), target_games],
+        ignore_index=True,
+    )
+    _logger.debug(
+        f"Seasons loaded for inference: {load_seasons} "
+        f"(historic 0 skipped + target {len(target_games)} rows)"
+    )
     df = build_features(combined)
     _logger.info(f"Feature df built: {df.shape[0]} rows, {df.shape[1]} cols")
 

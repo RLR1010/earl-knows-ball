@@ -126,7 +126,18 @@ WITH games_with_status AS (
         LAG(cgs.pitch_hits_allowed) OVER w AS prev_pitch_h,
         LAG(cgs.pitch_walks_allowed) OVER w AS prev_pitch_bb,
         LAG(cgs.pitch_strikeouts) OVER w AS prev_pitch_k,
-        LAG(cgs.pitch_home_runs_allowed) OVER w AS prev_pitch_hr
+        LAG(cgs.pitch_home_runs_allowed) OVER w AS prev_pitch_hr,
+
+        -- Prior-game pointers (see top-of-file convention):
+        --  prev_game_id_season = prior game within same season (NULL on 1st of season)
+        --  prev_game_id         = prior game ACROSS seasons (carries into next season)
+        --  prev_game_id_side    = prior game at the SAME team_side (venue label)
+        LAG(cgs.game_id) OVER w       AS prev_game_id_season,
+        LAG(g.date) OVER w            AS prev_game_date_season,
+        LAG(cgs.game_id) OVER w_all   AS prev_game_id,
+        LAG(g.date) OVER w_all        AS prev_game_date,
+        LAG(cgs.game_id) OVER w_side  AS prev_game_id_side,
+        LAG(g.date) OVER w_side       AS prev_game_date_side
 
     FROM mlb.cumulative_game_stats cgs
     JOIN mlb.games g ON g.id = cgs.game_id
@@ -141,6 +152,10 @@ WITH games_with_status AS (
         GROUP BY bg.game_id, bg.team_id
     ) bp ON bp.game_id = cgs.game_id AND bp.team_id = cgs.team_id
     WINDOW w AS (PARTITION BY cgs.team_id, cgs.season_id
+                 ORDER BY cgs.game_timestamp, cgs.game_id),
+           w_all AS (PARTITION BY cgs.team_id
+                 ORDER BY cgs.game_timestamp, cgs.game_id),
+           w_side AS (PARTITION BY cgs.team_id, cgs.season_id, cgs.team_side
                  ORDER BY cgs.game_timestamp, cgs.game_id)
 )
 , per_game AS (
@@ -602,7 +617,15 @@ SELECT *,
     CASE WHEN SUM(ip_outs) OVER w20 > 0
         THEN COALESCE(SUM(strikeouts) OVER w20, 0)::DOUBLE PRECISION / (COALESCE(SUM(ip_outs) OVER w20, 0)::DOUBLE PRECISION / 3) * 9 END AS k9_20,
     CASE WHEN SUM(ip_outs) OVER w20 > 0
-        THEN COALESCE(SUM(walks_allowed) OVER w20, 0)::DOUBLE PRECISION / (COALESCE(SUM(ip_outs) OVER w20, 0)::DOUBLE PRECISION / 3) * 9 END AS bb9_20
+        THEN COALESCE(SUM(walks_allowed) OVER w20, 0)::DOUBLE PRECISION / (COALESCE(SUM(ip_outs) OVER w20, 0)::DOUBLE PRECISION / 3) * 9 END AS bb9_20,
+
+    -- Prior-game pointers (see top-of-file convention):
+    --  prev_game_id_season = previous start in the SAME season (NULL on season debut)
+    --  prev_game_id         = previous start ACROSS seasons (carries into next season)
+    LAG(game_id) OVER w       AS prev_game_id_season,
+    LAG(game_date) OVER w     AS prev_game_date_season,
+    LAG(game_id) OVER w_all   AS prev_game_id,
+    LAG(game_date) OVER w_all AS prev_game_date
 
 FROM per_start
 WINDOW
@@ -615,7 +638,9 @@ WINDOW
     w15 AS (PARTITION BY player_id, season_id ORDER BY game_date, game_id
             ROWS BETWEEN 15 PRECEDING AND CURRENT ROW),
     w20 AS (PARTITION BY player_id, season_id ORDER BY game_date, game_id
-            ROWS BETWEEN 20 PRECEDING AND CURRENT ROW)
+            ROWS BETWEEN 20 PRECEDING AND CURRENT ROW),
+    w_all AS (PARTITION BY player_id ORDER BY game_date, game_id
+            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
 ORDER BY player_id, season_id, game_date, game_id
 ;
 """

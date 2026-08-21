@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS mlb.team_rolling_stats (
     team_id          INTEGER NOT NULL,
     team_side        TEXT    NOT NULL CHECK (team_side IN ('home', 'away')),
     season_id        INTEGER NOT NULL,
-    game_date        DATE    NOT NULL,
+    game_date        TIMESTAMPTZ NOT NULL,
     venue_id         INTEGER,
 
     -- Pre-computed game counters (replaces correlated subqueries in GAME_QUERY)
@@ -142,7 +142,7 @@ CREATE TABLE IF NOT EXISTS mlb.pitcher_rolling_stats (
     team_id          INTEGER NOT NULL,
     team_abbr        TEXT    NOT NULL,
     season_id        INTEGER NOT NULL,
-    game_date        DATE    NOT NULL,
+    game_date        TIMESTAMPTZ NOT NULL,
     is_starter       BOOLEAN NOT NULL DEFAULT true,
 
     -- Per-start totals
@@ -200,3 +200,86 @@ CREATE INDEX IF NOT EXISTS idx_prs_game
 CREATE INDEX IF NOT EXISTS idx_prs_starter_game
     ON mlb.pitcher_rolling_stats (game_id)
     WHERE is_starter = true;
+
+
+-- ── Player Batting Rolling Stats ──────────────────────────────────────────
+-- One row per (player, game) the batter appeared in a FINAL game.
+-- Rolling windows use ROWS BETWEEN ... AND CURRENT ROW, so each row INCLUDES
+-- its own game's result (matches the team_rolling_stats contract). The data
+-- loader reads the PREVIOUS FINAL row per player for any live/final target.
+--
+-- OPS inputs here: avg/obp/slg derived from per-game H/PA(AB+BB+HBP+SF)/TB.
+
+CREATE TABLE IF NOT EXISTS mlb.player_batting_rolling_stats (
+    game_id        INTEGER NOT NULL,
+    player_id      INTEGER NOT NULL,
+    team_id        INTEGER,
+    team_side      TEXT    NOT NULL CHECK (team_side IN ('home', 'away')),
+    season_id      INTEGER NOT NULL,
+    game_date        TIMESTAMPTZ NOT NULL,
+    game_n         INTEGER,        -- Nth game this season for this player
+
+    -- Per-game counting stats (OPS plate-appearance inputs)
+    pa             INTEGER,
+    at_bats        INTEGER,
+    runs           INTEGER,
+    hits           INTEGER,
+    doubles        INTEGER,
+    triples        INTEGER,
+    home_runs      INTEGER,
+    runs_batted_in INTEGER,
+    walks          INTEGER,        -- base_on_balls
+    strikeouts     INTEGER,
+    total_bases    INTEGER,
+    hit_by_pitch   INTEGER,
+    sacrifice_flies INTEGER,
+
+    -- Per-game rates
+    avg_this   DOUBLE PRECISION,
+    obp_this   DOUBLE PRECISION,
+    slg_this   DOUBLE PRECISION,
+    ops_this   DOUBLE PRECISION,
+
+    -- Season-to-date (entering incl. this game, CURRENT ROW)
+    ytd_games   INTEGER,
+    ytd_pa      INTEGER,
+    ytd_ab      INTEGER,
+    ytd_hits    INTEGER,
+    ytd_bb      INTEGER,
+    ytd_hbp     INTEGER,
+    ytd_sf      INTEGER,
+    ytd_runs    INTEGER,
+    ytd_rbi     INTEGER,
+    ytd_tb      INTEGER,
+    ytd_hr      INTEGER,
+    ytd_so      INTEGER,
+    ytd_avg     DOUBLE PRECISION,
+    ytd_obp     DOUBLE PRECISION,
+    ytd_slg     DOUBLE PRECISION,
+    ytd_ops     DOUBLE PRECISION,
+
+    -- Rolling 5-game (CURRENT ROW inclusive)
+    avg_5       DOUBLE PRECISION,
+    obp_5       DOUBLE PRECISION,
+    slg_5       DOUBLE PRECISION,
+    ops_5       DOUBLE PRECISION,
+
+    -- Rolling 15-game
+    avg_15      DOUBLE PRECISION,
+    obp_15      DOUBLE PRECISION,
+    slg_15      DOUBLE PRECISION,
+    ops_15      DOUBLE PRECISION,
+
+    -- Rolling 30-game
+    avg_30      DOUBLE PRECISION,
+    obp_30      DOUBLE PRECISION,
+    slg_30      DOUBLE PRECISION,
+    ops_30      DOUBLE PRECISION,
+
+    PRIMARY KEY (player_id, game_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_pbrs_player_season
+    ON mlb.player_batting_rolling_stats (player_id, season_id, game_date);
+CREATE INDEX IF NOT EXISTS idx_pbrs_game
+    ON mlb.player_batting_rolling_stats (game_id);

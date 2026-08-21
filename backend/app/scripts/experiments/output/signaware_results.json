@@ -1,0 +1,2344 @@
+{
+  "experiment": "sign_aware_ats",
+  "alpha": 0.0,
+  "test_years": [
+    2021,
+    2022,
+    2023,
+    2024,
+    2025,
+    2026
+  ],
+  "train_from": 2016,
+  "ts": 1787238399.336247,
+  "results": [
+    {
+      "test_year": 2021,
+      "alpha": 0.0,
+      "best_iter": 359,
+      "rows": {
+        "train": 13912,
+        "eval": 2455,
+        "test": 1069
+      },
+      "n_ats_with_data": 1069,
+      "mae": 3.491,
+      "ml": {
+        "total": 1069,
+        "correct": 593,
+        "pct": 55.47
+      },
+      "ats": {
+        "total": 1069,
+        "correct": 603,
+        "pct": 56.41
+      },
+      "feature_importance": [
+        {
+          "feature": "a_adj_rf_avg",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_adj_win_pct",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_away_rf",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_away_rf_r10",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_away_win_pct_r10",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_away_win_pct_season",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_bullpen_era_l5",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_bullpen_ip_l5",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_cum_avg",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_cum_babip",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_cum_bb9",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_cum_bb_rate",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_cum_era",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_cum_k9",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_cum_k_rate",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_cum_obp",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_cum_ops",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_cum_slg",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_cum_whip",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_form_l10",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_implied",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_ops_vs_opp_hand",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_pitcher_day_night_era",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_pitcher_era_l20",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_pitcher_rest",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_pitcher_road_era",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_pitcher_venue_era",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_ra10",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_ra20",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_ra_avg",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_rf10",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_rf20",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_rf_avg",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_rpg_vs_opp_hand",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_slg_l10",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_team_venue_winpct",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_winpct",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_winpct_l10",
+          "importance": 0.0
+        },
+        {
+          "feature": "away_losses",
+          "importance": 0.0
+        },
+        {
+          "feature": "away_moneyline",
+          "importance": 0.0
+        },
+        {
+          "feature": "away_wins",
+          "importance": 0.0
+        },
+        {
+          "feature": "combo_era_r10_diff",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_adj_rf_avg",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_adj_win_pct",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_bullpen_era_l5",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_bullpen_ip_l5",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_cum_avg",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_cum_babip",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_cum_bb9",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_cum_bb_rate",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_cum_era",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_cum_k9",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_cum_k_rate",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_cum_obp",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_cum_ops",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_cum_slg",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_cum_whip",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_form_l10",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_home_rf",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_home_win_pct_r10",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_home_win_pct_season",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_implied",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_ops_vs_opp_hand",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_pitcher_day_night_era",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_pitcher_era_l20",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_pitcher_home_era",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_pitcher_rest",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_ra10",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_ra20",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_ra_avg",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_rf10",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_rf20",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_rf_avg",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_rpg_vs_opp_hand",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_slg_l10",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_winpct",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_winpct_l10",
+          "importance": 0.0
+        },
+        {
+          "feature": "home_losses",
+          "importance": 0.0
+        },
+        {
+          "feature": "home_moneyline",
+          "importance": 0.0
+        },
+        {
+          "feature": "home_wins",
+          "importance": 0.0
+        },
+        {
+          "feature": "is_div",
+          "importance": 0.0
+        },
+        {
+          "feature": "is_summer",
+          "importance": 0.0
+        },
+        {
+          "feature": "ml_implied_movement",
+          "importance": 0.0
+        },
+        {
+          "feature": "opening_away_implied",
+          "importance": 0.0
+        },
+        {
+          "feature": "opening_away_ml",
+          "importance": 0.0
+        },
+        {
+          "feature": "opening_home_implied",
+          "importance": 0.0
+        },
+        {
+          "feature": "opening_home_ml",
+          "importance": 0.0
+        },
+        {
+          "feature": "rest_diff",
+          "importance": 0.0
+        },
+        {
+          "feature": "rest_diff_hours",
+          "importance": 0.0
+        },
+        {
+          "feature": "winpct_diff",
+          "importance": 0.0
+        },
+        {
+          "feature": "winpct_l10_diff",
+          "importance": 0.0
+        }
+      ]
+    },
+    {
+      "test_year": 2022,
+      "alpha": 0.0,
+      "best_iter": 327,
+      "rows": {
+        "train": 14821,
+        "eval": 2615,
+        "test": 2466
+      },
+      "n_ats_with_data": 2466,
+      "mae": 3.432,
+      "ml": {
+        "total": 2466,
+        "correct": 1372,
+        "pct": 55.64
+      },
+      "ats": {
+        "total": 2466,
+        "correct": 1371,
+        "pct": 55.6
+      },
+      "feature_importance": [
+        {
+          "feature": "a_adj_rf_avg",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_adj_win_pct",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_away_rf",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_away_rf_r10",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_away_win_pct_r10",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_away_win_pct_season",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_bullpen_era_l5",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_bullpen_ip_l5",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_cum_avg",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_cum_babip",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_cum_bb9",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_cum_bb_rate",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_cum_era",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_cum_k9",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_cum_k_rate",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_cum_obp",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_cum_ops",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_cum_slg",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_cum_whip",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_form_l10",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_implied",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_ops_vs_opp_hand",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_pitcher_day_night_era",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_pitcher_era_l20",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_pitcher_rest",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_pitcher_road_era",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_pitcher_venue_era",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_ra10",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_ra20",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_ra_avg",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_rf10",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_rf20",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_rf_avg",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_rpg_vs_opp_hand",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_slg_l10",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_team_venue_winpct",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_winpct",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_winpct_l10",
+          "importance": 0.0
+        },
+        {
+          "feature": "away_losses",
+          "importance": 0.0
+        },
+        {
+          "feature": "away_moneyline",
+          "importance": 0.0
+        },
+        {
+          "feature": "away_wins",
+          "importance": 0.0
+        },
+        {
+          "feature": "combo_era_r10_diff",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_adj_rf_avg",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_adj_win_pct",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_bullpen_era_l5",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_bullpen_ip_l5",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_cum_avg",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_cum_babip",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_cum_bb9",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_cum_bb_rate",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_cum_era",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_cum_k9",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_cum_k_rate",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_cum_obp",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_cum_ops",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_cum_slg",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_cum_whip",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_form_l10",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_home_rf",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_home_win_pct_r10",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_home_win_pct_season",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_implied",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_ops_vs_opp_hand",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_pitcher_day_night_era",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_pitcher_era_l20",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_pitcher_home_era",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_pitcher_rest",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_ra10",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_ra20",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_ra_avg",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_rf10",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_rf20",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_rf_avg",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_rpg_vs_opp_hand",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_slg_l10",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_winpct",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_winpct_l10",
+          "importance": 0.0
+        },
+        {
+          "feature": "home_losses",
+          "importance": 0.0
+        },
+        {
+          "feature": "home_moneyline",
+          "importance": 0.0
+        },
+        {
+          "feature": "home_wins",
+          "importance": 0.0
+        },
+        {
+          "feature": "is_div",
+          "importance": 0.0
+        },
+        {
+          "feature": "is_summer",
+          "importance": 0.0
+        },
+        {
+          "feature": "ml_implied_movement",
+          "importance": 0.0
+        },
+        {
+          "feature": "opening_away_implied",
+          "importance": 0.0
+        },
+        {
+          "feature": "opening_away_ml",
+          "importance": 0.0
+        },
+        {
+          "feature": "opening_home_implied",
+          "importance": 0.0
+        },
+        {
+          "feature": "opening_home_ml",
+          "importance": 0.0
+        },
+        {
+          "feature": "rest_diff",
+          "importance": 0.0
+        },
+        {
+          "feature": "rest_diff_hours",
+          "importance": 0.0
+        },
+        {
+          "feature": "winpct_diff",
+          "importance": 0.0
+        },
+        {
+          "feature": "winpct_l10_diff",
+          "importance": 0.0
+        }
+      ]
+    },
+    {
+      "test_year": 2023,
+      "alpha": 0.0,
+      "best_iter": 299,
+      "rows": {
+        "train": 16917,
+        "eval": 2985,
+        "test": 2469
+      },
+      "n_ats_with_data": 2469,
+      "mae": 3.54,
+      "ml": {
+        "total": 2469,
+        "correct": 1354,
+        "pct": 54.84
+      },
+      "ats": {
+        "total": 2469,
+        "correct": 1383,
+        "pct": 56.01
+      },
+      "feature_importance": [
+        {
+          "feature": "a_adj_rf_avg",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_adj_win_pct",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_away_rf",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_away_rf_r10",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_away_win_pct_r10",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_away_win_pct_season",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_bullpen_era_l5",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_bullpen_ip_l5",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_cum_avg",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_cum_babip",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_cum_bb9",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_cum_bb_rate",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_cum_era",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_cum_k9",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_cum_k_rate",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_cum_obp",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_cum_ops",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_cum_slg",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_cum_whip",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_form_l10",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_implied",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_ops_vs_opp_hand",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_pitcher_day_night_era",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_pitcher_era_l20",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_pitcher_rest",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_pitcher_road_era",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_pitcher_venue_era",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_ra10",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_ra20",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_ra_avg",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_rf10",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_rf20",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_rf_avg",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_rpg_vs_opp_hand",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_slg_l10",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_team_venue_winpct",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_winpct",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_winpct_l10",
+          "importance": 0.0
+        },
+        {
+          "feature": "away_losses",
+          "importance": 0.0
+        },
+        {
+          "feature": "away_moneyline",
+          "importance": 0.0
+        },
+        {
+          "feature": "away_wins",
+          "importance": 0.0
+        },
+        {
+          "feature": "combo_era_r10_diff",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_adj_rf_avg",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_adj_win_pct",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_bullpen_era_l5",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_bullpen_ip_l5",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_cum_avg",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_cum_babip",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_cum_bb9",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_cum_bb_rate",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_cum_era",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_cum_k9",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_cum_k_rate",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_cum_obp",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_cum_ops",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_cum_slg",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_cum_whip",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_form_l10",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_home_rf",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_home_win_pct_r10",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_home_win_pct_season",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_implied",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_ops_vs_opp_hand",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_pitcher_day_night_era",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_pitcher_era_l20",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_pitcher_home_era",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_pitcher_rest",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_ra10",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_ra20",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_ra_avg",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_rf10",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_rf20",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_rf_avg",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_rpg_vs_opp_hand",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_slg_l10",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_winpct",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_winpct_l10",
+          "importance": 0.0
+        },
+        {
+          "feature": "home_losses",
+          "importance": 0.0
+        },
+        {
+          "feature": "home_moneyline",
+          "importance": 0.0
+        },
+        {
+          "feature": "home_wins",
+          "importance": 0.0
+        },
+        {
+          "feature": "is_div",
+          "importance": 0.0
+        },
+        {
+          "feature": "is_summer",
+          "importance": 0.0
+        },
+        {
+          "feature": "ml_implied_movement",
+          "importance": 0.0
+        },
+        {
+          "feature": "opening_away_implied",
+          "importance": 0.0
+        },
+        {
+          "feature": "opening_away_ml",
+          "importance": 0.0
+        },
+        {
+          "feature": "opening_home_implied",
+          "importance": 0.0
+        },
+        {
+          "feature": "opening_home_ml",
+          "importance": 0.0
+        },
+        {
+          "feature": "rest_diff",
+          "importance": 0.0
+        },
+        {
+          "feature": "rest_diff_hours",
+          "importance": 0.0
+        },
+        {
+          "feature": "winpct_diff",
+          "importance": 0.0
+        },
+        {
+          "feature": "winpct_l10_diff",
+          "importance": 0.0
+        }
+      ]
+    },
+    {
+      "test_year": 2024,
+      "alpha": 0.0,
+      "best_iter": 127,
+      "rows": {
+        "train": 19016,
+        "eval": 3355,
+        "test": 2470
+      },
+      "n_ats_with_data": 2470,
+      "mae": 3.503,
+      "ml": {
+        "total": 2470,
+        "correct": 1370,
+        "pct": 55.47
+      },
+      "ats": {
+        "total": 2470,
+        "correct": 1408,
+        "pct": 57.0
+      },
+      "feature_importance": [
+        {
+          "feature": "a_adj_rf_avg",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_adj_win_pct",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_away_rf",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_away_rf_r10",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_away_win_pct_r10",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_away_win_pct_season",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_bullpen_era_l5",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_bullpen_ip_l5",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_cum_avg",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_cum_babip",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_cum_bb9",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_cum_bb_rate",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_cum_era",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_cum_k9",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_cum_k_rate",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_cum_obp",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_cum_ops",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_cum_slg",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_cum_whip",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_form_l10",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_implied",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_ops_vs_opp_hand",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_pitcher_day_night_era",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_pitcher_era_l20",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_pitcher_rest",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_pitcher_road_era",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_pitcher_venue_era",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_ra10",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_ra20",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_ra_avg",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_rf10",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_rf20",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_rf_avg",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_rpg_vs_opp_hand",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_slg_l10",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_team_venue_winpct",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_winpct",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_winpct_l10",
+          "importance": 0.0
+        },
+        {
+          "feature": "away_losses",
+          "importance": 0.0
+        },
+        {
+          "feature": "away_moneyline",
+          "importance": 0.0
+        },
+        {
+          "feature": "away_wins",
+          "importance": 0.0
+        },
+        {
+          "feature": "combo_era_r10_diff",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_adj_rf_avg",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_adj_win_pct",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_bullpen_era_l5",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_bullpen_ip_l5",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_cum_avg",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_cum_babip",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_cum_bb9",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_cum_bb_rate",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_cum_era",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_cum_k9",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_cum_k_rate",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_cum_obp",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_cum_ops",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_cum_slg",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_cum_whip",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_form_l10",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_home_rf",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_home_win_pct_r10",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_home_win_pct_season",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_implied",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_ops_vs_opp_hand",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_pitcher_day_night_era",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_pitcher_era_l20",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_pitcher_home_era",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_pitcher_rest",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_ra10",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_ra20",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_ra_avg",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_rf10",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_rf20",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_rf_avg",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_rpg_vs_opp_hand",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_slg_l10",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_winpct",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_winpct_l10",
+          "importance": 0.0
+        },
+        {
+          "feature": "home_losses",
+          "importance": 0.0
+        },
+        {
+          "feature": "home_moneyline",
+          "importance": 0.0
+        },
+        {
+          "feature": "home_wins",
+          "importance": 0.0
+        },
+        {
+          "feature": "is_div",
+          "importance": 0.0
+        },
+        {
+          "feature": "is_summer",
+          "importance": 0.0
+        },
+        {
+          "feature": "ml_implied_movement",
+          "importance": 0.0
+        },
+        {
+          "feature": "opening_away_implied",
+          "importance": 0.0
+        },
+        {
+          "feature": "opening_away_ml",
+          "importance": 0.0
+        },
+        {
+          "feature": "opening_home_implied",
+          "importance": 0.0
+        },
+        {
+          "feature": "opening_home_ml",
+          "importance": 0.0
+        },
+        {
+          "feature": "rest_diff",
+          "importance": 0.0
+        },
+        {
+          "feature": "rest_diff_hours",
+          "importance": 0.0
+        },
+        {
+          "feature": "winpct_diff",
+          "importance": 0.0
+        },
+        {
+          "feature": "winpct_l10_diff",
+          "importance": 0.0
+        }
+      ]
+    },
+    {
+      "test_year": 2025,
+      "alpha": 0.0,
+      "best_iter": 124,
+      "rows": {
+        "train": 21115,
+        "eval": 3726,
+        "test": 2477
+      },
+      "n_ats_with_data": 2477,
+      "mae": 3.567,
+      "ml": {
+        "total": 2477,
+        "correct": 1371,
+        "pct": 55.35
+      },
+      "ats": {
+        "total": 2477,
+        "correct": 1500,
+        "pct": 60.56
+      },
+      "feature_importance": [
+        {
+          "feature": "a_adj_rf_avg",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_adj_win_pct",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_away_rf",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_away_rf_r10",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_away_win_pct_r10",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_away_win_pct_season",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_bullpen_era_l5",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_bullpen_ip_l5",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_cum_avg",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_cum_babip",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_cum_bb9",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_cum_bb_rate",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_cum_era",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_cum_k9",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_cum_k_rate",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_cum_obp",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_cum_ops",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_cum_slg",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_cum_whip",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_form_l10",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_implied",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_ops_vs_opp_hand",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_pitcher_day_night_era",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_pitcher_era_l20",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_pitcher_rest",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_pitcher_road_era",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_pitcher_venue_era",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_ra10",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_ra20",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_ra_avg",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_rf10",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_rf20",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_rf_avg",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_rpg_vs_opp_hand",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_slg_l10",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_team_venue_winpct",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_winpct",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_winpct_l10",
+          "importance": 0.0
+        },
+        {
+          "feature": "away_losses",
+          "importance": 0.0
+        },
+        {
+          "feature": "away_moneyline",
+          "importance": 0.0
+        },
+        {
+          "feature": "away_wins",
+          "importance": 0.0
+        },
+        {
+          "feature": "combo_era_r10_diff",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_adj_rf_avg",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_adj_win_pct",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_bullpen_era_l5",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_bullpen_ip_l5",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_cum_avg",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_cum_babip",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_cum_bb9",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_cum_bb_rate",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_cum_era",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_cum_k9",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_cum_k_rate",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_cum_obp",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_cum_ops",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_cum_slg",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_cum_whip",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_form_l10",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_home_rf",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_home_win_pct_r10",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_home_win_pct_season",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_implied",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_ops_vs_opp_hand",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_pitcher_day_night_era",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_pitcher_era_l20",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_pitcher_home_era",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_pitcher_rest",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_ra10",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_ra20",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_ra_avg",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_rf10",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_rf20",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_rf_avg",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_rpg_vs_opp_hand",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_slg_l10",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_winpct",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_winpct_l10",
+          "importance": 0.0
+        },
+        {
+          "feature": "home_losses",
+          "importance": 0.0
+        },
+        {
+          "feature": "home_moneyline",
+          "importance": 0.0
+        },
+        {
+          "feature": "home_wins",
+          "importance": 0.0
+        },
+        {
+          "feature": "is_div",
+          "importance": 0.0
+        },
+        {
+          "feature": "is_summer",
+          "importance": 0.0
+        },
+        {
+          "feature": "ml_implied_movement",
+          "importance": 0.0
+        },
+        {
+          "feature": "opening_away_implied",
+          "importance": 0.0
+        },
+        {
+          "feature": "opening_away_ml",
+          "importance": 0.0
+        },
+        {
+          "feature": "opening_home_implied",
+          "importance": 0.0
+        },
+        {
+          "feature": "opening_home_ml",
+          "importance": 0.0
+        },
+        {
+          "feature": "rest_diff",
+          "importance": 0.0
+        },
+        {
+          "feature": "rest_diff_hours",
+          "importance": 0.0
+        },
+        {
+          "feature": "winpct_diff",
+          "importance": 0.0
+        },
+        {
+          "feature": "winpct_l10_diff",
+          "importance": 0.0
+        }
+      ]
+    },
+    {
+      "test_year": 2026,
+      "alpha": 0.0,
+      "best_iter": 210,
+      "rows": {
+        "train": 23221,
+        "eval": 4097,
+        "test": 1909
+      },
+      "n_ats_with_data": 1909,
+      "mae": 3.586,
+      "ml": {
+        "total": 1909,
+        "correct": 1023,
+        "pct": 53.59
+      },
+      "ats": {
+        "total": 1909,
+        "correct": 1119,
+        "pct": 58.62
+      },
+      "feature_importance": [
+        {
+          "feature": "a_adj_rf_avg",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_adj_win_pct",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_away_rf",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_away_rf_r10",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_away_win_pct_r10",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_away_win_pct_season",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_bullpen_era_l5",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_bullpen_ip_l5",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_cum_avg",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_cum_babip",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_cum_bb9",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_cum_bb_rate",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_cum_era",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_cum_k9",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_cum_k_rate",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_cum_obp",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_cum_ops",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_cum_slg",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_cum_whip",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_form_l10",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_implied",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_ops_vs_opp_hand",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_pitcher_day_night_era",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_pitcher_era_l20",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_pitcher_rest",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_pitcher_road_era",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_pitcher_venue_era",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_ra10",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_ra20",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_ra_avg",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_rf10",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_rf20",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_rf_avg",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_rpg_vs_opp_hand",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_slg_l10",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_team_venue_winpct",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_winpct",
+          "importance": 0.0
+        },
+        {
+          "feature": "a_winpct_l10",
+          "importance": 0.0
+        },
+        {
+          "feature": "away_losses",
+          "importance": 0.0
+        },
+        {
+          "feature": "away_moneyline",
+          "importance": 0.0
+        },
+        {
+          "feature": "away_wins",
+          "importance": 0.0
+        },
+        {
+          "feature": "combo_era_r10_diff",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_adj_rf_avg",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_adj_win_pct",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_bullpen_era_l5",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_bullpen_ip_l5",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_cum_avg",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_cum_babip",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_cum_bb9",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_cum_bb_rate",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_cum_era",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_cum_k9",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_cum_k_rate",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_cum_obp",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_cum_ops",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_cum_slg",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_cum_whip",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_form_l10",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_home_rf",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_home_win_pct_r10",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_home_win_pct_season",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_implied",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_ops_vs_opp_hand",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_pitcher_day_night_era",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_pitcher_era_l20",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_pitcher_home_era",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_pitcher_rest",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_ra10",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_ra20",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_ra_avg",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_rf10",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_rf20",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_rf_avg",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_rpg_vs_opp_hand",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_slg_l10",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_winpct",
+          "importance": 0.0
+        },
+        {
+          "feature": "h_winpct_l10",
+          "importance": 0.0
+        },
+        {
+          "feature": "home_losses",
+          "importance": 0.0
+        },
+        {
+          "feature": "home_moneyline",
+          "importance": 0.0
+        },
+        {
+          "feature": "home_wins",
+          "importance": 0.0
+        },
+        {
+          "feature": "is_div",
+          "importance": 0.0
+        },
+        {
+          "feature": "is_summer",
+          "importance": 0.0
+        },
+        {
+          "feature": "ml_implied_movement",
+          "importance": 0.0
+        },
+        {
+          "feature": "opening_away_implied",
+          "importance": 0.0
+        },
+        {
+          "feature": "opening_away_ml",
+          "importance": 0.0
+        },
+        {
+          "feature": "opening_home_implied",
+          "importance": 0.0
+        },
+        {
+          "feature": "opening_home_ml",
+          "importance": 0.0
+        },
+        {
+          "feature": "rest_diff",
+          "importance": 0.0
+        },
+        {
+          "feature": "rest_diff_hours",
+          "importance": 0.0
+        },
+        {
+          "feature": "winpct_diff",
+          "importance": 0.0
+        },
+        {
+          "feature": "winpct_l10_diff",
+          "importance": 0.0
+        }
+      ]
+    }
+  ]
+}

@@ -284,6 +284,17 @@ async def run(started_at=None):
             logger.error(f"  Step 13b team_runs_vs_arm refresh failed: {e}")
             step_failures.append(f"team_runs_vs_arm: {e}")
 
+        # Step 14: Refresh per-hitter rolling stats (player_batting_rolling_stats)
+        # Powers OPS/hitter features in GAME_QUERY. Windows are season-scoped, so
+        # incremental (auto-target current season) emits only new FINAL games' rows.
+        try:
+            from app.handicapping.mlb.populate_batting_rolling import populate
+            n = populate(incremental=True)
+            logger.info(f"  Step 14: per-hitter batting rolling refreshed (+{n} rows)")
+        except Exception as e:
+            logger.error(f"  Step 14 per-hitter batting rolling refresh failed: {e}")
+            step_failures.append(f"player_batting_rolling_stats: {e}")
+
         await pconn.close()
 
         # Commit all changes (lineups, pitchers, picks)
