@@ -157,6 +157,13 @@ CREATE TABLE IF NOT EXISTS nba.team_rolling_stats (
     star1_ppg_5                   DOUBLE PRECISION,
     stars_active                  INTEGER,
     star1_active                  INTEGER,
+    -- prior-game pointers (LAG; NULL on first appearance)
+    prev_game_id                  INTEGER,
+    prev_game_date                DATE,
+    prev_game_id_season           INTEGER,
+    prev_game_date_season         DATE,
+    prev_game_id_side             INTEGER,
+    prev_game_date_side           DATE,
     PRIMARY KEY (game_id, team_side)
 );
 CREATE INDEX IF NOT EXISTS idx_team_rolling_stats_game
@@ -167,6 +174,14 @@ CREATE INDEX IF NOT EXISTS idx_team_rolling_stats_team
 -- Migration: venue-conditional rolling columns (idempotent)
 ALTER TABLE nba.team_rolling_stats ADD COLUMN IF NOT EXISTS venue_pts_r10 DOUBLE PRECISION;
 ALTER TABLE nba.team_rolling_stats ADD COLUMN IF NOT EXISTS venue_win_pct_r10 DOUBLE PRECISION;
+
+-- Migration: prior-game pointer columns (idempotent)
+ALTER TABLE nba.team_rolling_stats ADD COLUMN IF NOT EXISTS prev_game_id INTEGER;
+ALTER TABLE nba.team_rolling_stats ADD COLUMN IF NOT EXISTS prev_game_date DATE;
+ALTER TABLE nba.team_rolling_stats ADD COLUMN IF NOT EXISTS prev_game_id_season INTEGER;
+ALTER TABLE nba.team_rolling_stats ADD COLUMN IF NOT EXISTS prev_game_date_season DATE;
+ALTER TABLE nba.team_rolling_stats ADD COLUMN IF NOT EXISTS prev_game_id_side INTEGER;
+ALTER TABLE nba.team_rolling_stats ADD COLUMN IF NOT EXISTS prev_game_date_side DATE;
 """
 
 
@@ -181,7 +196,7 @@ base AS (
     SELECT
         g.id                               AS game_id,
         g.season_id                        AS season_id,
-        g.date                             AS game_date,
+        (g.date AT TIME ZONE 'America/New_York')::date AS game_date,
         'home'                             AS team_side,
         g.home_team_id                     AS team_id,
         g.home_score                       AS points,
@@ -225,7 +240,7 @@ base AS (
     SELECT
         g.id                               AS game_id,
         g.season_id                        AS season_id,
-        g.date                             AS game_date,
+        (g.date AT TIME ZONE 'America/New_York')::date AS game_date,
         'away'                             AS team_side,
         g.away_team_id                     AS team_id,
         g.away_score                       AS points,
@@ -339,6 +354,13 @@ pg AS (
 rolling AS (
     SELECT
         p.game_id, p.team_id, p.team_side, p.season_id, p.game_date,
+        -- prior-game pointers (LAG; NULL on the first appearance)
+        LAG(p.game_id)   OVER w_seas AS prev_game_id_season,
+        LAG(p.game_date) OVER w_seas AS prev_game_date_season,
+        LAG(p.game_id)   OVER w_all  AS prev_game_id,
+        LAG(p.game_date) OVER w_all  AS prev_game_date,
+        LAG(p.game_id)   OVER w_side AS prev_game_id_side,
+        LAG(p.game_date) OVER w_side AS prev_game_date_side,
         -- simple rolling r5/r10 (avg incl current)
         AVG(p.per_game_net)    OVER w5  AS net_rtg_r5,
         AVG(p.per_game_net)    OVER w10 AS net_rtg_r10,
@@ -442,6 +464,9 @@ rolling AS (
         p.points AS points
     FROM pg p
     WINDOW
+        w_seas AS (PARTITION BY p.team_id, p.season_id ORDER BY p.game_date, p.game_id),
+        w_all  AS (PARTITION BY p.team_id ORDER BY p.game_date, p.game_id),
+        w_side AS (PARTITION BY p.team_id, p.team_side, p.season_id ORDER BY p.game_date, p.game_id),
         w5   AS (PARTITION BY p.team_id, p.season_id ORDER BY p.game_date, p.game_id
                  ROWS BETWEEN 4 PRECEDING AND CURRENT ROW),
         w10  AS (PARTITION BY p.team_id, p.season_id ORDER BY p.game_date, p.game_id
@@ -478,7 +503,7 @@ star_prep AS (
 star_rolling AS (
     SELECT
         sp.team_id, sp.season_id, sp.rk,
-        pgs.game_id, g.date AS game_date,
+        pgs.game_id, (g.date AT TIME ZONE 'America/New_York')::date AS game_date,
         AVG(pgs.points) OVER (
             PARTITION BY sp.player_id, sp.season_id
             ORDER BY g.date, pgs.game_id
@@ -512,6 +537,8 @@ star_agg AS (
 -- Final upsert
 INSERT INTO nba.team_rolling_stats (
     game_id, team_id, team_side, season_id, game_date,
+    prev_game_id, prev_game_date, prev_game_id_season, prev_game_date_season,
+    prev_game_id_side, prev_game_date_side,
     net_rtg_r5, net_rtg_r10, ortg_r5, ortg_r10, drtg_r5, drtg_r10,
     efg_r5, efg_r10, pace_r5, pace_r10, ast_ratio_r5, ast_ratio_r10,
     ft_rate_r5, ft_rate_r10, threep_rate_r5, threep_rate_r10,
@@ -528,6 +555,8 @@ INSERT INTO nba.team_rolling_stats (
 )
 SELECT
     r.game_id, r.team_id, r.team_side, r.season_id, r.game_date,
+    r.prev_game_id, r.prev_game_date, r.prev_game_id_season, r.prev_game_date_season,
+    r.prev_game_id_side, r.prev_game_date_side,
     r.net_rtg_r5, r.net_rtg_r10, r.ortg_r5, r.ortg_r10, r.drtg_r5, r.drtg_r10,
     r.efg_r5, r.efg_r10, r.pace_r5, r.pace_r10, r.ast_ratio_r5, r.ast_ratio_r10,
     r.ft_rate_r5, r.ft_rate_r10, r.threep_rate_r5, r.threep_rate_r10,
@@ -549,6 +578,12 @@ DO UPDATE SET
     team_id          = EXCLUDED.team_id,
     season_id        = EXCLUDED.season_id,
     game_date        = EXCLUDED.game_date,
+    prev_game_id             = EXCLUDED.prev_game_id,
+    prev_game_date           = EXCLUDED.prev_game_date,
+    prev_game_id_season      = EXCLUDED.prev_game_id_season,
+    prev_game_date_season    = EXCLUDED.prev_game_date_season,
+    prev_game_id_side        = EXCLUDED.prev_game_id_side,
+    prev_game_date_side      = EXCLUDED.prev_game_date_side,
     net_rtg_r5       = EXCLUDED.net_rtg_r5,
     net_rtg_r10      = EXCLUDED.net_rtg_r10,
     ortg_r5          = EXCLUDED.ortg_r5,

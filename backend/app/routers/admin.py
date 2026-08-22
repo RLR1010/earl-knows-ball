@@ -3131,8 +3131,8 @@ def _build_mlb_model_variant(name, results_data, feature_descriptions, feature_c
     ats_incorrect = _sum_metric("ats", "incorrect")
     ou_incorrect = _sum_metric("ou", "incorrect")
     ml_incorrect = _sum_metric("ml", "incorrect")
-    ats_pushes = _sum_metric("ats", "pushes")
-    ou_pushes = _sum_metric("ou", "pushes")
+    ats_pushes = _sum_metric("ats", "pushes") or _sum_metric("ats", "push")
+    ou_pushes = _sum_metric("ou", "pushes") or _sum_metric("ou", "push")
 
     algorithm = "XGBoost"
     if name == "ML":
@@ -3318,14 +3318,14 @@ def _build_model_variant(name, results_file, feature_descriptions, feature_categ
             incorrect=_count_metric("ats", "incorrect"),
             total=ats_total,
             pct=round(100 * _count_metric("ats", "correct") / max(ats_total, 1), 1),
-            pushes=_count_metric("ats", "pushes"),
+            pushes=_count_metric("ats", "pushes") or _count_metric("ats", "push"),
         ) if ats_total > 0 else None,
         overall_ou=ModelBettingOut(
             correct=_count_metric("ou", "correct"),
             incorrect=_count_metric("ou", "incorrect"),
             total=ou_total,
             pct=round(100 * _count_metric("ou", "correct") / max(ou_total, 1), 1),
-            pushes=_count_metric("ou", "pushes"),
+            pushes=_count_metric("ou", "pushes") or _count_metric("ou", "push"),
         ) if ou_total > 0 else None,
         overall_ml=ModelBettingOut(
             correct=_count_metric("ml", "correct"),
@@ -3546,7 +3546,7 @@ def _get_nba_model_detail() -> SportModelDetailOut:
             all_mae.append(r.get("mae", 0))
             all_ats_correct += r.get("ats", {}).get("correct", 0)
             all_ats_incorrect += r.get("ats", {}).get("incorrect", 0)
-            all_ats_pushes += r.get("ats", {}).get("pushes", 0)
+            all_ats_pushes += r.get("ats", {}).get("pushes", r.get("ats", {}).get("push", 0))
     overall_mae = round(sum(all_mae) / max(len(all_mae), 1), 2)
     ats_total = all_ats_correct + all_ats_incorrect
     overall_ats = ModelBettingOut(

@@ -152,7 +152,8 @@ async def resolve_player_id(db, player_name: str, team_id: int | None) -> int | 
                     WHERE lower(regexp_replace(name, '[\u0300-\u036f]', '', 'g')) = :norm
                     LIMIT 1
                     """
-                )
+                ),
+                {"norm": norm},
             )
         )
         row = row.mappings().first()

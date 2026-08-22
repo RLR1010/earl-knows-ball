@@ -637,9 +637,9 @@ export default function AdminModels() {
         <h3 className="text-lg font-semibold text-white mb-4">Overall Performance</h3>
         <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
           <StatCard label="MAE" value={data.overall_mae} subtitle="Avg prediction error" color="text-blue-400" />
-          {variant !== "O/U" && <StatCard label="ATS" value={`${data.overall_ats.pct}%`} subtitle={`${data.overall_ats.correct}-${data.overall_ats.incorrect}`} color="text-green-400" />}
+          {variant !== "O/U" && <StatCard label="ATS" value={`${data.overall_ats.pct}%`} subtitle={`${data.overall_ats.correct}-${data.overall_ats.incorrect}${data.overall_ats.pushes ? `-${data.overall_ats.pushes}` : ""}`} color="text-green-400" />}
           {variant === "O/U" && data.overall_ou && <StatCard label="O/U" value={`${data.overall_ou.pct}%`} subtitle={`${data.overall_ou.correct}-${data.overall_ou.incorrect}${data.overall_ou.pushes ? `-${data.overall_ou.pushes}` : ""}`} color="text-yellow-400" />}
-          {variant !== "O/U" && data.overall_ml && <StatCard label="Moneyline" value={`${data.overall_ml.pct}%`} subtitle={`${data.overall_ml.correct}-${data.overall_ml.incorrect}`} color="text-earl-400" />}
+          {variant !== "O/U" && data.overall_ml && <StatCard label="Moneyline" value={`${data.overall_ml.pct}%`} subtitle={`${data.overall_ml.correct}-${data.overall_ml.incorrect}${data.overall_ml.pushes ? `-${data.overall_ml.pushes}` : ""}`} color="text-earl-400" />}
           <StatCard label="Total Games" value={data.backtest_results.reduce((s, r) => s + r.total_games, 0)} subtitle="Across all test years" color="text-purple-400" />
           <StatCard label="Test Years" value={data.test_years.length} subtitle={data.test_years.join(", ")} color="text-gray-300" />
         </div>

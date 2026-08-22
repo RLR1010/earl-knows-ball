@@ -480,41 +480,67 @@ team_games AS (
     JOIN nba.teams at ON at.id = g.away_team_id
     JOIN nba.seasons s ON s.id = g.season_id
     INNER JOIN betting_agg ba ON ba.game_id = g.id
+    -- ── Efficient prior-game pointer resolution (prev_game_id fast path) ──
+    -- Resolve each team's effective prior game_id ONCE. For a FINAL target game the
+    -- snapshot tables carry prev_game_id_season (cross-venue) / prev_game_id_side
+    -- (same venue) directly -> O(1) equality join downstream, no ORDER BY scan.
+    -- For a scheduled game there is no snapshot row yet, so fall back to the
+    -- indexed "most recent prior game" lookup (single ORDER BY, leak-safe).
+    LEFT JOIN LATERAL (
+        SELECT COALESCE(
+            (SELECT cgs.prev_game_id_season FROM nba.cumulative_game_stats cgs
+              WHERE cgs.game_id = g.id AND cgs.team_id = g.home_team_id),
+            (SELECT cgs2.game_id FROM nba.cumulative_game_stats cgs2
+              WHERE cgs2.team_id = g.home_team_id AND cgs2.game_id != g.id
+                AND cgs2.game_date < (g.date AT TIME ZONE 'America/New_York')::date AND cgs2.season_id = g.season_id
+              ORDER BY cgs2.game_date DESC, cgs2.game_id DESC LIMIT 1)
+        ) AS prior_game_id
+    ) h_prio ON true
+    LEFT JOIN LATERAL (
+        SELECT COALESCE(
+            (SELECT cgs.prev_game_id_season FROM nba.cumulative_game_stats cgs
+              WHERE cgs.game_id = g.id AND cgs.team_id = g.away_team_id),
+            (SELECT cgs2.game_id FROM nba.cumulative_game_stats cgs2
+              WHERE cgs2.team_id = g.away_team_id AND cgs2.game_id != g.id
+                AND cgs2.game_date < (g.date AT TIME ZONE 'America/New_York')::date AND cgs2.season_id = g.season_id
+              ORDER BY cgs2.game_date DESC, cgs2.game_id DESC LIMIT 1)
+        ) AS prior_game_id
+    ) a_prio ON true
+    LEFT JOIN LATERAL (
+        SELECT COALESCE(
+            (SELECT rs.prev_game_id_side FROM nba.team_rolling_stats rs
+              WHERE rs.game_id = g.id AND rs.team_id = g.home_team_id AND rs.team_side = 'home'),
+            (SELECT rs2.game_id FROM nba.team_rolling_stats rs2
+              WHERE rs2.team_id = g.home_team_id AND rs2.team_side = 'home' AND rs2.game_id != g.id
+                AND rs2.game_date < (g.date AT TIME ZONE 'America/New_York')::date AND rs2.season_id = g.season_id
+              ORDER BY rs2.game_date DESC, rs2.game_id DESC LIMIT 1)
+        ) AS prior_game_id
+    ) h_prio_side ON true
+    LEFT JOIN LATERAL (
+        SELECT COALESCE(
+            (SELECT rs.prev_game_id_side FROM nba.team_rolling_stats rs
+              WHERE rs.game_id = g.id AND rs.team_id = g.away_team_id AND rs.team_side = 'away'),
+            (SELECT rs2.game_id FROM nba.team_rolling_stats rs2
+              WHERE rs2.team_id = g.away_team_id AND rs2.team_side = 'away' AND rs2.game_id != g.id
+                AND rs2.game_date < (g.date AT TIME ZONE 'America/New_York')::date AND rs2.season_id = g.season_id
+              ORDER BY rs2.game_date DESC, rs2.game_id DESC LIMIT 1)
+        ) AS prior_game_id
+    ) a_prio_side ON true
     LEFT JOIN LATERAL (
         SELECT cgs.* FROM nba.cumulative_game_stats cgs
-        WHERE cgs.team_id = g.home_team_id
-          AND cgs.game_id != g.id
-          AND cgs.game_date < g.date::date
-          AND cgs.season_id = g.season_id
-        ORDER BY cgs.game_date DESC, cgs.game_id DESC
-        LIMIT 1
+        WHERE cgs.team_id = g.home_team_id AND cgs.game_id = h_prio.prior_game_id
     ) hcs ON true
     LEFT JOIN LATERAL (
         SELECT rs.* FROM nba.team_rolling_stats rs
-        WHERE rs.team_id = g.home_team_id
-          AND rs.game_id != g.id
-          AND rs.game_date < g.date::date
-          AND rs.season_id = g.season_id
-        ORDER BY rs.game_date DESC, rs.game_id DESC
-        LIMIT 1
+        WHERE rs.team_id = g.home_team_id AND rs.game_id = h_prio.prior_game_id
     ) hrs ON true
     LEFT JOIN LATERAL (
         SELECT cgs.* FROM nba.cumulative_game_stats cgs
-        WHERE cgs.team_id = g.away_team_id
-          AND cgs.game_id != g.id
-          AND cgs.game_date < g.date::date
-          AND cgs.season_id = g.season_id
-        ORDER BY cgs.game_date DESC, cgs.game_id DESC
-        LIMIT 1
+        WHERE cgs.team_id = g.away_team_id AND cgs.game_id = a_prio.prior_game_id
     ) acs ON true
     LEFT JOIN LATERAL (
         SELECT rs.* FROM nba.team_rolling_stats rs
-        WHERE rs.team_id = g.away_team_id
-          AND rs.game_id != g.id
-          AND rs.game_date < g.date::date
-          AND rs.season_id = g.season_id
-        ORDER BY rs.game_date DESC, rs.game_id DESC
-        LIMIT 1
+        WHERE rs.team_id = g.away_team_id AND rs.game_id = a_prio.prior_game_id
     ) ars ON true
     -- Venue-conditional reads (home team's last HOME row / away team's last ROAD
     -- row). These feed the venue-scoped split features (h_home_pts_r10,
@@ -526,22 +552,14 @@ team_games AS (
         FROM nba.team_rolling_stats rs
         WHERE rs.team_id = g.home_team_id
           AND rs.team_side = 'home'
-          AND rs.game_id != g.id
-          AND rs.game_date < g.date::date
-          AND rs.season_id = g.season_id
-        ORDER BY rs.game_date DESC, rs.game_id DESC
-        LIMIT 1
+          AND rs.game_id = h_prio_side.prior_game_id
     ) hrs_hv ON true
     LEFT JOIN LATERAL (
         SELECT rs.venue_pts_r10, rs.venue_win_pct_r10
         FROM nba.team_rolling_stats rs
         WHERE rs.team_id = g.away_team_id
           AND rs.team_side = 'away'
-          AND rs.game_id != g.id
-          AND rs.game_date < g.date::date
-          AND rs.season_id = g.season_id
-        ORDER BY rs.game_date DESC, rs.game_id DESC
-        LIMIT 1
+          AND rs.game_id = a_prio_side.prior_game_id
     ) ars_av ON true
     -- Venue-scoped season win pct from cumulative (home team's home win pct season-to-date
     -- / away team's road win pct season-to-date). Leak-safe.
@@ -550,22 +568,14 @@ team_games AS (
         FROM nba.cumulative_game_stats cgs
         WHERE cgs.team_id = g.home_team_id
           AND cgs.team_side = 'home'
-          AND cgs.game_id != g.id
-          AND cgs.game_date < g.date::date
-          AND cgs.season_id = g.season_id
-        ORDER BY cgs.game_date DESC, cgs.game_id DESC
-        LIMIT 1
+          AND cgs.game_id = h_prio_side.prior_game_id
     ) cgs_hv ON true
     LEFT JOIN LATERAL (
         SELECT cgs.venue_win_pct_season
         FROM nba.cumulative_game_stats cgs
         WHERE cgs.team_id = g.away_team_id
           AND cgs.team_side = 'away'
-          AND cgs.game_id != g.id
-          AND cgs.game_date < g.date::date
-          AND cgs.season_id = g.season_id
-        ORDER BY cgs.game_date DESC, cgs.game_id DESC
-        LIMIT 1
+          AND cgs.game_id = a_prio_side.prior_game_id
     ) cgs_av ON true
     LEFT JOIN nba.prior_team_stats pts_h
         ON pts_h.team_id = g.home_team_id AND pts_h.season_year = s.year - 1

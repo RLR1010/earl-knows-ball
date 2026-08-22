@@ -316,22 +316,31 @@ def _evaluate_year_model(year_df: pd.DataFrame, model: xgb.Booster, model_type: 
         feat_vals, feat_names = _extract_feature_vector(row, model_type)
         dmat = xgb.DMatrix(feat_vals, feature_names=feat_names)
         prob = float(model.predict(dmat)[0])
-        probs.append(prob)
 
         if model_type == "ats":
             spread = row.get("spread", 0) or 0
             home_score = row.get("home_score", 0) or 0
             away_score = row.get("away_score", 0) or 0
-            actual_cover = int((home_score - away_score + spread) > 0)
+            margin = home_score - away_score
+            # A push (margin exactly on the line) is a refund, not a home/away cover.
+            # A binary model can't express a push, so exclude pushes from win/loss
+            # accuracy (and the labels used for AUC) to avoid biasing toward away.
+            if margin + spread == 0:
+                continue  # push -> refund, no win/loss
+            actual_cover = int((margin + spread) > 0)
             labels.append(actual_cover)
+            probs.append(prob)
             total += 1
             if int(prob > 0.5) == actual_cover:
                 correct += 1
         else:
             ou_line = row.get("over_under", 0) or 0
             total_score = (row.get("home_score", 0) or 0) + (row.get("away_score", 0) or 0)
+            if total_score == ou_line:
+                continue  # O/U push -> refund, no win/loss
             actual_over = int(total_score > ou_line)
             labels.append(actual_over)
+            probs.append(prob)
             total += 1
             if int(prob > 0.5) == actual_over:
                 correct += 1
@@ -941,7 +950,7 @@ async def _fetch_upcoming_games(
                 ht.abbreviation AS home_abbr,
                 at.name AS away_team,
                 at.abbreviation AS away_abbr,
-                g.date AS game_date,
+                (g.date AT TIME ZONE 'America/New_York')::date AS game_date,
                 s.year AS season
             FROM nba.games g
             JOIN nba.teams ht ON ht.id = g.home_team_id
@@ -979,7 +988,7 @@ async def _fetch_games_by_ids(
                 ht.abbreviation AS home_abbr,
                 at.name AS away_team,
                 at.abbreviation AS away_abbr,
-                g.date AS game_date,
+                (g.date AT TIME ZONE 'America/New_York')::date AS game_date,
                 s.year AS season
             FROM nba.games g
             JOIN nba.teams ht ON ht.id = g.home_team_id

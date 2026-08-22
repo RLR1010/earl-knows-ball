@@ -333,10 +333,23 @@ async def train_model(
                     spreads = df_test_clean["spread"].values
                     actual_margins = df_test_clean["home_actual_margin"].values
                     ats_pick_home = pred_margins > -(spreads)
-                    ats_cover = (actual_margins > -(spreads)).astype(int)
                     ats_pred = ats_pick_home.astype(int)
                     ats_total = len(ats_pred)
-                    ats_correct = int((ats_pred == ats_cover).sum())
+                    # Three-way ATS outcome vs the ACTUAL (integer) margin.
+                    # A push occurs only when the spread is an integer AND the actual
+                    # margin exactly equals the spread line (actual_margin == -spread).
+                    # Pushes are refunds -> excluded from win/loss accuracy, counted separately.
+                    ats_home_cover = (actual_margins > -(spreads)).astype(int)
+                    ats_away_cover = (actual_margins < -(spreads)).astype(int)
+                    ats_push_mask = (actual_margins == -(spreads))
+                    ats_push_count = int(ats_push_mask.sum())
+                    # correct = picked home & home covers, OR picked away & away covers
+                    ats_correct = int(
+                        ((ats_pred == 1) & (ats_home_cover == 1)).sum()
+                        + ((ats_pred == 0) & (ats_away_cover == 1)).sum()
+                    )
+                    # denominator excludes pushes (refunds are not wins/losses)
+                    ats_decision_total = ats_total - ats_push_count
 
                     # ML: model picks home if margin > 0
                     home_won = (actual_margins > 0).astype(int)
@@ -344,8 +357,8 @@ async def train_model(
                     ml_total = len(ml_pred)
                     ml_correct = int((ml_pred == home_won).sum())
 
-        ats_incorrect = ats_total - ats_correct
-        ats_pct = round(100 * ats_correct / ats_total, 2) if ats_total > 0 else 0.0
+        ats_incorrect = ats_decision_total - ats_correct
+        ats_pct = round(100 * ats_correct / ats_decision_total, 2) if ats_decision_total > 0 else 0.0
         ml_incorrect = ml_total - ml_correct
         ml_pct = round(100 * ml_correct / ml_total, 2) if ml_total > 0 else 0.0
 
@@ -370,6 +383,7 @@ async def train_model(
                 "total": ats_total,
                 "correct": ats_correct,
                 "incorrect": ats_incorrect,
+                "pushes": ats_push_count,
                 "pct": ats_pct,
             },
             "ml": {

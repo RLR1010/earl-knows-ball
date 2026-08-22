@@ -45,6 +45,12 @@ CREATE TABLE IF NOT EXISTS {CUM_TABLE} (
     season_id   INTEGER NOT NULL,
     game_date   DATE    NOT NULL,
 
+    -- Prior-game pointers (LAG; NULL on a team's first appearance)
+    prev_game_id            INTEGER,
+    prev_game_date          DATE,
+    prev_game_id_season     INTEGER,
+    prev_game_date_season   DATE,
+
     -- ── Tier 1: Raw cumulative counters ──────────────────────────────
     games_played           INTEGER DEFAULT 0,
 
@@ -119,6 +125,12 @@ CREATE TABLE IF NOT EXISTS {CUM_TABLE} (
 );
 CREATE INDEX IF NOT EXISTS idx_nba_cgs_team_date_game
     ON nba.cumulative_game_stats (team_id, game_date DESC, game_id DESC);
+
+-- Prior-game pointer columns (idempotent)
+ALTER TABLE nba.cumulative_game_stats ADD COLUMN IF NOT EXISTS prev_game_id INTEGER;
+ALTER TABLE nba.cumulative_game_stats ADD COLUMN IF NOT EXISTS prev_game_date DATE;
+ALTER TABLE nba.cumulative_game_stats ADD COLUMN IF NOT EXISTS prev_game_id_season INTEGER;
+ALTER TABLE nba.cumulative_game_stats ADD COLUMN IF NOT EXISTS prev_game_date_season DATE;
 """
 
 # ── SQL: per-game team box-score view ───────────────────────────────────────
@@ -130,7 +142,7 @@ WITH team_games AS (
         g.home_team_id AS team_id,
         'home'         AS team_side,
         g.season_id    AS season_id,
-        g.date         AS game_date,
+        (g.date AT TIME ZONE 'America/New_York')::date AS game_date,
         g.home_score   AS points,
         g.away_score   AS points_allowed,
         g.home_field_goals_made        AS fgm,
@@ -173,7 +185,7 @@ WITH team_games AS (
         g.away_team_id AS team_id,
         'away'         AS team_side,
         g.season_id    AS season_id,
-        g.date         AS game_date,
+        (g.date AT TIME ZONE 'America/New_York')::date AS game_date,
         g.away_score   AS points,
         g.home_score   AS points_allowed,
         g.away_field_goals_made        AS fgm,
@@ -365,6 +377,7 @@ def _div(a: float, b: float, precision: int = 4) -> float:
 
 ALL_COLS = [
     "game_id", "team_id", "team_side", "season_id", "game_date",
+    "prev_game_id", "prev_game_date", "prev_game_id_season", "prev_game_date_season",
     "games_played",
     "cum_points", "cum_points_allowed", "cum_margin",
     "cum_fgm", "cum_fga", "cum_fgm3", "cum_fga3",
@@ -521,6 +534,15 @@ def _populate(
     # ── Sort by (team, season, date, game_id) for cumulative computation ──
     df.sort_values(["team_id", "season_id", "game_date", "game_id"], inplace=True)
 
+    # ── Prior-game pointers (LAG; NULL on a team's first appearance) ──
+    # Computed in the SORTED order so the previous row is the immediately
+    # prior game. _season = within the same season (NULL on first game of a
+    # season); plain prev_game_id = across seasons (carries over the seam).
+    df["prev_game_id_season"] = df.groupby(["team_id", "season_id"], sort=False)["game_id"].shift(1)
+    df["prev_game_date_season"] = df.groupby(["team_id", "season_id"], sort=False)["game_date"].shift(1)
+    df["prev_game_id"] = df.groupby("team_id", sort=False)["game_id"].shift(1)
+    df["prev_game_date"] = df.groupby("team_id", sort=False)["game_date"].shift(1)
+
     # ── Keep a copy of per-game data for momentum/recency stats ──
     # We need single-game values before cumsum overwrites them.
     df_raw = df.copy()
@@ -634,6 +656,10 @@ def _populate(
             "team_side":           str(row["team_side"]),
             "season_id":           int(row["season_id"]),
             "game_date":           row["game_date"].isoformat() if hasattr(row["game_date"], "isoformat") else row["game_date"],
+            "prev_game_id":        int(row["prev_game_id"]) if pd.notna(row.get("prev_game_id")) else None,
+            "prev_game_date":      (row["prev_game_date"].isoformat() if pd.notna(row.get("prev_game_date")) else None),
+            "prev_game_id_season": int(row["prev_game_id_season"]) if pd.notna(row.get("prev_game_id_season")) else None,
+            "prev_game_date_season": (row["prev_game_date_season"].isoformat() if pd.notna(row.get("prev_game_date_season")) else None),
             "games_played":        gs,
         }
         for col in cum_sum_cols:

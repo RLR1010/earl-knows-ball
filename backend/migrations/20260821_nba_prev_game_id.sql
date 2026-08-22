@@ -45,3 +45,7 @@ CREATE INDEX IF NOT EXISTS idx_trs_nba_pg_side ON nba.team_rolling_stats (prev_g
 
 CREATE INDEX IF NOT EXISTS idx_cgs_nba_pg      ON nba.cumulative_game_stats (prev_game_id);
 CREATE INDEX IF NOT EXISTS idx_cgs_nba_pg_seas ON nba.cumulative_game_stats (prev_game_id_season);
+
+-- Equality lookup for the loader's prior_game_id joins (mirrors the existing
+-- idx_nba_trs_team_game on team_rolling_stats).
+CREATE INDEX IF NOT EXISTS idx_nba_cgs_team_game ON nba.cumulative_game_stats (team_id, game_id);
