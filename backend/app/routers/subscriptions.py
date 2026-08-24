@@ -44,6 +44,12 @@ class CheckoutRequest(BaseModel):
     ui_mode: str = "hosted"  # "hosted" (redirect) or "embedded_page" (modal)
 
 
+class TokenTopupRequest(BaseModel):
+    success_url: Optional[str] = None
+    cancel_url: Optional[str] = None
+    ui_mode: str = "hosted"  # "hosted" (redirect) or "embedded_page" (modal)
+
+
 class CheckoutResponse(BaseModel):
     url: str | None = None
     client_secret: str | None = None
@@ -190,6 +196,93 @@ async def create_checkout_session(
         raise HTTPException(status_code=500, detail=f"Payment processing error: {str(e)}")
 
 
+# ── Token Top-Up (one-time purchase) ─────────────────────────────
+
+@router.post("/token-topup/checkout", response_model=CheckoutResponse)
+async def create_token_topup_checkout(
+    req: TokenTopupRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Create a one-time (non-recurring) Stripe Checkout Session for an
+    additional token top-up. The purchased tokens are credited to the user's
+    extra_token_balance via the checkout.session.completed webhook and roll
+    over between billing periods (they are NOT part of the monthly allotment)."""
+    user = await get_current_user(request, db)
+
+    # Read the one-time token top-up plan from the DB so it's admin-configurable
+    # (Stripe product id, price, token grant). Falls back to settings for back-compat.
+    plan = (await db.execute(
+        select(SubscriptionPlan)
+        .where(SubscriptionPlan.kind == "token_topup", SubscriptionPlan.is_active == True)
+        .order_by(SubscriptionPlan.sort_order)
+    )).scalars().first()
+
+    if plan:
+        price_id = plan.stripe_price_id or plan.stripe_product_id
+        grant = plan.token_amount or settings.token_topup_grant
+        price_cents = plan.price_cents
+    else:
+        price_id = settings.stripe_token_topup_price_id
+        grant = settings.token_topup_grant
+        price_cents = int(round(grant / 1000 * 19.95)) if grant == settings.token_topup_grant else 1995
+
+    if not price_id:
+        raise HTTPException(status_code=503, detail="Token top-up is not configured")
+
+    if not _stripe_available():
+        return CheckoutResponse(
+            url=None,
+            mock=True,
+            message=f"Stripe not configured. Would charge ${grant/1000:.2f} one-time for {grant:,} extra tokens.",
+        )
+
+    try:
+        stripe = _get_stripe()
+        customer_id = await _get_or_create_stripe_customer(user, stripe)
+        # Origin-correct return URL (user browsed on www vs apex) — embedded mode.
+        success_url = req.success_url or f"{settings.base_url}/profile?token_topup=success"
+        cancel_url = req.cancel_url or f"{settings.base_url}/profile"
+
+        session_kwargs = {
+            "customer": customer_id,
+            "mode": "payment",  # one-time, non-recurring
+            "line_items": [{"price": price_id, "quantity": 1}],
+            "metadata": {
+                "user_id": user.id,
+                "type": "token_topup",
+                "tokens": str(grant),
+            },
+            "payment_intent_data": {
+                "metadata": {
+                    "user_id": user.id,
+                    "type": "token_topup",
+                    "tokens": str(grant),
+                },
+                "description": "Earl token top-up: additional chat tokens (one-time)",
+            },
+        }
+
+        if req.ui_mode == "embedded_page":
+            # Embedded Checkout — renders in-page (modal/panel), user never leaves
+            # the site. Return client_secret for initEmbeddedCheckout to mount.
+            session_kwargs.update({
+                "ui_mode": "embedded_page",
+                "return_url": success_url,
+            })
+            session = stripe.checkout.Session.create(**session_kwargs)
+            return CheckoutResponse(url=None, client_secret=session.client_secret)
+
+        # Hosted redirect (fallback)
+        session_kwargs.update({"success_url": success_url, "cancel_url": cancel_url})
+        session = stripe.checkout.Session.create(**session_kwargs)
+        return CheckoutResponse(url=session.url, client_secret=session.client_secret)
+
+    except Exception as e:
+        logger.error(f"Stripe token top-up checkout error: {e}")
+        raise HTTPException(status_code=500, detail=f"Payment processing error: {str(e)}")
+
+
 # ── Stripe Webhook ──────────────────────────────────────────────────
 
 @router.post("/webhook")
@@ -231,7 +324,12 @@ async def stripe_webhook(request: Request, db: AsyncSession = Depends(get_db)):
 
     try:
         if event_type == "checkout.session.completed":
-            await _handle_checkout_completed(data_object, db)
+            # Branch: one-time token top-up vs. subscription checkout
+            role = (data_object.get("metadata") or {}).get("type")
+            if role == "token_topup":
+                await _handle_token_topup_completed(data_object, db)
+            else:
+                await _handle_checkout_completed(data_object, db)
         elif event_type == "customer.subscription.updated":
             await _handle_subscription_updated(data_object, db)
         elif event_type == "customer.subscription.deleted":
@@ -249,6 +347,52 @@ async def stripe_webhook(request: Request, db: AsyncSession = Depends(get_db)):
         return JSONResponse(status_code=200, content={"received": True, "error": str(e)})
 
     return JSONResponse(status_code=200, content={"received": True})
+
+
+def _subscription_period(sub) -> tuple:
+    """Extract (current_period_start_ts, current_period_end_ts) from a Stripe
+    subscription object, robust to API field-location changes.
+
+    In current Stripe API versions these live on the SubscriptionItem
+    (sub.items.data[0].current_period_start/end); in older versions they were
+    top-level on the Subscription. Accepts a StripeObject or a dict.
+    """
+    def _get(obj, *keys):
+        for k in keys:
+            if isinstance(obj, dict):
+                if k in obj and obj[k] is not None:
+                    return obj[k]
+            else:
+                try:
+                    v = getattr(obj, k)
+                    if v is not None:
+                        return v
+                except Exception:
+                    pass
+        return None
+
+    start = _get(sub, "current_period_start")
+    end = _get(sub, "current_period_end")
+
+    if start is None or end is None:
+        item = _get(sub, "items")
+        # items may be a dict {data: [...]}, a stripe ListObject, a list, or an item
+        if item is not None and hasattr(item, "data"):
+            items = item.data or []
+        elif isinstance(item, dict):
+            items = item.get("data") or []
+        elif isinstance(item, (list, tuple)):
+            items = item
+        else:
+            items = [item] if item else []
+        if items:
+            first = items[0]
+            if start is None:
+                start = _get(first, "current_period_start")
+            if end is None:
+                end = _get(first, "current_period_end")
+
+    return (start, end)
 
 
 async def _handle_checkout_completed(session: dict, db: AsyncSession):
@@ -277,8 +421,11 @@ async def _handle_checkout_completed(session: dict, db: AsyncSession):
         try:
             stripe = _get_stripe()
             stripe_sub = stripe.Subscription.retrieve(stripe_sub_id)
-            period_start = datetime.fromtimestamp(stripe_sub.current_period_start, tz=timezone.utc)
-            period_end = datetime.fromtimestamp(stripe_sub.current_period_end, tz=timezone.utc)
+            start_ts, end_ts = _subscription_period(stripe_sub)
+            if start_ts:
+                period_start = datetime.fromtimestamp(start_ts, tz=timezone.utc)
+            if end_ts:
+                period_end = datetime.fromtimestamp(end_ts, tz=timezone.utc)
             status = stripe_sub.status
         except Exception as e:
             logger.warning(f"Could not retrieve Stripe subscription: {e}")
@@ -323,6 +470,62 @@ async def _handle_checkout_completed(session: dict, db: AsyncSession):
                 user.monthly_token_limit = plan.monthly_token_limit
 
     await db.commit()
+
+
+async def _handle_token_topup_completed(checkout_session: dict, db: AsyncSession):
+    """Handle a one-time token top-up checkout completing.
+
+    Credits the purchased tokens to user.extra_token_balance. This is a
+    one-time purchase (not a subscription) and is NOT tied to the monthly
+    allotment, so it rolls over between billing periods.
+    """
+    metadata = checkout_session.get("metadata") or {}
+    user_id = str(metadata.get("user_id") or "")
+    try:
+        grant = int(metadata.get("tokens") or 0)
+    except (TypeError, ValueError):
+        grant = 0
+    payment_status = checkout_session.get("payment_status")
+
+    if not user_id:
+        logger.warning("Token top-up checkout missing user_id in metadata")
+        return
+    if grant <= 0:
+        logger.warning(f"Token top-up checkout for user {user_id} had no token grant")
+        return
+    if payment_status not in ("paid", "no_payment_required"):
+        logger.info(f"Token top-up checkout {checkout_session.get('id')} not paid yet ({payment_status}); ignoring")
+        return
+
+    user = await db.get(User, user_id)
+    if not user:
+        logger.warning(f"Token top-up for unknown user {user_id}")
+        return
+
+    user.extra_token_balance = (user.extra_token_balance or 0) + grant
+    await db.commit()
+    logger.info(
+        f"Token top-up credited: user={user_id} += {grant} (now {user.extra_token_balance}). "
+        f"Checkout={checkout_session.get('id')}"
+    )
+
+    # Record the one-time payment for the user's history (no subscription)
+    try:
+        amount_cents = checkout_session.get("amount_total") or 0
+        payment = Payment(
+            user_id=user.id,
+            subscription_id=None,
+            amount_cents=int(amount_cents),
+            currency=(checkout_session.get("currency") or "usd").lower(),
+            status="succeeded",
+            stripe_payment_intent_id=(checkout_session.get("payment_intent") or None),
+            stripe_invoice_id=None,
+            description="Token top-up: additional chat tokens (one-time)",
+        )
+        db.add(payment)
+        await db.commit()
+    except Exception as e:
+        logger.warning(f"Could not record token top-up payment row: {e}")
 
 
 async def _handle_subscription_updated(subscription: dict, db: AsyncSession):

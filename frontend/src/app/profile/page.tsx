@@ -1,13 +1,21 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useAuth } from "@/lib/auth-context";
 import { api, type PaymentRecord, type TokenUsageResponse } from "@/lib/api";
 import { useRouter } from "next/navigation";
 import { useSeo } from "@/components/Seo";
 
+declare global {
+  interface Window {
+    Stripe: (key: string) => any;
+  }
+}
+
 function formatCents(cents: number, currency: string) {
-  const symbol = currency === "usd" ? "$" : currency === "eur" ? "€" : "£";
+  // Backend stores currency in UPPERCASE (e.g. "USD", "EUR", "GBP") via .upper()
+  const c = (currency || "usd").toLowerCase();
+  const symbol = c === "usd" ? "$" : c === "eur" ? "€" : c === "gbp" ? "£" : `${c.toUpperCase()} `;
   return `${symbol}${(cents / 100).toFixed(2)}`;
 }
 
@@ -77,6 +85,26 @@ export default function ProfilePage() {
   const [cancelMessage, setCancelMessage] = useState<string | null>(null);
   const [tokenUsage, setTokenUsage] = useState<TokenUsageResponse | null>(null);
   const [tokenUsageLoading, setTokenUsageLoading] = useState(false);
+  const [buying, setBuying] = useState(false);
+  const [buyMessage, setBuyMessage] = useState<string | null>(null);
+  const [topupCheckoutOpen, setTopupCheckoutOpen] = useState(false);
+  const [tokenTopup, setTokenTopup] = useState<string | null>(null); // token_topup=success query
+  const checkoutRef = useRef<HTMLDivElement>(null);
+
+  // React to a successful token top-up (redirect back from Stripe)
+  useEffect(() => {
+    const q = new URLSearchParams(window.location.search);
+    if (q.get("token_topup") === "success") {
+      setTokenTopup(q.get("token_topup"));
+      setBuyMessage("Your token top-up was successful! Extra tokens have been added to your balance.");
+      // refresh token usage so the new balance shows
+      if (user?.subscription_tier?.startsWith("premium")) {
+        api.tokenUsage.my().then(setTokenUsage).catch(() => {});
+      }
+      // clean the query param
+      window.history.replaceState({}, document.title, window.location.pathname);
+    }
+  }, [user]);
 
   useEffect(() => {
     if (!authLoading && !user) {
@@ -129,6 +157,58 @@ export default function ProfilePage() {
     } finally {
       setCancelling(false);
     }
+  };
+
+  const handleBuyTokens = async () => {
+    setBuying(true);
+    setBuyMessage(null);
+    try {
+      const res = await api.subscriptions.tokenTopup({
+        success_url: `${window.location.origin}/profile?token_topup=success`,
+        cancel_url: `${window.location.origin}/profile`,
+        ui_mode: "embedded_page",
+      });
+      if (res.mock) {
+        setBuyMessage(res.message || "Stripe not configured — this would charge $19.95 one-time for 2,000,000 extra tokens.");
+        return;
+      }
+      if (!res.client_secret) {
+        setBuyMessage("Unable to start the token purchase. Please try again.");
+        return;
+      }
+
+      const key = process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY;
+      if (!key) { setBuyMessage("Stripe is not configured"); return; }
+
+      // Load Stripe.js from CDN (same as the membership checkout)
+      if (!window.Stripe) {
+        await new Promise<void>((resolve, reject) => {
+          const script = document.createElement("script");
+          script.src = "https://js.stripe.com/v3/";
+          script.onload = () => resolve();
+          script.onerror = () => reject(new Error("Failed to load Stripe.js"));
+          document.head.appendChild(script);
+        });
+      }
+
+      // Embedded Checkout — mounts in the modal, user never leaves the site
+      setTopupCheckoutOpen(true);
+      const stripe = window.Stripe(key);
+      const checkout = await stripe.initEmbeddedCheckout({
+        clientSecret: res.client_secret,
+      });
+      checkoutRef.current && (checkoutRef.current.innerHTML = "");
+      checkout.mount(checkoutRef.current);
+    } catch (err: any) {
+      setBuyMessage(err?.message || "Failed to start token purchase");
+    } finally {
+      setBuying(false);
+    }
+  };
+
+  const closeTopupCheckout = () => {
+    setTopupCheckoutOpen(false);
+    if (checkoutRef.current) checkoutRef.current.innerHTML = "";
   };
 
   if (authLoading) {
@@ -287,6 +367,32 @@ export default function ProfilePage() {
                 </p>
               )}
             </div>
+
+            {/* Extra (one-time purchased) token bank — rolls over */}
+            <div className="pt-3 mt-3 border-t border-gray-800">
+              <div className="flex justify-between text-sm">
+                <span className="text-gray-400">Extra Tokens</span>
+                <span className="text-white font-medium">
+                  {tokenUsage.extra_token_balance?.toLocaleString() ?? 0} available
+                </span>
+              </div>
+              <p className="text-xs text-gray-500 mt-1">
+                One-time purchased tokens. Used only after your monthly allotment is
+                exhausted, and they roll over to future months if unused.
+              </p>
+              <div className="mt-3">
+                <button
+                  onClick={handleBuyTokens}
+                  disabled={buying}
+                  className="w-full sm:w-auto px-4 py-2 text-sm font-semibold text-gray-950 bg-green-500 hover:bg-green-400 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                >
+                  {buying ? "Starting…" : "Buy 2,000,000 Extra Tokens — $19.95"}
+                </button>
+                {buyMessage && (
+                  <p className="text-sm text-green-400 mt-2">{buyMessage}</p>
+                )}
+              </div>
+            </div>
           </section>
         )}
 
@@ -334,6 +440,23 @@ export default function ProfilePage() {
           )}
         </section>
       </main>
+
+      {/* Embedded Stripe Checkout modal for token top-up (user stays on-site) */}
+      {topupCheckoutOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 overflow-hidden" onClick={closeTopupCheckout}>
+          <div className="relative w-full max-w-2xl bg-white rounded-2xl shadow-2xl flex flex-col max-h-[90vh]" onClick={(e) => e.stopPropagation()}>
+            <button
+              onClick={closeTopupCheckout}
+              aria-label="Close checkout"
+              className="absolute top-2 right-2 z-10 w-8 h-8 flex items-center justify-center rounded-full bg-gray-200 hover:bg-gray-300 text-gray-700 text-lg font-bold"
+            >
+              ×
+            </button>
+            {/* Stripe embedded checkout scrolls internally so the Pay button stays reachable */}
+            <div ref={checkoutRef} className="min-h-[540px] flex-1 overflow-y-auto" />
+          </div>
+        </div>
+      )}
     </div>
   );
 }
