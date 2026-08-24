@@ -79,6 +79,10 @@ export default function ProfilePage() {
   const [payments, setPayments] = useState<PaymentRecord[]>([]);
   const [paymentsLoading, setPaymentsLoading] = useState(true);
   const [paymentsError, setPaymentsError] = useState("");
+  const [paymentsOpen, setPaymentsOpen] = useState(false);
+  const [paymentsPage, setPaymentsPage] = useState(1);
+  const [paymentsTotal, setPaymentsTotal] = useState(0);
+  const PAGE_SIZE = 20;
   const [subscription, setSubscription] = useState<any>(null);
   const [subLoading, setSubLoading] = useState(true);
   const [cancelling, setCancelling] = useState(false);
@@ -115,12 +119,16 @@ export default function ProfilePage() {
   useEffect(() => {
     if (!user) return;
     setPaymentsLoading(true);
+    const offset = (paymentsPage - 1) * PAGE_SIZE;
     api.subscriptions
-      .payments({ limit: 50 })
-      .then(setPayments)
+      .payments({ limit: PAGE_SIZE, offset })
+      .then((res) => {
+        setPayments(res.items);
+        setPaymentsTotal(res.total);
+      })
       .catch((err) => setPaymentsError(err?.message || "Failed to load payment history"))
       .finally(() => setPaymentsLoading(false));
-  }, [user]);
+  }, [user, paymentsPage]);
 
   useEffect(() => {
     if (!user) return;
@@ -396,11 +404,18 @@ export default function ProfilePage() {
           </section>
         )}
 
-        {/* Payment History */}
+        {/* Payment History (collapsible) */}
         <section className="bg-gray-900 border border-gray-800 rounded-lg p-6">
-          <h2 className="text-lg font-semibold mb-4">Payment History</h2>
+          <button
+            onClick={() => setPaymentsOpen((o) => !o)}
+            className="w-full flex items-center justify-between text-left"
+            aria-expanded={paymentsOpen}
+          >
+            <h2 className="text-lg font-semibold">Payment History</h2>
+            <span className="text-gray-400 text-sm">{paymentsOpen ? "Hide" : "Show"}</span>
+          </button>
 
-          {paymentsLoading ? (
+          {!paymentsOpen ? null : paymentsLoading ? (
             <div className="flex justify-center py-6">
               <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-green-500" />
             </div>
@@ -409,33 +424,70 @@ export default function ProfilePage() {
           ) : payments.length === 0 ? (
             <p className="text-sm text-gray-400">No payments yet.</p>
           ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="text-gray-400 border-b border-gray-700 text-left">
-                    <th className="pb-2 pr-4">Date</th>
-                    <th className="pb-2 pr-4">Description</th>
-                    <th className="pb-2 pr-4">Amount</th>
-                    <th className="pb-2">Status</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {payments.map((p) => (
-                    <tr key={p.id} className="border-b border-gray-800">
-                      <td className="py-3 pr-4 text-gray-300 whitespace-nowrap">
-                        {formatDate(p.created_at)}
-                      </td>
-                      <td className="py-3 pr-4 text-gray-300">
-                        {p.description || "Payment"}
-                      </td>
-                      <td className="py-3 pr-4 text-white whitespace-nowrap font-medium">
-                        {formatCents(p.amount_cents, p.currency)}
-                      </td>
-                      <td className="py-3">{paymentBadge(p.status)}</td>
+            <div className="mt-4">
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-gray-400 border-b border-gray-700 text-left">
+                      <th className="pb-2 pr-4">Date</th>
+                      <th className="pb-2 pr-4">Description</th>
+                      <th className="pb-2 pr-4">Amount</th>
+                      <th className="pb-2">Status</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {payments.map((p) => (
+                      <tr key={p.id} className="border-b border-gray-800">
+                        <td className="py-3 pr-4 text-gray-300 whitespace-nowrap">
+                          {formatDate(p.created_at)}
+                        </td>
+                        <td className="py-3 pr-4 text-gray-300">
+                          {p.description || "Payment"}
+                        </td>
+                        <td className="py-3 pr-4 text-white whitespace-nowrap font-medium">
+                          {formatCents(p.amount_cents, p.currency)}
+                        </td>
+                        <td className="py-3">{paymentBadge(p.status)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {paymentsTotal > PAGE_SIZE && (
+                <div className="flex items-center justify-between mt-4 pt-4 border-t border-gray-800">
+                  <span className="text-sm text-gray-400">
+                    Showing{" "}
+                    {payments.length === 0
+                      ? 0
+                      : (paymentsPage - 1) * PAGE_SIZE + 1}
+                    -{(paymentsPage - 1) * PAGE_SIZE + payments.length} of {""}
+                    {paymentsTotal}
+                  </span>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => setPaymentsPage((p) => Math.max(1, p - 1))}
+                      disabled={paymentsPage <= 1}
+                      className="px-3 py-1 rounded bg-gray-800 text-sm text-gray-200 hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      Prev
+                    </button>
+                    <span className="px-3 py-1 text-sm text-gray-400">
+                      Page {paymentsPage} of{" "}
+                      {Math.max(1, Math.ceil(paymentsTotal / PAGE_SIZE))}
+                    </span>
+                    <button
+                      onClick={() => setPaymentsPage((p) => p + 1)}
+                      disabled={
+                        paymentsPage >= Math.ceil(paymentsTotal / PAGE_SIZE)
+                      }
+                      className="px-3 py-1 rounded bg-gray-800 text-sm text-gray-200 hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      Next
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </section>

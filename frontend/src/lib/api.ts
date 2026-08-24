@@ -439,14 +439,21 @@ export const api = {
         "/api/subscriptions/token-topup/checkout",
         { method: "POST", body: body ? JSON.stringify(body) : undefined }
       ),
-    payments: (params?: { limit?: number; offset?: number }) => {
+    payments: async (params?: { limit?: number; offset?: number }) => {
       const q = new URLSearchParams();
       if (params?.limit) q.set("limit", String(params.limit));
       if (params?.offset) q.set("offset", String(params.offset));
-      return fetchAPI<PaymentRecord[]>(
-        `/api/subscriptions/payments?${q}`,
-        {} 
-      );
+      const token = getStoredToken();
+      const res = await fetch(`${API_BASE}/api/subscriptions/payments?${q}`, {
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      });
+      if (!res.ok) throw new Error(`API error: ${res.status} ${res.statusText}`);
+      const items = (await res.json()) as PaymentRecord[];
+      const total = Number(res.headers.get("X-Total-Count") || items.length);
+      return { items, total };
     },
   },
 
