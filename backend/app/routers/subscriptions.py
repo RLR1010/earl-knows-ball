@@ -885,6 +885,55 @@ async def get_payment_history(
         base_query.order_by(Payment.created_at.desc()).offset(offset).limit(limit)
     )
     payments = result.scalars().all()
+
+    # Resolve a live display label per payment from the CURRENT plan config so
+    # that editing a plan's Payment Description in /admin/plans instantly
+    # updates that plan's payment history (instead of only applying to new rows).
+    # membership payments -> their subscription's plan; token top-ups -> the
+    # active token_topup plan. Falls back to the stored snapshot description.
+    plan_labels: dict[str, str] = {}
+    membership_payment_ids = [p.id for p in payments if p.subscription_id]
+    if membership_payment_ids:
+        plan_rows = (
+            await db.execute(
+                select(Payment.id, SubscriptionPlan.payment_description)
+                .join(UserSubscription, UserSubscription.id == Payment.subscription_id)
+                .join(
+                    SubscriptionPlan,
+                    SubscriptionPlan.id == UserSubscription.plan_id,
+                )
+                .where(Payment.id.in_(membership_payment_ids))
+            )
+        ).all()
+        for pay_id, paydesc in plan_rows:
+            if paydesc and paydesc.strip():
+                plan_labels[str(pay_id)] = paydesc.strip()
+
+    token_desc = ""
+    tokplan = (
+        await db.execute(
+            select(SubscriptionPlan.payment_description)
+            .where(
+                SubscriptionPlan.kind == "token_topup",
+                SubscriptionPlan.is_active == True,  # noqa: E712
+            )
+            .order_by(SubscriptionPlan.sort_order)
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if tokplan:
+        token_desc = tokplan.strip()
+
+    def effective_description(p: Payment) -> str:
+        if p.subscription_id:
+            label = plan_labels.get(str(p.id))
+            if label:
+                return label
+        elif token_desc:
+            # token top-up (no subscription) -> live label from the token_topup plan
+            return token_desc
+        return p.description or "Payment"
+
     return JSONResponse(
         content=[
             {
@@ -896,7 +945,7 @@ async def get_payment_history(
                 "amount_cents": p.amount_cents,
                 "currency": p.currency,
                 "status": p.status,
-                "description": p.description,
+                "description": effective_description(p),
                 "stripe_invoice_id": p.stripe_invoice_id,
                 "created_at": p.created_at.isoformat() if p.created_at else None,
             }
