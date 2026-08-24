@@ -46,7 +46,7 @@ export default function SiteChrome({ children }: { children: React.ReactNode }) 
   const activeSport = getActiveSport(pathname);
 
   const hideSportChrome =
-    ["/login", "/register", "/profile"].some((p) => pathname.startsWith(p));
+    ["/login", "/register"].some((p) => pathname.startsWith(p));
 
   // The sport sub-nav (Home/Schedule/Analysis/...) is hidden on the standalone
   // chat page (which has its own left-nav), but the sport pills and login/profile
