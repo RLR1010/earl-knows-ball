@@ -169,7 +169,14 @@ export default function AdminPlans() {
       )}
 
       {/* Edit/Create Modal */}
-      {editing && <PlanFormModal plan={editing === "new" ? null : editing} onSave={handleSave} onClose={() => setEditing(null)} />}
+      {editing && (
+        <PlanFormModal
+          key={editing === "new" ? "new" : `plan-${editing.id}`}
+          plan={editing === "new" ? null : editing}
+          onSave={handleSave}
+          onClose={() => setEditing(null)}
+        />
+      )}
     </div>
   );
 }
