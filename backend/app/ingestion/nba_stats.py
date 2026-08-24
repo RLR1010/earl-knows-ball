@@ -223,30 +223,36 @@ async def load_players_and_stats(db: AsyncSession, team_map: dict[int, int], sea
                     team_id = team_map[aid]
                     break
 
-            # Extract NBA ID from player page URL
-            nba_id = None
+            # Extract bball-ref slug (br_id) from player page URL -- this is the
+            # deterministic canonical key. NOTE: we intentionally do NOT fabricate
+            # an nba_id via hash() (that was non-deterministic per-process and
+            # corrupted the real-NBA.com-ID column). br_id is the stable ref.
+            br_id = None
             a_tag = name_el.find('a')
             if a_tag and a_tag.get('href'):
                 m = re.search(r'/players/[a-z]/([a-z0-9]{6,12})\.html', a_tag['href'])
                 if m:
-                    nba_id = hash(m.group(1)) % (10**9) + 100000  # synthetic ID
+                    br_id = m.group(1)
 
-            # Upsert player
+            # Upsert player (match by br_id first, then by name)
             player = None
-            if nba_id:
-                r = await db.execute(select(NBAPlayer).where(NBAPlayer.nba_id == nba_id))
+            if br_id:
+                r = await db.execute(select(NBAPlayer).where(NBAPlayer.br_id == br_id))
                 player = r.scalar_one_or_none()
             if not player:
                 r = await db.execute(select(NBAPlayer).where(NBAPlayer.name == name).limit(1))
                 player = r.scalar_one_or_none()
-            if not player and nba_id:
-                player = NBAPlayer(nba_id=nba_id, name=name, position=pos, team_id=team_id, active=1)
+            if not player and br_id:
+                player = NBAPlayer(br_id=br_id, name=name, position=pos, team_id=team_id, active=1)
                 db.add(player)
                 await db.flush()
                 player_count += 1
-            elif player:
-                player.name = name
-                player.position = pos
+            else:
+                # attach/refresh br_id on the matched player
+                if player is not None:
+                    player.br_id = br_id if br_id else player.br_id
+                    player.name = name
+                    player.position = pos
 
             if not player:
                 continue

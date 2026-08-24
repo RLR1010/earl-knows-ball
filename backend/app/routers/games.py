@@ -19,6 +19,49 @@ from pydantic import BaseModel
 router = APIRouter()
 
 
+# ---------------------------------------------------------------------
+# Feature-section enrichment for Detailed Analysis stats: attach
+# pick_card_section (home_stats / away_stats / game_context / betting_lines /
+# other) to each feature in a stored prediction's features payload so the
+# frontend can group stats into the section columns. Sections come from the DB
+# `features` table (source of truth), looked up live so already-stored
+# predictions render correctly without re-predicting.
+# ---------------------------------------------------------------------
+async def _attach_sections(db: AsyncSession, sport: str, features: dict) -> dict:
+    if not isinstance(features, dict):
+        return features or {}
+    try:
+        res = await db.execute(
+            text(f"SELECT name, pick_card_section, sort_order FROM {sport}.features")
+        )
+        rows = res.fetchall()
+        sections = {r[0]: r[1] for r in rows}
+        sort_map = {r[0]: r[2] for r in rows}
+    except Exception:
+        return features
+    out = {}
+    for k, v in features.items():
+        if isinstance(v, dict):
+            v = dict(v)
+            v["pick_card_section"] = sections.get(k) or "other"
+            # display-order hint used ONLY by the frontend (never by the
+            # data_loader / training / inference ordering).
+            v["sort_order"] = sort_map.get(k) or 0
+        out[k] = v
+    # Order by sort_order for the frontend; harmless for NFL/NBA which present
+    # features via TeamStatsTable rather than a features grid.
+    return dict(
+        sorted(
+            out.items(),
+            key=lambda kv: (
+                kv[1].get("sort_order", 0) if isinstance(kv[1], dict) else 0,
+                kv[0],
+            ),
+        )
+    )
+
+
+
 # ---------------------------------------------------------------------------
 # TTL cache for the NFL schedule GET /games endpoint. The frontend schedule page
 # auto-polls /games every ~30s so completed-game pick results stay fresh. This
@@ -906,6 +949,12 @@ async def get_nfl_prediction_stats(
     away_stats = _safe_json(pred.away_stats_json)
     situational = _safe_json(pred.situational_json)
     shap = _safe_json(pred.shap_json)
+    # Attach pick_card_section so the frontend can group stats into
+    # Home/Away/Game Context/Betting Lines sections.
+    features = await _attach_sections(db, "nba", features or {})
+    # Attach pick_card_section so the frontend can group stats into
+    # Home/Away/Game Context/Betting Lines sections.
+    features = await _attach_sections(db, "nfl", features or {})
 
     # Get season/year info
     game_result = await db.execute(

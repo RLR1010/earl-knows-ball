@@ -80,13 +80,13 @@ function formatMoneyline(ml: number | null | undefined): string {
   return n > 0 ? `+${n}` : `${n}`;
 }
 
-/** Return "favorite team | line" or "Pick'em". spread is from the home team's perspective. */
+/** Return "favorite team | line" or "Pick'em". spread is from the home team's perspective.
+ *  Negative = home favored (giving runs, e.g. MIL -1.5); positive = away favored. */
 function favoredSpread(spread: number | null | undefined, home: string | null | undefined, away: string | null | undefined): string {
   if (spread === null || spread === undefined) return "-";
   if (Math.abs(spread) < 0.05) return "Pick'em";
-  const line = spread > 0 ? `-${spread}` : `+${Math.abs(spread)}`;
-  const team = spread < 0 ? (home ?? "?") : (away ?? "?");
-  return `${team} ${line}`;
+  if (spread < 0) return `${home ?? "?"} ${spread}`;          // home favored: MIL -1.5
+  return `${away ?? "?"} ${-Math.abs(spread)}`;               // away favored: TB -1.5
 }
 
 interface NBAGame {

@@ -18,6 +18,8 @@ interface Plan {
   stripe_price_id: string | null;
   stripe_product_id: string | null;
   monthly_token_limit: number | null;
+  kind: string | null;
+  token_amount: number | null;
   created_at: string | null;
 }
 
@@ -25,6 +27,7 @@ const emptyPlan = {
   name: "", slug: "", description: "", price_cents: 999, currency: "usd",
   interval: "month", trial_days: 0, features: [], is_active: true, sort_order: 0,
   stripe_price_id: "", stripe_product_id: "", monthly_token_limit: null,
+  kind: "subscription", token_amount: null,
 };
 
 const token = () => localStorage.getItem("earl_token");
@@ -86,6 +89,7 @@ export default function AdminPlans() {
   const formatPrice = (cents: number, currency: string, interval: string) => {
     const amount = (cents / 100).toFixed(2);
     const symbol = currency === "usd" ? "$" : currency.toUpperCase() + " ";
+    if (interval === "one-time" || interval === "one_time") return `${symbol}${amount} one-time`;
     return `${symbol}${amount}/${interval}`;
   };
 
@@ -122,11 +126,19 @@ export default function AdminPlans() {
                     {plan.stripe_price_id && (
                       <span className="px-2 py-0.5 bg-blue-900/30 text-blue-400 rounded-full text-xs font-medium">Stripe</span>
                     )}
+                    {plan.kind === "token_topup" && (
+                      <span className="px-2 py-0.5 bg-green-900/30 text-green-400 rounded-full text-xs font-medium">Token Top-Up</span>
+                    )}
                   </div>
                   <div className="text-sm text-gray-400 mt-1">
-                    {formatPrice(plan.price_cents, plan.currency, plan.interval)}
+                    {plan.kind === "token_topup"
+                      ? formatPrice(plan.price_cents, plan.currency, "one-time")
+                      : formatPrice(plan.price_cents, plan.currency, plan.interval)}
                     {plan.trial_days > 0 && ` · ${plan.trial_days}-day trial`}
-                    {plan.monthly_token_limit != null && (
+                    {plan.kind === "token_topup" && plan.token_amount != null && (
+                      <span className="ml-2 text-green-400">· {plan.token_amount.toLocaleString()} tokens</span>
+                    )}
+                    {plan.kind !== "token_topup" && plan.monthly_token_limit != null && (
                       <span className="ml-2 text-gray-400">· {plan.monthly_token_limit.toLocaleString()} tokens/mo</span>
                     )}
                   </div>
@@ -183,16 +195,24 @@ function PlanFormModal({ plan, onSave, onClose }: { plan: Plan | null; onSave: (
         <label className="block text-xs text-gray-500 mb-1">Description</label>
         <textarea id="f-desc" defaultValue={plan?.description || ""} rows={2} className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white mb-3 focus:outline-none focus:border-earl-600" />
 
-        <div className="grid grid-cols-3 gap-3">
+        <div className="grid grid-cols-4 gap-3">
           <div>
             <label className="block text-xs text-gray-500 mb-1">Price (cents)</label>
             <input id="f-price" type="number" defaultValue={plan?.price_cents || 999} className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white mb-3 focus:outline-none focus:border-earl-600" />
+          </div>
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">Kind</label>
+            <select id="f-kind" defaultValue={plan?.kind || "subscription"} className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white mb-3 focus:outline-none focus:border-earl-600">
+              <option value="subscription">Subscription</option>
+              <option value="token_topup">Token Top-Up (one-time)</option>
+            </select>
           </div>
           <div>
             <label className="block text-xs text-gray-500 mb-1">Interval</label>
             <select id="f-interval" defaultValue={plan?.interval || "month"} className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white mb-3 focus:outline-none focus:border-earl-600">
               <option value="month">Monthly</option>
               <option value="year">Yearly</option>
+              <option value="one-time">One-time</option>
             </select>
           </div>
           <div>
@@ -212,8 +232,16 @@ function PlanFormModal({ plan, onSave, onClose }: { plan: Plan | null; onSave: (
 
         <div className="grid grid-cols-2 gap-3">
           <div>
+            <label className="block text-xs text-gray-500 mb-1">Stripe Product ID</label>
+            <input id="f-prodid" defaultValue={plan?.stripe_product_id || ""} className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white mb-3 focus:outline-none focus:border-earl-600 font-mono" />
+          </div>
+          <div>
             <label className="block text-xs text-gray-500 mb-1">Stripe Price ID</label>
-            <input id="f-spid" defaultValue={plan?.stripe_price_id || ""} className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white mb-3 focus:outline-none focus:border-earl-600" />
+            <input id="f-spid" defaultValue={plan?.stripe_price_id || ""} className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white mb-3 focus:outline-none focus:border-earl-600 font-mono" />
+          </div>
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">Token Amount (one-time grant)</label>
+            <input id="f-tokamt" type="number" min="0" defaultValue={plan?.token_amount ?? ""} placeholder="e.g. 2000000" className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white mb-3 focus:outline-none focus:border-earl-600" />
           </div>
           <div>
             <label className="block text-xs text-gray-500 mb-1">Sort Order</label>
@@ -248,13 +276,15 @@ function PlanFormModal({ plan, onSave, onClose }: { plan: Plan | null; onSave: (
                 price_cents: parseInt(get("f-price")) || 0,
                 currency: "usd",
                 interval: get("f-interval") || "month",
+                kind: get("f-kind") || "subscription",
+                token_amount: get("f-tokamt") ? parseInt(get("f-tokamt")) : null,
                 trial_days: parseInt(get("f-trial")) || 0,
                 features,
                 is_active: getCheck("f-active"),
                 sort_order: parseInt(get("f-order")) || 0,
                 monthly_token_limit: get("f-tokens") ? parseInt(get("f-tokens")) : null,
                 stripe_price_id: get("f-spid") || null,
-                stripe_product_id: plan?.stripe_product_id || null,
+                stripe_product_id: get("f-prodid") || null,
               });
             }}
             className="px-4 py-2 bg-earl-600 text-white rounded-lg text-sm hover:bg-earl-500 transition"

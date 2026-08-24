@@ -20,12 +20,13 @@ router = APIRouter(prefix="/api/users/me", tags=["token-usage"])
 
 
 class TokenUsageResponse(BaseModel):
-    """Current month's token usage and limit."""
+    """Current month's token usage and limit plus the purchased-extra bank."""
 
     month: str
     tokens_used: int
     token_limit: Optional[int] = None  # None = unlimited
     percent_used: Optional[float] = None
+    extra_token_balance: int = 0  # one-time purchased tokens, rolls over
 
 
 @router.get("/token-usage", response_model=TokenUsageResponse)
@@ -56,6 +57,7 @@ async def get_token_usage(
         tokens_used=tokens_used,
         token_limit=token_limit,
         percent_used=percent_used,
+        extra_token_balance=user.extra_token_balance or 0,
     )
 
 

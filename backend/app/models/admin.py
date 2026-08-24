@@ -16,7 +16,9 @@ class SubscriptionPlan(Base):
     description = Column(Text, nullable=True)
     price_cents = Column(Integer, nullable=False)           # price in cents (e.g. 999 = $9.99)
     currency = Column(String(3), default="usd")
-    interval = Column(String(10), nullable=False)            # "month" or "year"
+    interval = Column(String(10), nullable=False)            # "month" or "year" (or "one-time"/"one_time" for token top-ups)
+    kind = Column(String(20), nullable=False, default="subscription", server_default="subscription")  # "subscription" | "token_topup"
+    token_amount = Column(BigInteger, nullable=True)         # one-time token grant for token_topup plans
     trial_days = Column(Integer, default=0)                 # free trial days
     features = Column(JSON, default=list)                    # ["AI Chat", "Advanced Stats", ...]
     monthly_token_limit = Column(BigInteger, nullable=True)

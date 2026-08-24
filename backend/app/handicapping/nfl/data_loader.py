@@ -288,534 +288,6 @@ ORDER BY g.season_id, g.week, g.date;
 # Populated from the database on first loader use; the static dict below is a
 # fallback / documentation cache.
 
-FEATURES_CATALOG: Dict[str, str] = {
-    "hpf": "Home team points for (PPG)",
-    "hpa": "Home team points against (PPG)",
-    "apf": "Away team points for (PPG)",
-    "apa": "Away team points against (PPG)",
-    "dpf": "Defensive points for (adjusted)",
-    "dpa": "Defensive points against (adjusted)",
-    "himp": "Home implied scoring",
-    "aimp": "Away implied scoring",
-    "dimp": "Differential implied (home - away)",
-    "spread_movement": "Spread movement (closing - opening)",
-    "sp_h_odds_mvmt": "Home spread odds movement",
-    "sp_a_odds_mvmt": "Away spread odds movement",
-    "home_win_pct_r5": "Home team win % last 5 games",
-    "away_win_pct_r5": "Away team win % last 5 games",
-    "home_margin_r3": "Home team avg margin last 3 games",
-    "away_margin_r3": "Away team avg margin last 3 games",
-    "home_cover_pct_r5": "Home team ATS cover % last 5 games",
-    "away_cover_pct_r5": "Away team ATS cover % last 5 games",
-    "home_embarrassed": 'Home team "embarrassed" (lost by 14+ last game)',
-    "away_embarrassed": 'Away team "embarrassed" (lost by 14+ last game)',
-    "home_season_ats_pct": "Home team season-wide ATS cover %",
-    "away_season_ats_pct": "Away team season-wide ATS cover %",
-    "home_margin_r10": "Home team avg margin last 10 games",
-    "away_margin_r10": "Away team avg margin last 10 games",
-    "travel_miles": "Away team travel distance in miles",
-    "is_dome": "Home stadium dome / retractable roof",
-    "opening_ou": "Opening over/under line",
-    "spread": "Closing spread",
-    "ou_movement": "Closing OU minus opening OU",
-    "rest_diff": "Rest day differential (home - away)",
-    "tz_diff": "Timezone difference home - away (hours)",
-    "is_short": "Short week indicator",
-    "temp": "Game-time temperature (F)",
-    "wind": "Game-time wind speed (mph)",
-    "season_year": "Calendar year this game belongs to",
-    "season_avg_pts": "League average points per team per game for the season",
-    "home_off_epa_per_play": "Home offensive EPA per play (cumulative)",
-    "away_off_epa_per_play": "Away offensive EPA per play (cumulative)",
-    "home_def_epa_per_play": "Home defensive EPA per play allowed (cumulative)",
-    "away_def_epa_per_play": "Away defensive EPA per play allowed (cumulative)",
-    "home_win_streak": "Home win streak entering game",
-    "away_win_streak": "Away win streak entering game",
-    "home_off_pts_stddev_5": "Home offensive points std dev (last 5 games)",
-    "away_off_pts_stddev_5": "Away offensive points std dev (last 5 games)",
-    "home_off_yds_stddev_5": "Home offensive yards std dev (last 5 games)",
-    "away_off_yds_stddev_5": "Away offensive yards std dev (last 5 games)",
-    "home_def_pts_stddev_5": "Home defensive points allowed std dev (last 5 games)",
-    "away_def_pts_stddev_5": "Away defensive points allowed std dev (last 5 games)",
-    "home_def_yds_stddev_5": "Home defensive yards allowed std dev (last 5 games)",
-    "away_def_yds_stddev_5": "Away defensive yards allowed std dev (last 5 games)",
-    "home_rw_off_ppg": "Home recency-weighted offensive PPG",
-    "away_rw_off_ppg": "Away recency-weighted offensive PPG",
-    "home_rw_off_ypg": "Home recency-weighted offensive YPG",
-    "away_rw_off_ypg": "Away recency-weighted offensive YPG",
-    "home_rw_def_ppg": "Home recency-weighted defensive PPG allowed",
-    "away_rw_def_ppg": "Away recency-weighted defensive PPG allowed",
-    "home_rw_def_ypg": "Home recency-weighted defensive YPG allowed",
-    "away_rw_def_ypg": "Away recency-weighted defensive YPG allowed",
-    "home_adj_off_ppg": "Home opponent-adjusted offensive PPG",
-    "away_adj_off_ppg": "Away opponent-adjusted offensive PPG",
-    "home_adj_off_ypg": "Home opponent-adjusted offensive YPG",
-    "away_adj_off_ypg": "Away opponent-adjusted offensive YPG",
-    "home_adj_def_ppg": "Home opponent-adjusted defensive PPG allowed",
-    "away_adj_def_ppg": "Away opponent-adjusted defensive PPG allowed",
-    "home_adj_def_ypg": "Home opponent-adjusted defensive YPG allowed",
-    "away_adj_def_ypg": "Away opponent-adjusted defensive YPG allowed",
-
-    # ── Team Off/Def Advanced Stats (added 2026-07-30) ──
-    "home_third_down_pct": "Home third down % (5-game avg)",
-    "away_third_down_pct": "Away third down % (5-game avg)",
-    "home_fourth_down_pct": "Home fourth down % (5-game avg)",
-    "away_fourth_down_pct": "Away fourth down % (5-game avg)",
-    "home_rz_trips": "Home red zone trips (5-game avg)",
-    "away_rz_trips": "Away red zone trips (5-game avg)",
-    "home_rz_td_pct": "Home red zone TD % (5-game avg)",
-    "away_rz_td_pct": "Away red zone TD % (5-game avg)",
-    "home_explosive_plays": "Home explosive play rate (5-game avg)",
-    "away_explosive_plays": "Away explosive play rate (5-game avg)",
-    "home_three_and_outs": "Home three-and-out rate (5-game avg)",
-    "away_three_and_outs": "Away three-and-out rate (5-game avg)",
-    "home_ints_thrown": "Home INTs thrown (5-game avg)",
-    "away_ints_thrown": "Away INTs thrown (5-game avg)",
-    "home_def_first_downs": "Home def first downs allowed (5-game avg)",
-    "away_def_first_downs": "Away def first downs allowed (5-game avg)",
-    "home_def_third_down_pct": "Home def third down % allowed (5-game avg)",
-    "away_def_third_down_pct": "Away def third down % allowed (5-game avg)",
-    "home_def_fourth_down_pct": "Home def fourth down % allowed (5-game avg)",
-    "away_def_fourth_down_pct": "Away def fourth down % allowed (5-game avg)",
-    "home_def_rz_trips": "Home def red zone trips allowed (5-game avg)",
-    "away_def_rz_trips": "Away def red zone trips allowed (5-game avg)",
-    "home_def_rz_td_pct": "Home def red zone TD % allowed (5-game avg)",
-    "away_def_rz_td_pct": "Away def red zone TD % allowed (5-game avg)",
-    "home_def_explosive_plays": "Home def explosive plays allowed (5-game avg)",
-    "away_def_explosive_plays": "Away def explosive plays allowed (5-game avg)",
-    "home_def_three_and_outs": "Home def 3-and-out forced rate (5-game avg)",
-    "away_def_three_and_outs": "Away def 3-and-out forced rate (5-game avg)",
-    "home_def_ints_thrown": "Home def INTs forced (5-game avg)",
-    "away_def_ints_thrown": "Away def INTs forced (5-game avg)",
-
-    # ── QB: 5-game rolling ──
-    "home_qb_passer_rating_5": "Home QB passer rating over last 5 games",
-    "away_qb_passer_rating_5": "Away QB passer rating over last 5 games",
-    "home_qb_any_a_5": "Home QB adj net yards/att over last 5",
-    "away_qb_any_a_5": "Away QB adj net yards/att over last 5",
-    "home_qb_ypa_5": "Home QB yards per pass attempt over last 5",
-    "away_qb_ypa_5": "Away QB yards per pass attempt over last 5",
-    "home_qb_td_pct_5": "Home QB touchdown pct over last 5",
-    "away_qb_td_pct_5": "Away QB touchdown pct over last 5",
-    "home_qb_int_pct_5": "Home QB interception pct over last 5",
-    "away_qb_int_pct_5": "Away QB interception pct over last 5",
-    "home_qb_sack_rate_5": "Home QB sack rate over last 5",
-    "away_qb_sack_rate_5": "Away QB sack rate over last 5",
-    "home_qb_rush_ypg_5": "Home QB rush yds/game over last 5",
-    "away_qb_rush_ypg_5": "Away QB rush yds/game over last 5",
-    "home_qb_rush_att_5": "Home QB rush attempts last 5 (total)",
-    "away_qb_rush_att_5": "Away QB rush attempts last 5 (total)",
-    "home_qb_games_5": "Home QB games played in last 5",
-    "away_qb_games_5": "Away QB games played in last 5",
-
-    # ── QB: season-long cumulative ──
-    "home_qb_passer_rating_season": "Home QB passer rating YTD",
-    "away_qb_passer_rating_season": "Away QB passer rating YTD",
-    "home_qb_any_a_season": "Home QB adj net yards/att YTD",
-    "away_qb_any_a_season": "Away QB adj net yards/att YTD",
-    "home_qb_ypa_season": "Home QB yds/att YTD",
-    "away_qb_ypa_season": "Away QB yds/att YTD",
-    "home_qb_td_pct_season": "Home QB touchdown pct YTD",
-    "away_qb_td_pct_season": "Away QB touchdown pct YTD",
-    "home_qb_int_pct_season": "Home QB interception pct YTD",
-    "away_qb_int_pct_season": "Away QB interception pct YTD",
-    "home_qb_sack_rate_season": "Home QB sack rate YTD",
-    "away_qb_sack_rate_season": "Away QB sack rate YTD",
-    "home_qb_rush_ypg_season": "Home QB rush yds/game YTD",
-    "away_qb_rush_ypg_season": "Away QB rush yds/game YTD",
-    "home_qb_rush_att_pg_season": "Home QB rush att/game YTD",
-    "away_qb_rush_att_pg_season": "Away QB rush att/game YTD",
-    "home_qb_games_season": "Home QB games played YTD",
-    "away_qb_games_season": "Away QB games played YTD",
-
-    # ── QB: differentials (home minus away) ──
-    "qb_passer_rating_5_diff": "Home minus away QB passer rating (5-game)",
-    "qb_any_a_5_diff": "Home minus away QB ANY/A (5-game)",
-    "qb_passer_rating_season_diff": "Home minus away QB passer rating YTD",
-    "qb_any_a_season_diff": "Home minus away QB ANY/A YTD",
-
-    # ── QB: trends (5-game minus season avg) ──
-    "home_qb_passer_rating_trend": "Home QB recent rating minus season avg",
-    "away_qb_passer_rating_trend": "Away QB recent rating minus season avg",
-    "home_qb_ypa_trend": "Home QB recent YPA minus season avg",
-    "away_qb_ypa_trend": "Away QB recent YPA minus season avg",
-}
-
-# Features that are computed from raw columns rather than read directly.
-# These appear in the DataFrame alongside the raw features.
-COMPUTED_FEATURES_CATALOG: Dict[str, str] = {
-    "home_ats_cover": "Home team covered the spread (1=yes, 0=no, NaN=pick)",
-    "away_ats_cover": "Away team covered the spread (1=yes, 0=no, NaN=pick)",
-    "over_result": "Game went over the total (1=over, 0=under, NaN=push)",
-    "home_score_margin": "Home score - away score",
-    "home_pts_differential": "Home PF - Home PA (rolling)",
-    "away_pts_differential": "Away PF - Away PA (rolling)",
-    "home_strength": "Home team power rating (PF - PA with SOS adjustment)",
-    "away_strength": "Away team power rating (PF - PA with SOS adjustment)",
-    "home_implied_pts": "Home team implied points from closing spread + OU",
-    "away_implied_pts": "Away team implied points from closing spread + OU",
-    "home_rest_days": "Home team rest days since last game",
-    "away_rest_days": "Away team rest days since last game",
-
-    # ── New features (added 2026-07-06) ──────────────────────────────────
-    "is_division_game": "Division matchup flag",
-    "is_primetime": "Primetime game flag",
-    "venue_elevation_ft": "Stadium elevation (ft)",
-    "home_ou_over_pct_r5": "Home OU Over% L5",
-    "away_ou_over_pct_r5": "Away OU Over% L5",
-    "home_ou_margin_r5": "Home OU Margin L5",
-    "away_ou_margin_r5": "Away OU Margin L5",
-    "home_ats_home_pct_r5": "Home ATS-Home% L5",
-    "away_ats_away_pct_r5": "Away ATS-Away% L5",
-    "home_win_streak": "Home Win Streak",
-    "away_win_streak": "Away Win Streak",
-    "home_ats_streak": "Home ATS Streak",
-    "away_ats_streak": "Away ATS Streak",
-    "home_weighted_margin_r5": "Home Wt'd Margin L5",
-    "away_weighted_margin_r5": "Away Wt'd Margin L5",
-    "home_off_ypg": "Home Off YPG",
-    "away_off_ypg": "Away Off YPG",
-    "home_def_ypg": "Home Def YPG",
-    "away_def_ypg": "Away Def YPG",
-    "home_ypp": "Home YPP",
-    "away_ypp": "Away YPP",
-    "home_def_ypp": "Home Def YPP",
-    "away_def_ypp": "Away Def YPP",
-    "home_pass_ypg": "Home Pass YPG",
-    "away_pass_ypg": "Away Pass YPG",
-    "home_rush_ypg": "Home Rush YPG",
-    "away_rush_ypg": "Away Rush YPG",
-    "home_pass_ypa": "Home Pass YPA",
-    "away_pass_ypa": "Away Pass YPA",
-    "home_rush_ypa": "Home Rush YPA",
-    "away_rush_ypa": "Away Rush YPA",
-    "home_turnover_diff_r5": "Home TO Diff L5",
-    "away_turnover_diff_r5": "Away TO Diff L5",
-    "home_def_pass_ypg": "Home Def Pass YPG",
-    "away_def_pass_ypg": "Away Def Pass YPG",
-    "home_def_rush_ypg": "Home Def Rush YPG",
-    "away_def_rush_ypg": "Away Def Rush YPG",
-    "home_injury_weight": "Home Injury Weight",
-    "away_injury_weight": "Away Injury Weight",
-
-    # ── Rankings (added 2026-07-25) ──
-    "home_off_yardage_rank": "Off YPG Rank H",
-    "away_off_yardage_rank": "Off YPG Rank A",
-    "home_def_yardage_rank": "Def YPG Rank H",
-    "away_def_yardage_rank": "Def YPG Rank A",
-    "home_off_scoring_rank": "Off Pts Rank H",
-    "away_off_scoring_rank": "Off Pts Rank A",
-    "home_def_scoring_rank": "Def Pts Rank H",
-    "away_def_scoring_rank": "Def Pts Rank A",
-    "home_off_rushing_rank": "Rush YPG Rank H",
-    "away_off_rushing_rank": "Rush YPG Rank A",
-    "home_def_rushing_rank": "Def Rush YPG Rank H",
-    "away_def_rushing_rank": "Def Rush YPG Rank A",
-    "home_off_passing_rank": "Pass YPG Rank H",
-    "away_off_passing_rank": "Pass YPG Rank A",
-    "home_def_passing_rating_rank": "Def Pass QBR Rank H",
-    "away_def_passing_rating_rank": "Def Pass QBR Rank A",
-}
-
-RAW_FEATURES_CATALOG: Dict[str, str] = {
-    # Raw GAME_QUERY columns — game identifiers, scores, betting lines, situational data
-    "game_id": "Unique game identifier (GSIS ID)",
-    "season_id": "Internal season ID",
-    "season_type": "Regular season, playoff, or preseason",
-    "week": "Game week (1-18 regular, wildcard, divisional, etc.)",
-    "game_date": "Date the game was played",
-    "home_team_id": "Home team internal ID",
-    "away_team_id": "Away team internal ID",
-    "home_abbr": "Home team abbreviation",
-    "away_abbr": "Away team abbreviation",
-    "home_conf": "Home team conference",
-    "away_conf": "Away team conference",
-    "home_div": "Home team division",
-    "away_div": "Away team division",
-    "home_score": "Final home team score",
-    "away_score": "Final away team score",
-    "status": "Game status (FINAL, SCHEDULED, etc.)",
-    "venue": "Stadium name",
-    "surface": "Playing surface type",
-    "roof_type": "Stadium roof type",
-    "temperature": "Game temperature (°F)",
-    "wind_speed": "Wind speed (mph)",
-    "conditions": "Weather conditions description",
-    "home_rest": "Days of rest for home team",
-    "away_rest": "Days of rest for away team",
-    "rest_diff": "Rest day difference (home - away)",
-    "travel_miles": "Travel distance for away team (miles)",
-    "tz_diff": "Time zone difference (hours)",
-    "is_division": "Game is within the same division",
-    "is_primetime": "Game is in a primetime slot",
-    "is_short": "Away team on short week (<6 days rest)",
-    "is_dome": "Game is in a domed/retractable roof stadium",
-    "is_early_season": "Game is in weeks 1-4",
-    "opening_spread": "Opening spread (positive = home favorite)",
-    "closing_spread": "Closing spread (positive = home favorite)",
-    "opening_ou": "Opening over/under line",
-    "closing_ou": "Closing over/under line",
-    "opening_home_ml": "Opening home team moneyline odds",
-    "opening_away_ml": "Opening away team moneyline odds",
-    "closing_home_ml": "Closing home team moneyline odds",
-    "closing_away_ml": "Closing away team moneyline odds",
-    "opening_home_implied_probability": "Opening home team implied win probability",
-    "closing_home_implied_probability": "Closing home team implied win probability",
-    "opening_away_implied_probability": "Opening away team implied win probability",
-    "closing_away_implied_probability": "Closing away team implied win probability",
-    "closing_spread_home_odds": "Closing spread home side odds (american)",
-    "closing_spread_away_odds": "Closing spread away side odds (american)",
-    "implied_public_bet_pct": "Implied public betting percentage",
-    "line_movement_spread_pct": "Line movement percentage on spread",
-    "line_movement_ou_pct": "Line movement percentage on over/under",
-    "opening_total": "Opening total points",
-    "closing_total": "Closing total points",
-    "venue_elevation_ft": "Venue elevation (feet)",
-    "home_ats_stats": "Home team ATS statistics (JSON)",
-    "away_ats_stats": "Away team ATS statistics (JSON)",
-    "home_first_downs": "Home team first downs",
-    "away_first_downs": "Away team first downs",
-    "bt_home_score": "Backtest home score",
-    "bt_away_score": "Backtest away score",
-}
-
-# Human-readable short labels for every feature (matches nfl.features.display_name)
-DISPLAY_NAMES: Dict[str, str] = {
-    "hpf": "Home PF",
-    "hpa": "Home PA",
-    "apf": "Away PF",
-    "apa": "Away PA",
-    "dpf": "Def PF",
-    "dpa": "Def PA",
-    "himp": "Home Implied",
-    "aimp": "Away Implied",
-    "dimp": "Diff Implied",
-    "spread_movement": "Spread Movement",
-    "sp_h_odds_mvmt": "SP Home Odds MV",
-    "sp_a_odds_mvmt": "SP Away Odds MV",
-    "home_win_pct_r5": "Home W% L5",
-    "away_win_pct_r5": "Away W% L5",
-    "home_margin_r3": "Home Margin L3",
-    "away_margin_r3": "Away Margin L3",
-    "home_cover_pct_r5": "Home Cover% L5",
-    "away_cover_pct_r5": "Away Cover% L5",
-    "home_embarrassed": "Home Embarrassed",
-    "away_embarrassed": "Away Embarrassed",
-    "home_season_ats_pct": "Home Season ATS%",
-    "away_season_ats_pct": "Away Season ATS%",
-    "home_margin_r10": "Home Margin L10",
-    "away_margin_r10": "Away Margin L10",
-    "travel_miles": "Travel Miles",
-    "is_dome": "Dome",
-    "opening_ou": "Opening OU",
-    "spread": "Spread",
-    "ou_movement": "OU Movement",
-    "rest_diff": "Rest Diff",
-    "tz_diff": "TZ Diff",
-    "is_short": "Short Week",
-    "temp": "Temperature",
-    "wind": "Wind",
-    "season_year": "Season",
-    "season_avg_pts": "Season Avg Pts",
-    # computed
-    "home_ats_cover": "Home ATS Cover",
-    "away_ats_cover": "Away ATS Cover",
-    "over_result": "Over Result",
-    "home_score_margin": "Home Margin",
-    "home_pts_differential": "Home Pt Diff",
-    "away_pts_differential": "Away Pt Diff",
-    "home_strength": "Home Strength",
-    "away_strength": "Away Strength",
-    "home_implied_pts": "Home Imp Pts",
-    "away_implied_pts": "Away Imp Pts",
-    "home_rest_days": "Home Rest",
-    "away_rest_days": "Away Rest",
-
-    # ── New features (added 2026-07-06) ─────────────────────────────────────
-    "is_division_game": "Division",
-    "is_primetime": "Primetime",
-    "venue_elevation_ft": "Elevation",
-    "home_ou_over_pct_r5": "OU Over% L5 H",
-    "away_ou_over_pct_r5": "OU Over% L5 A",
-    "home_ou_margin_r5": "OU Margin L5 H",
-    "away_ou_margin_r5": "OU Margin L5 A",
-    "home_ats_home_pct_r5": "ATS@Home L5",
-    "away_ats_away_pct_r5": "ATS@Away L5",
-    "home_win_streak": "Win Str H",
-    "away_win_streak": "Win Str A",
-    "home_ats_streak": "ATS Str H",
-    "away_ats_streak": "ATS Str A",
-    "home_weighted_margin_r5": "Wt Margin H",
-    "away_weighted_margin_r5": "Wt Margin A",
-    "home_off_ypg": "Off YPG H",
-    "away_off_ypg": "Off YPG A",
-    "home_def_ypg": "Def YPG H",
-    "away_def_ypg": "Def YPG A",
-    "home_ypp": "YPP H",
-    "away_ypp": "YPP A",
-    "home_def_ypp": "Def YPP H",
-    "away_def_ypp": "Def YPP A",
-    "home_pass_ypg": "Pass YPG H",
-    "away_pass_ypg": "Pass YPG A",
-    "home_rush_ypg": "Rush YPG H",
-    "away_rush_ypg": "Rush YPG A",
-    "home_pass_ypa": "Pass YPA H",
-    "away_pass_ypa": "Pass YPA A",
-    "home_rush_ypa": "Rush YPA H",
-    "away_rush_ypa": "Rush YPA A",
-    "home_turnover_diff_r5": "TO Dff H",
-    "away_turnover_diff_r5": "TO Dff A",
-    "home_def_pass_ypg": "D-Pass YPG H",
-    "away_def_pass_ypg": "D-Pass YPG A",
-    "home_def_rush_ypg": "D-Rush YPG H",
-    "away_def_rush_ypg": "D-Rush YPG A",
-    "home_injury_weight": "Inj Wt H",
-    "away_injury_weight": "Inj Wt A",
-
-    # ── Rankings ──
-    "home_off_yardage_rank": "Off YPG Rn H",
-    "away_off_yardage_rank": "Off YPG Rn A",
-    "home_def_yardage_rank": "Def YPG Rn H",
-    "away_def_yardage_rank": "Def YPG Rn A",
-    "home_off_scoring_rank": "Off Pts Rn H",
-    "away_off_scoring_rank": "Off Pts Rn A",
-    "home_def_scoring_rank": "Def Pts Rn H",
-    "away_def_scoring_rank": "Def Pts Rn A",
-    "home_off_rushing_rank": "Rush YPG Rn H",
-    "away_off_rushing_rank": "Rush YPG Rn A",
-    "home_def_rushing_rank": "Def Rush YPG Rn H",
-    "away_def_rushing_rank": "Def Rush YPG Rn A",
-    "home_off_passing_rank": "Pass YPG Rn H",
-    "away_off_passing_rank": "Pass YPG Rn A",
-    "home_def_passing_rating_rank": "Def Pass QBR Rn H",
-    "away_def_passing_rating_rank": "Def Pass QBR Rn A",
-
-    # ── Team Off/Def Advanced Stats ──
-    "home_third_down_pct": "3D% H",
-    "away_third_down_pct": "3D% A",
-    "home_fourth_down_pct": "4D% H",
-    "away_fourth_down_pct": "4D% A",
-    "home_rz_trips": "RZ Tps H",
-    "away_rz_trips": "RZ Tps A",
-    "home_rz_td_pct": "RZ TD% H",
-    "away_rz_td_pct": "RZ TD% A",
-    "home_explosive_plays": "Exp% H",
-    "away_explosive_plays": "Exp% A",
-    "home_three_and_outs": "3&Out% H",
-    "away_three_and_outs": "3&Out% A",
-    "home_ints_thrown": "INTs H",
-    "away_ints_thrown": "INTs A",
-    "home_def_first_downs": "D-1stD H",
-    "away_def_first_downs": "D-1stD A",
-    "home_def_third_down_pct": "D-3D% H",
-    "away_def_third_down_pct": "D-3D% A",
-    "home_def_fourth_down_pct": "D-4D% H",
-    "away_def_fourth_down_pct": "D-4D% A",
-    "home_def_rz_trips": "D-RZ Tps H",
-    "away_def_rz_trips": "D-RZ Tps A",
-    "home_def_rz_td_pct": "D-RZ TD% H",
-    "away_def_rz_td_pct": "D-RZ TD% A",
-    "home_def_explosive_plays": "D-Exp% H",
-    "away_def_explosive_plays": "D-Exp% A",
-    "home_def_three_and_outs": "D-3&Out% H",
-    "away_def_three_and_outs": "D-3&Out% A",
-    "home_def_ints_thrown": "D-INTs H",
-    "away_def_ints_thrown": "D-INTs A",
-
-    # ── Raw GAME_QUERY columns ──
-    "season_type": "Season Type",
-    "game_date": "Game Date",
-    "home_score": "Home Score",
-    "away_score": "Away Score",
-    "home_first_downs": "Home 1st Downs",
-    "away_first_downs": "Away 1st Downs",
-    "venue": "Venue",
-    "surface": "Surface",
-    "roof_type": "Roof",
-    "temperature": "Temp",
-    "wind_speed": "Wind",
-    "conditions": "Conditions",
-    "home_rest": "Home Rest",
-    "away_rest": "Away Rest",
-    "is_division": "Division Game",
-    "is_primetime": "Primetime",
-    "opening_spread": "Opening Spread",
-    "opening_ou": "Opening OU",
-    "closing_spread": "Closing Spread",
-    "closing_ou": "Closing OU",
-    "opening_home_ml": "Opening Home ML",
-    "opening_away_ml": "Opening Away ML",
-    "closing_home_ml": "Closing Home ML",
-    "closing_away_ml": "Closing Away ML",
-    "opening_home_implied_probability": "Opening Home Imp%",
-    "opening_away_implied_probability": "Opening Away Imp%",
-    "closing_home_implied_probability": "Closing Home Imp%",
-    "closing_away_implied_probability": "Closing Away Imp%",
-    "closing_spread_home_odds": "Closing Spread H Odds",
-    "closing_spread_away_odds": "Closing Spread A Odds",
-    "implied_public_bet_pct": "Public Bet %",
-    "line_movement_spread_pct": "Sprd Movement %",
-    "line_movement_ou_pct": "OU Movement %",
-    "opening_total": "Opening Total",
-    "closing_total": "Closing Total",
-    "bt_home_score": "BT Home Score",
-    "bt_away_score": "BT Away Score",
-    "venue_elevation_ft": "Elevation",
-    "is_early_season": "Early Season",
-
-    # ── QB: 5-game rolling ──
-    "home_qb_passer_rating_5": "QB Rtg 5G H",
-    "away_qb_passer_rating_5": "QB Rtg 5G A",
-    "home_qb_any_a_5": "QB ANY/A 5G H",
-    "away_qb_any_a_5": "QB ANY/A 5G A",
-    "home_qb_ypa_5": "QB YPA 5G H",
-    "away_qb_ypa_5": "QB YPA 5G A",
-    "home_qb_td_pct_5": "QB TD% 5G H",
-    "away_qb_td_pct_5": "QB TD% 5G A",
-    "home_qb_int_pct_5": "QB INT% 5G H",
-    "away_qb_int_pct_5": "QB INT% 5G A",
-    "home_qb_sack_rate_5": "QB SCK% 5G H",
-    "away_qb_sack_rate_5": "QB SCK% 5G A",
-    "home_qb_rush_ypg_5": "QB RuYPG 5G H",
-    "away_qb_rush_ypg_5": "QB RuYPG 5G A",
-    "home_qb_rush_att_5": "QB RuAtt 5G H",
-    "away_qb_rush_att_5": "QB RuAtt 5G A",
-    "home_qb_games_5": "QB Gms 5G H",
-    "away_qb_games_5": "QB Gms 5G A",
-
-    # ── QB: season-long cumulative ──
-    "home_qb_passer_rating_season": "QB Rtg Seas H",
-    "away_qb_passer_rating_season": "QB Rtg Seas A",
-    "home_qb_any_a_season": "QB ANY/A Seas H",
-    "away_qb_any_a_season": "QB ANY/A Seas A",
-    "home_qb_ypa_season": "QB YPA Seas H",
-    "away_qb_ypa_season": "QB YPA Seas A",
-    "home_qb_td_pct_season": "QB TD% Seas H",
-    "away_qb_td_pct_season": "QB TD% Seas A",
-    "home_qb_int_pct_season": "QB INT% Seas H",
-    "away_qb_int_pct_season": "QB INT% Seas A",
-    "home_qb_sack_rate_season": "QB SCK% Seas H",
-    "away_qb_sack_rate_season": "QB SCK% Seas A",
-    "home_qb_rush_ypg_season": "QB RuYPG Seas H",
-    "away_qb_rush_ypg_season": "QB RuYPG Seas A",
-    "home_qb_rush_att_pg_season": "QB RuAtt/G Seas H",
-    "away_qb_rush_att_pg_season": "QB RuAtt/G Seas A",
-    "home_qb_games_season": "QB GP Seas H",
-    "away_qb_games_season": "QB GP Seas A",
-
-    # ── QB: differentials ──
-    "qb_passer_rating_5_diff": "QB Rtg Diff 5G",
-    "qb_any_a_5_diff": "QB ANY/A Diff 5G",
-    "qb_passer_rating_season_diff": "QB Rtg Diff Seas",
-    "qb_any_a_season_diff": "QB ANY/A Diff Seas",
-
-    # ── QB: trends ──
-    "home_qb_passer_rating_trend": "QB Rtg Trend H",
-    "away_qb_passer_rating_trend": "QB Rtg Trend A",
-    "home_qb_ypa_trend": "QB YPA Trend H",
-    "away_qb_ypa_trend": "QB YPA Trend A",
-}
-
 # ── Feature Aliases ─────────────────────────────────────────────────────────────
 # Alternative names / synonyms for features, shown in the admin data-loader UI.
 FEATURE_ALIASES: Dict[str, List[str]] = {
@@ -1029,23 +501,64 @@ class NFLDataLoader:
             f"ats_only={self.ats_only}, ou_only={self.ou_only})"
         )
 
-    # ── Feature catalog helpers ────────────────────────────────────────────────
+    # ── Feature catalog helpers (source of truth: DB `features` table) ────────
+    _CATALOG_SCHEMA = "nfl"
+    _catalog_cache: Optional[Dict[str, Dict[str, str]]] = None
+    _catalog_ts: float = 0.0
+
+    def _load_catalog_from_db(self) -> Dict[str, Dict[str, str]]:
+        """Load {name: {'description','display_name'}} from nfl.features.
+
+        The DB is the single source of truth for the feature catalog (including
+        descriptions and customer-facing display names). Values are cached for a
+        short TTL so admin edits propagate without hammering the DB.
+        """
+        now = time.time()
+        if self._catalog_cache is not None and (now - self._catalog_ts) < 60:
+            return self._catalog_cache
+        from sqlalchemy import text as _text
+        try:
+            eng = self.engine
+            with eng.connect() as conn:
+                rows = conn.execute(
+                    _text(f"SELECT name, description, display_name FROM {self._CATALOG_SCHEMA}.features")
+                ).mappings().all()
+            catalog = {}
+            for r in rows:
+                name = r["name"]
+                catalog[name] = {
+                    "description": r["description"] or "",
+                    "display_name": r["display_name"] or name,
+                }
+            self._catalog_cache = catalog
+            self._catalog_ts = now
+            return catalog
+        except Exception:
+            logger.exception("Failed to load feature catalog from DB")
+            self._catalog_cache = {}
+            self._catalog_ts = now
+            return self._catalog_cache
 
     def get_features_catalog(self) -> Dict[str, str]:
-        """Return the full features catalog dict (name → description)."""
-        return {**FEATURES_CATALOG, **COMPUTED_FEATURES_CATALOG, **RAW_FEATURES_CATALOG}
+        """Return the full features catalog dict (name → description) from the DB."""
+        db = self._load_catalog_from_db()
+        return {name: meta["description"] for name, meta in db.items()}
 
     def get_feature_names(self) -> List[str]:
         """Return all known feature names."""
         return list(self.get_features_catalog().keys())
 
     def get_feature_description(self, name: str) -> Optional[str]:
-        """Return the description for a single feature."""
-        return self.get_features_catalog().get(name)
+        """Return the description for a single feature (None if unknown)."""
+        db = self._load_catalog_from_db()
+        meta = db.get(name)
+        return meta["description"] if meta and meta["description"] else None
 
     def get_display_name(self, name: str) -> str:
-        """Return the human-friendly display label for a feature."""
-        return DISPLAY_NAMES.get(name, name)
+        """Return the human-friendly display label from the DB (falls back to name)."""
+        db = self._load_catalog_from_db()
+        meta = db.get(name)
+        return meta["display_name"] if meta and meta["display_name"] else name
 
     def get_feature_aliases(self, name: str) -> List[str]:
         """Return known aliases for a feature."""
@@ -1053,7 +566,8 @@ class NFLDataLoader:
 
     def get_all_with_display(self) -> Dict[str, str]:
         """Return all features with their display names."""
-        return {name: self.get_display_name(name) for name in self.get_feature_names()}
+        db = self._load_catalog_from_db()
+        return {name: meta["display_name"] for name, meta in db.items()}
 
     # ── Query building ──────────────────────────────────────────────────────────
 
@@ -2975,5 +2489,4 @@ if __name__ == "__main__":
         print(df.head(3).to_string())
         print()
         logger.info("Features used: %s", list(df.columns))
-        logger.info("Features listed in catalog: %d", len(FEATURES_CATALOG))
-        logger.info("Computed features: %d", len(COMPUTED_FEATURES_CATALOG))
+        logger.info("Features listed in catalog: %d", len(loader.get_feature_names()))

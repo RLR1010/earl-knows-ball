@@ -9,6 +9,8 @@ from .dfs_salary import NBADfsSalary
 from .player_game_stats import NBAPlayerGameStats
 from .game_prediction import NBAGamePrediction
 from .writeup import NBAGameWriteup
+from .active_player import NBAActivePlayer
+from .inactive_player import NBAInactivePlayer
 
 __all__ = [
     "NBATeam",
@@ -23,4 +25,6 @@ __all__ = [
     "NBADfsSalary",
     "NBAGamePrediction",
     "NBAGameWriteup",
+    "NBAActivePlayer",
+    "NBAInactivePlayer",
 ]

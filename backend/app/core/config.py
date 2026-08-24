@@ -39,6 +39,10 @@ class Settings(BaseSettings):
     stripe_webhook_secret: str = ""
     stripe_publishable_key: str = ""
 
+    # One-time token top-up (Stripe price id + token grant)
+    stripe_token_topup_price_id: str = ""
+    token_topup_grant: int = 2_000_000  # tokens credited per purchase
+
     # App
     base_url: str = "http://localhost:3000"
     admin_email: str = "admin@earlknowsball.com"

@@ -129,7 +129,7 @@ async def chat_nfl(
             async def limit_error_stream():
                 yield {"data": json.dumps({
                     "type": "answer",
-                    "content": "You've reached your monthly chat token limit. Your usage will reset at the start of next month. Upgrade your plan if you need more tokens.",
+                    "content": "You've reached your chat token limit for this billing period — your monthly allotment is used up and you have no extra tokens left. You can buy more tokens from your profile page (earlknowsball.com/profile), which roll over to future months if unused.",
                 }, ensure_ascii=False)}
                 yield {"data": json.dumps({"type": "done"}, ensure_ascii=False)}
             return EventSourceResponse(

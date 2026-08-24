@@ -10,6 +10,7 @@ class NBAPlayer(Base):
     id = Column(Integer, primary_key=True)
     nba_id = Column(Integer, unique=True, nullable=True, index=True)  # stats.nba.com person ID
     espn_id = Column(Integer, nullable=True, index=True)  # ESPN athlete ID
+    br_id = Column(String(64), unique=True, nullable=True, index=True)  # basketball-reference slug e.g. porzikr01
     nbaname = Column(String(100), nullable=True)
     name = Column(String(100), nullable=False, index=True)
     position = Column(String(4), nullable=False, index=True)  # PG, SG, SF, PF, C, G, F

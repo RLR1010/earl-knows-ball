@@ -259,6 +259,7 @@ export interface TokenUsageResponse {
   tokens_used: number;
   token_limit: number | null;
   percent_used: number | null;
+  extra_token_balance: number;
 }
 
 export const api = {
@@ -433,6 +434,11 @@ export const api = {
       fetchAPI<{ status: string; message: string }>("/api/subscriptions/cancel", {
         method: "POST",
       }),
+    tokenTopup: (body?: { success_url?: string; cancel_url?: string; ui_mode?: string }) =>
+      fetchAPI<{ url: string | null; client_secret: string | null; mock: boolean; message: string }>(
+        "/api/subscriptions/token-topup/checkout",
+        { method: "POST", body: body ? JSON.stringify(body) : undefined }
+      ),
     payments: (params?: { limit?: number; offset?: number }) => {
       const q = new URLSearchParams();
       if (params?.limit) q.set("limit", String(params.limit));

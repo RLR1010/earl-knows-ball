@@ -1811,22 +1811,15 @@ async def mlb_feature_definitions():
     to human-readable descriptions. The frontend uses them for popover tooltips
     in the prediction stats modal.
     """
-    from app.handicapping.mlb.data_loader import (
-        FEATURES_CATALOG,
-        COMPUTED_FEATURES_CATALOG,
-        DISPLAY_NAMES,
-    )
+    from app.handicapping.mlb.data_loader import get_data_loader
 
-    merged: dict[str, str] = {}
-    merged.update(FEATURES_CATALOG)
-    merged.update(COMPUTED_FEATURES_CATALOG)
-
+    loader = get_data_loader()
     features: list[dict] = []
-    for slug, description in sorted(merged.items()):
+    for f in loader.get_all_with_display():
         features.append({
-            "slug": slug,
-            "display_name": DISPLAY_NAMES.get(slug, slug.replace("_", " ").title()),
-            "description": description,
+            "slug": f["name"],
+            "display_name": f["display_name"],
+            "description": f["description"],
         })
 
     return features
@@ -1854,6 +1847,37 @@ async def mlb_game_prediction_stats(
     if not pred:
         return {"game_id": game_id, "has_prediction": False}
 
+    # Enrich each pick-card feature in features_json with its pick_card_section
+    # so the frontend can group stats into sections. Looked up live from
+    # mlb.features (DB is the source of truth) so existing stored predictions
+    # render correctly without re-predicting.
+    from sqlalchemy import text as _text
+    section_res = await db.execute(_text("SELECT name, pick_card_section, sort_order FROM mlb.features"))
+    feat_rows = section_res.fetchall()
+    sections = {r[0]: r[1] for r in feat_rows}
+    sort_order_map = {r[0]: r[2] for r in feat_rows}
+    features_json = {}
+    if pred.features_json:
+        try:
+            features_json = json.loads(pred.features_json)
+        except Exception:
+            features_json = {}
+    sanitized_features = _sanitize_json(features_json)
+    if isinstance(sanitized_features, dict):
+        for k in sanitized_features:
+            if isinstance(sanitized_features[k], dict):
+                sanitized_features[k]["pick_card_section"] = sections.get(k) or "other"
+                # display-order hint used ONLY by the frontend (never by the
+                # data_loader / training / inference feature ordering).
+                sanitized_features[k]["sort_order"] = sort_order_map.get(k) or 0
+        # Order the returned dict by sort_order so the frontend renders features
+        # in the admin-chosen order within each section without sorting client-side.
+        sanitized_features = dict(
+            sorted(sanitized_features.items(),
+                   key=lambda kv: (kv[1].get("sort_order", 0) if isinstance(kv[1], dict) else 0,
+                                   kv[0]))
+        )
+
     return {
         "game_id": game_id,
         "has_prediction": True,
@@ -1867,7 +1891,7 @@ async def mlb_game_prediction_stats(
         "confidence": (pred.ml_conf_cal or 0) if pred.ml_conf_cal is not None else pred.ml_conf,
         "home_spread_cover_prob": pred.rl_conf_cal if pred.rl_conf_cal is not None else pred.rl_conf,
         "away_spread_cover_prob": (1.0 - pred.rl_conf_cal) if pred.rl_conf_cal is not None else ((1.0 - pred.rl_conf) if pred.rl_conf is not None else None),
-        "features_json": _sanitize_json(json.loads(pred.features_json)) if pred.features_json else None,
+        "features_json": sanitized_features,
         "home_stats_json": _sanitize_json(json.loads(pred.home_stats_json)) if pred.home_stats_json else None,
         "away_stats_json": _sanitize_json(json.loads(pred.away_stats_json)) if pred.away_stats_json else None,
         "situational_json": _sanitize_json(json.loads(pred.situational_json)) if pred.situational_json else None,

@@ -103,6 +103,22 @@ async def run(api_key: str, db: AsyncSession):
         game_ids = [r[0] for r in predict_rows]
         logger.info(f"NFL: {len(game_ids)} games have consolidated lines")
 
+        # Snapshot existing picks BEFORE they are overwritten so we can detect
+        # whether OU / ML / ATS changed (batch_predict deletes+reinserts source='api').
+        old_picks: dict[int, dict] = {}
+        if game_ids:
+            old_res = await db.execute(
+                text("""
+                    SELECT game_id, ou_pick, ml_pick, spread_pick
+                    FROM nfl.game_predictions
+                    WHERE source = 'api'
+                      AND game_id = ANY(:gids)
+                """),
+                {"gids": game_ids},
+            )
+            for gid, ou, ml, sld in old_res.fetchall():
+                old_picks[gid] = {"ou_pick": ou, "ml_pick": ml, "spread_pick": sld}
+
         if game_ids:
             # Use the engine's resolved live model year (max trained year), NOT the
             # calendar year — no NFL model exists for the upcoming season until it's
@@ -114,6 +130,100 @@ async def run(api_key: str, db: AsyncSession):
                 db=db,
             )
             results["predictions"] = {"games": len(pick_results)}
+
+            # ── Step 4: Regenerate premium writeups when a pick flipped side ──
+            # Same behavior as mlb-lines-and-picks: picks refresh throughout the
+            # day until game time, and the writeup is written with those picks as
+            # a guide. If OU / ML / ATS changed on a game that already has a
+            # premium writeup, regenerate it to stay in sync.
+            regenerated: list[int] = []
+            regen_failures: list[dict] = []
+            if game_ids:
+                try:
+                    wu_rows = await db.execute(
+                        text("""
+                            SELECT game_id
+                            FROM nfl.game_writeups
+                            WHERE game_id = ANY(:gids)
+                              AND premium_content IS NOT NULL
+                              AND premium_content != ''
+                        """),
+                        {"gids": game_ids},
+                    )
+                    games_with_premium = {r[0] for r in wu_rows.fetchall()}
+
+                    new_res = await db.execute(
+                        text("""
+                            SELECT game_id, ou_pick, ml_pick, spread_pick
+                            FROM nfl.game_predictions
+                            WHERE source = 'api'
+                              AND game_id = ANY(:gids)
+                        """),
+                        {"gids": game_ids},
+                    )
+                    new_picks: dict[int, dict] = {}
+                    for gid, ou, ml, sp in new_res.fetchall():
+                        new_picks[gid] = {"ou_pick": ou, "ml_pick": ml, "spread_pick": sp}
+
+                    from app.writeups.nfl.generator import NFLWriteupGenerator
+                    gen = NFLWriteupGenerator()
+
+                    # Only regenerate when a pick FLIPS SIDE — not when a margin/
+                    # line just drifts. OU/ML are already side-only (Over/Under,
+                    # home/away). ATS spread_pick is "<team> <+/-val>"; side = team
+                    # token only, so spread movement (e.g. +1.5 → +2.5 on the same
+                    # team) does NOT fire.
+                    def _ats_side(val):
+                        if not val:
+                            return None
+                        return str(val).split()[0].strip()
+
+                    def _pick_flipped(old_v, new_v):
+                        # normalize empties; flip = different non-empty side
+                        a = (old_v or "").strip()
+                        b = (new_v or "").strip()
+                        if a == b:
+                            return False
+                        return bool(a) and bool(b)
+
+                    for gid in game_ids:
+                        if gid not in games_with_premium:
+                            continue
+                        old = old_picks.get(gid)
+                        new = new_picks.get(gid)
+                        if old is None or new is None:
+                            continue
+                        flipped = (
+                            _pick_flipped(old.get("ou_pick"), new.get("ou_pick"))
+                            or _pick_flipped(old.get("ml_pick"), new.get("ml_pick"))
+                            or _pick_flipped(
+                                _ats_side(old.get("spread_pick")),
+                                _ats_side(new.get("spread_pick")),
+                            )
+                        )
+                        if not flipped:
+                            continue
+                        try:
+                            writeup, _qc = await gen.generate(
+                                db, gid, is_historical=False,
+                                as_of_date=None, reasoning="minimal",
+                            )
+                            if "error" in writeup:
+                                raise RuntimeError(writeup["error"])
+                            regenerated.append(gid)
+                            logger.info(f"Pick flipped side for game {gid} — regenerated premium writeup")
+                        except Exception as exc:
+                            regen_failures.append({"game_id": gid, "error": str(exc)[:200]})
+                            logger.warning(f"Writeup regen failed for game {gid}: {exc}")
+                except Exception as exc:
+                    logger.warning(f"Writeup regeneration pass failed: {exc}")
+                    regen_failures.append({"game_id": None, "error": f"pass_failed: {exc}"})
+
+                results["writeup_regen"] = {
+                    "regenerated_count": len(regenerated),
+                    "regenerated_game_ids": regenerated,
+                    "failures": regen_failures,
+                }
         else:
             results["predictions"] = {"games": 0, "skipped": "no games with lines"}
 

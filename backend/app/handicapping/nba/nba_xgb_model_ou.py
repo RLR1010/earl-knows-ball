@@ -30,7 +30,6 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from app.handicapping.db_training import save_training_run, update_pkl_filename
 from app.handicapping.nba.nba_engine import _impute_feature
 from app.handicapping.nba.data_loader import (
-    FEATURES_CATALOG,
     NBADataLoader,
     get_data_loader,
     get_model_features,
@@ -122,7 +121,7 @@ async def train_model(
     # never used; prior-season stats come from nba.prior_team_stats).
     load_seasons = list(range(2016, max(TEST_YEARS) + 1))
     # Train ONLY on regular-season games. Playoff/play-in games have different
-    # pace/tempo/restr contexts that skew the OU margin target; fit the model on
+    # pace/tempo/rest contexts that skew the OU margin target; fit the model on
     # REG games only. (Playoff inference still works via load_inference_data.)
     df = dl.load_data(seasons=load_seasons, game_types=['REG'])
 
@@ -325,6 +324,7 @@ async def train_model(
             "mae": round(float(train_mae), 4),
             "r2": round(float(train_r2), 4),
             "input_features": len(available),
+            "feature_names": list(available),
             "feature_importance": fi_sorted,
             "model_params": {**params, "n_estimators": n_estimators},
             "duration_seconds": round(ty_elapsed, 2),

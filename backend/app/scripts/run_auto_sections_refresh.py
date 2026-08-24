@@ -196,6 +196,10 @@ async def generate_config(cfg: dict) -> dict:
         payload["word_count"] = [wmin if wmin is not None else 0, wmax if wmax is not None else 2500]
     if cfg.get("title_mode"):
         payload["title_mode"] = cfg["title_mode"]
+    # Fixed-title configs (e.g. MLB daily picks 'Daily Picks We Like') send the
+    # actual title value so the /generate endpoint can apply it verbatim.
+    if cfg.get("title_mode") == "fixed" and cfg.get("title"):
+        payload["title"] = cfg["title"]
 
     url = f"{API_BASE}/original-articles/{sport}/generate"
     async with httpx.AsyncClient(timeout=1200) as client:

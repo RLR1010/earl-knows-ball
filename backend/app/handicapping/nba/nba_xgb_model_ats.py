@@ -32,7 +32,6 @@ from sklearn.metrics import (
 from app.handicapping.db_training import save_training_run, update_pkl_filename
 from app.handicapping.nba.nba_engine import _impute_feature
 from app.handicapping.nba.data_loader import (
-    FEATURES_CATALOG,
     NBADataLoader,
     get_data_loader,
     get_model_features,
@@ -376,6 +375,7 @@ async def train_model(
             "total_games": ats_total,
             "mae": round(float(test_mae), 4),
             "input_features": len(available),
+            "feature_names": list(available),
             "feature_importance": fi_sorted,
             "model_params": {**params, "n_estimators": n_estimators},
             "duration_seconds": round(ty_elapsed, 2),

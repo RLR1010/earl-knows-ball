@@ -241,6 +241,10 @@ async def list_configs(db: AsyncSession = Depends(get_db)):
 @admin_router.get("/teams/{sport}")
 async def list_teams(sport: str, db: AsyncSession = Depends(get_db)):
     sport = _validate_sport(sport)
+    # 'all' is the site-wide editorial scope — no team dimension (see create_config).
+    # Also: 'all' is a reserved keyword in Postgres, so we can't query all.teams.
+    if sport == "all":
+        return []
     try:
         result = await db.execute(
             text(f"SELECT id, name, abbreviation FROM {sport}.teams ORDER BY name"),

@@ -23,6 +23,7 @@ const NAV_GROUPS = [
       { label: "Auto Generation", path: "/admin/auto-generation" },
       { label: "Articles", path: "/admin/articles" },
       { label: "RSS Feeds", path: "/admin/articles/rss" },
+      { label: "Features", path: "/admin/features" },
     ],
   },
   {

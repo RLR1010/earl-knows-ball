@@ -14,4 +14,4 @@ if [ -f "$VIRTUAL_ENV_DIR/bin/activate" ]; then
 fi
 # EARL_PORT/EARL_WORKERS are configurable so the same script drives both the
 # api (EARL_ROLE=api) and compute (EARL_ROLE=compute) granian servers.
-PYTHONPATH="$PWD" exec granian --interface asgi --http 1 app.main:app --host 0.0.0.0 --port "$EARL_PORT" --workers "$EARL_WORKERS" --backlog 4096
+PYTHONPATH="$PWD" exec granian --interface asgi --http 1 app.main:app --host 0.0.0.0 --port "$EARL_PORT" --workers "$EARL_WORKERS" --backlog 4096 --workers-kill-timeout 10s

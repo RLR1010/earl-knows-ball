@@ -27,6 +27,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -1219,396 +1220,9 @@ ORDER BY g.date DESC
 """
 
 
-# ── Known MLB features (mirrors the mlb.features table) ─────────────────────
-
-# This list is the code-side source of truth.  If you add a new feature, add it
-# here AND insert a row into mlb.features.  The dictionary maps slug → human-
-# readable description for the pick-card layer.
-
-FEATURES_CATALOG: Dict[str, str] = {
-    # ── Raw game fields ──
-    "game_id": "Internal game ID (mlb.games.id)",
-    "game_date": "Date of the game (timestamp with time zone)",
-    "season_year": "Calendar year this game belongs to",
-    "game_type": "Type of game (Regular Season, Spring Training, etc.)",
-    "status": "Game status (FINAL, PREGAME, etc.)",
-    "venue": "Venue/ballpark name",
-    "roof_type": "Roof type: dome / outdoor / retractable",
-    "surface": "Playing surface (grass / turf)",
-    "temperature": "Game-time temperature (°F)",
-    "wind_speed": "Wind speed (mph)",
-    "wind_direction": "Wind direction",
-    "weather_condition": "General weather description",
-    "day_night": "Day or night game",
-    "attendance": "Number of attendees",
-    "scheduled_innings": "Scheduled innings (usually 9)",
-    "duration_minutes": "Duration of game (minutes)",
-    # ── Pre-game records ──
-    "home_wins": "Home team wins prior to this game",
-    "home_losses": "Home team losses prior to this game",
-    "away_wins": "Away team wins prior to this game",
-    "away_losses": "Away team losses prior to this game",
-    # ── Pitcher identities ──
-    "home_pitcher_name": "Home starting pitcher name",
-    "away_pitcher_name": "Away starting pitcher name",
-    # ── Betting lines ──
-    "spread": "Closing run-line spread (negative = favorite giving runs)",
-    "home_moneyline": "Closing home moneyline (American odds)",
-    "away_moneyline": "Closing away moneyline (American odds)",
-    "over_under": "Closing over/under total",
-    "opening_total": "Opening over/under total",
-    "opening_spread": "Opening run-line spread",
-    "opening_home_ml": "Opening home moneyline",
-    "opening_away_ml": "Opening away moneyline",
-    "has_verified_ou": "Closing OU came from a verified betting source",
-    "sportsbook": "Sportsbook that supplied the closing OU line",
-    # ── Team info ──
-    "ha": "Home team abbreviation",
-    "aa": "Away team abbreviation",
-    "hdiv": "Home team division",
-    "adiv": "Away team division",
-    "home_team_id": "Home team internal ID",
-    "away_team_id": "Away team internal ID",
-    "home_team_name": "Home team full name",
-    "away_team_name": "Away team full name",
-    "margin": "Actual run differential (home_score - away_score); FINAL only",
-    # ── Player IDs (not yet enriched) ──
-    "mlb_game_id": "External MLB game ID (from ESPN/MLB.com)",
-    # ── Cumulative season-to-date stats ──
-    "h_cum_avg": "Home cumulative AVG",
-    "a_cum_avg": "Away cumulative AVG",
-    "h_cum_obp": "Home cumulative OBP",
-    "a_cum_obp": "Away cumulative OBP",
-    "h_cum_slg": "Home cumulative SLG",
-    "a_cum_slg": "Away cumulative SLG",
-    "h_cum_ops": "Home cumulative OPS",
-    "a_cum_ops": "Away cumulative OPS",
-    "h_cum_babip": "Home cumulative BABIP",
-    "a_cum_babip": "Away cumulative BABIP",
-    "h_cum_k_rate": "Home cumulative K rate",
-    "a_cum_k_rate": "Away cumulative K rate",
-    "h_cum_bb_rate": "Home cumulative BB rate",
-    "a_cum_bb_rate": "Away cumulative BB rate",
-    "h_cum_era": "Home cumulative ERA",
-    "a_cum_era": "Away cumulative ERA",
-    "h_cum_whip": "Home cumulative WHIP",
-    "a_cum_whip": "Away cumulative WHIP",
-    "h_cum_k9": "Home cumulative K/9",
-    "a_cum_k9": "Away cumulative K/9",
-    "h_cum_bb9": "Home cumulative BB/9",
-    "a_cum_bb9": "Away cumulative BB/9",
-
-    # -- Game context additions
-    "game_number": "Game number in season",
-    "venue_id": "Venue ID",
-    "season_id": "Season ID",
-    "actual_innings": "Actual innings played",
-    "scheduled_innings": "Scheduled innings",
-    "duration_minutes": "Game duration in minutes",
-    "mlb_game_id": "MLB game ID",
-
-    # -- Betting additions
-    "closing_over_odds": "Closing over odds",
-    "closing_under_odds": "Closing under odds",
-    "closing_spread_home_odds": "Closing run line home odds",
-    "closing_spread_away_odds": "Closing run line away odds",
-    "opening_ou": "Opening total (O/U)",
-    "opening_home_implied_probability": "Opening home implied probability",
-    "opening_away_implied_probability": "Opening away implied probability",
-    "opening_spread": "Opening run line",
-    "opening_home_ml": "Opening home ML",
-    "opening_away_ml": "Opening away ML",
-
-    # -- Rolling team stats (produced by GAME_QUERY)
-    "h_rf5": "Home runs for (rolling avg last 5)",
-    "a_rf5": "Away runs for (rolling avg last 5)",
-    "h_ra5": "Home runs against (rolling avg last 5)",
-    "a_ra5": "Away runs against (rolling avg last 5)",
-    "h_rf10": "Home runs for (rolling avg last 10)",
-    "a_rf10": "Away runs for (rolling avg last 10)",
-    "h_ra10": "Home runs against (rolling avg last 10)",
-    "a_ra10": "Away runs against (rolling avg last 10)",
-    "h_rf15": "Home runs for (rolling avg last 15)",
-    "a_rf15": "Away runs for (rolling avg last 15)",
-    "h_ra15": "Home runs against (rolling avg last 15)",
-    "a_ra15": "Away runs against (rolling avg last 15)",
-    "h_rf20": "Home runs for (rolling avg last 20)",
-    "a_rf20": "Away runs for (rolling avg last 20)",
-    "h_ra20": "Home runs against (rolling avg last 20)",
-    "a_ra20": "Away runs against (rolling avg last 20)",
-
-    # -- Rolling hitting stats (from GAME_QUERY)
-    "h_avg_5": "Home AVG (rolling avg last 5)",
-    "a_avg_5": "Away AVG (rolling avg last 5)",
-    "h_avg_10": "Home AVG (rolling avg last 10)",
-    "a_avg_10": "Away AVG (rolling avg last 10)",
-    "h_avg_15": "Home AVG (rolling avg last 15)",
-    "a_avg_15": "Away AVG (rolling avg last 15)",
-    "h_obp_5": "Home OBP (rolling avg last 5)",
-    "a_obp_5": "Away OBP (rolling avg last 5)",
-    "h_obp_10": "Home OBP (rolling avg last 10)",
-    "a_obp_10": "Away OBP (rolling avg last 10)",
-    "h_ops_5": "Home OPS (rolling avg last 5)",
-    "a_ops_5": "Away OPS (rolling avg last 5)",
-    "h_ops_10": "Home OPS (rolling avg last 10)",
-    "a_ops_10": "Away OPS (rolling avg last 10)",
-    "h_ops_15": "Home OPS (rolling avg last 15)",
-    "a_ops_15": "Away OPS (rolling avg last 15)",
-
-    # -- Rolling pitching stats (from GAME_QUERY)
-    "h_era_5": "Home ERA (rolling avg last 5)",
-    "a_era_5": "Away ERA (rolling avg last 5)",
-    "h_era_10": "Home ERA (rolling avg last 10)",
-    "a_era_10": "Away ERA (rolling avg last 10)",
-    "h_era_15": "Home ERA (rolling avg last 15)",
-    "a_era_15": "Away ERA (rolling avg last 15)",
-    "h_whip_5": "Home WHIP (rolling avg last 5)",
-    "a_whip_5": "Away WHIP (rolling avg last 5)",
-    "h_whip_10": "Home WHIP (rolling avg last 10)",
-    "a_whip_10": "Away WHIP (rolling avg last 10)",
-    "h_whip_15": "Home WHIP (rolling avg last 15)",
-    "a_whip_15": "Away WHIP (rolling avg last 15)",
-    "h_k9_5": "Home K/9 (rolling avg last 5)",
-    "a_k9_5": "Away K/9 (rolling avg last 5)",
-    "h_k9_10": "Home K/9 (rolling avg last 10)",
-    "a_k9_10": "Away K/9 (rolling avg last 10)",
-    "h_bb9_5": "Home BB/9 (rolling avg last 5)",
-    "a_bb9_5": "Away BB/9 (rolling avg last 5)",
-    "h_bb9_10": "Home BB/9 (rolling avg last 10)",
-    "a_bb9_10": "Away BB/9 (rolling avg last 10)",
-}
-
 # Features added during featurization (computed by build_features)
 # These won't be in the raw query but may appear after feature engineering.
 
-COMPUTED_FEATURES_CATALOG: Dict[str, str] = {
-    # ── Situational ──
-    "rest_h": "Home team days of rest since last game",
-    "rest_a": "Away team days of rest since last game",
-    "rest_diff": "Rest differential (rest_h - rest_a); positive = home more rested",
-    "rest_h_hours": "Home team hours of rest since last game (time between first pitches)",
-    "rest_a_hours": "Away team hours of rest since last game (time between first pitches)",
-    "rest_diff_hours": "Rest differential in hours (rest_h_hours - rest_a_hours)",
-    "is_div": "1 if both teams are in the same division",
-    "month": "Numeric month (1-12) of game_date",
-    "is_summer": "1 if month is June, July, or August",
-    "is_dome": "1 if roof type is dome or retractable",
-    "travel_miles": "Away team estimated travel distance to venue (0 if < 50 miles)",
-    "tz_diff": "Time-zone difference in hours between home and away cities",
-    # ── Team quality ──
-    "is_home_fav": "1 if home team is favored (negative spread)",
-    "h_winpct": "Home win percentage entering game (blended with prior-season avg)",
-    "a_winpct": "Away win percentage entering game (blended with prior-season avg)",
-    "winpct_diff": "Win percentage differential (h_winpct - a_winpct)",
-    "winpct_l10_diff": "Last-10-games win% differential (home - away)",
-    # ── Team-level run production ──
-    "h_home_rf": "Home team avg runs-for at home (expanding mean, shift(1))",
-    "a_away_rf": "Away team avg runs-for on the road (expanding mean, shift(1))",
-    # ── Implied probabilities ──
-    "h_implied": "Home implied win probability from closing moneyline",
-    "a_implied": "Away implied win probability from closing moneyline",
-    "home_implied_probability": "Same as h_implied",
-    "away_implied_probability": "Same as a_implied",
-    "implied_total": "Estimated total from home + away implied probabilities",
-    "ou_line": "Alias for over_under, used inside modeling code",
-    # ── Team hitting stats ──
-    "h_ops_l10": "Home OPS over last 10 games",
-    "a_ops_l10": "Away OPS over last 10 games",
-    "h_ops_l20": "Home OPS over last 20 games",
-    "a_ops_l20": "Away OPS over last 20 games",
-    "h_slg_l10": "Home slugging pct over last 10 games",
-    "a_slg_l10": "Away slugging pct over last 10 games",
-    "h_slg_l20": "Home slugging pct over last 20 games",
-    "a_slg_l20": "Away slugging pct over last 20 games",
-    # ── Pitcher-derived ──
-    "h_pitcher_era_l20": "Home pitcher ERA over last 20 appearances",
-    "a_pitcher_era_l20": "Away pitcher ERA over last 20 appearances",
-    "h_pitcher_era_l5": "Home pitcher ERA over last 5 appearances",
-    "a_pitcher_era_l5": "Away pitcher ERA over last 5 appearances",
-    "h_pitcher_k9_l20": "Home pitcher K/9 over last 20 appearances",
-    "a_pitcher_k9_l20": "Away pitcher K/9 over last 20 appearances",
-    "h_pitcher_whip_l20": "Home pitcher WHIP over last 20 appearances",
-    "a_pitcher_whip_l20": "Away pitcher WHIP over last 20 appearances",
-    "h_pitcher_kbb_l20": "Home pitcher K/BB rate over last 20 appearances",
-    "a_pitcher_kbb_l20": "Away pitcher K/BB rate over last 20 appearances",
-    "h_pitcher_home_team_l20": "Home pitcher ERA with this team (last 20)",
-    "a_pitcher_home_team_l20": "Away pitcher ERA with this team (last 20)",
-    # ── Venue-specific & home-split ──
-    "a_pitcher_venue_era": "Away pitcher ERA at this venue (expanding mean, shift(1), since 2021)",
-    "h_pitcher_home_era": "Home pitcher ERA at home (expanding mean, shift(1), prev + current season)",
-    "a_team_venue_winpct": "Away team win pct at this venue (expanding mean, shift(1), prev + current season)",
-    "h_home_rf_r10": "Home team avg runs scored in its last 10 HOME games (venue-conditional rolling)",
-    "a_away_rf_r10": "Away team avg runs scored in its last 10 ROAD games (venue-conditional rolling)",
-    "h_home_win_pct_r10": "Home team win% in its last 10 HOME games (venue-conditional rolling)",
-    "a_away_win_pct_r10": "Away team win% in its last 10 ROAD games (venue-conditional rolling)",
-    "h_home_win_pct_season": "Home team season win% in HOME games only (venue-scoped season)",
-    "a_away_win_pct_season": "Away team season win% in ROAD games only (venue-scoped season)",
-    # ── Pitcher day/night & rest ──
-    "h_pitcher_day_era": "Home pitcher ERA in day games (expanding mean, shift(1))",
-    "h_pitcher_night_era": "Home pitcher ERA in night games (expanding mean, shift(1))",
-    "a_pitcher_day_era": "Away pitcher ERA in day games (expanding mean, shift(1))",
-    "a_pitcher_night_era": "Away pitcher ERA in night games (expanding mean, shift(1))",
-    "h_pitcher_day_night_era": "Home pitcher ERA resolved by game time (day_era if day game, night_era if night game)",
-    "a_pitcher_day_night_era": "Away pitcher ERA resolved by game time (day_era if day game, night_era if night game)",
-    "h_pitcher_rest": "Home pitcher days since last start",
-    "a_pitcher_rest": "Away pitcher days since last start",
-    "a_pitcher_road_era": "Away pitcher ERA in road starts (expanding mean, shift(1))",
-    # ── Bullpen ──
-    "h_bullpen_era_l5": "Home bullpen ERA over last 5 appearances",
-    "a_bullpen_era_l5": "Away bullpen ERA over last 5 appearances",
-    "h_bullpen_ip_l5": "Home bullpen IP over last 5 appearances",
-    "a_bullpen_ip_l5": "Away bullpen IP over last 5 appearances",
-    # ── Form ──
-    "h_form_l10": "Home winning percentage last 10 games (exponential MA, shift(1))",
-    "a_form_l10": "Away winning percentage last 10 games (exponential MA, shift(1))",
-    "h_pitcher_day_night_era": "Home pitcher ERA resolved by game time (day/night)",
-    "a_pitcher_day_night_era": "Away pitcher ERA resolved by game time (day/night)",
-    # ── Park & environment ──
-    "park_factor": "Estimated venue run multiplier based on rolling historical totals",
-    "wind_calculated": "Wind effect: wd * wind_speed where wd=1 for out, -1 for in, 0 otherwise",
-    "total_avg_team_r10": "Avg total runs involving this team last 10 games",
-    "combo_era_r10": "Combined (home + away) total-team ERA last 10 games",
-    "combo_era_r10_diff": "Home minus away component of combo_era_r10",
-    # ── Movement ──
-    "ou_movement": "Closing OU minus opening OU",
-    "ml_implied_movement": "Closing home implied prob minus opening home implied prob",
-    "opening_home_implied": "Opening home moneyline as implied probability",
-    "opening_away_implied": "Opening away moneyline as implied probability",
-    # ── Targets (for analysis only — the model predicts these) ──
-    "actual_margin": "Actual run differential (target for ATS model)",
-    "actual_total": "Actual total runs (target for OU model)",
-    "home_score": "Home team final score",
-    "away_score": "Away team final score",
-}
-
-
-# ── Customer-facing display names ──────────────────────────────────────────
-
-# Every feature name in FEATURES_CATALOG / COMPUTED_FEATURES_CATALOG has a
-# human-readable label.  Keep this in sync with mlb.features.display_name.
-
-DISPLAY_NAMES: Dict[str, str] = {
-    "home_team": "Home Team",
-    "away_team": "Away Team",
-    "game_date": "Game Date",
-    "game_type": "Game Type",
-    "season_year": "Season",
-    "status": "Status",
-    "venue": "Venue",
-    "roof_type": "Roof Type",
-    "surface": "Surface",
-    "temperature": "Temperature",
-    "wind_speed": "Wind Speed",
-    "wind_direction": "Wind Direction",
-    "weather_condition": "Weather",
-    "day_night": "Day/Night",
-    "scheduled_innings": "Scheduled Innings",
-    "attendance": "Attendance",
-    "actual_innings": "Actual Innings",
-    "duration_minutes": "Duration",
-    "home_wins": "Home Wins",
-    "home_losses": "Home Losses",
-    "away_wins": "Away Wins",
-    "away_losses": "Away Losses",
-    "home_pitcher_name": "Home Pitcher",
-    "away_pitcher_name": "Away Pitcher",
-    "spread": "Run Line",
-    "home_moneyline": "Home Moneyline",
-    "away_moneyline": "Away Moneyline",
-    "over_under": "Over/Under",
-    "opening_total": "Opening Total",
-    "opening_spread": "Opening Spread",
-    "opening_home_ml": "Opening Home ML",
-    "opening_away_ml": "Opening Away ML",
-    "has_verified_ou": "Verified OU",
-    "sportsbook": "Sportsbook",
-    "ha": "Home Abbreviation",
-    "aa": "Away Abbreviation",
-    "hdiv": "Home Division",
-    "adiv": "Away Division",
-    "home_team_id": "Home Team ID",
-    "away_team_id": "Away Team ID",
-    "home_team_name": "Home Team Name",
-    "away_team_name": "Away Team Name",
-    "margin": "Margin",
-    "mlb_game_id": "MLB Game ID",
-    "game_id": "Game ID",
-    "rest_h": "Home Rest Days",
-    "rest_a": "Away Rest Days",
-    "rest_diff": "Rest Differential",
-    "is_div": "Same Division",
-    "month": "Month",
-    "is_summer": "Summer Game",
-    "is_dome": "Dome Game",
-    "travel_miles": "Travel Miles",
-    "tz_diff": "Time Zone Diff",
-    "is_home_fav": "Home Favored",
-    "h_winpct": "Home Win %",
-    "a_winpct": "Away Win %",
-    "winpct_diff": "Win % Diff",
-    "winpct_l10_diff": "Win % L10 Diff",
-    "h_home_rf": "Home Home Runs For",
-    "a_away_rf": "Away Away Runs For",
-    "pf": "Home Runs Scored",
-    "pa": "Home Runs Allowed",
-    "home_implied_probability": "Home Implied Prob",
-    "away_implied_probability": "Away Implied Prob",
-    "implied_total": "Implied Total",
-    "h_implied": "Home Implied (Model)",
-    "a_implied": "Away Implied (Model)",
-    "h_pitcher_home_team_l20": "H. Pitcher Team ERA (L20)",
-    "a_pitcher_home_team_l20": "A. Pitcher Team ERA (L20)",
-    "h_pitcher_era_l20": "Home Pitcher ERA (L20)",
-    "a_pitcher_era_l20": "Away Pitcher ERA (L20)",
-    "h_pitcher_k9_l20": "Home Pitcher K/9 (L20)",
-    "a_pitcher_k9_l20": "Away Pitcher K/9 (L20)",
-    "h_pitcher_whip_l20": "Home Pitcher WHIP (L20)",
-    "a_pitcher_whip_l20": "Away Pitcher WHIP (L20)",
-    "h_pitcher_kbb_rate_l20": "Home Pitcher K/BB (L20)",
-    "a_pitcher_kbb_rate_l20": "Away Pitcher K/BB (L20)",
-    "a_pitcher_venue_era": "Away Pitcher Venue ERA",
-    "h_pitcher_home_era": "Home Pitcher Home ERA",
-    "a_team_venue_winpct": "Away Team Venue Win Pct",
-    "h_home_rf_r10": "Home Team Runs in Last 10 Home Games",
-    "a_away_rf_r10": "Away Team Runs in Last 10 Road Games",
-    "h_home_win_pct_r10": "Home Team Win% in Last 10 Home Games",
-    "a_away_win_pct_r10": "Away Team Win% in Last 10 Road Games",
-    "h_home_win_pct_season": "Home Team Win% at Home (Season)",
-    "a_away_win_pct_season": "Away Team Win% on Road (Season)",
-    "a_pitcher_road_era": "Away Pitcher Road ERA",
-    "h_pitcher_rest": "Home Pitcher Rest (Days)",
-    "a_pitcher_rest": "Away Pitcher Rest (Days)",
-    "h_pitcher_day_era": "Home Pitcher Day ERA",
-    "h_pitcher_night_era": "Home Pitcher Night ERA",
-    "a_pitcher_day_era": "Away Pitcher Day ERA",
-    "a_pitcher_night_era": "Away Pitcher Night ERA",
-    "park_factor": "Park Factor",
-    "total_avg_team_r10": "Team Avg Total (L10)",
-    "combo_era_r10": "Combo ERA (L10)",
-    "combo_era_r10_diff": "Combo ERA Diff (L10)",
-    "h_bullpen_era_l5": "Home Bullpen ERA (L5)",
-    "a_bullpen_era_l5": "Away Bullpen ERA (L5)",
-    "h_bullpen_ip_l5": "Home Bullpen IP (L5)",
-    "a_bullpen_ip_l5": "Away Bullpen IP (L5)",
-    "h_form_l10": "Home Form (L10)",
-    "a_form_l10": "Away Form (L10)",
-    "h_pitcher_day_night_era": "Home Pitcher ERA (Day/Night)",
-    "a_pitcher_day_night_era": "Away Pitcher ERA (Day/Night)",
-    "h_pitcher_era_l5": "Home Pitcher ERA (L5)",
-    "a_pitcher_era_l5": "Away Pitcher ERA (L5)",
-    "ou_movement": "OU Movement",
-    "ml_implied_movement": "ML Movement (Implied)",
-    "opening_home_implied": "Opening Home Implied",
-    "opening_away_implied": "Opening Away Implied",
-    "home_implied": "Home Implied (Model)",
-    "away_implied": "Away Implied (Model)",
-    "actual_margin": "Actual Margin",
-    "actual_total": "Actual Total",
-    "closing_ou": "Closing OU",
-    "ou_line": "O/U Line (Model)",
-    "home_score": "Home Score",
-    "away_score": "Away Score",
-}
 
 # ── Feature set definitions (model-specific column lists) ────────────────────
 
@@ -1694,6 +1308,60 @@ def _load_park_history() -> pd.DataFrame:
     """
     _PARK_HISTORY_CACHE = pd.read_sql(q, engine, parse_dates=["game_date"])
     return _PARK_HISTORY_CACHE
+
+
+# ── 4. Pitcher stat aliases (for backward compat with model features) ───────
+# Raw GAME_QUERY columns (*_p_*) -> the derived names used by model features
+# and the pick card. Shared module-level so BOTH build_features() (which
+# derives the aliases) and _build_query()'s projection (which must keep the raw
+# SOURCE columns when a derived alias is requested) reference the same mapping.
+P_ALIASES = {
+    "h_p_era_5": "h_pitcher_era_l5",
+    "h_p_era_10": "h_pitcher_era_l10",
+    "h_p_whip_5": "h_pitcher_whip_l5",
+    "h_p_whip_10": "h_pitcher_whip_l10",
+    "h_p_k9_5": "h_pitcher_k9_l5",
+    "h_p_k9_10": "h_pitcher_k9_l10",
+    "h_p_era_20": "h_pitcher_era_l20",
+    "h_p_whip_20": "h_pitcher_whip_l20",
+    "h_p_k9_20": "h_pitcher_k9_l20",
+    "h_p_kbb_10": "h_pitcher_kbb_l10",
+    "h_p_fip_ytd": "h_pitcher_fip_ytd",
+    "h_p_era_ytd": "h_pitcher_era_ytd",
+    "h_p_whip_ytd": "h_pitcher_whip_ytd",
+    "h_p_k9_ytd": "h_pitcher_k9_ytd",
+    "h_p_bb9_ytd": "h_pitcher_bb9_ytd",
+    "h_p_qs_rate_ytd": "h_pitcher_qs_rate",
+    "a_p_era_5": "a_pitcher_era_l5",
+    "a_p_era_10": "a_pitcher_era_l10",
+    "a_p_whip_5": "a_pitcher_whip_l5",
+    "a_p_whip_10": "a_pitcher_whip_l10",
+    "a_p_k9_5": "a_pitcher_k9_l5",
+    "a_p_k9_10": "a_pitcher_k9_l10",
+    "a_p_era_20": "a_pitcher_era_l20",
+    "a_p_whip_20": "a_pitcher_whip_l20",
+    "a_p_k9_20": "a_pitcher_k9_l20",
+    "a_p_kbb_10": "a_pitcher_kbb_l10",
+    "a_p_fip_ytd": "a_pitcher_fip_ytd",
+    "a_p_era_ytd": "a_pitcher_era_ytd",
+    "a_p_whip_ytd": "a_pitcher_whip_ytd",
+    "a_p_k9_ytd": "a_pitcher_k9_ytd",
+    "a_p_bb9_ytd": "a_pitcher_bb9_ytd",
+    "a_p_qs_rate_ytd": "a_pitcher_qs_rate",
+}
+
+# Derived pitcher SPLIT ERA names (dest -> raw *_p_*_era_ytd source columns).
+# Same projection concern as P_ALIASES: if the model/pick-card requests a dest
+# (e.g. h_pitcher_home_era) the projection must keep the raw source column
+# (h_p_home_era_ytd) or build_features() sets it to NaN.
+P_SPLIT_MAP = {
+    "h_pitcher_home_era": "h_p_home_era_ytd",
+    "h_pitcher_day_era": "h_p_day_era_ytd",
+    "h_pitcher_night_era": "h_p_night_era_ytd",
+    "a_pitcher_road_era": "a_p_road_era_ytd",
+    "a_pitcher_day_era": "a_p_day_era_ytd",
+    "a_pitcher_night_era": "a_p_night_era_ytd",
+}
 
 
 def build_features(df: pd.DataFrame) -> pd.DataFrame:
@@ -1812,41 +1480,7 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
                     result[dst] = result[src]
 
     # ── 4. Pitcher stat aliases (for backward compat with model features) ─
-    _P_ALIASES = {
-        "h_p_era_5": "h_pitcher_era_l5",
-        "h_p_era_10": "h_pitcher_era_l10",
-        "h_p_whip_5": "h_pitcher_whip_l5",
-        "h_p_whip_10": "h_pitcher_whip_l10",
-        "h_p_k9_5": "h_pitcher_k9_l5",
-        "h_p_k9_10": "h_pitcher_k9_l10",
-        "h_p_era_20": "h_pitcher_era_l20",
-        "h_p_whip_20": "h_pitcher_whip_l20",
-        "h_p_k9_20": "h_pitcher_k9_l20",
-        "h_p_kbb_10": "h_pitcher_kbb_l10",
-        "h_p_fip_ytd": "h_pitcher_fip_ytd",
-        "h_p_era_ytd": "h_pitcher_era_ytd",
-        "h_p_whip_ytd": "h_pitcher_whip_ytd",
-        "h_p_k9_ytd": "h_pitcher_k9_ytd",
-        "h_p_bb9_ytd": "h_pitcher_bb9_ytd",
-        "h_p_qs_rate_ytd": "h_pitcher_qs_rate",
-        "a_p_era_5": "a_pitcher_era_l5",
-        "a_p_era_10": "a_pitcher_era_l10",
-        "a_p_whip_5": "a_pitcher_whip_l5",
-        "a_p_whip_10": "a_pitcher_whip_l10",
-        "a_p_k9_5": "a_pitcher_k9_l5",
-        "a_p_k9_10": "a_pitcher_k9_l10",
-        "a_p_era_20": "a_pitcher_era_l20",
-        "a_p_whip_20": "a_pitcher_whip_l20",
-        "a_p_k9_20": "a_pitcher_k9_l20",
-        "a_p_kbb_10": "a_pitcher_kbb_l10",
-        "a_p_fip_ytd": "a_pitcher_fip_ytd",
-        "a_p_era_ytd": "a_pitcher_era_ytd",
-        "a_p_whip_ytd": "a_pitcher_whip_ytd",
-        "a_p_k9_ytd": "a_pitcher_k9_ytd",
-        "a_p_bb9_ytd": "a_pitcher_bb9_ytd",
-        "a_p_qs_rate_ytd": "a_pitcher_qs_rate",
-    }
-    for src, dst in _P_ALIASES.items():
+    for src, dst in P_ALIASES.items():
         if src in result.columns and dst not in result.columns:
             result[dst] = result[src]
 
@@ -2166,15 +1800,7 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     # value or NULL. A missing split (e.g. no night games) stays NULL so the pick
     # card blanks it and `_impute_feature` (model path) fills the season ytd ERA
     # only when that feature is a model input. No .fillna(0), no cross-side fallback.
-    _split_map = [
-        ("h_pitcher_home_era", "h_p_home_era_ytd"),
-        ("h_pitcher_day_era", "h_p_day_era_ytd"),
-        ("h_pitcher_night_era", "h_p_night_era_ytd"),
-        ("a_pitcher_road_era", "a_p_road_era_ytd"),
-        ("a_pitcher_day_era", "a_p_day_era_ytd"),
-        ("a_pitcher_night_era", "a_p_night_era_ytd"),
-    ]
-    for dest, src in _split_map:
+    for dest, src in P_SPLIT_MAP.items():
         result[dest] = result[src] if src in result.columns else np.nan
 
     # Real pitcher VENUE ERA (from prior starts at this exact park, multi-season).
@@ -2361,8 +1987,10 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
             result[combo_key] = (result[h_key] + result[a_key]) / 2.0
         else:
             result[combo_key] = 4.5
-    if "h_era_10" in result.columns and "a_era_10" in result.columns and "combo_era_r5" in result.columns:
-        result["combo_era_r10_diff"] = result["combo_era_r10"] - result["combo_era_r5"]
+    # combo_era_r10_diff = head-to-head L10 ERA gap: home L10 ERA minus away L10 ERA.
+    # (NOT combo_era_r10 - combo_era_r5, which measures L10-vs-L5 combined change.)
+    if "h_era_10" in result.columns and "a_era_10" in result.columns:
+        result["combo_era_r10_diff"] = result["h_era_10"] - result["a_era_10"]
     else:
         result["combo_era_r10_diff"] = 0.0
     # h/a_combo_era_r15 = just the individual team's ERA component over L15
@@ -2662,6 +2290,9 @@ class MLBDataLoader:
         self._db_url = db_url
         self._cache_dir = cache_dir or Path.home() / ".cache" / "mlb_data_loader"
         self._cache_dir.mkdir(parents=True, exist_ok=True)
+        # Feature catalog cache (source of truth: mlb.features table)
+        self._catalog_cache: Optional[Dict[str, Dict[str, str]]] = None
+        self._catalog_ts: float = 0
 
     # ── Public methods ──────────────────────────────────────────────────────
 
@@ -2724,29 +2355,61 @@ class MLBDataLoader:
     def _auto_display(self, name: str) -> str:
         return self._auto_munge(name)
 
-    def get_features_catalog(self) -> Dict[str, str]:
-        """Return the full feature catalog (raw + computed).
+    # ── Feature catalog (source of truth: DB `features` table) ───────────
+    _CATALOG_SCHEMA = "mlb"
 
-        Columns that appear in the GAME_QUERY but lack an explicit
-        FEATURES_CATALOG / COMPUTED_FEATURES_CATALOG entry get an
-        auto-generated description so nothing comes back blank.
+    def _load_catalog_from_db(self) -> Dict[str, Dict[str, str]]:
+        """Load {name: {'description','display_name'}} from mlb.features.
+
+        The DB is the single source of truth for the feature catalog. Values
+        are cached for a short TTL so admin edits (display name / description)
+        propagate quickly without hammering the DB on every call.
         """
-        merged = dict(FEATURES_CATALOG)
-        merged.update(COMPUTED_FEATURES_CATALOG)
-        # Add auto-generated descriptions for any missing columns
-        import re
-        seen = set()
+        now = time.time()
+        if self._catalog_cache is not None and (now - self._catalog_ts) < 60:
+            return self._catalog_cache
+        try:
+            engine = create_engine(DEFAULT_DB_URL)
+            with engine.connect() as conn:
+                rows = conn.execute(
+                    text(f"SELECT name, description, display_name FROM {self._CATALOG_SCHEMA}.features")
+                ).mappings().all()
+            engine.dispose()
+            catalog = {}
+            for r in rows:
+                name = r["name"]
+                catalog[name] = {
+                    "description": r["description"] or "",
+                    "display_name": r["display_name"] or name,
+                }
+            self._catalog_cache = catalog
+            self._catalog_ts = now
+            return catalog
+        except Exception:
+            logger.exception("Failed to load feature catalog from DB; using empty")
+            self._catalog_cache = {}
+            self._catalog_ts = now
+            return self._catalog_cache
+
+    def get_features_catalog(self) -> Dict[str, str]:
+        """Return the full feature catalog (name -> description) from the DB.
+
+        Any column that appears in GAME_QUERY but has no DB row falls back to
+        an auto-generated description so nothing comes back blank.
+        """
+        db = self._load_catalog_from_db()
+        merged = {name: meta["description"] for name, meta in db.items()}
+        # Auto-generate descriptions for any GAME_QUERY column missing from DB
+        seen = set(merged.keys())
         for m in re.finditer(r'\bAS\s+(\w+)', GAME_QUERY):
             col = m.group(1)
-            seen.add(col)
             if col not in merged:
                 merged[col] = self._auto_description(col)
-        # Also capture bare column references (table.col or alias.col without AS)
-        # from the SELECT list (everything before ORDER BY)
+            seen.add(col)
         select_part = GAME_QUERY.split("ORDER BY")[0] if "ORDER BY" in GAME_QUERY else GAME_QUERY
         for m in re.finditer(r'(?:\w+\.)?(\w+)(?=\s*[,]\s*|\s*$)', select_part):
             col = m.group(1)
-            if col and col not in seen and col.isidentifier() and col != col.upper()[:3].lower() and len(col) > 1:
+            if col and col not in seen and col.isidentifier() and len(col) > 1 and not col.isupper():
                 seen.add(col)
                 if col not in merged:
                     merged[col] = self._auto_description(col)
@@ -2757,22 +2420,42 @@ class MLBDataLoader:
         return list(self.get_features_catalog().keys())
 
     def get_feature_description(self, name: str) -> Optional[str]:
-        """Return the description for a single feature, or None."""
-        return self.get_features_catalog().get(name)
+        """Return the DB description for a feature (auto fallback if absent)."""
+        db = self._load_catalog_from_db()
+        meta = db.get(name)
+        if meta and meta["description"]:
+            return meta["description"]
+        return self._auto_description(name)
 
     def get_display_name(self, name: str) -> str:
-        """Return the customer-facing display name for a feature.
+        """Return the customer-facing display name from the DB.
 
-        Falls back to a smart auto-generated label if not in DISPLAY_NAMES.
+        Falls back to the DB row name, then a smart auto-generated label.
         """
-        return DISPLAY_NAMES.get(name, self._auto_display(name))
+        db = self._load_catalog_from_db()
+        meta = db.get(name)
+        if meta and meta["display_name"]:
+            return meta["display_name"]
+        return self._auto_display(name)
 
     def get_all_with_display(self) -> List[Dict[str, str]]:
-        """Return a list of dicts with name, description, display_name for every feature."""
-        return [
-            {"name": name, "description": desc, "display_name": self.get_display_name(name)}
-            for name, desc in self.get_features_catalog().items()
-        ]
+        """Return a list of dicts with name, description, display_name."""
+        db = self._load_catalog_from_db()
+        # Include DB rows plus any GAME_QUERY columns not present in DB
+        names = set(db.keys())
+        for m in re.finditer(r'\bAS\s+(\w+)', GAME_QUERY):
+            names.add(m.group(1))
+        out = []
+        for name in names:
+            meta = db.get(name)
+            out.append({
+                "name": name,
+                "description": (meta["description"] if meta and meta["description"]
+                                else self._auto_description(name)),
+                "display_name": (meta["display_name"] if meta and meta["display_name"]
+                                  else self._auto_display(name)),
+            })
+        return out
 
     # ── Public load methods ─────────────────────────────────────────────────
 
@@ -2903,7 +2586,32 @@ class MLBDataLoader:
             sql += f"\nLIMIT {limit}"
 
         if columns:
-            sql = project_game_query(sql, set(columns))
+            req = set(columns)
+            # Expand: any requested python-derived pitcher alias (e.g.
+            # h_pitcher_whip_l20) needs its RAW GAME_QUERY source column
+            # (h_p_whip_20) kept in the projection, or build_features() can't
+            # derive it and the model/pick-card reads a 0.
+            for src, dst in P_ALIASES.items():
+                if dst in req:
+                    req.add(src)
+            # Also keep raw split-ERA source columns (h_p_home_era_ytd, etc.) so
+            # the derived home/road/day/night pitcher ERA columns get the prior
+            # FINAL-game values instead of NaN (same bug class as P_ALIASES).
+            for dest, src in P_SPLIT_MAP.items():
+                if dest in req and src not in req:
+                    req.add(src)
+            # Bullpen ERA L5 is python-derived from raw *_bullpen_{er,ip}_l5
+            # (+ *_prior_era fallback). Keep those raw columns in the projection
+            # or the derived bullpen_era_l5 goes NaN.
+            for side in ("h", "a"):
+                if f"{side}_bullpen_era_l5" in req:
+                    req.add(f"{side}_bullpen_er_l5")
+                    req.add(f"{side}_bullpen_ip_l5")
+                    req.add(f"{side}_prior_era")
+            # build_features 4b gating also keys off *_p_starts_ytd; keep it
+            for side in ("h", "a"):
+                req.add(f"{side}_p_starts_ytd")
+            sql = project_game_query(sql, req)
 
         return sql
 

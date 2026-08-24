@@ -176,31 +176,20 @@ def set_training_run_as_current(sport: str, run_id: int) -> Optional[dict]:
                 for yr in results:
                     if not isinstance(yr, dict):
                         continue
-                    if model_type == "ats":
-                        # ATS: try feature_set first, then fall back to feature_importance
-                        fs = yr.get("feature_set", [])
-                        if isinstance(fs, list) and fs:
-                            for fname in fs:
-                                if isinstance(fname, str) and fname not in seen:
-                                    seen.add(fname)
-                                    features.append(fname)
-                        else:
-                            fi = yr.get("feature_importance", [])
-                            if isinstance(fi, list):
-                                for entry in fi:
-                                    fname = entry.get("feature") if isinstance(entry, dict) else None
-                                    if fname and isinstance(fname, str) and fname not in seen:
-                                        seen.add(fname)
-                                        features.append(fname)
-                    else:
-                        # OU / any other model type that stores feature_importance
+                    # Authoritative full feature set first (some features exist in
+                    # the Booster but have zero gain, so they're absent from
+                    # feature_importance — even though XGBoost still REQUIRES them
+                    # as inputs for predict()). Prefer an explicit feature_names /
+                    # feature_set before falling back to gain-derived importance.
+                    fs = yr.get("feature_names") or yr.get("feature_set") or []
+                    if not isinstance(fs, list) or not fs:
                         fi = yr.get("feature_importance", [])
                         if isinstance(fi, list):
-                            for entry in fi:
-                                fname = entry.get("feature") if isinstance(entry, dict) else None
-                                if fname and isinstance(fname, str) and fname not in seen:
-                                    seen.add(fname)
-                                    features.append(fname)
+                            fs = [e.get("feature") for e in fi if isinstance(e, dict)]
+                    for fname in fs:
+                        if isinstance(fname, str) and fname and fname not in seen:
+                            seen.add(fname)
+                            features.append(fname)
 
             # ── Update training_runs is_current ──
             cur.execute(

@@ -139,6 +139,8 @@ class PlanCreate(BaseModel):
     price_cents: int
     currency: str = "usd"
     interval: str = "month"
+    kind: str = "subscription"  # "subscription" | "token_topup"
+    token_amount: Optional[int] = None  # one-time token grant (token_topup)
     trial_days: int = 0
     features: list[str] = []
     is_active: bool = True
@@ -155,6 +157,8 @@ class PlanUpdate(BaseModel):
     price_cents: Optional[int] = None
     currency: Optional[str] = None
     interval: Optional[str] = None
+    kind: Optional[str] = None
+    token_amount: Optional[int] = None
     trial_days: Optional[int] = None
     features: Optional[list[str]] = None
     is_active: Optional[bool] = None
@@ -172,6 +176,8 @@ class PlanOut(BaseModel):
     price_cents: int
     currency: str
     interval: str
+    kind: str | None = None
+    token_amount: int | None = None
     trial_days: int
     features: list
     is_active: bool
@@ -1871,10 +1877,155 @@ async def get_mlb_features(
     conn = _pg_conn()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(f"SELECT name, description, display_name, is_trainable, current_ou, current_ats, "
-                        f"created_at FROM {sport}.features ORDER BY display_name, name")
+            cur.execute(f"SELECT name, description, display_name, is_trainable, pick_card, current_ou, "
+                        f"current_ats, pick_card_section, sort_order, created_at FROM {sport}.features "
+                        f"ORDER BY sort_order NULLS LAST, display_name, name")
             rows = cur.fetchall()
             return {"features": [dict(r) for r in rows]}
+    finally:
+        conn.close()
+
+
+class FeatureUpdate(BaseModel):
+    """Editable fields on a Features row. Only provided fields are updated."""
+    display_name: Optional[str] = None
+    description: Optional[str] = None
+    is_trainable: Optional[bool] = None
+    pick_card: Optional[bool] = None
+    pick_card_section: Optional[str] = None
+    sort_order: Optional[int] = None
+
+
+# Valid values for pick_card_section (aligned with the Features admin dropdown and
+# the Detailed Analysis -> Stats renderer sections).
+PICK_CARD_SECTIONS = ("home_stats", "away_stats", "game_context", "betting_lines", "other")
+
+
+@router.patch("/features/{sport}/{feature_name}")
+async def update_sport_feature(
+    sport: str,
+    feature_name: str,
+    body: FeatureUpdate,
+    admin: User = Depends(get_admin_user),
+):
+    """Update editable fields (display_name, description, is_trainable, pick_card) on one feature."""
+    sport = sport.lower()
+    if sport not in ("mlb", "nfl", "nba"):
+        raise HTTPException(status_code=404, detail=f"Unknown sport: {sport}")
+    if feature_name is None or not feature_name.strip():
+        raise HTTPException(status_code=400, detail="feature_name is required")
+
+    # Map request fields to column names. sport + column identifiers are
+    # allowlisted/static here (never user-controlled interpolated directly into SQL).
+    if body.pick_card_section is not None and body.pick_card_section not in PICK_CARD_SECTIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"pick_card_section must be one of {', '.join(PICK_CARD_SECTIONS)}",
+        )
+
+    fields = {
+        "display_name": body.display_name,
+        "description": body.description,
+        "is_trainable": body.is_trainable,
+        "pick_card": body.pick_card,
+        "pick_card_section": body.pick_card_section,
+        "sort_order": body.sort_order,
+    }
+    sets = {k: v for k, v in fields.items() if v is not None}
+    if not sets:
+        raise HTTPException(status_code=400, detail="No editable fields provided")
+
+    # Validate feature exists first (return 404 if not).
+    conn = _pg_conn()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                f"SELECT name FROM {sport}.features WHERE name = %s",
+                (feature_name,),
+            )
+            if not cur.fetchone():
+                raise HTTPException(status_code=404, detail=f"Feature '{feature_name}' not found in {sport}.features")
+
+            assignments = ", ".join(f"{k} = %s" for k in sets)
+            params = list(sets.values())
+            params.append(feature_name)
+            cur.execute(
+                f"UPDATE {sport}.features SET {assignments} WHERE name = %s",
+                params,
+            )
+        conn.commit()
+        return {"updated": feature_name, "fields": list(sets.keys())}
+    finally:
+        conn.close()
+
+
+class FeatureReorder(BaseModel):
+    sport: str
+    a: str
+    b: str
+    aPatch: Optional[dict] = None
+    bPatch: Optional[dict] = None
+
+
+@router.post("/features/reorder")
+async def reorder_sport_features(
+    body: FeatureReorder,
+    admin: User = Depends(get_admin_user),
+):
+    """Swap the display sort_order of two features (single txn).
+
+    Used by the admin Features page to reorder features for the Detailed
+    Analysis Stats frontend. Only ever touches the sort_order column.
+    """
+    sport = body.sport.lower()
+    if sport not in ("mlb", "nfl", "nba"):
+        raise HTTPException(status_code=404, detail=f"Unknown sport: {sport}")
+    if not body.a or not body.b or body.a == body.b:
+        raise HTTPException(status_code=400, detail="Must provide two distinct feature names")
+
+    # Handing the client raw dicts through is unnecessary; we only swap
+    # sort_order values. Ignore aPatch/bPatch payloads and compute from DB.
+    conn = _pg_conn()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                f"SELECT name, sort_order FROM {sport}.features WHERE name IN (%s, %s)",
+                (body.a, body.b),
+            )
+            rows = cur.fetchall()
+            if len(rows) != 2:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"One or both features not found: {body.a}, {body.b}",
+                )
+            order_a = (next(r for r in rows if r["name"] == body.a))["sort_order"]
+            order_b = (next(r for r in rows if r["name"] == body.b))["sort_order"]
+            # If either is unset (NULL), derive from current DB ordering so the
+            # swap stays deterministic: assign BOTH an explicit order by their
+            # relative position if they differ; if equal (both NULL), give the
+            # first a, the second b+1 so a precedes b after this call.
+            if order_a is None and order_b is None:
+                base = 0
+                cur.execute(f"SELECT COALESCE(MAX(sort_order), 0) + 1 AS n FROM {sport}.features")
+                base = cur.fetchone()["n"] or 0
+                cur.execute(f"UPDATE {sport}.features SET sort_order = %s WHERE name = %s", (base, body.a))
+                cur.execute(f"UPDATE {sport}.features SET sort_order = %s WHERE name = %s", (base + 10, body.b))
+            elif order_a is None:
+                cur.execute(f"UPDATE {sport}.features SET sort_order = %s WHERE name = %s", (order_b, body.a))
+                cur.execute(f"UPDATE {sport}.features SET sort_order = %s WHERE name = %s", (order_a, body.b))
+            else:
+                cur.execute(f"UPDATE {sport}.features SET sort_order = %s WHERE name = %s", (order_b, body.a))
+                cur.execute(f"UPDATE {sport}.features SET sort_order = %s WHERE name = %s", (order_a, body.b))
+            # Normalize: reassign sequential 0..N-1 ordered by sort_order so
+            # swaps never leave gaps that reorder later rows unintuitively.
+            cur.execute(
+                f"SELECT name FROM {sport}.features ORDER BY sort_order NULLS LAST, name"
+            )
+            names = [r["name"] for r in cur.fetchall()]
+            for i, n in enumerate(names):
+                cur.execute(f"UPDATE {sport}.features SET sort_order = %s WHERE name = %s", (i, n))
+        conn.commit()
+        return {"swapped": [body.a, body.b]}
     finally:
         conn.close()
 

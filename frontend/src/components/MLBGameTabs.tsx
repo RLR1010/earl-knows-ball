@@ -538,10 +538,6 @@ export default function MLBGameTabs({ gameId, game, formatOdds, boxscore, linesc
     // Parse all JSON columns (safety net for unparsed API responses)
     const parseSafe = (v: any) => (typeof v === "string" ? JSON.parse(v) : (v || {}));
     const featuresJson = parseSafe(ps.features_json);
-    const hs = ps.home_stats_json || {};
-    const as = ps.away_stats_json || {};
-    const sit = ps.situational_json || {};
-    const spl = ps.splits_json || {};
 
     // ── Rich value extractor ─────────────────────────────────────────────────
     // Values can be plain (string/number) or dict {value, display_name, description}
@@ -622,60 +618,44 @@ export default function MLBGameTabs({ gameId, game, formatOdds, boxscore, linesc
       </div>
     );
 
-    // ── Render a stat section (handles both plain and rich value dicts) ───────
-    function renderStatSection(data: Record<string, any>, gridCols: string) {
-      const entries = Object.entries(data);
-      if (entries.length === 0) return null;
-      return (
-        <div className={`grid ${gridCols} gap-x-3 gap-y-0.5`}>
-          {entries.map(([key, val]) => {
-            const info = getInfo(val, keyToLabel(key));
-            return (
-              <StatRow
-                key={key}
-                label={info.displayName || keyToLabel(key)}
-                value={info.displayValue}
-                description={info.description}
-              />
-            );
-          })}
-        </div>
-      );
+    // ── Sectioned feature renderer (grouped by pick_card_section) ────────────
+    // Renders only the features from features_json assigned to the given
+    // section (home_stats / away_stats / game_context / betting_lines / other).
+    function sectionLabel(section: string) {
+      const map: Record<string, string> = {
+        home_stats: "Home Team Stats",
+        away_stats: "Away Team Stats",
+        game_context: "Game Context",
+        betting_lines: "Betting Lines",
+        other: "Other Stats",
+      };
+      return map[section] || section;
     }
 
-    // ── Feature section renderer (rich {value, display_name, description}) ────
-    function renderFeatures() {
-      const entries = Object.entries(featuresJson);
+    function renderSectionedFeatures(section: string) {
+      let entries = Object.entries(featuresJson as Record<string, any>).filter(
+        ([, val]) => {
+          const v = val as { pick_card_section?: string } | null;
+          return (
+            val &&
+            typeof val === "object" &&
+            (v?.pick_card_section === section ||
+              (section === "other" && !v?.pick_card_section))
+          );
+        },
+      );
+      // Order by the admin-chosen sort_order column (from mlb.features, attached
+      // read-time by the backend). This only affects frontend display — the
+      // data_loader keeps its own order for training/inference.
+      entries = entries.sort((a, b) => {
+        const av = (a[1] as any)?.sort_order ?? 0;
+        const bv = (b[1] as any)?.sort_order ?? 0;
+        return av - bv || a[0].localeCompare(b[0]);
+      });
       if (entries.length === 0) return null;
       return (
         <div>
-          <SectionHeader title="All Model Features" />
-          <div className="max-h-96 overflow-y-auto rounded-lg border border-gray-700/30 bg-black/20 p-2">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-x-3 gap-y-0.5">
-              {entries.map(([key, val]) => {
-                const info = getInfo(val, keyToLabel(key));
-                return (
-                  <StatRow
-                    key={key}
-                    label={info.displayName || keyToLabel(key)}
-                    value={info.displayValue}
-                    description={info.description}
-                  />
-                );
-              })}
-            </div>
-          </div>
-        </div>
-      );
-    }
-
-    // ── Splits renderer (display_name may be embedded or flat) ────────────────
-    function renderSplits() {
-      const entries = Object.entries(spl);
-      if (entries.length === 0) return null;
-      return (
-        <div>
-          <SectionHeader title="Splits / Betting Lines" />
+          <SectionHeader title={sectionLabel(section)} />
           <div className="grid grid-cols-2 md:grid-cols-3 gap-x-3 gap-y-0.5">
             {entries.map(([key, val]) => {
               const info = getInfo(val, keyToLabel(key));
@@ -715,10 +695,6 @@ export default function MLBGameTabs({ gameId, game, formatOdds, boxscore, linesc
     }
 
     // ── Build component tree ─────────────────────────────────────────────────
-    const homeEntries = Object.entries(hs);
-    const awayEntries = Object.entries(as);
-    const sitEntries = Object.entries(sit);
-
     return (
       <div className="space-y-6 text-xs">
         {/* ── SHAP Feature Attribution (admin only) ── */}
@@ -765,35 +741,17 @@ export default function MLBGameTabs({ gameId, game, formatOdds, boxscore, linesc
           </div>
         </div>
 
+        {/* ── Game Context ── */}
+        {renderSectionedFeatures("game_context")}
+
+        {/* ── Betting Lines ── */}
+        {renderSectionedFeatures("betting_lines")}
+
         {/* ── Home Team Stats ── */}
-        {homeEntries.length > 0 && (
-          <div>
-            <SectionHeader title="Home Team Stats" />
-            {renderStatSection(hs, "grid-cols-2 md:grid-cols-3")}
-          </div>
-        )}
+        {renderSectionedFeatures("home_stats")}
 
         {/* ── Away Team Stats ── */}
-        {awayEntries.length > 0 && (
-          <div>
-            <SectionHeader title="Away Team Stats" />
-            {renderStatSection(as, "grid-cols-2 md:grid-cols-3")}
-          </div>
-        )}
-
-        {/* ── Game Context / Situational ── */}
-        {sitEntries.length > 0 && (
-          <div>
-            <SectionHeader title="Game Context / Situational" />
-            {renderStatSection(sit, "grid-cols-2 md:grid-cols-3")}
-          </div>
-        )}
-
-        {/* ── Splits / Betting Lines ── */}
-        {renderSplits()}
-
-        {/* ── All Model Features ── */}
-        {renderFeatures()}
+        {renderSectionedFeatures("away_stats")}
       </div>
     );
   }

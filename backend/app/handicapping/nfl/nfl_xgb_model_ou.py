@@ -29,7 +29,6 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from app.handicapping.db_training import save_training_run, update_pkl_filename
 from app.handicapping.nfl.engine import _impute_feature
 from app.handicapping.nfl.data_loader import (
-    FEATURES_CATALOG,
     NFLDataLoader,
     get_data_loader,
     get_model_features,

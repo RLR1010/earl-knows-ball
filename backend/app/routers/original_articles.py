@@ -163,6 +163,8 @@ class GenerateRequest(BaseModel):
     word_count: Optional[tuple[int, int]] = Field(None)  # (min_words, max_words)
     visibility: str = Field("public", pattern="^(public|premium)$")
     section: str = Field("article", pattern="^(article|daily_picks)$")
+    title_mode: Optional[str] = Field(None, pattern="^(fixed|llm)?$")  # 'fixed' => use req.title verbatim
+    title: Optional[str] = Field(None, min_length=1, max_length=200)  # fixed title when title_mode='fixed'
 
 
 class PublishRequest(BaseModel):
@@ -680,6 +682,8 @@ async def _write_original_article(
     reasoning: str | None = None,
     word_count: tuple | None = None,
     usage_log: list[dict[str, Any]] | None = None,
+    fixed_title: str | None = None,
+    fallback_title: str | None = None,
 ) -> tuple[str, str, int]:
     """Write an original article using the deterministic research brief.
 
@@ -691,7 +695,9 @@ async def _write_original_article(
     a per-call entry (with cache hit/miss token split) so cost can be audited.
     """
     if not settings.deepseek_api_key:
-        return f"{sport.upper()} Original Article", "", 0
+        # Even on total failure, honor the configured fallback title (the auto-gen
+        # config's Title box) instead of a generic "<SPORT> Original Article".
+        return fixed_title or fallback_title or f"{sport.upper()} Original Article", "", 0
     client = AsyncOpenAI(
         api_key=settings.deepseek_api_key,
         base_url=f"{settings.deepseek_base_url.rstrip('/')}/v1",
@@ -765,12 +771,24 @@ async def _write_original_article(
             "total_tokens": getattr(usage, "total_tokens", 0) or 0,
         })
 
+    if fixed_title:
+        # Fixed title mode (auto-gen configs with title_mode='fixed', e.g. the
+        # MLB 'Daily Picks We Like' section). Strip any `# Heading` the model
+        # wrote on its first line so the fixed title isn't duplicated in the
+        # body, then always return the configured title verbatim.
+        if re.match(r"^#\s", raw):
+            first_nl = raw.find("\n")
+            raw = raw[first_nl + 1 :].lstrip() if first_nl != -1 else ""
+        return fixed_title.strip(), raw, tokens
     title = ""
     m = re.search(r"^#\s+(.+)$", raw, flags=re.MULTILINE)
     if m:
         title = m.group(1).strip()
     if not title:
-        title = f"{sport.upper()} Original Article"
+        # Fallback is ALWAYS the auto-gen config's Title box value (never a
+        # generic "<SPORT> Original Article"), so LLM-title configs that
+        # produce no usable heading still get the configured human title.
+        title = fallback_title or f"{sport.upper()} Original Article"
     return title, raw, tokens
 
 
@@ -1151,9 +1169,17 @@ async def generate_original_article(
 
     try:
         # Phase B: single write call whose user message starts with the brief.
+        # fixed_title: title_mode='fixed' → Title box value used VERBATIM, LLM
+        #   title generation skipped entirely.
+        # fallback_title: title_mode='llm' → used when the model returns no
+        #   usable title. Always the config's Title box value — never a generic
+        #   "<SPORT> Original Article" placeholder.
+        fixed_title = req.title.strip() if (req.title_mode == "fixed" and req.title) else None
+        fallback_title = req.title.strip() if req.title else None
         title, answer, write_tokens = await _write_original_article(
             sport, engine, req.instructions, research_brief,
             req.visibility, reasoning, req.word_count, usage_log=usage_log,
+            fixed_title=fixed_title, fallback_title=fallback_title,
         )
         tokens += write_tokens
     except Exception as e:  # noqa: BLE001
@@ -1220,6 +1246,10 @@ async def generate_original_article(
         title = corrected["title"]
         answer = corrected["content"]
         summary = corrected["summary"]
+        # A fixed-title config (title_mode='fixed') must never let the accuracy
+        # correction re-title the piece — always restore the configured title.
+        if fixed_title:
+            title = fixed_title
         accuracy_check, accuracy_tokens = await _verify_original_accuracy(
             title, answer, research_trace, req.visibility, research_brief=research_brief, usage_log=usage_log
         )

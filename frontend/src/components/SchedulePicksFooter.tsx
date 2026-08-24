@@ -5,12 +5,14 @@ import EarlsPicksPanel from "@/components/EarlsPicksPanel";
 import { buildPickItems, hasPicks } from "@/components/ScheduleGameCard";
 
 // Current/Earl-favored spread (mirrors the regular schedule game card).
+// `spread` is the SIGNED spread for the HOME team: negative = home favored (giving
+// runs, e.g. MIL -1.5), positive = away favored (receiving runs). We display the
+// FAVORED team with the negative run line.
 function favoredSpread(spread: number | null | undefined, home?: string | null | undefined, away?: string | null | undefined): string {
   if (spread == null) return "Pick'em";
   if (Math.abs(spread) < 0.05) return "Pick'em";
-  const line = spread > 0 ? `-${spread}` : `+${Math.abs(spread)}`;
-  const team = spread < 0 ? (home ?? "?") : (away ?? "?");
-  return `${team} ${line}`;
+  if (spread < 0) return `${home ?? "?"} ${spread}`;          // home favored: MIL -1.5
+  return `${away ?? "?"} ${-Math.abs(spread)}`;               // away favored: TB -1.5
 }
 
 // Moneyline: prefer the provided value; fall back to "-" placeholder.

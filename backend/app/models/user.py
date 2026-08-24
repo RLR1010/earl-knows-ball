@@ -18,6 +18,10 @@ class User(Base):
     is_admin = Column(Boolean, default=False)
     email_verified = Column(Boolean, default=False)
     monthly_token_limit = Column(BigInteger, nullable=True)
+    # Purchased token bank (one-time top-ups, NOT the monthly allotment).
+    # Rolls over between billing periods; used only as a fallback once the
+    # monthly allotment is exhausted.
+    extra_token_balance = Column(BigInteger, nullable=False, default=0, server_default="0")
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     last_login_at = Column(DateTime(timezone=True), nullable=True)
     stripe_customer_id = Column(String(100), nullable=True)

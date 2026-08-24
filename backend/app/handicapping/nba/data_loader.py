@@ -255,7 +255,21 @@ team_games AS (
         hrs.star1_ppg_5            AS h_star1_ppg_5,
         hrs.stars_active           AS h_stars_active,
         hrs.star1_active           AS h_star1_active,
-
+        COALESCE(h_actv.actv_pts, 0)  AS h_active_pts,
+        COALESCE(h_actv.actv_reb, 0)  AS h_active_reb,
+        COALESCE(h_actv.actv_ast, 0)  AS h_active_ast,
+        COALESCE(h_actv.actv_n, 0)    AS h_active_n,
+        COALESCE(h_actv.actv_pts, 0) - COALESCE(hcs.cum_ppg, 0)  AS h_active_pts_minus_team,
+        COALESCE(h_actv.actv_reb, 0) - COALESCE(hcs.cum_reb_pg, 0) AS h_active_reb_minus_team,
+        COALESCE(h_actv.actv_ast, 0) - COALESCE(hcs.cum_ast_pg, 0) AS h_active_ast_minus_team,
+        -- starter-only active-roster aggregates (same 5-man content, only starters)
+        COALESCE(h_actv_st.st_pts, 0)  AS h_starter_pts,
+        COALESCE(h_actv_st.st_reb, 0)  AS h_starter_reb,
+        COALESCE(h_actv_st.st_ast, 0)  AS h_starter_ast,
+        COALESCE(h_actv_st.st_n, 0)    AS h_starter_n,
+        COALESCE(h_actv_st.st_pts, 0) - COALESCE(hcs.cum_ppg, 0)  AS h_starter_pts_minus_team,
+        COALESCE(h_actv_st.st_reb, 0) - COALESCE(hcs.cum_reb_pg, 0) AS h_starter_reb_minus_team,
+        COALESCE(h_actv_st.st_ast, 0) - COALESCE(hcs.cum_ast_pg, 0) AS h_starter_ast_minus_team,
         -- Away team cumulative stats (backward-looking, season-to-date)
         acs.games_played           AS a_games_played,
         acs.cum_ppg                AS a_cum_ppg,
@@ -333,7 +347,21 @@ team_games AS (
         ars.star1_ppg_5            AS a_star1_ppg_5,
         ars.stars_active           AS a_stars_active,
         ars.star1_active           AS a_star1_active,
-        -- prior-season (previous full season) home values for blending
+        COALESCE(a_actv.actv_pts, 0)  AS a_active_pts,
+        COALESCE(a_actv.actv_reb, 0)  AS a_active_reb,
+        COALESCE(a_actv.actv_ast, 0)  AS a_active_ast,
+        COALESCE(a_actv.actv_n, 0)    AS a_active_n,
+        COALESCE(a_actv.actv_pts, 0) - COALESCE(acs.cum_ppg, 0)  AS a_active_pts_minus_team,
+        COALESCE(a_actv.actv_reb, 0) - COALESCE(acs.cum_reb_pg, 0) AS a_active_reb_minus_team,
+        COALESCE(a_actv.actv_ast, 0) - COALESCE(acs.cum_ast_pg, 0) AS a_active_ast_minus_team,
+        -- starter-only active-roster aggregates (away)
+        COALESCE(a_actv_st.st_pts, 0)  AS a_starter_pts,
+        COALESCE(a_actv_st.st_reb, 0)  AS a_starter_reb,
+        COALESCE(a_actv_st.st_ast, 0)  AS a_starter_ast,
+        COALESCE(a_actv_st.st_n, 0)    AS a_starter_n,
+        COALESCE(a_actv_st.st_pts, 0) - COALESCE(acs.cum_ppg, 0)  AS a_starter_pts_minus_team,
+        COALESCE(a_actv_st.st_reb, 0) - COALESCE(acs.cum_reb_pg, 0) AS a_starter_reb_minus_team,
+        COALESCE(a_actv_st.st_ast, 0) - COALESCE(acs.cum_ast_pg, 0) AS a_starter_ast_minus_team,
         pts_h.cum_ppg              AS h_prior_cum_ppg,
         pts_h.cum_oppg             AS h_prior_cum_oppg,
         pts_h.cum_margin_pg        AS h_prior_cum_margin_pg,
@@ -577,6 +605,113 @@ team_games AS (
           AND cgs.team_side = 'away'
           AND cgs.game_id = a_prio_side.prior_game_id
     ) cgs_av ON true
+    -- ── Active-player aggregates (the core active-roster feature) ──
+    -- For each team use the TARGET game's OWN active roster (nba.active_players
+    -- rows for game g) when present -- the active roster is knowable before
+    -- tip-off (pregame info), so this is NOT a leak. Fall back to the team's
+    -- most recent prior FINAL game's roster (h_prio/a_prio) only if game g's
+    -- roster isn't filled yet (e.g. a scheduled game not yet pregame-ingested).
+    -- Each active player's cum_ppg/rpg/apg is read from their MOST RECENT PRIOR
+    -- player_rolling_stats row (strictly before the target game -> leak-safe),
+    -- then SUM across the roster.
+    --
+    -- PERF (2026-08-23): rewritten from nested correlated subqueries to indexed
+    -- O(log n) lookups. (1) The effective roster game per team is resolved once
+    -- (EXISTS-prefer g.id else prior game). (2) active_players is read on
+    -- (team_id, game_id=eff) via idx_active_players_team_game. (3) each player's
+    -- prior stats use `game_id < g.id ORDER BY game_id DESC LIMIT 1` -- a reverse
+    -- index seek on the PK (player_id, game_id); game_id is strictly chronological
+    -- within (season, game_type), so this picks the most recent prior game and is
+    -- leak-safe, carrying across the season boundary exactly like the old sort.
+    LEFT JOIN LATERAL (
+        SELECT CASE
+            WHEN EXISTS (SELECT 1 FROM nba.active_players x
+                         WHERE x.team_id = g.home_team_id AND x.game_id = g.id)
+            THEN g.id ELSE COALESCE(h_prio.prior_game_id, g.id) END AS eff
+    ) heff ON true
+    LEFT JOIN LATERAL (
+        SELECT CASE
+            WHEN EXISTS (SELECT 1 FROM nba.active_players x
+                         WHERE x.team_id = g.away_team_id AND x.game_id = g.id)
+            THEN g.id ELSE COALESCE(a_prio.prior_game_id, g.id) END AS eff
+    ) aeff ON true
+    LEFT JOIN LATERAL (
+        SELECT
+            COALESCE(SUM(prs.cum_ppg), 0) AS actv_pts,
+            COALESCE(SUM(prs.cum_rpg), 0) AS actv_reb,
+            COALESCE(SUM(prs.cum_apg), 0) AS actv_ast,
+            COUNT(prs.cum_ppg)            AS actv_n
+        FROM nba.active_players ap
+        LEFT JOIN LATERAL (
+            SELECT prs.cum_ppg, prs.cum_rpg, prs.cum_apg
+            FROM nba.player_rolling_stats prs
+            WHERE prs.player_id = ap.player_id
+              AND prs.game_id < g.id
+            ORDER BY prs.game_id DESC
+            LIMIT 1
+        ) prs ON true
+        WHERE ap.team_id = g.home_team_id
+          AND ap.game_id = heff.eff
+    ) h_actv ON true
+    -- Starter-only equivalent of the home active-roster aggregate: identical
+    -- player_rolling_stats prior read (leak-safe), but only players flagged
+    -- is_starter on the effective active roster. Same pts/ast/reb sums.
+    LEFT JOIN LATERAL (
+        SELECT
+            COALESCE(SUM(prs.cum_ppg), 0) AS st_pts,
+            COALESCE(SUM(prs.cum_rpg), 0) AS st_reb,
+            COALESCE(SUM(prs.cum_apg), 0) AS st_ast,
+            COUNT(prs.cum_ppg)            AS st_n
+        FROM nba.active_players ap
+        LEFT JOIN LATERAL (
+            SELECT prs.cum_ppg, prs.cum_rpg, prs.cum_apg
+            FROM nba.player_rolling_stats prs
+            WHERE prs.player_id = ap.player_id
+              AND prs.game_id < g.id
+            ORDER BY prs.game_id DESC
+            LIMIT 1
+        ) prs ON true
+        WHERE ap.team_id = g.home_team_id
+          AND ap.is_starter
+          AND ap.game_id = heff.eff
+    ) h_actv_st ON true
+    LEFT JOIN LATERAL (
+        SELECT
+            COALESCE(SUM(prs.cum_ppg), 0) AS actv_pts,
+            COALESCE(SUM(prs.cum_rpg), 0) AS actv_reb,
+            COALESCE(SUM(prs.cum_apg), 0) AS actv_ast,
+            COUNT(prs.cum_ppg)            AS actv_n
+        FROM nba.active_players ap
+        LEFT JOIN LATERAL (
+            SELECT prs.cum_ppg, prs.cum_rpg, prs.cum_apg
+            FROM nba.player_rolling_stats prs
+            WHERE prs.player_id = ap.player_id
+              AND prs.game_id < g.id
+            ORDER BY prs.game_id DESC
+            LIMIT 1
+        ) prs ON true
+        WHERE ap.team_id = g.away_team_id
+          AND ap.game_id = aeff.eff
+    ) a_actv ON true
+    LEFT JOIN LATERAL (
+        SELECT
+            COALESCE(SUM(prs.cum_ppg), 0) AS st_pts,
+            COALESCE(SUM(prs.cum_rpg), 0) AS st_reb,
+            COALESCE(SUM(prs.cum_apg), 0) AS st_ast,
+            COUNT(prs.cum_ppg)            AS st_n
+        FROM nba.active_players ap
+        LEFT JOIN LATERAL (
+            SELECT prs.cum_ppg, prs.cum_rpg, prs.cum_apg
+            FROM nba.player_rolling_stats prs
+            WHERE prs.player_id = ap.player_id
+              AND prs.game_id < g.id
+            ORDER BY prs.game_id DESC
+            LIMIT 1
+        ) prs ON true
+        WHERE ap.team_id = g.away_team_id
+          AND ap.is_starter
+          AND ap.game_id = aeff.eff
+    ) a_actv_st ON true
     LEFT JOIN nba.prior_team_stats pts_h
         ON pts_h.team_id = g.home_team_id AND pts_h.season_year = s.year - 1
     LEFT JOIN nba.prior_team_stats pts_a
@@ -595,396 +730,6 @@ ORDER BY season_id, date ASC
 # ═══════════════════════════════════════════════════════════════════════════════
 #  Feature catalogs — synchronised with nba.features DB table
 # ═══════════════════════════════════════════════════════════════════════════════
-
-FEATURES_CATALOG: Dict[str, str] = {
-    "spread": "Closing point spread (negative = home favorite)",
-    "closing_ou": "Closing over/under total",
-    "home_moneyline": "Home team moneyline odds",
-    "away_moneyline": "Away team moneyline odds",
-    "spread_home_odds": "Home team spread betting odds (e.g. -110)",
-    "spread_away_odds": "Away team spread betting odds (e.g. -110)",
-    "over_odds": "Over total betting odds (e.g. -110)",
-    "under_odds": "Under total betting odds (e.g. -110)",
-    "home_score": "Home team final score",
-    "away_score": "Away team final score",
-    "season_year": "Calendar year of the season (via nba.seasons join)",
-    "season_id": "Season identifier",
-    "game_id": "Unique game identifier",
-    "date": "Game date",
-    "home_team_id": "Home team ID",
-    "away_team_id": "Away team ID",
-
-    # ── Cumulative game stats (pre-computed, backward-looking) ────────
-    "h_games_played": "Home team games played before this game in season",
-    "h_cum_ppg": "Home cumulative PPG (season-to-date, excl. current)",
-    "h_cum_oppg": "Home cumulative opponent PPG",
-    "h_cum_margin_pg": "Home cumulative point margin per game",
-    "h_cum_fg_pct": "Home cumulative FG%",
-    "h_cum_fg3_pct": "Home cumulative 3P%",
-    "h_cum_ft_pct": "Home cumulative FT%",
-    "h_cum_reb_pg": "Home cumulative RPG",
-    "h_cum_ast_pg": "Home cumulative APG",
-    "h_cum_stl_pg": "Home cumulative SPG",
-    "h_cum_blk_pg": "Home cumulative BPG",
-    "h_cum_tov_pg": "Home cumulative TOV per game",
-    "h_cum_pf_pg": "Home cumulative fouls per game",
-    "h_cum_ortg": "Home cumulative offensive rating",
-    "h_cum_drtg": "Home cumulative defensive rating",
-    "h_cum_net_ortg": "Home cumulative net rating",
-    "h_cum_pace": "Home cumulative estimated pace",
-    "h_cum_efg_pct": "Home cumulative effective FG%",
-    "h_cum_opp_efg_pct": "Home cumulative opponent eFG%",
-    "h_cum_tov_rate": "Home cumulative turnover rate",
-    "h_cum_opp_tov_rate": "Home cumulative opponent TOV rate",
-    "h_cum_ft_rate": "Home cumulative free throw rate (FTA/FGA)",
-    "h_cum_3pa_rate": "Home cumulative 3PA rate (3PA/FGA)",
-    "h_cum_ast_ratio": "Home cumulative assist ratio (AST/FGM)",
-    "h_cum_stl_rate": "Home cumulative steal rate (STL/opp_poss)",
-    "h_cum_blk_rate": "Home cumulative block rate (BLK/opp_FGA)",
-
-    "a_games_played": "Away team games played before this game in season",
-    "a_cum_ppg": "Away cumulative PPG (season-to-date, excl. current)",
-    "a_cum_oppg": "Away cumulative opponent PPG",
-    "a_cum_margin_pg": "Away cumulative point margin per game",
-    "a_cum_fg_pct": "Away cumulative FG%",
-    "a_cum_fg3_pct": "Away cumulative 3P%",
-    "a_cum_ft_pct": "Away cumulative FT%",
-    "a_cum_reb_pg": "Away cumulative RPG",
-    "a_cum_ast_pg": "Away cumulative APG",
-    "a_cum_stl_pg": "Away cumulative SPG",
-    "a_cum_blk_pg": "Away cumulative BPG",
-    "a_cum_tov_pg": "Away cumulative TOV per game",
-    "a_cum_pf_pg": "Away cumulative fouls per game",
-    "a_cum_ortg": "Away cumulative offensive rating",
-    "a_cum_drtg": "Away cumulative defensive rating",
-    "a_cum_net_ortg": "Away cumulative net rating",
-    "a_cum_pace": "Away cumulative estimated pace",
-    "a_cum_efg_pct": "Away cumulative effective FG%",
-    "a_cum_opp_efg_pct": "Away cumulative opponent eFG%",
-    "a_cum_tov_rate": "Away cumulative turnover rate",
-    "a_cum_opp_tov_rate": "Away cumulative opponent TOV rate",
-    "a_cum_ft_rate": "Away cumulative free throw rate (FTA/FGA)",
-    "a_cum_3pa_rate": "Away cumulative 3PA rate (3PA/FGA)",
-    "a_cum_ast_ratio": "Away cumulative assist ratio (AST/FGM)",
-    "a_cum_stl_rate": "Away cumulative steal rate (STL/opp_poss)",
-    "a_cum_blk_rate": "Away cumulative block rate (BLK/opp_FGA)",
-
-    # ── Tier 4: Momentum & recency ─────────────────────────────────────
-    "h_rw3_ppg": "Home trailing 3-game recency-weighted PPG",
-    "h_rw5_ppg": "Home trailing 5-game recency-weighted PPG",
-    "h_rw3_net_rtg": "Home trailing 3-game net rating",
-    "h_rw5_net_rtg": "Home trailing 5-game net rating",
-    "h_rw3_efg_pct": "Home trailing 3-game eFG%",
-    "h_rw5_efg_pct": "Home trailing 5-game eFG%",
-    "h_rw3_drtg": "Home trailing 3-game defensive rating",
-    "h_rw5_drtg": "Home trailing 5-game defensive rating",
-    "h_cv10_ppg": "Home coefficient of variation PPG (last 10)",
-    "h_cv20_ppg": "Home coefficient of variation PPG (last 20)",
-    "h_cv10_net_rtg": "Home coefficient of variation net rating (last 10)",
-    "h_recency_ppg": "Home % of PPG from last 3 games",
-    "h_recency_net_rtg": "Home % of net rating from last 3 games",
-    "h_cum_win_pct": "Home season-to-date win %",
-
-    "a_rw3_ppg": "Away trailing 3-game recency-weighted PPG",
-    "a_rw5_ppg": "Away trailing 5-game recency-weighted PPG",
-    "a_rw3_net_rtg": "Away trailing 3-game net rating",
-    "a_rw5_net_rtg": "Away trailing 5-game net rating",
-    "a_rw3_efg_pct": "Away trailing 3-game eFG%",
-    "a_rw5_efg_pct": "Away trailing 5-game eFG%",
-    "a_rw3_drtg": "Away trailing 3-game defensive rating",
-    "a_rw5_drtg": "Away trailing 5-game defensive rating",
-    "a_cv10_ppg": "Away coefficient of variation PPG (last 10)",
-    "a_cv20_ppg": "Away coefficient of variation PPG (last 20)",
-    "a_cv10_net_rtg": "Away coefficient of variation net rating (last 10)",
-    "a_recency_ppg": "Away % of PPG from last 3 games",
-    "a_recency_net_rtg": "Away % of net rating from last 3 games",
-    "a_cum_win_pct": "Away season-to-date win %",
-    "h_home_pts_r10": "Home team avg points in its last 10 HOME games (venue-conditional rolling)",
-    "a_away_pts_r10": "Away team avg points in its last 10 ROAD games (venue-conditional rolling)",
-    "h_home_win_pct_r10": "Home team win% in its last 10 HOME games (venue-conditional rolling)",
-    "a_away_win_pct_r10": "Away team win% in its last 10 ROAD games (venue-conditional rolling)",
-    "h_home_win_pct_season": "Home team season win% in HOME games only (venue-scoped season)",
-    "a_away_win_pct_season": "Away team season win% in ROAD games only (venue-scoped season)",
-}
-
-COMPUTED_FEATURES_CATALOG: Dict[str, str] = {
-    "h_adj_off_10": "Home opponent-adjusted offense, rolling 10",
-    "h_adj_def_10": "Home opponent-adjusted defense, rolling 10",
-    "a_adj_off_10": "Away opponent-adjusted offense, rolling 10",
-    "a_adj_def_10": "Away opponent-adjusted defense, rolling 10",
-
-    "rest_h": "Home team rest days since last game",
-    "rest_a": "Away team rest days since last game",
-    "rest_diff": "Rest days advantage (home - away)",
-    "home_b2b": "Binary: 1 if home team on back-to-back",
-    "away_b2b": "Binary: 1 if away team on back-to-back",
-    "travel_miles": "Away team travel distance in miles (haversine)",
-    "h_implied": "Home team implied win probability from moneyline",
-    "a_implied": "Away team implied win probability from moneyline",
-    "spread_movement": "Spread movement: opening - closing",
-    "ou_movement": "OU movement: closing - opening",
-    "over_implied_prob": "Vig-free over probability from over/under odds",
-    "implied_margin": "Home minus away ML-implied win probability, scaled to points (x14.0) so it matches the closing-spread scale; positive = home favored",
-    "ml_spread_mismatch": "Disagreement between ML-implied point margin and closing spread (implied_margin - |closing_spread|)",
-    "h_implied_score": "Implied home points from closing total + spread ((OU-|spread|)/2)",
-    "a_implied_score": "Implied away points from closing total + spread ((OU+|spread|)/2)",
-    "h_ats_wins_5": "Home team ATS wins in last 5 games",
-    "a_ats_wins_5": "Away team ATS wins in last 5 games",
-    "h_ats_margin_5": "Home team avg ATS cover margin last 5 games",
-    "a_ats_margin_5": "Away team avg ATS cover margin last 5 games",
-    "h_wins_5": "Home team straight-up wins in last 5 games",
-    "h_wins_10": "Home team straight-up wins in last 10 games",
-    "a_wins_5": "Away team straight-up wins in last 5 games",
-    "a_wins_10": "Away team straight-up wins in last 10 games",
-    "home_ats_cover": "Home team covered the spread (1=yes, 0=no)",
-    "away_ats_cover": "Away team covered the spread (1=yes, 0=no)",
-    "over_result": "Game went over the total (1=yes, 0=no)",
-
-    # ── Enhanced fatigue ──────────────────────────────────────────────
-    "h_three_in_four": "Home team has 3+ games in 4 nights",
-    "a_three_in_four": "Away team has 3+ games in 4 nights",
-    "h_four_in_five": "Home team has 4+ games in 5 nights",
-    "a_four_in_five": "Away team has 4+ games in 5 nights",
-    "h_five_in_eight": "Home team has 5+ games in 8 nights",
-    "a_five_in_eight": "Away team has 5+ games in 8 nights",
-
-    # ── OU rolling records (mirrors ATS pattern) ──────────────────────
-    "h_ou_wins_5": "Home team over wins in last 5 games",
-    "a_ou_wins_5": "Away team over wins in last 5 games",
-    "h_ou_wins_10": "Home team over wins in last 10 games",
-    "a_ou_wins_10": "Away team over wins in last 10 games",
-    "h_ou_margin_5": "Home team avg OU margin (pts above/below) last 5",
-    "a_ou_margin_5": "Away team avg OU margin (pts above/below) last 5",
-
-    # ── Extended ATS windows ───────────────────────────────────────────
-    "h_ats_wins_10": "Home team ATS wins in last 10 games",
-    "a_ats_wins_10": "Away team ATS wins in last 10 games",
-    "h_ats_margin_10": "Home team avg ATS cover margin last 10 games",
-    "a_ats_margin_10": "Away team avg ATS cover margin last 10 games",
-
-    # ── Rolling ORTG, DRTG, Net Rating, Pace ─────────────────────────–
-    "h_ortg_r5": "Home team offensive rating rolling 5",
-    "a_ortg_r5": "Away team offensive rating rolling 5",
-    "h_ortg_r10": "Home team offensive rating rolling 10",
-    "a_ortg_r10": "Away team offensive rating rolling 10",
-
-    "h_drtg_r5": "Home team defensive rating rolling 5",
-    "a_drtg_r5": "Away team defensive rating rolling 5",
-    "h_drtg_r10": "Home team defensive rating rolling 10",
-    "a_drtg_r10": "Away team defensive rating rolling 10",
-
-    "h_net_rtg_r5": "Home team net rating rolling 5",
-    "a_net_rtg_r5": "Away team net rating rolling 5",
-    "h_net_rtg_r10": "Home team net rating rolling 10",
-    "a_net_rtg_r10": "Away team net rating rolling 10",
-
-    "h_pace_r5": "Home team pace (possessions) rolling 5",
-    "a_pace_r5": "Away team pace (possessions) rolling 5",
-    "h_pace_r10": "Home team pace (possessions) rolling 10",
-    "a_pace_r10": "Away team pace (possessions) rolling 10",
-
-    "net_rtg_diff_5": "Net rating differential (home - away) rolling 5",
-    "net_rtg_diff_10": "Net rating differential (home - away) rolling 10",
-    "pace_diff_5": "Pace differential (home - away) rolling 5",
-
-    # ── Rolling per-possession stats (TOV rate excluded — TOV data NULL in DB) ──
-    "h_ft_rate_r5": "Home team free throw rate (FTA/FGA) rolling 5",
-    "a_ft_rate_r5": "Away team free throw rate (FTA/FGA) rolling 5",
-    "h_ft_rate_r10": "Home team free throw rate (FTA/FGA) rolling 10",
-    "a_ft_rate_r10": "Away team free throw rate (FTA/FGA) rolling 10",
-
-    "h_efg_r5": "Home team effective FG% rolling 5",
-    "a_efg_r5": "Away team effective FG% rolling 5",
-    "h_efg_r10": "Home team effective FG% rolling 10",
-    "a_efg_r10": "Away team effective FG% rolling 10",
-
-    "h_threep_rate_r5": "Home team 3PA rate (3PA/FGA) rolling 5",
-    "a_threep_rate_r5": "Away team 3PA rate (3PA/FGA) rolling 5",
-    "h_threep_rate_r10": "Home team 3PA rate (3PA/FGA) rolling 10",
-    "a_threep_rate_r10": "Away team 3PA rate (3PA/FGA) rolling 10",
-
-    "h_ast_ratio_r5": "Home team assist ratio (AST/FGM) rolling 5",
-    "a_ast_ratio_r5": "Away team assist ratio (AST/FGM) rolling 5",
-    "h_ast_ratio_r10": "Home team assist ratio (AST/FGM) rolling 10",
-    "a_ast_ratio_r10": "Away team assist ratio (AST/FGM) rolling 10",
-
-
-    # ── Star player features (season 35 only) ──────────────────────────
-    "h_star_ppg_5": "Home team top-3 scorers PPG rolling 5",
-    "a_star_ppg_5": "Away team top-3 scorers PPG rolling 5",
-    "h_stars_active": "Home team active top-3 scorers count",
-    "a_stars_active": "Away team active top-3 scorers count",
-    "h_star1_ppg_5": "Home team leading scorer PPG rolling 5",
-    "a_star1_ppg_5": "Away team leading scorer PPG rolling 5",
-    "h_star1_active": "Home team leading scorer active (binary)",
-    "a_star1_active": "Away team leading scorer active (binary)",
-
-    # ── Team splits (home/away + vs conference) — PRIOR SEASON ─────────
-    # Derived from nba.team_splits (ATS/OU over-rate + venue scoring). Home/away
-    # venue splits for the venue team; vs_conf = vs the OPPONENT's conference.
-    # (Back-to-back/rest splits excluded per Rich.)
-    "h_ats_pct_home": "Home team ATS cover % at home (prior season)",
-    "a_ats_pct_away": "Away team ATS cover % on road (prior season)",
-    "h_ou_over_pct_home": "Home team OU over % at home (prior season)",
-    "a_ou_over_pct_away": "Away team OU over % on road (prior season)",
-    "h_pts_home": "Home team pts-for per game at home (prior season)",
-    "a_pts_away": "Away team pts-for per game on road (prior season)",
-    "h_pts_against_home": "Home team pts-against per game at home (prior season)",
-    "a_pts_against_away": "Away team pts-against per game on road (prior season)",
-    "h_ats_pct_vs_conf": "Home team ATS cover % vs opponent conference (prior season)",
-    "a_ats_pct_vs_conf": "Away team ATS cover % vs opponent conference (prior season)",
-    "h_ou_over_pct_vs_conf": "Home team OU over % vs opponent conference (prior season)",
-    "a_ou_over_pct_vs_conf": "Away team OU over % vs opponent conference (prior season)",
-}
-
-DISPLAY_NAMES: Dict[str, str] = {
-    "spread": "Spread",
-    "closing_ou": "Closing OU",
-    "home_moneyline": "Home ML",
-    "away_moneyline": "Away ML",
-    "home_score": "Home Score",
-    "away_score": "Away Score",
-    "season_year": "Season",
-    "season_id": "Season",
-    "game_id": "Game ID",
-    "date": "Date",
-    "home_team_id": "Home Team ID",
-    "away_team_id": "Away Team ID",
-    "h_adj_off_10": "Home Adj Off L10",
-    "h_adj_def_10": "Home Adj Def L10",
-    "a_adj_off_10": "Away Adj Off L10",
-    "a_adj_def_10": "Away Adj Def L10",
-    "h_home_pts_r10": "Home Teams Pts in Last 10 Home Games",
-    "a_away_pts_r10": "Away Team Pts in Last 10 Road Games",
-    "h_home_win_pct_r10": "Home Team Win% in Last 10 Home Games",
-    "a_away_win_pct_r10": "Away Team Win% in Last 10 Road Games",
-    "h_home_win_pct_season": "Home Team Win% at Home (Season)",
-    "a_away_win_pct_season": "Away Team Win% on Road (Season)",
-
-    "rest_h": "Home Rest",
-    "rest_a": "Away Rest",
-    "rest_diff": "Rest Diff",
-    "home_b2b": "Home B2B",
-    "away_b2b": "Away B2B",
-    "travel_miles": "Travel Miles",
-    "h_implied": "Home Implied",
-    "a_implied": "Away Implied",
-    "spread_movement": "Spread Movement",
-    "ou_movement": "OU Movement",
-    "over_implied_prob": "Over Implied Prob",
-    "implied_margin": "Implied Margin",
-    "ml_spread_mismatch": "ML-Spread Mismatch",
-    "h_implied_score": "Home Implied Score",
-    "a_implied_score": "Away Implied Score",
-    "h_ats_wins_5": "Home ATS Wins L5",
-    "a_ats_wins_5": "Away ATS Wins L5",
-    "h_ats_margin_5": "Home ATS Margin L5",
-    "a_ats_margin_5": "Away ATS Margin L5",
-    "h_wins_5": "Home Wins L5",
-    "h_wins_10": "Home Wins L10",
-    "a_wins_5": "Away Wins L5",
-    "a_wins_10": "Away Wins L10",
-    "home_ats_cover": "Home team covered the spread (1=yes, 0=no)",
-    "away_ats_cover": "Away team covered the spread (1=yes, 0=no)",
-    "over_result": "Game went over the total (1=yes, 0=no)",
-
-    # ── Enhanced fatigue ──────────────────────────────────────────────
-    "h_three_in_four": "Home 3-in-4",
-    "a_three_in_four": "Away 3-in-4",
-    "h_four_in_five": "Home 4-in-5",
-    "a_four_in_five": "Away 4-in-5",
-    "h_five_in_eight": "Home 5-in-8",
-    "a_five_in_eight": "Away 5-in-8",
-
-    # ── OU rolling records ────────────────────────────────────────────
-    "h_ou_wins_5": "Home Over Wins L5",
-    "a_ou_wins_5": "Away Over Wins L5",
-    "h_ou_wins_10": "Home Over Wins L10",
-    "a_ou_wins_10": "Away Over Wins L10",
-    "h_ou_margin_5": "Home OU Margin L5",
-    "a_ou_margin_5": "Away OU Margin L5",
-
-    # ── Extended ATS windows ───────────────────────────────────────────
-    "h_ats_wins_10": "Home ATS Wins L10",
-    "a_ats_wins_10": "Away ATS Wins L10",
-    "h_ats_margin_10": "Home ATS Margin L10",
-    "a_ats_margin_10": "Away ATS Margin L10",
-
-    # ── Rolling ORTG, DRTG, Net Rating, Pace ───────────────────────────
-    "h_ortg_r5": "Home ORTG L5",
-    "a_ortg_r5": "Away ORTG L5",
-    "h_ortg_r10": "Home ORTG L10",
-    "a_ortg_r10": "Away ORTG L10",
-
-    "h_drtg_r5": "Home DRTG L5",
-    "a_drtg_r5": "Away DRTG L5",
-    "h_drtg_r10": "Home DRTG L10",
-    "a_drtg_r10": "Away DRTG L10",
-
-    "h_net_rtg_r5": "Home Net Rtg L5",
-    "a_net_rtg_r5": "Away Net Rtg L5",
-    "h_net_rtg_r10": "Home Net Rtg L10",
-    "a_net_rtg_r10": "Away Net Rtg L10",
-
-    "h_pace_r5": "Home Pace L5",
-    "a_pace_r5": "Away Pace L5",
-    "h_pace_r10": "Home Pace L10",
-    "a_pace_r10": "Away Pace L10",
-
-    "net_rtg_diff_5": "Net Rtg Diff L5",
-    "net_rtg_diff_10": "Net Rtg Diff L10",
-    "pace_diff_5": "Pace Diff L5",
-
-    # ── Rolling per-possession stats ───────────────────────────────────
-    "h_ft_rate_r5": "Home FTr L5",
-    "a_ft_rate_r5": "Away FTr L5",
-    "h_ft_rate_r10": "Home FTr L10",
-    "a_ft_rate_r10": "Away FTr L10",
-
-    "h_efg_r5": "Home eFG% L5",
-    "a_efg_r5": "Away eFG% L5",
-    "h_efg_r10": "Home eFG% L10",
-    "a_efg_r10": "Away eFG% L10",
-
-    "h_threep_rate_r5": "Home 3PA% L5",
-    "a_threep_rate_r5": "Away 3PA% L5",
-    "h_threep_rate_r10": "Home 3PA% L10",
-    "a_threep_rate_r10": "Away 3PA% L10",
-
-    "h_ast_ratio_r5": "Home AST/FGM L5",
-    "a_ast_ratio_r5": "Away AST/FGM L5",
-    "h_ast_ratio_r10": "Home AST/FGM L10",
-    "a_ast_ratio_r10": "Away AST/FGM L10",
-
-
-    # ── Star player features ───────────────────────────────────────────
-    "h_star_ppg_5": "Home Stars PPG L5",
-    "a_star_ppg_5": "Away Stars PPG L5",
-    "h_stars_active": "Home Stars Active",
-    "a_stars_active": "Away Stars Active",
-    "h_star1_ppg_5": "Home Top Scorer PPG L5",
-    "a_star1_ppg_5": "Away Top Scorer PPG L5",
-    "h_star1_active": "Home Top Scorer Active",
-    "a_star1_active": "Away Top Scorer Active",
-
-    # ── Team splits (home/away + vs conference) — PRIOR SEASON ─────────
-    # Derived from nba.team_splits (contains ATS/OU over-rate + venue scoring).
-    # Uses the team's previous completed season to avoid lookahead. Home/away
-    # venue splits for the venue team; vs_conf = team's split vs the OPPONENT's
-    # conference. (Back-to-back/rest splits deliberately excluded.)
-    "h_ats_pct_home": "Home team ATS cover % at home (prior season)",
-    "a_ats_pct_away": "Away team ATS cover % on road (prior season)",
-    "h_ou_over_pct_home": "Home team OU over % at home (prior season)",
-    "a_ou_over_pct_away": "Away team OU over % on road (prior season)",
-    "h_pts_home": "Home team pts-for per game at home (prior season)",
-    "a_pts_away": "Away team pts-for per game on road (prior season)",
-    "h_pts_against_home": "Home team pts-against per game at home (prior season)",
-    "a_pts_against_away": "Away team pts-against per game on road (prior season)",
-    "h_ats_pct_vs_conf": "Home team ATS cover % vs opponent conference (prior season)",
-    "a_ats_pct_vs_conf": "Away team ATS cover % vs opponent conference (prior season)",
-    "h_ou_over_pct_vs_conf": "Home team OU over % vs opponent conference (prior season)",
-    "a_ou_over_pct_vs_conf": "Away team OU over % vs opponent conference (prior season)",
-}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1026,11 +771,12 @@ class NBADataLoader:
         self.ats_only: bool = ats_only
         self.ou_only: bool = ou_only
         self._engine: Any = None
-        self._catalog = {**FEATURES_CATALOG, **COMPUTED_FEATURES_CATALOG}
+        # Source of truth: nba.features table (name -> description)
+        self._catalog, self._display_names = self._load_catalog_from_db()
         self._feature_cache: Optional[pd.DataFrame] = None
         logger.info(
-            "NBADataLoader initialized (ats_only=%s, ou_only=%s)",
-            ats_only, ou_only,
+            "NBADataLoader initialized (ats_only=%s, ou_only=%s, catalog=%d)",
+            ats_only, ou_only, len(self._catalog),
         )
 
     @property
@@ -1051,6 +797,29 @@ class NBADataLoader:
                 connect_args={"options": "-c jit=off -c statement_timeout=1200000"},
             )
         return self._engine
+
+    def _load_catalog_from_db(self) -> "Tuple[Dict[str, str], Dict[str, str]]":
+        """Load {name: description} and {name: display_name} from nba.features.
+
+        The DB is the single source of truth for the feature catalog. Returns a
+        (catalog, display_names) pair. Safe: on any DB failure it falls back to
+        the hardcoded in-memory catalogs so nothing breaks during startup.
+        """
+        try:
+            with psycopg2.connect(PSYCOPG2_DATABASE_URL) as conn:
+                with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                    cur.execute("SELECT name, description, display_name FROM nba.features")
+                    rows = cur.fetchall()
+            catalog = {}
+            display = {}
+            for r in rows:
+                name = r["name"]
+                catalog[name] = r["description"] or ""
+                display[name] = r["display_name"] or name
+            return catalog, display
+        except Exception:
+            logger.exception("Failed to load catalog from DB; leaving catalog empty")
+            return {}, {}
 
     def __repr__(self) -> str:
         return (
@@ -1074,24 +843,30 @@ class NBADataLoader:
 
     def get_display_name(self, name: str) -> str:
         """Return the human-readable display name for a feature."""
-        return DISPLAY_NAMES.get(name, name)
+        return self._display_names.get(name, name)
 
-    def get_feature_columns(self, target: Optional[str] = None) -> List[str]:
+    def get_feature_columns(self, target: Optional[str] = None, live: bool = False) -> List[str]:
         """Return trainable feature column names.
 
         Parameters
         ----------
         target :
-            If ``'ats'``, only return features in ``COMPUTED_FEATURES_CATALOG``
+            If ``'ats'``, only return features flagged current_ats / is_trainable
             that correspond to ATS features.  If ``None``, return all
             trainable features (all computed).
+        live :
+            If ``True``, read the ``live_ats`` / ``live_ou`` flags (matching the
+            MLB loader's convention and the live models).  Default ``False``
+            reads ``current_ats`` / ``current_ou``.  ``db_training.py`` keeps both
+            in sync from the trained Booster's feature set, so they're identical.
 
         Returns
         -------
         Sorted list of feature column names.
         """
         if target in ("ats", "ou"):
-            flag = "current_ats" if target == "ats" else "current_ou"
+            flag = ("live_ats" if live else "current_ats") if target == "ats" \
+                else ("live_ou" if live else "current_ou")
             try:
                 with psycopg2.connect(PSYCOPG2_DATABASE_URL) as conn:
                     with conn.cursor() as cur:
@@ -1101,17 +876,16 @@ class NBADataLoader:
                         )
                         rows = cur.fetchall()
                         db_features = [r[0] for r in rows]
-                        known = set(FEATURES_CATALOG.keys()) | set(COMPUTED_FEATURES_CATALOG.keys())
+                        known = set(self._catalog.keys())
                         return sorted(c for c in db_features if c in known)
             except Exception:
                 pass
             # Fallback: return home/away computed features
             return sorted(
-                k for k in COMPUTED_FEATURES_CATALOG
+                k for k in self._catalog
                 if k.startswith(("h_", "a_"))
             )
-        known = set(FEATURES_CATALOG.keys()) | set(COMPUTED_FEATURES_CATALOG.keys())
-        return sorted(known)
+        return sorted(self._catalog.keys())
 
     def get_all_with_display(self) -> List[Dict[str, str]]:
         """Return a list of dicts with 'name', 'description', 'display_name'."""
@@ -1119,7 +893,7 @@ class NBADataLoader:
             {
                 "name": name,
                 "description": desc,
-                "display_name": DISPLAY_NAMES.get(name, name),
+                "display_name": self._display_names.get(name, name),
             }
             for name, desc in self._catalog.items()
         ]
@@ -1354,7 +1128,7 @@ class NBADataLoader:
         """Apply module-level feature engineering and order columns."""
         df = build_features(df, **kwargs)
 
-        known = set(list(FEATURES_CATALOG.keys()) + list(COMPUTED_FEATURES_CATALOG.keys()))
+        known = set(self._catalog.keys())
         keep = [c for c in df.columns if c in known]
         # Add the non-trainable prior-season + raw display columns produced by
         # build_features(). They are NOT in the catalogs (so they never become
@@ -2128,19 +1902,24 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
 # ── Module-level helpers ──────────────────────────────────────────────────────
 
 
-def get_model_features(target: Optional[str] = None) -> List[str]:
+def get_model_features(target: Optional[str] = None, live: bool = False) -> List[str]:
     """Return the list of trainable feature names for NBA models.
 
     Parameters
     ----------
     target :
-        If ``'ats'``, only return features for the ATS model.
+        If ``'ats'``, only return features for the ATS model. If ``'ou'``,
+        return features for the OU model.
+    live :
+        If ``True``, read the ``live_*`` flags (the live models). Default
+        ``False`` reads ``current_*``. Both are kept in sync by
+        ``db_training.py`` from the trained Booster's feature set.
 
     Returns
     -------
     Sorted list of trainable feature names.
     """
-    return NBADataLoader().get_feature_columns(target=target)
+    return NBADataLoader().get_feature_columns(target=target, live=live)
 
 
 # ── Singleton / factory ───────────────────────────────────────────────────────

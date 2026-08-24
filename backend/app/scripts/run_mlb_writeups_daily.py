@@ -23,6 +23,7 @@ import asyncio
 import json
 import logging
 import os
+from typing import Any
 import sys
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -157,8 +158,19 @@ async def run() -> int:
         "failures": failures,
         "results": results,
     }
-    print(json.dumps(summary, indent=2))
+    print(json.dumps(summary, indent=2, default=_json_default))
     return 1 if failures else 0
+
+
+def _json_default(o: Any) -> Any:
+    """Tolerate non-serializable types (Decimal, etc.) in the summary blob.
+    MLB writeup payloads can carry Decimal model values (e.g. prop/probability
+    figures) that aren't JSON-safe; stringify them rather than letting the whole
+    daily run exit non-zero after articles are already persisted."""
+    from decimal import Decimal
+    if isinstance(o, Decimal):
+        return float(o)
+    return str(o)
 
 
 def main() -> int:

@@ -272,11 +272,82 @@ _BUILDFEATURES_RAW_INPUTS = [
     "h_cum_ops", "a_cum_ops", "h_lineup_ops", "a_lineup_ops",
     "h_lineup_ops_minus_team", "a_lineup_ops_minus_team",
     "combo_era_r5", "combo_era_r10",
+    # raw inputs for build_features-derived combo_era_r5/r10/r15, combo_era_r10_diff
+    # (= h_era_10 - a_era_10), era_diff, h/a_combo_era_r15, h/a_cum_era_vs_l5/l10
+    # (h/a_era_5/10/15 from trs_h/trs_a rolling stats). combo_era_* are NOT raw
+    # GAME_QUERY aliases, so without these raw team rolling-era columns a lean
+    # projection silently drops them -> combo_era_r10 falls back to 4.5 and
+    # combo_era_r10_diff reads 0.0 for every scheduled game (regression from the
+    # 2026-08-21 projection overhaul).
+    "h_era_5", "a_era_5", "h_era_10", "a_era_10", "h_era_15", "a_era_15",
+    "closing_home_implied_probability", "closing_away_implied_probability",
+    # ^ raw blc aliases that build_features derives h_implied/a_implied and
+    #   home/away_implied_probability from (in _REQUIRED_ROW_COLUMNS). Without
+    #   these raw columns a lean projection silently drops them -> Away/Home
+    #   Implied Win Prob reads 0.5000 for every scheduled game (same projection
+    #   regression as combo_era_* below).
     # raw inputs for build_features-derived features rest_diff (h_rest/a_rest)
     # and is_div (home_abbr/away_abbr). Without these the derived features stay
     # NaN and any lean projection silently drops them (model trains on fewer
     # features than live inference -> Feature shape mismatch, expected: 101 got 103).
     "h_rest", "a_rest", "home_abbr", "away_abbr",
+    # raw inputs for the derived pitcher SPLIT ERA + day/night ERA features
+    # (h_pitcher_home_era / *_day_era / *_night_era / *_day_night_era) and the
+    # venue ERA. These are build_features-derived, so their raw YTD split
+    # sources must always be projected or the derived feature reads NaN.
+    "h_p_home_era_ytd", "h_p_road_era_ytd", "h_p_day_era_ytd", "h_p_night_era_ytd",
+    "a_p_home_era_ytd", "a_p_road_era_ytd", "a_p_day_era_ytd", "a_p_night_era_ytd",
+    "h_pitcher_venue_era", "a_pitcher_venue_era",
+    "h_pitcher_venue_starts", "a_pitcher_venue_starts",
+    "day_night",
+    # raw inputs for the derived bullpen ERA/IP L5 features (bullpen_era_l5 and
+    # bullpen_ip_l5) + the prior-year team ERA fallback (never 0).
+    "h_bullpen_er_l5", "a_bullpen_er_l5",
+    "h_bullpen_ip_l5", "a_bullpen_ip_l5",
+    "h_prior_era", "a_prior_era",
+    # ALL raw P_ALIASES source columns (h/a_p_* rate columns for 5/10/20/ytd).
+    # These feed build_features()'s derived pitcher-rate features
+    # (h/a_pitcher_{era,whip,k9}_{l5,l10,l20}, kbb_l10, *_ytd, qs_rate). The
+    # derived names are NOT raw GAME_QUERY aliases, so without their raw sources
+    # here a lean projection silently drops them -> the LIVE model reads 0/NaN
+    # while training reads real values (Feature shape mismatch / drifting picks).
+    "h_p_k9_20", "a_p_k9_20", "h_p_whip_20", "a_p_whip_20",
+    "h_p_k9_5", "a_p_k9_5", "h_p_whip_5", "a_p_whip_5",
+    "h_p_k9_10", "a_p_k9_10", "h_p_whip_10", "a_p_whip_10",
+    "h_p_kbb_10", "a_p_kbb_10",
+    "h_p_fip_ytd", "a_p_fip_ytd",
+    "h_p_era_ytd", "a_p_era_ytd", "h_p_whip_ytd", "a_p_whip_ytd",
+    "h_p_k9_ytd", "a_p_k9_ytd", "h_p_bb9_ytd", "a_p_bb9_ytd",
+    "h_p_qs_rate_ytd", "a_p_qs_rate_ytd",
+    "h_p_starts_ytd", "a_p_starts_ytd",
+
+    # AUDIT 2026-08-23: every remaining raw GAME_QUERY alias that build_features()
+    # READS but the 08-21 projection overhaul left out of this list. All 38 are
+    # gated in build_features (`if X in result.columns`), so with them unprojected
+    # a lean live/training projection silently dropped them -> each derived feature
+    # fell back to a constant. Added in one batch:
+    #   - L5/L10 rolling team line stats (h/a_avg_5/10, h/a_ops_5/10, h/a_whip_5/10,
+    #     h/a_k9_10, h/a_over_pct5) -> h/a_cum_*_vs_l5/l10, h/a_over_freq5
+    #   - side-run-factor (h_home_runs_per_game / a_away_runs_per_game) -> h/a_side_rf
+    #   - exact rest hours (h/a_prev_game_date) -> rest_h/a_hours
+    #   - venue park factor / roof / name / capacity -> park_factor, is_dome,
+    #     retractable-roof temp neutralization, venue-winpct
+    #   - team/division names (h/a_team_name, adiv, hdiv) -> division features
+    #   - starter names (h/a_starter_name) -> pitching matchup display/config
+    #   - prior-year rolling fallbacks (h/a_prior_avg/ops/whip) used when a team's
+    #     current rolling window is empty
+    #   - a_p_era_10 (away starter ERA L10) -> era_diff fallback branch
+    "h_avg_5", "a_avg_5", "h_avg_10", "a_avg_10",
+    "h_ops_5", "a_ops_5", "h_ops_10", "a_ops_10",
+    "h_whip_5", "a_whip_5", "h_whip_10", "a_whip_10",
+    "h_k9_10", "a_k9_10", "h_over_pct5", "a_over_pct5",
+    "h_home_runs_per_game", "a_away_runs_per_game",
+    "h_prev_game_date", "a_prev_game_date",
+    "h_prior_avg", "a_prior_avg", "h_prior_ops", "a_prior_ops",
+    "h_prior_whip", "a_prior_whip", "h_p_era_10", "a_p_era_10",
+    "hdiv", "adiv", "home_team_name", "away_team_name",
+    "home_starter_name", "away_starter_name",
+    "venue_park_factor", "venue_roof", "venue_name", "venue_capacity",
 ]
 
 # Context/target columns the prediction + pick-card pipeline reads directly off

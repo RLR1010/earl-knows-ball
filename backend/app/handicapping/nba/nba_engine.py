@@ -306,14 +306,22 @@ def _evaluate_year_model(year_df: pd.DataFrame, model: xgb.Booster, model_type: 
 
     Returns dict with accuracy (ATS) or MAE/RMSE (OU), AUC, and game-level
     predictions (list of dicts).  Matches the NFL ``backtest_season`` pattern.
+
+    The feature set is taken from the LOADED model's own ``feature_names``
+    (the live model is the authority), NOT from the ``current_ats``/``current_ou``
+    DB flags.  Those flags can drift out of sync with a trained Booster (e.g. a
+    zero-gain feature absent from ``feature_importance``) and cause an XGBoost
+    ``feature_names mismatch`` on predict().  Deriving from the model guarantees
+    the matrix always matches what the Booster was actually trained on.
     """
     labels = []
     probs = []
     total = 0
     correct = 0
+    model_feats = _model_feature_names(model)
 
     for idx, row in year_df.iterrows():
-        feat_vals, feat_names = _extract_feature_vector(row, model_type)
+        feat_vals, feat_names = _extract_feature_vector(row, model_type, model_feats)
         dmat = xgb.DMatrix(feat_vals, feature_names=feat_names)
         prob = float(model.predict(dmat)[0])
 
@@ -369,10 +377,10 @@ def _get_features(model_type: str) -> List[str]:
     if model_type == "ou" and _FEATURES_CACHE_OU is not None:
         return _FEATURES_CACHE_OU
     if model_type == "ats":
-        feats = get_model_features(target="ats")
+        feats = get_model_features(target="ats", live=True)
         _FEATURES_CACHE_ATS = feats
     else:
-        feats = get_model_features(target="ou")
+        feats = get_model_features(target="ou", live=True)
         _FEATURES_CACHE_OU = feats
     return feats
 
@@ -471,12 +479,33 @@ def _impute_feature(row: pd.Series, feat: str) -> Optional[float]:
     return 0.0
 
 
+def _model_feature_names(model: xgb.Booster) -> Optional[List[str]]:
+    """Return the authoritative feature list from a loaded Booster.
+
+    Falls back to ``None`` if the model doesn't expose ``feature_names`` (then
+    callers fall back to the DB-derived ``_get_features``).
+    """
+    fn = getattr(model, "feature_names", None)
+    if fn:
+        return list(fn)
+    booster = getattr(model, "_Booster", None)
+    fn = getattr(booster, "feature_names", None) if booster is not None else None
+    return list(fn) if fn else None
+
+
 def _extract_feature_vector(
     row: pd.Series,
     model_type: str,
+    feature_names: Optional[List[str]] = None,
 ) -> Tuple[np.ndarray, List[str]]:
-    """Build a feature vector (values, names) from a DataFrame row."""
-    feature_names = _get_features(model_type)
+    """Build a feature vector (values, names) from a DataFrame row.
+
+    ``feature_names`` defaults to the DB-derived ``_get_features(model_type)``,
+    but callers should pass the loaded model's own ``feature_names`` (via
+    ``_model_feature_names``) so inference always matches the Booster.
+    """
+    if feature_names is None:
+        feature_names = _get_features(model_type)
     values = []
     names = []
     for feat in feature_names:
@@ -551,12 +580,12 @@ async def _build_pick_card(
     ou_line = float(row.get("over_under", 0) or 0)
 
     # ATS prediction (regression model outputs MARGIN: home_score - away_score)
-    ats_vals, ats_names = _extract_feature_vector(row, "ats")
+    ats_vals, ats_names = _extract_feature_vector(row, "ats", _model_feature_names(ats_model))
     ats_dmat = xgb.DMatrix(ats_vals, feature_names=ats_names)
     pred_margin = float(ats_model.predict(ats_dmat)[0])
 
     # OU prediction (regression model outputs TOTAL: home_score + away_score)
-    ou_vals, ou_names = _extract_feature_vector(row, "ou")
+    ou_vals, ou_names = _extract_feature_vector(row, "ou", _model_feature_names(ou_model))
     ou_dmat = xgb.DMatrix(ou_vals, feature_names=ou_names)
     pred_total = float(ou_model.predict(ou_dmat)[0])
 
@@ -786,8 +815,8 @@ async def _backtest_season_inner(
                 curve_data = None
 
             for idx, row in year_df.iterrows():
-                ats_feats, ats_names = _extract_feature_vector(row, "ats")
-                ou_feats, ou_names = _extract_feature_vector(row, "ou")
+                ats_feats, ats_names = _extract_feature_vector(row, "ats", _model_feature_names(ats_model))
+                ou_feats, ou_names = _extract_feature_vector(row, "ou", _model_feature_names(ou_model))
                 gid = row.get("game_id")
                 await _save_backtest_prediction(
                     game_id=gid,
@@ -1390,12 +1419,6 @@ async def _save_backtest_prediction(
         ou_ev = _ev(ou_conf_cal, ou_odds_value) if ou_conf_cal is not None and ou_odds_value else None
         ml_ev = _ev(ml_conf_cal, ml_odds_value) if ml_conf_cal is not None and ml_odds_value else None
 
-        logger.debug(
-            "NBA backtest game %s: spread=%s, ats_proba=%s, pred_margin=%s, margin_conf=%s, "
-            "ou_total=%s, over_under=%s, ml_result=%s",
-            game_id, spread, ats_proba, predicted_margin, margin_conf,
-            ou_total, over_under, ml_result
-        )
         pred_home_score = None
         pred_away_score = None
         if predicted_total is not None and predicted_margin is not None:
@@ -1449,13 +1472,6 @@ async def _save_backtest_prediction(
         )
 
         # ── Save via ORM ───────────────────────────────────────────────────────────
-        logger.debug(
-            "Saving backtest prediction game_id=%s: "
-            "ml_conf=%s ou_conf=%s ml_result=%s margin_conf=%s "
-            "ats_result=%s ou_result=%s ml_pick=%s",
-            game_id, rec.ml_conf, rec.ou_conf, rec.ml_result,
-            rec.margin_conf, rec.ats_result, rec.ou_result, rec.ml_pick,
-        )
         if close_session:
             db.execute(
                 sa_delete(NBAGamePrediction).where(
@@ -1612,9 +1628,16 @@ def _float_safe(val) -> Optional[float]:
     if val is None:
         return None
     try:
-        return float(val)
+        f = float(val)
     except (ValueError, TypeError):
         return None
+    # NaN is truthy but not a usable number: normalize to None so downstream
+    # ``if x:`` guards and ``round(x)`` (which raises on NaN) behave correctly
+    # instead of silently propagating NaN (e.g. a game with no posted OU line
+    # produced over_odds=nan -> round(nan) -> ValueError in _save_backtest_prediction).
+    if isinstance(f, float) and f != f:
+        return None
+    return f
 
 
 def _raw_safe(row: pd.Series, col: str):
