@@ -35,6 +35,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.database import get_db
+from app.core.security import get_optional_current_user, user_is_premium
+from app.models import User
 from app.services.team_extractor import extract_teams
 
 # Per-sport chat engines (reused so articles get the same research tools as chat).
@@ -1413,9 +1415,12 @@ async def list_original_articles(
     limit: int = Query(50, ge=1, le=100),
     section: Optional[str] = Query(None, description="Filter to a specific destination section, e.g. 'article' or 'daily_picks'"),
     tier: str = Query("public", description="'public' (default) or 'premium'. Premium article bodies are redacted unless tier=premium."),
+    current_user: "User | None" = Depends(get_optional_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     sport = _validate_sport(sport)
+    if tier == "premium" and not user_is_premium(current_user):
+        raise HTTPException(status_code=403, detail="Premium subscription required")
     where = "WHERE sport = :sport AND status = 'published'"
     params: dict = {"sport": sport, "limit": limit}
     if section:
@@ -1449,9 +1454,12 @@ async def get_original_article(
     sport: str,
     ref: str,
     tier: str = Query("public", description="'public' (default) or 'premium'. Premium article bodies are redacted unless tier=premium."),
+    current_user: "User | None" = Depends(get_optional_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     sport = _validate_sport(sport)
+    if tier == "premium" and not user_is_premium(current_user):
+        raise HTTPException(status_code=403, detail="Premium subscription required")
     # `ref` may be a numeric id (legacy) or an SEO slug (date + title).
     if ref.isdigit():
         result = await db.execute(

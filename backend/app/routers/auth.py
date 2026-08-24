@@ -199,15 +199,17 @@ async def get_token_user(auth_header: str, db: AsyncSession) -> User:
 
 
 async def get_current_user(request: Request, db: AsyncSession = Depends(get_db)) -> User:
-    """Dependency: extract user from the earl_token cookie or Authorization header."""
-    # Check cookie first
-    token = request.cookies.get(COOKIE_NAME)
-    if token:
-        user = await get_user_from_token(token, db)
-        record_activity(request, user.id)
-        return user
+    """Dependency: extract user from the Authorization header (localStorage
+    token) or the earl_token cookie.
 
-    # Fall back to Authorization header (legacy support for admin pages)
+    The Authorization header is preferred when present and valid: the frontend
+    treats the localStorage token as the source of truth for "who is logged in",
+    so a stale/outdated cookie must NOT silently override it (which previously
+    left a premium user looking non-premium because an old free-tier cookie won).
+    We fall back to the cookie only when there's no valid Bearer token. That
+    keeps the cookie-based "stay logged in" flow working.
+    """
+    # Preferred: Authorization header (localStorage token)
     auth_header = request.headers.get("authorization", "")
     if auth_header.startswith("Bearer "):
         token = auth_header.replace("Bearer ", "", 1).strip()
@@ -215,6 +217,13 @@ async def get_current_user(request: Request, db: AsyncSession = Depends(get_db))
             user = await get_user_from_token(token, db)
             record_activity(request, user.id)
             return user
+
+    # Fall back to cookie (persistent login)
+    token = request.cookies.get(COOKIE_NAME)
+    if token:
+        user = await get_user_from_token(token, db)
+        record_activity(request, user.id)
+        return user
 
     raise HTTPException(status_code=401, detail="Not authenticated")
 

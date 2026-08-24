@@ -13,6 +13,8 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
+from app.core.security import get_optional_current_user, user_is_premium
+from app.models import User
 from app.writeups.mlb.generator import MLBWriteupGenerator
 from app.writeups.nfl.generator import NFLWriteupGenerator
 from app.writeups.nba.generator import NBAGameWriteupGenerator
@@ -368,12 +370,15 @@ async def list_mlb_writeups(
 async def get_mlb_writeup(
     identifier: str,
     tier: str = Query("premium"),  # "public" or "premium"
+    current_user: "User | None" = Depends(get_optional_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Get a single write-up by numeric ID or SEO slug.
 
     *tier* controls which content version is returned.
     """
+    if tier == "premium" and not user_is_premium(current_user):
+        raise HTTPException(status_code=403, detail="Premium subscription required")
     is_id = identifier.isdigit()
     row = await db.execute(
         text("""
@@ -780,12 +785,15 @@ async def list_nfl_writeups(
 async def get_nfl_writeup(
     identifier: str,
     tier: str = Query("premium"),  # "public" or "premium"
+    current_user: "User | None" = Depends(get_optional_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Get a specific NFL writeup by numeric ID or SEO slug.
 
     *tier* controls which content version is returned in the ``content`` field.
     """
+    if tier == "premium" and not user_is_premium(current_user):
+        raise HTTPException(status_code=403, detail="Premium subscription required")
     is_id = identifier.isdigit()
     row = await db.execute(
         text("""SELECT w.id, w.game_id, w.title, w.slug, w.public_content, w.premium_content,
@@ -1168,9 +1176,12 @@ async def list_nba_writeups(
 async def get_nba_writeup(
     identifier: str,
     tier: str = Query("premium"),  # "public" or "premium"
+    current_user: "User | None" = Depends(get_optional_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Get a specific NBA write-up by numeric ID or SEO slug. Matches MLB pattern for frontend compatibility."""
+    if tier == "premium" and not user_is_premium(current_user):
+        raise HTTPException(status_code=403, detail="Premium subscription required")
     is_id = identifier.isdigit()
     result = await db.execute(
         text("""

@@ -40,6 +40,7 @@ export default function SportAnalysisDetailPage({
   const [identifier, setIdentifier] = useState<string>("");
   const [preview, setPreview] = useState<AnalysisDetail | null>(null);
   const [missing, setMissing] = useState(false);
+  const [premiumRequired, setPremiumRequired] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -49,10 +50,16 @@ export default function SportAnalysisDetailPage({
       const normalized = sport.toLowerCase();
       // Use the relative Caddy-proxied /api path so the browser can reach the
       // backend (a raw localhost:8001 URL is server-only and fails in the client).
+      const token = typeof window !== "undefined" ? localStorage.getItem("earl_token") : null;
       fetch(`/api/writeups/${normalized}/${identifier}?tier=premium`, {
         cache: "no-store",
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
       })
         .then(async (r) => {
+          if (r.status === 403) {
+            if (active) setPremiumRequired(true);
+            return null;
+          }
           if (!r.ok) {
             if (active) setMissing(true);
             return null;
@@ -84,6 +91,17 @@ export default function SportAnalysisDetailPage({
       <div className="max-w-3xl mx-auto px-4 py-24 text-center text-gray-400">
         Analysis not found.
       </div>
+    );
+  }
+
+  if (premiumRequired) {
+    return (
+      <PremiumGate
+        title="Premium Analysis"
+        message="This analysis is for Premium members. Upgrade to unlock the full write-up."
+      >
+        <></>
+      </PremiumGate>
     );
   }
 

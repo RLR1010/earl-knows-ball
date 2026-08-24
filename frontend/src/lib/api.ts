@@ -5,7 +5,7 @@ const API_BASE = "";
  * The backend accepts it as `Authorization: Bearer`, which lets API calls
  * succeed even when the httpOnly cookie is missing (e.g. cookie cleared).
  */
-function getStoredToken(): string | null {
+export function getStoredToken(): string | null {
   if (typeof window === "undefined") return null;
   const t = localStorage.getItem("earl_token");
   if (!t) return null;
