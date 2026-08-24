@@ -99,6 +99,33 @@ export default function ChatPage() {
     if (saved) setToken(saved);
   }, []);
 
+  // Live premium verification from the stored token, so the gate matches what
+  // the premium article endpoints enforce. This is immune to a stale
+  // useAuth().user (which can be resolved from an outdated earl_token cookie
+  // instead of the localStorage token).
+  const [livePremium, setLivePremium] = useState<boolean | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    const tok = token || (typeof window !== "undefined" ? localStorage.getItem("earl_token") : null);
+    if (!tok) {
+      setLivePremium(false);
+      return;
+    }
+    fetch(`/auth/me`, {
+      headers: { Authorization: `Bearer ${tok}` },
+    })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((me) => {
+        if (cancelled) return;
+        const tier = me?.subscription_tier;
+        setLivePremium(tier === "premium" || tier === "ultimate");
+      })
+      .catch(() => !cancelled && setLivePremium(false));
+    return () => {
+      cancelled = true;
+    };
+  }, [token]);
+
   // Reset when navigating between sports
   useEffect(() => {
     setMessages([{ role: "assistant", content: SPORT_WELCOME[sport] }]);
@@ -392,9 +419,14 @@ export default function ChatPage() {
   const loginModal = <LoginModal open={loginModalOpen} onClose={() => setLoginModalOpen(false)} />;
 
   // --- Premium gate: shown to non-logged-in or non-premium users ---
-  const isPremium = user?.subscription_tier === "premium" || user?.subscription_tier === "ultimate";
+  // isPremium derives from the LIVE token verify (livePremium) when available,
+  // falling back to the auth context's user object.
+  const contextPremium =
+    user?.subscription_tier === "premium" || user?.subscription_tier === "ultimate";
+  const isPremium = livePremium ?? contextPremium;
+  const showGate = !token || !isPremium;
 
-  if (!token || !isPremium) {
+  if (showGate) {
     return (
       <div className="min-h-screen flex items-center justify-center p-6">
         <div className="w-full max-w-md bg-white/5 rounded-2xl p-8 border border-white/10 text-center">
