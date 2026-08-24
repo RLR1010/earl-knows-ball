@@ -14,6 +14,7 @@ class SubscriptionPlan(Base):
     name = Column(String(100), nullable=False)             # e.g. "Monthly Premium"
     slug = Column(String(50), unique=True, nullable=False)  # e.g. "premium_monthly"
     description = Column(Text, nullable=True)
+    payment_description = Column(Text, nullable=True)       # what shows in payment history for this plan
     price_cents = Column(Integer, nullable=False)           # price in cents (e.g. 999 = $9.99)
     currency = Column(String(3), default="usd")
     interval = Column(String(10), nullable=False)            # "month" or "year" (or "one-time"/"one_time" for token top-ups)

@@ -8,6 +8,7 @@ interface Plan {
   name: string;
   slug: string;
   description: string | null;
+  payment_description: string | null;
   price_cents: number;
   currency: string;
   interval: string;
@@ -24,7 +25,7 @@ interface Plan {
 }
 
 const emptyPlan = {
-  name: "", slug: "", description: "", price_cents: 999, currency: "usd",
+  name: "", slug: "", description: "", payment_description: "", price_cents: 999, currency: "usd",
   interval: "month", trial_days: 0, features: [], is_active: true, sort_order: 0,
   stripe_price_id: "", stripe_product_id: "", monthly_token_limit: null,
   kind: "subscription", token_amount: null,
@@ -195,6 +196,9 @@ function PlanFormModal({ plan, onSave, onClose }: { plan: Plan | null; onSave: (
         <label className="block text-xs text-gray-500 mb-1">Description</label>
         <textarea id="f-desc" defaultValue={plan?.description || ""} rows={2} className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white mb-3 focus:outline-none focus:border-earl-600" />
 
+        <label className="block text-xs text-gray-500 mb-1">Payment Description (shown in payment history)</label>
+        <input id="f-paydesc" defaultValue={plan?.payment_description ?? ""} placeholder={"e.g. Premium Membership"} className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white mb-3 focus:outline-none focus:border-earl-600" />
+
         <div className="grid grid-cols-4 gap-3">
           <div>
             <label className="block text-xs text-gray-500 mb-1">Price (cents)</label>
@@ -273,6 +277,7 @@ function PlanFormModal({ plan, onSave, onClose }: { plan: Plan | null; onSave: (
                 name: get("f-name"),
                 slug: get("f-slug"),
                 description: get("f-desc") || null,
+                payment_description: get("f-paydesc") || null,
                 price_cents: parseInt(get("f-price")) || 0,
                 currency: "usd",
                 interval: get("f-interval") || "month",

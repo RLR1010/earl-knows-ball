@@ -148,6 +148,7 @@ class PlanCreate(BaseModel):
     stripe_price_id: Optional[str] = None
     stripe_product_id: Optional[str] = None
     monthly_token_limit: Optional[int] = None
+    payment_description: Optional[str] = None
 
 
 class PlanUpdate(BaseModel):
@@ -166,6 +167,7 @@ class PlanUpdate(BaseModel):
     stripe_price_id: Optional[str] = None
     stripe_product_id: Optional[str] = None
     monthly_token_limit: Optional[int] = None
+    payment_description: Optional[str] = None
 
 
 class PlanOut(BaseModel):
@@ -185,6 +187,7 @@ class PlanOut(BaseModel):
     stripe_price_id: str | None = None
     stripe_product_id: str | None = None
     monthly_token_limit: int | None = None
+    payment_description: str | None = None
     created_at: datetime | None = None
 
     model_config = {"from_attributes": True}

@@ -511,6 +511,20 @@ async def _handle_token_topup_completed(checkout_session: dict, db: AsyncSession
 
     # Record the one-time payment for the user's history (no subscription)
     try:
+        # Prefer the admin-editable plan payment_description (set in /admin/plans);
+        # fall back to a readable default.
+        tokplan = (
+            await db.execute(
+                select(SubscriptionPlan).where(
+                    SubscriptionPlan.kind == "token_topup",
+                    SubscriptionPlan.is_active == True,  # noqa: E712
+                ).order_by(SubscriptionPlan.sort_order)
+            )
+        ).scalars().first()
+        if tokplan and (tokplan.payment_description or "").strip():
+            desc = tokplan.payment_description.strip()
+        else:
+            desc = "Token top-up: additional chat tokens (one-time)"
         amount_cents = checkout_session.get("amount_total") or 0
         payment = Payment(
             user_id=user.id,
@@ -520,7 +534,7 @@ async def _handle_token_topup_completed(checkout_session: dict, db: AsyncSession
             status="succeeded",
             stripe_payment_intent_id=(checkout_session.get("payment_intent") or None),
             stripe_invoice_id=None,
-            description="Token top-up: additional chat tokens (one-time)",
+            description=desc,
         )
         db.add(payment)
         await db.commit()
@@ -654,13 +668,30 @@ async def _handle_invoice_paid(invoice: dict, db: AsyncSession):
         return
 
     # Record payment
+    # If the subscription's plan has a `payment_description`, use it as the
+    # payment-history label (admin-editable from /admin/plans). Otherwise fall
+    # back to a readable default rather than a bare Stripe invoice number.
+    description = f"Invoice {stripe_invoice_id}"
+    if sub.plan_id:
+        plan_result = await db.execute(
+            select(SubscriptionPlan).where(SubscriptionPlan.id == sub.plan_id)
+        )
+        plan = plan_result.scalar_one_or_none()
+        if plan:
+            label = (plan.payment_description or "").strip()
+            description = (
+                label
+                if label
+                else (plan.name or "Subscription") + " — Membership"
+            )
+
     payment = Payment(
         user_id=sub.user_id,
         subscription_id=sub.id,
         amount_cents=amount_paid,
         currency=currency,
         status="succeeded" if status == "paid" else status,
-        description=f"Invoice {stripe_invoice_id}",
+        description=description,
         stripe_invoice_id=stripe_invoice_id,
         stripe_payment_intent_id=invoice.get("payment_intent"),
     )
