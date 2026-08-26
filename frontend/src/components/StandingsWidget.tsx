@@ -126,11 +126,18 @@ export default function StandingsWidget({
                     <span className="font-medium uppercase tracking-wide">
                       {div.division ?? "Division"}
                     </span>
-                    <span className="tabular-nums">
-                      REC&nbsp;&nbsp;GB&nbsp;&nbsp;STK&nbsp;&nbsp;L10
-                    </span>
                   </div>
                   <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-gray-700 text-[10px] uppercase tracking-wide text-gray-500">
+                        <th className="py-1 pr-1 w-7" />
+                        <th className="py-1 pr-2 text-left font-medium">Team</th>
+                        <th className="py-1 pr-2 text-right font-medium tabular-nums">REC</th>
+                        <th className="py-1 pr-2 text-right font-medium tabular-nums">GB</th>
+                        <th className="py-1 pr-2 text-right font-medium tabular-nums">STK</th>
+                        <th className="py-1 text-right font-medium tabular-nums">L10</th>
+                      </tr>
+                    </thead>
                     <tbody>
                       {div.teams.slice(0, limitPerDivision).map((t) => (
                         <StandingsRow key={t.team_id} t={t} sport={sport} />
