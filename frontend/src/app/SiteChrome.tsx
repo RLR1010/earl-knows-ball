@@ -22,6 +22,7 @@ const SUB_NAV_ITEMS = [
   { label: "Teams", path: "/teams" },
   { label: "Props", path: "/props" },
   { label: "Articles", path: "/articles" },
+  { label: "Standings", path: "/standings" },
   { label: "Results", path: "/results" },
   { label: "Chat With Earl", path: "/chat" },
 ];

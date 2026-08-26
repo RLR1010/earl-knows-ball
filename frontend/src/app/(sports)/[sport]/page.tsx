@@ -69,15 +69,6 @@ export default async function SportHomePage({ params }: { params: Promise<{ spor
         hideIfEmpty
       />
 
-      {/* Standings / Down-the-Stretch frames */}
-      <StandingsWidget
-        sport={sport as "nfl" | "nba" | "mlb"}
-        containerClassName=""
-        title={`${SPORT_INFO[sport]?.name ?? sport.toUpperCase()} Standings`}
-        subtitle="W-L · Games back · Streak · Last 10"
-        hideIfEmpty
-      />
-
       {/* Upcoming Games */}
       <SportUpcomingGames sport={sport as CardSport} />
 
@@ -86,6 +77,18 @@ export default async function SportHomePage({ params }: { params: Promise<{ spor
 
       {/* Recent Articles & Game Previews */}
       <RecentContent sport={sport} />
+
+      {/* Standings — only surfaced on a sport's home page while that sport
+          is OUT of season (e.g. NBA during the summer). In-season sports get
+          standings on the dedicated /standings page instead. */}
+      <StandingsWidget
+        sport={sport as "nfl" | "nba" | "mlb"}
+        containerClassName=""
+        title={`${SPORT_INFO[sport]?.name ?? sport.toUpperCase()} Standings`}
+        subtitle="W-L · Games back · Streak · Last 10"
+        hideIfEmpty
+        onlyWhenOffseason
+      />
     </div>
   );
 }

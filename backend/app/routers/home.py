@@ -1,7 +1,7 @@
 """Home page router — upcoming games across all sports (or a single sport)."""
 
 import math
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import text
@@ -508,26 +508,39 @@ async def home_standings(
         raise HTTPException(status_code=400, detail=f"Invalid sport '{sport}'. Choose one of: {', '.join(_VALID_SPORTS)}.")
 
     # Resolve the season id. If not given, pick the latest season that has any
-    # final game (so an off-season year won't return an empty table).
+    # final game (so an off-season year won't return an empty table). We also
+    # derive whether the sport is currently "in season": the latest season has
+    # any game dated on/after today (upcoming) OR it has non-final games.
+    _today = date.today()
     if season_year is None:
         season_sql = f"""
-            SELECT s.id, s.year
+            SELECT s.id, s.year,
+                   (SELECT count(*) FROM {sport}.games g
+                    WHERE g.season_id = s.id AND g.date >= :today)        AS upcoming,
+                   (SELECT count(*) FROM {sport}.games g
+                    WHERE g.season_id = s.id
+                      AND lower(g.status::text) <> 'final')               AS nonfinal
             FROM {sport}.seasons s
             WHERE EXISTS (SELECT 1 FROM {sport}.games g WHERE g.season_id = s.id AND lower(g.status::text) = 'final')
             ORDER BY s.year DESC
             LIMIT 1
         """
-        res = await db.execute(text(season_sql))
+        res = await db.execute(text(season_sql), {"today": _today})
         season = res.mappings().first()
         if not season:
-            return {"sport": sport, "season": None, "conferences": [], "teams": []}
+            return {"sport": sport, "season": None, "in_season": False, "conferences": [], "teams": []}
         season_id, season_year = season["id"], season["year"]
+        # In season = the league currently has games on/after today (upcoming or
+        # in-progress). A purely finished season (all past dates) is off-season.
+        in_season = bool(season["upcoming"])
     else:
         season_res = await db.execute(text(f"SELECT id FROM {sport}.seasons WHERE year = :y"), {"y": season_year})
         season_row = season_res.mappings().first()
         if not season_row:
             raise HTTPException(status_code=404, detail=f"No season found for {sport} year {season_year}.")
         season_id = season_row["id"]
+        in_season = None  # caller explicitly chose a season; unused
+
 
     group_col = _SPORT_TEAM_COL[sport]
 
@@ -553,7 +566,7 @@ async def home_standings(
     """
     rows = (await db.execute(text(games_sql), {"sid": season_id})).mappings().all()
     if not rows:
-        return {"sport": sport, "season": season_year, "conferences": [], "teams": []}
+        return {"sport": sport, "season": season_year, "in_season": in_season, "conferences": [], "teams": []}
 
     # teams + grouping
     teams_sql = f"""
@@ -645,4 +658,4 @@ async def home_standings(
         for c in conferences:
             c["divisions"] = [d for d in c["divisions"] if d["division"] == division]
 
-    return {"sport": sport, "season": season_year, "conferences": conferences, "teams": team_rows}
+    return {"sport": sport, "season": season_year, "in_season": in_season, "conferences": conferences, "teams": team_rows}

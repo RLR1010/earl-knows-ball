@@ -309,6 +309,7 @@ export interface StandingsConference {
 export interface StandingsResponse {
   sport: string;
   season: number | null;
+  in_season: boolean | null;
   conferences: StandingsConference[];
   teams: StandingsTeam[];
 }
