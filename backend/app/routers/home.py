@@ -596,12 +596,17 @@ async def home_standings(
     # Sort results chronologically per team to derive streak + last-10.
     def _streak_last10(res):
         res = sorted(res, key=lambda x: x[0])
+        # Current streak: count consecutive same-direction results from the
+        # most recent game, stopping at the first direction flip.
+        if not res:
+            return 0, 0, 0
         streak = 0
+        last_won = res[-1][1]
         for _, won in reversed(res):
-            if won:
-                streak = streak + 1 if streak >= 0 else 1
+            if won == last_won:
+                streak += 1 if won else -1
             else:
-                streak = streak - 1 if streak <= 0 else -1
+                break
         last10 = res[-10:]
         l10_w = sum(1 for _, won in last10 if won)
         return streak, l10_w, len(last10)
