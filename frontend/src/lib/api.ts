@@ -336,6 +336,13 @@ export interface MatchupTeam {
   splits: Record<string, unknown> | null;
 }
 
+export interface MatchupPremiumStat {
+  label: string;
+  av: number | null;
+  bv: number | null;
+  lower: boolean;
+}
+
 export interface MatchupResponse {
   sport: string;
   game_id: number | null;
@@ -348,6 +355,8 @@ export interface MatchupResponse {
     team_b: string;
   } | null;
   comparison_error?: string | null;
+  viewer_premium?: boolean;
+  premium_stats?: MatchupPremiumStat[];
 }
 
 export const api = {

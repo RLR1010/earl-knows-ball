@@ -1,5 +1,6 @@
 "use client";
 
+import { Lock } from "lucide-react";
 import TeamLogo from "./TeamLogo";
 import { MatchupResponse } from "../lib/api";
 
@@ -356,3 +357,62 @@ export function MatchupComparisonTable({
 
   return <ThreeColTable rows={rows} homeAbbr={homeAbbr} awayAbbr={awayAbbr} note="= better on that stat" />;
 }
+
+/** Premium-only advanced handicapping stats (head-to-head style).
+ * Rendered for premium subscribers; free/anonymous viewers see a locked
+ * teaser instead (the advanced data is stripped at the API, not just hidden).
+ * @param stats  rows from the endpoint's `premium_stats`.
+ * @param premium whether this viewer can see the values.
+ * @param homeAbbr / awayAbbr for the column headers.
+ */
+export function MatchupPremiumTable({
+  stats,
+  premium,
+  homeAbbr,
+  awayAbbr,
+}: {
+  stats: { label: string; av: number | null; bv: number | null; lower: boolean }[] | null;
+  premium: boolean;
+  homeAbbr: string;
+  awayAbbr: string;
+}) {
+  if (!premium || !stats || stats.length === 0) {
+    return (
+      <div className="rounded-xl border border-amber-500/30 bg-gradient-to-br from-amber-500/10 to-transparent px-4 py-4">
+        <div className="flex items-center gap-2">
+          <span className="flex h-5 w-5 items-center justify-center rounded bg-amber-500/20 text-[10px] text-amber-300">
+            <Lock size={12} />
+          </span>
+          <span className="text-xs font-bold uppercase tracking-widest text-amber-300">Premium · Advanced Handicapping</span>
+        </div>
+        <p className="mt-2 text-xs text-gray-400">
+          Unlock deeper efficiency &amp; consistency metrics (offensive/defensive rating, eFG%, ATS margin, consistency
+          index, and longer-window pitching/hitting reads) plus full head-to-head numbers with an Earl premium
+          membership.
+        </p>
+      </div>
+    );
+  }
+  const rows = stats.map((s) => {
+    let aBest = false;
+    let bBest = false;
+    if (s.av !== null && s.bv !== null) {
+      aBest = s.lower ? s.av < s.bv : s.av > s.bv;
+      bBest = s.lower ? s.bv < s.av : s.bv > s.av;
+    }
+    return { av: s.av, bv: s.bv, aBest, bBest, label: s.label, metricKey: s.label };
+  });
+  return (
+    <div className="space-y-1">
+      <div className="mb-1 flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest text-amber-300/80">
+        <span className="flex h-4 w-4 items-center justify-center rounded bg-amber-500/20 text-amber-300">
+          <Lock size={9} />
+        </span>
+        Premium · Advanced
+      </div>
+      <ThreeColTable rows={rows} homeAbbr={homeAbbr} awayAbbr={awayAbbr} note="= better · Premium" />
+    </div>
+  );
+}
+
+
