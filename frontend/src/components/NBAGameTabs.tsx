@@ -7,6 +7,7 @@ import remarkGfm from "remark-gfm";
 import PremiumGate from "./PremiumGate";
 import ShapBreakdown from "./ShapBreakdown";
 import PropBetsTab from "./PropBetsTab";
+import MatchupPanel from "./MatchupPanel";
 import EarlsPicksPanel from "./EarlsPicksPanel";
 import { useAuth } from "../lib/auth-context";
 
@@ -169,7 +170,7 @@ export default function NBAGameTabs({ gameId, prediction }: NBAGameTabsProps) {
   const [propBets, setPropBets] = useState<any[] | null>(null);
 
   // Sub-tab inside Detailed Analysis: "analysis" vs "stats"
-  const [analysisSubTab, setAnalysisSubTab] = useState<"analysis" | "stats">("analysis");
+  const [analysisSubTab, setAnalysisSubTab] = useState<"analysis" | "stats" | "matchup">("analysis");
   const writeupLoadedOnce = useRef(false);
   const [loadingProps, setLoadingProps] = useState(false);
   const writeupAttempted = useRef(false);
@@ -875,15 +876,16 @@ export default function NBAGameTabs({ gameId, prediction }: NBAGameTabsProps) {
             {activeTab === "summary" && renderGamePreview()}
             {activeTab === "analysis" && (
               <div>
-                {/* Nested sub-tabs: Analysis | Stats */}
+                {/* Nested sub-tabs: Analysis | Stats | Matchup */}
                 <div className="flex border-b border-white/10 mb-4">
                   {[
                     { key: "analysis", label: "Analysis" },
                     { key: "stats", label: "Stats" },
+                    { key: "matchup", label: "Matchup" },
                   ].map((sub) => (
                     <button
                       key={sub.key}
-                      onClick={() => setAnalysisSubTab(sub.key as "analysis" | "stats")}
+                      onClick={() => setAnalysisSubTab(sub.key as "analysis" | "stats" | "matchup")}
                       className={`px-4 py-2 text-xs uppercase tracking-wider font-medium transition-colors cursor-pointer border-b-2 ${
                         analysisSubTab === sub.key
                           ? "text-earl-400 border-earl-400"
@@ -898,6 +900,16 @@ export default function NBAGameTabs({ gameId, prediction }: NBAGameTabsProps) {
                 {analysisSubTab === "stats" && (
                   <PremiumGate>
                     <DetailedStatsTab gameId={gameId} />
+                  </PremiumGate>
+                )}
+                {analysisSubTab === "matchup" && (
+                  <PremiumGate>
+                    <MatchupPanel
+                      sport="nba"
+                      gameId={gameId}
+                      homeAbbr={h.team ?? ""}
+                      awayAbbr={a.team ?? ""}
+                    />
                   </PremiumGate>
                 )}
               </div>

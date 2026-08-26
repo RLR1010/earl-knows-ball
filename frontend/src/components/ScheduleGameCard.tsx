@@ -199,6 +199,7 @@ export default function ScheduleGameCard({
     <ChatCardLink
       href={href}
       sport={sport}
+      gameId={game.id}
       homeTeam={game.home_team ?? ""}
       awayTeam={game.away_team ?? ""}
       date={game.date}

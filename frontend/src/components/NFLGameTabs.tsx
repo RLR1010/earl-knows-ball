@@ -6,6 +6,7 @@ import remarkGfm from "remark-gfm";
 import PremiumGate from "./PremiumGate";
 import ShapBreakdown from "./ShapBreakdown";
 import PropBetsTab from "./PropBetsTab";
+import MatchupPanel from "./MatchupPanel";
 import EarlsPicksPanel from "./EarlsPicksPanel";
 import { useAuth } from "../lib/auth-context";
 
@@ -438,7 +439,7 @@ export default function NFLGameTabs({ gameId, boxscore, prediction, isFinal }: N
   const [propBetsLoading, setPropBetsLoading] = useState(false);
 
   // Sub-tab inside Detailed Analysis: "analysis" vs "stats"
-  const [analysisSubTab, setAnalysisSubTab] = useState<"analysis" | "stats">("analysis");
+  const [analysisSubTab, setAnalysisSubTab] = useState<"analysis" | "stats" | "matchup">("analysis");
   const writeupLoadedOnce = useRef(false);
 
   const home_stats = boxscore.home_stats || { total_yards: null, pass_yards: null, rush_yards: null, turnovers: null, first_downs: null, third_down_pct: null, fourth_down_pct: null, time_of_possession: null, penalties: null, penalty_yards: null, top_players: [] };
@@ -566,15 +567,16 @@ export default function NFLGameTabs({ gameId, boxscore, prediction, isFinal }: N
         {activeTab === "analysis" && (
           <PremiumGate>
           <div className="border border-white/10 rounded-xl p-6 bg-gradient-to-br from-earl-900/20 to-transparent">
-            {/* Nested sub-tabs: Analysis | Stats */}
+            {/* Nested sub-tabs: Analysis | Stats | Matchup */}
             <div className="flex border-b border-white/10 mb-4">
               {[
                 { key: "analysis", label: "Analysis" },
                 { key: "stats", label: "Stats" },
+                { key: "matchup", label: "Matchup" },
               ].map((sub) => (
                 <button
                   key={sub.key}
-                  onClick={() => setAnalysisSubTab(sub.key as "analysis" | "stats")}
+                  onClick={() => setAnalysisSubTab(sub.key as "analysis" | "stats" | "matchup")}
                   className={`px-4 py-2 text-xs uppercase tracking-wider font-medium transition-colors cursor-pointer border-b-2 ${
                     analysisSubTab === sub.key
                       ? "text-earl-300 border-earl-500"
@@ -611,6 +613,15 @@ export default function NFLGameTabs({ gameId, boxscore, prediction, isFinal }: N
 
             {analysisSubTab === "stats" && (
               <DetailedStatsTab gameId={gameId} boxscore={boxscore} />
+            )}
+
+            {analysisSubTab === "matchup" && (
+              <MatchupPanel
+                sport="nfl"
+                gameId={Number(gameId)}
+                homeAbbr={boxscore.game?.home_team ?? ""}
+                awayAbbr={boxscore.game?.away_team ?? ""}
+              />
             )}
           </div>
           </PremiumGate>

@@ -314,6 +314,42 @@ export interface StandingsResponse {
   teams: StandingsTeam[];
 }
 
+// Matchup (feature #2+#3 combined — trends + side-by-side comparison)
+export interface MatchupTeamTrends {
+  latest_game?: string;
+  last_5?: Record<string, unknown>;
+  last_10?: Record<string, unknown>;
+  recent_weighted_3?: Record<string, unknown>;
+  recent_weighted_5?: Record<string, unknown>;
+  windows?: string[];
+  latest_summary?: Record<string, unknown>;
+  recent_games?: unknown[];
+  [k: string]: unknown;
+}
+
+export interface MatchupTeam {
+  name: string;
+  id: number | null;
+  abbr: string;
+  trends: MatchupTeamTrends | null;
+  trends_error?: string | null;
+  splits: Record<string, unknown> | null;
+}
+
+export interface MatchupResponse {
+  sport: string;
+  game_id: number | null;
+  game_date: string | null;
+  teams: { home: MatchupTeam; away: MatchupTeam };
+  // comparison is { compare: { [metric]: { [abbr]: number } }, team_a, team_b }
+  comparison: {
+    compare: Record<string, Record<string, number>>;
+    team_a: string;
+    team_b: string;
+  } | null;
+  comparison_error?: string | null;
+}
+
 export const api = {
   // Teams
   teams: {
@@ -381,6 +417,16 @@ export const api = {
           (params?.seasonYear ? `&season_year=${params.seasonYear}` : "") +
           (params?.conference ? `&conference=${encodeURIComponent(params.conference)}` : "") +
           (params?.division ? `&division=${encodeURIComponent(params.division)}` : "")
+      ),
+  },
+
+  matchup: {
+    get: (params: { sport: "nfl" | "nba" | "mlb"; gameId?: number; home?: string; away?: string }) =>
+      fetchAPI<MatchupResponse>(
+        `/api/matchup?sport=${params.sport}` +
+          (params.gameId ? `&game_id=${params.gameId}` : "") +
+          (params.home ? `&home=${encodeURIComponent(params.home)}` : "") +
+          (params.away ? `&away=${encodeURIComponent(params.away)}` : "")
       ),
   },
 

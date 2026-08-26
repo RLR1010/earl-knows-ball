@@ -6,6 +6,7 @@ import remarkGfm from "remark-gfm";
 import PremiumGate from "./PremiumGate";
 import ShapBreakdown from "./ShapBreakdown";
 import PropBetsTab from "./PropBetsTab";
+import MatchupPanel from "./MatchupPanel";
 import { useAuth } from "../lib/auth-context";
 
 interface MLBGameTabsProps {
@@ -27,7 +28,7 @@ export default function MLBGameTabs({ gameId, game, formatOdds, boxscore, linesc
   const [loadingProps, setLoadingProps] = useState(false);
 
   // Sub-tab inside Detailed Analysis: "analysis" vs "stats"
-  const [analysisSubTab, setAnalysisSubTab] = useState<"analysis" | "stats">("analysis");
+  const [analysisSubTab, setAnalysisSubTab] = useState<"analysis" | "stats" | "matchup">("analysis");
   const writeupLoadedOnce = useRef(false);
 
   const hasBoxscore = !!(boxscore?.teams?.away?.teamStats || linescore?.teams?.away?.runs != null);
@@ -147,15 +148,16 @@ export default function MLBGameTabs({ gameId, game, formatOdds, boxscore, linesc
         {activeTab === "summary" && renderGameSummary()}
         {activeTab === "analysis" && (
           <div>
-            {/* Nested sub-tabs: Analysis | Stats */}
+            {/* Nested sub-tabs: Analysis | Stats | Matchup */}
             <div className="flex border-b border-white/10 mb-4">
               {[
                 { key: "analysis", label: "Analysis" },
                 { key: "stats", label: "Stats" },
+                { key: "matchup", label: "Matchup" },
               ].map(sub => (
                 <button
                   key={sub.key}
-                  onClick={() => setAnalysisSubTab(sub.key as "analysis" | "stats")}
+                  onClick={() => setAnalysisSubTab(sub.key as "analysis" | "stats" | "matchup")}
                   className={`px-4 py-2 text-xs uppercase tracking-wider font-medium transition-colors cursor-pointer ${
                     analysisSubTab === sub.key
                       ? "text-earl-400 border-b-2 border-earl-400"
@@ -168,6 +170,16 @@ export default function MLBGameTabs({ gameId, game, formatOdds, boxscore, linesc
             </div>
             {analysisSubTab === "analysis" && <PremiumGate>{renderDetailedAnalysis()}</PremiumGate>}
             {analysisSubTab === "stats" && <PremiumGate>{renderDetailedStats()}</PremiumGate>}
+            {analysisSubTab === "matchup" && (
+              <PremiumGate>
+                <MatchupPanel
+                  sport="mlb"
+                  gameId={gameId}
+                  homeAbbr={game?.home_team ?? ""}
+                  awayAbbr={game?.away_team ?? ""}
+                />
+              </PremiumGate>
+            )}
           </div>
         )}
         {activeTab === "propBets" && renderPropBets()}

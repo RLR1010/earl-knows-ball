@@ -98,6 +98,7 @@ from app.routers import (
     games,
     home,
     ingest,
+    matchup,
     mlb_stats,
     nba_stats,
     players,
@@ -136,6 +137,7 @@ _LEGACY_USER_FACING = [
     token_usage,
     customer_service,
     seo,
+    matchup,
 ]
 
 _COMPUTE_FACING = [
