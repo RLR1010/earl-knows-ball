@@ -639,7 +639,7 @@ async def home_standings(
         })
 
     # Group into conferences/leagues, then divisions, computing games back
-    # per division (vs. division leader by win pct).
+    # per division (vs. division leader by best record).
     groups = {}
     for r in team_rows:
         groups.setdefault(r["group"], {})
@@ -650,10 +650,14 @@ async def home_standings(
         divisions = []
         for dname, members in sorted(groups[gname].items()):
             members.sort(key=lambda x: (-x["wins"], x["losses"]))
-            leader_pct = members[0]["win_pct"] if members else 0.0
+            leader = members[0] if members else None
             for r in members:
-                # games back vs division leader using win pct (NFL/NBA-style).
-                r["games_back"] = round((leader_pct - r["win_pct"]) * r["games"] / 2, 1) if leader_pct > 0 else 0.0
+                if leader is None or r is leader:
+                    r["games_back"] = 0.0
+                else:
+                    # Standard GB = (W_leader - W_team + L_team - L_leader) / 2.
+                    # Always a whole or half number.
+                    r["games_back"] = (leader["wins"] - r["wins"] + r["losses"] - leader["losses"]) / 2.0
             divisions.append({"division": dname, "teams": members})
         conferences.append({"name": gname, "divisions": divisions})
 
