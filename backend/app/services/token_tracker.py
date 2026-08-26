@@ -8,7 +8,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.token_usage import UserTokenUsage
 from app.models.user import User
-from app.models.admin import UserSubscription
 
 logger = logging.getLogger(__name__)
 
@@ -16,24 +15,11 @@ logger = logging.getLogger(__name__)
 async def _get_token_period_start(user: User, db: AsyncSession) -> date:
     """Get the start date of the current token usage period for a user.
 
-    Uses the subscription's current_period_start to determine the billing
-    cycle anchor.  Falls back to the 1st of the calendar month for users
-    without an active subscription.
+    Token budget resets on the 1st of every calendar month for ALL users
+    (free, monthly, and annual members alike). The subscription's Stripe
+    billing cycle is intentionally NOT used as the anchor, so annual
+    subscribers get a fresh token limit every month instead of once per year.
     """
-    result = await db.execute(
-        select(UserSubscription.current_period_start)
-        .where(
-            UserSubscription.user_id == user.id,
-            UserSubscription.status.in_(["active", "trialing"]),
-        )
-        .order_by(UserSubscription.created_at.asc())
-        .limit(1)
-    )
-    row = result.scalar_one_or_none()
-
-    if row:
-        return row.date()
-
     return date.today().replace(day=1)
 
 

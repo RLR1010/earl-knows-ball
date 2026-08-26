@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from sqlalchemy.orm import joinedload
 from sqlalchemy import func
+from app.routers.games import _records_as_of_batch
 from app.models.nba import NBAGame, NBAPlayer, NBAPlayerSeasonStats, NBASeason, NBATeam
 
 router = APIRouter()
@@ -432,7 +433,7 @@ async def nba_games(
     if cached is not None:
         return JSONResponse(content=cached, headers={"Cache-Control": "public, max-age=30"})
 
-    filters = ["s.year = :year"]
+    filters = ["s.year = :year", "g.game_type != 'PRE'"]
     params = {"year": year}
 
     if date:
@@ -446,7 +447,8 @@ async def nba_games(
     where_clause = " AND ".join(filters)
 
     sql = f"""
-    SELECT g.id, g.nba_game_id, g.date, g.game_type, g.home_score, g.away_score,
+    SELECT g.id, g.nba_game_id, g.date, (g.date AT TIME ZONE 'America/Chicago')::date AS game_date,
+           g.game_type, g.home_score, g.away_score, g.home_team_id, g.away_team_id,
            g.status::text, g.venue, g.attendance,
            ht.abbreviation AS home_team, at.abbreviation AS away_team,
            blc.closing_spread AS spread, blc.closing_ou AS over_under,
@@ -480,7 +482,23 @@ async def nba_games(
     ORDER BY g.date ASC
     """
     result = await db.execute(text(sql), params)
-    games_list = jsonable_encoder([dict(r) for r in result.mappings().all()])
+    _nba_docs = [dict(r) for r in result.mappings().all()]
+
+    # Team records at the time of each game (batched, matches game-detail behavior)
+    _sid = await db.execute(
+        text("SELECT id FROM nba.seasons WHERE year = :y LIMIT 1"), {"y": year}
+    )
+    _season_id = _sid.scalar()
+    _pairs = []
+    for _r in _nba_docs:
+        _pairs.append((_r["home_team_id"], _r["game_date"], _season_id))
+        _pairs.append((_r["away_team_id"], _r["game_date"], _season_id))
+    _records = await _records_as_of_batch(db, "nba", _pairs)
+    for _g in _nba_docs:
+        _g["home_record"] = _records.get((_g["home_team_id"], str(_g["game_date"]), _season_id))
+        _g["away_record"] = _records.get((_g["away_team_id"], str(_g["game_date"]), _season_id))
+
+    games_list = jsonable_encoder(_nba_docs)
     _nba_games_store(cache_key, games_list)
     return JSONResponse(content=games_list, headers={"Cache-Control": "public, max-age=30"})
 

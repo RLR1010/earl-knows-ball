@@ -688,7 +688,7 @@ function DetailedStatsTab({ gameId, boxscore }: { gameId: string; boxscore: NFLB
       const raw = val.value;
       const dv = raw !== null && raw !== undefined
         ? (typeof raw === "number"
-            ? (Number.isInteger(raw) ? raw.toLocaleString() : raw.toFixed(4))
+            ? (Number.isInteger(raw) ? raw.toLocaleString() : raw.toFixed(3))
             : String(raw))
         : "—";
       const dn = val.display_name || fallbackKey || "";
@@ -697,7 +697,7 @@ function DetailedStatsTab({ gameId, boxscore }: { gameId: string; boxscore: NFLB
     const raw = val;
     const dv = raw !== null && raw !== undefined
       ? (typeof raw === "number"
-          ? (Number.isInteger(raw) ? raw.toLocaleString() : raw.toFixed(2))
+          ? (Number.isInteger(raw) ? raw.toLocaleString() : raw.toFixed(3))
           : String(raw))
       : "—";
     return { displayValue: dv, displayName: fallbackKey || "", description: undefined };
@@ -825,6 +825,61 @@ function DetailedStatsTab({ gameId, boxscore }: { gameId: string; boxscore: NFLB
     );
   }
 
+  // ── Section label + sectioned feature renderer (mirrors MLB) ──────────
+  // Groups pick_card features into Home/Away/Game Context/Betting Lines
+  // using the pick_card_section attached read-time from the nfl.features table.
+  function sectionLabel(section: string): string {
+    const map: Record<string, string> = {
+      home_stats: "Home Team Stats",
+      away_stats: "Away Team Stats",
+      game_context: "Game Context",
+      betting_lines: "Betting Lines",
+      other: "Other Stats",
+    };
+    return map[section] || section;
+  }
+
+  function renderSectionedFeatures(section: string) {
+    let entries = Object.entries(features as Record<string, any>).filter(
+      ([, val]) => {
+        const v = val as { pick_card_section?: string } | null;
+        return (
+          val &&
+          typeof val === "object" &&
+          (v?.pick_card_section === section ||
+            (section === "other" && !v?.pick_card_section))
+        );
+      },
+    );
+    // Order by the admin-chosen sort_order column (from nfl.features, attached
+    // read-time by the backend). This only affects frontend display — the
+    // data_loader keeps its own order for training/inference.
+    entries = entries.sort((a, b) => {
+      const av = (a[1] as any)?.sort_order ?? 0;
+      const bv = (b[1] as any)?.sort_order ?? 0;
+      return av - bv || a[0].localeCompare(b[0]);
+    });
+    if (entries.length === 0) return null;
+    return (
+      <div>
+        <SectionHeader title={sectionLabel(section)} />
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-x-3 gap-y-0.5">
+          {entries.map(([key, val]) => {
+            const info = getInfo(val, keyToLabel(key));
+            return (
+              <StatRow
+                key={key}
+                label={info.displayName || keyToLabel(key)}
+                value={info.displayValue}
+                description={info.description}
+              />
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
   // ── PredCard for predictions summary ────────────────────────────────────
   function PredCard({ label, value, iconClass, tooltip }: {
     label: string; value: string; iconClass: string; tooltip: string;
@@ -898,35 +953,13 @@ function DetailedStatsTab({ gameId, boxscore }: { gameId: string; boxscore: NFLB
         </div>
       </div>
 
-      {/* Home Team Stats */}
-      {homeEntries.length > 0 && (
-        <div>
-          <SectionHeader title="Home Team Stats" />
-          {renderStatSection(homeStats, "grid-cols-2 md:grid-cols-3")}
-        </div>
-      )}
-
-      {/* Away Team Stats */}
-      {awayEntries.length > 0 && (
-        <div>
-          <SectionHeader title="Away Team Stats" />
-          {renderStatSection(awayStats, "grid-cols-2 md:grid-cols-3")}
-        </div>
-      )}
-
-      {/* Game Context / Situational */}
-      {sitEntries.length > 0 && (
-        <div>
-          <SectionHeader title="Game Context / Situational" />
-          {renderStatSection(situational, "grid-cols-2 md:grid-cols-3")}
-        </div>
-      )}
-
-      {/* Splits / Betting Lines */}
-      {renderSplits()}
-
-      {/* All Model Features */}
-      {renderFeatures()}
+      {/* Sectioned stats — grouped by pick_card_section from the NFL
+         features table, exactly like MLB */}
+      {renderSectionedFeatures("game_context")}
+      {renderSectionedFeatures("betting_lines")}
+      {renderSectionedFeatures("home_stats")}
+      {renderSectionedFeatures("away_stats")}
+      {renderSectionedFeatures("other")}
     </div>
   );
 }

@@ -1,4 +1,6 @@
 import type { Metadata } from "next";
+import type { ReactNode } from "react";
+import Link from "next/link";
 
 export const metadata: Metadata = {
   title: "FAQ",
@@ -7,7 +9,7 @@ export const metadata: Metadata = {
   keywords: ["Earl Knows Ball FAQ", "AI sports handicapping", "sports betting help", "betting picks questions"],
 };
 
-const FAQS: { q: string; a: string }[] = [
+const FAQS: { q: string; a: string | ReactNode }[] = [
   {
     q: "What is Earl Knows Ball?",
     a: "Earl Knows Ball is an AI-powered sports handicapping service that provides football (NFL), baseball (MLB), and basketball (NBA) predictions, picks with probabilities, betting lines, statistics, game writeups, and a conversational AI handicapper called Earl. It is built to give bettors the research and analysis they need to make more informed decisions.",
@@ -17,8 +19,8 @@ const FAQS: { q: string; a: string }[] = [
     a: "Earl combines historical stats, current betting lines, injuries, splits, situational data, and matchup analysis to produce predictions for moneyline, against-the-spread (ATS), and over/under (total) markets. You can ask Earl questions directly in the chat to get explanations behind any pick. All predictions are statistical estimates and are never guaranteed to win.",
   },
   {
-    q: "What is the difference between the Free, Premium, and Ultimate plans?",
-    a: "Free gives you limited access to picks and basic features. Premium unlocks full writeups, detailed handicapping info, and expanded chat. Ultimate provides everything in Premium plus the most advanced features and the deepest research. You can see the full comparison and upgrade on the Pricing page inside your account.",
+    q: "What is the difference between the Free and Premium plans?",
+    a: "Free gives you limited access to picks and basic features. Premium unlocks full writeups, detailed handicapping info, and expanded chat. You can see the full comparison and upgrade on the Pricing page inside your account.",
   },
   {
     q: "What payment methods do you accept?",
@@ -26,15 +28,24 @@ const FAQS: { q: string; a: string }[] = [
   },
   {
     q: "How do I cancel my subscription?",
-    a: "You can cancel anytime from your account (Account or Billing settings). Cancellation takes effect at the end of your current billing period, so you keep Premium or Ultimate access until then. After that you'll downgrade to the Free plan automatically.",
+    a: (
+      <>
+        You can cancel anytime by visiting your profile at{" "}
+        <Link href="/profile" className="text-earl-400 hover:text-earl-300 underline">
+          https://earlknowsball.com/profile
+        </Link>
+        . Cancellation takes effect at the end of your current billing period, so you keep Premium access until
+        then. After that you&apos;ll downgrade to the Free plan automatically.
+      </>
+    ),
   },
   {
     q: "Do you offer refunds?",
-    a: "Refunds are handled on a case-by-case basis in line with our Terms & Conditions. If you believe you were incorrectly charged, or the Service did not work as described, please contact customer support and we'll review your request.",
+    a: "We do not offer refunds for our service in line with our Terms &amp; Conditions. If you believe you were incorrectly charged, or the Service did not work as described, please contact customer support and we'll review your request.",
   },
   {
-    q: "Is betting advice legal?",
-    a: "Earl Knows Ball is a sports analytics and information service. We do not offer gambling, financial, or professional advice, and you must be of legal age to gamble in your jurisdiction. Always bet responsibly. If you or someone you know has a gambling problem, call 1-800-GAMBLER or contact your local responsible-gambling resource.",
+    q: "Is it legal for me to use this service?",
+    a: "Earl Knows Ball is a sports analytics and information service, and is for entertainment purposes only. We do not offer gambling, financial, or professional advice, and you must be of legal age to gamble in your jurisdiction. Always bet responsibly. If you or someone you know has a gambling problem, call 1-800-GAMBLER or contact your local responsible-gambling resource.",
   },
   {
     q: "Do your picks guarantee wins?",

@@ -1054,8 +1054,50 @@ async def update_subscription(
         raise HTTPException(status_code=404, detail="Subscription not found")
 
     allowed_fields = {"status", "current_period_start", "current_period_end", "canceled_at", "plan_id"}
+
+    requested_status = data.get("status")
+
+    # ── Real Stripe cancellation (at end of billing period) ──────────────
+    # When an admin sets status to "canceled" on a subscription that has a
+    # Stripe subscription id, schedule the cancel at Stripe so the customer
+    # keeps their membership through the end of the current billing cycle and
+    # then stops being billed. Without this, the admin dashboard only flipped
+    # a local DB flag and Stripe kept charging the customer.
+    if requested_status == "canceled" and sub.stripe_subscription_id:
+        try:
+            from app.routers.subscriptions import cancel_subscription_at_stripe
+            stripe_sub = await cancel_subscription_at_stripe(sub.stripe_subscription_id)
+            # Stripe keeps the sub status "active" and sets cancel_at_period_end=True;
+            # mirror that locally. The customer.subscription.deleted webhook will
+            # downgrade them to free when the period actually ends.
+            sub.cancel_at_period_end = True
+            sub.status = stripe_sub.get("status", sub.status)
+            logger.info(
+                f"Admin scheduled Stripe cancel-at-period-end for {sub.stripe_subscription_id} "
+                f"(user {sub.user_id}, admin={admin.id})"
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(
+                f"Admin attempted to cancel Stripe subscription "
+                f"{sub.stripe_subscription_id} but Stripe call failed: {e}"
+            )
+            raise HTTPException(
+                status_code=400,
+                detail=f"Failed to cancel subscription at Stripe: {e}",
+            )
+
+    # Resolve the final status: if we canceled at Stripe (end of period),
+    # reflect Stripe's actual status ('active' + cancel_at_period_end=True) so
+    # the local row isn't marked fully 'canceled' while the customer keeps paid
+    # access until the cycle ends. The customer.subscription.deleted webhook
+    # marks it 'canceled' (+ downgrades to free) when the period actually ends.
+    canceled_at_stripe = requested_status == "canceled" and sub.stripe_subscription_id
     for key, value in data.items():
         if key in allowed_fields:
+            if canceled_at_stripe and key == "status":
+                continue  # keep the Stripe-synced status from the block above
             setattr(sub, key, value)
 
     await db.commit()

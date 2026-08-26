@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useSeo } from "@/components/Seo";
+import { useAuth } from "@/lib/auth-context";
 
 interface Plan {
   id: string;
@@ -32,8 +33,12 @@ export default function PricingPage() {
     keywords: "pricing, plans, premium, Earl Knows Ball, sports betting picks, AI handicapping",
   });
   const router = useRouter();
+  const { user, loading: loadingAuth } = useAuth();
   const [plans, setPlans] = useState<Plan[]>([]);
   const [loadingPlans, setLoadingPlans] = useState(true);
+
+  const isMember =
+    user?.subscription_tier === "premium" || user?.subscription_tier === "premium_yearly";
 
   useEffect(() => {
     fetch("/api/subscriptions/plans")
@@ -44,6 +49,10 @@ export default function PricingPage() {
   }, []);
 
   const handleSubscribe = (planId: string) => {
+    if (isMember) {
+      router.push("/profile");
+      return;
+    }
     const token = localStorage.getItem("earl_token");
     if (!token) {
       router.push(`/auth?redirect=/pricing&plan=${planId}`);
@@ -52,7 +61,7 @@ export default function PricingPage() {
     router.push(`/checkout?plan=${planId}`);
   };
 
-  if (loadingPlans) {
+  if (loadingPlans || loadingAuth) {
     return (
       <div className="min-h-screen bg-neutral-950 flex items-center justify-center">
         <div className="text-earl-400 text-lg animate-pulse">Loading plans...</div>
@@ -127,12 +136,18 @@ export default function PricingPage() {
                   ))}
                 </ul>
 
-                <button
-                  onClick={() => handleSubscribe(plan.id)}
-                  className="w-full py-3 rounded-lg font-semibold text-sm transition bg-earl-400 text-black hover:bg-amber-400"
-                >
-                  Subscribe Now
-                </button>
+                {isMember ? (
+                  <div className="w-full py-3 rounded-lg font-semibold text-sm transition bg-emerald-600 text-white text-center">
+                    You&apos;re already a Premium member
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => handleSubscribe(plan.id)}
+                    className="w-full py-3 rounded-lg font-semibold text-sm transition bg-earl-400 text-black hover:bg-amber-400"
+                  >
+                    Subscribe Now
+                  </button>
+                )}
               </div>
             );
           })}
@@ -144,6 +159,19 @@ export default function PricingPage() {
           <Link href="/profile" className="text-earl-400 hover:underline">
             Manage your subscription
           </Link>
+        </p>
+
+        {/* Terms disclaimer */}
+        <p className="text-center text-xs text-gray-500 leading-relaxed mt-4 max-w-2xl mx-auto">
+          By purchasing a membership, you agree to our{" "}
+          <Link href="/terms" className="text-earl-400 hover:text-earl-300 underline">
+            Terms &amp; Conditions
+          </Link>{" "}
+          and{" "}
+          <Link href="/privacy" className="text-earl-400 hover:text-earl-300 underline">
+            Privacy Policy
+          </Link>
+          .
         </p>
       </div>
     </div>

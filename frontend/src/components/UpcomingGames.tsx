@@ -36,7 +36,7 @@ export default function UpcomingGames() {
 
   if (loading) {
     return (
-      <section className="max-w-5xl mx-auto px-4 mb-12">
+      <section className="max-w-6xl mx-auto px-4 mb-12">
         <h2 className="text-3xl font-bold mb-6 text-center">Upcoming Games</h2>
         <div className="text-center py-12 text-gray-500">Loading upcoming games...</div>
       </section>
@@ -45,7 +45,7 @@ export default function UpcomingGames() {
 
   if (games.length === 0) {
     return (
-      <section className="max-w-5xl mx-auto px-4 mb-12">
+      <section className="max-w-6xl mx-auto px-4 mb-12">
         <h2 className="text-3xl font-bold mb-6 text-center">Upcoming Games</h2>
         <div className="text-center py-12 text-gray-500">
           No upcoming games scheduled across MLB, NBA, and NFL.
@@ -67,7 +67,7 @@ export default function UpcomingGames() {
     .filter(([, list]) => list.length > 0);
 
   return (
-    <section className="max-w-5xl mx-auto px-4 mb-12">
+    <section className="max-w-6xl mx-auto px-4 mb-12">
       <h2 className="text-3xl font-bold mb-6 text-center">Upcoming Games</h2>
 
       {orderedGroups.map(([sport, list]) => (

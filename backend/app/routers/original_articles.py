@@ -1444,7 +1444,7 @@ async def list_original_articles(
     # (Matches the writeup `tier` convention — full content only for tier=premium.)
     if tier != "premium":
         for r in rows:
-            if r.get("visibility") in ("premium", "ultimate"):
+            if r.get("visibility") == "premium":
                 r["content"] = None
     return {"sport": sport, "articles": rows}
 
@@ -1492,7 +1492,7 @@ async def get_original_article(
         raise HTTPException(status_code=404, detail="Article not found")
     art = dict(row)
     # Premium gate: redact the body for non-premium callers.
-    if tier != "premium" and art.get("visibility") in ("premium", "ultimate"):
+    if tier != "premium" and art.get("visibility") == "premium":
         art["content"] = None
     return {"article": art, "slug": art["slug"]}
 

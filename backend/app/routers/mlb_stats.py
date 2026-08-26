@@ -13,6 +13,7 @@ import decimal
 import httpx
 from sqlalchemy import select, text
 from app.database import get_db, async_session
+from app.routers.games import _records_as_of_batch
 from app.models.mlb import MLBPlayer, MLBBettingLine
 
 
@@ -973,7 +974,7 @@ async def mlb_games(
         return JSONResponse(content=cached, headers={"Cache-Control": "public, max-age=30"})
 
     # Build query from our DB
-    filters = ["s.year = :year"]
+    filters = ["s.year = :year", "g.game_type != 'S'"]
     params = {"year": year}
 
     if date:
@@ -992,6 +993,7 @@ async def mlb_games(
         g.mlb_game_id,
         g.game_type,
         g.date,
+        (g.date AT TIME ZONE 'America/Chicago')::date AS game_date,
         g.status::text,
         ht.abbreviation AS home_team,
         at.abbreviation AS away_team,
@@ -1005,6 +1007,8 @@ async def mlb_games(
         g.day_night,
         g.home_pitcher_name,
         g.away_pitcher_name,
+        g.home_team_id,
+        g.away_team_id,
         c.closing_spread AS spread,
         c.closing_ou AS over_under,
         c.closing_home_ml AS home_moneyline,
@@ -1048,6 +1052,19 @@ async def mlb_games(
             if isinstance(g.get(field), decimal.Decimal):
                 g[field] = float(g[field])
         games_list.append(g)
+
+    # Team records at the time of each game (batched, matches game-detail behavior)
+    # Resolve the season id for this year (schedule is filtered to one calendar year)
+    _sid_row = await db.execute(text("SELECT id FROM mlb.seasons WHERE year = :y LIMIT 1"), {"y": year})
+    _season_id = _sid_row.scalar()
+    pairs = []
+    for r_ in rows:
+        pairs.append((r_["home_team_id"], r_["game_date"], _season_id))
+        pairs.append((r_["away_team_id"], r_["game_date"], _season_id))
+    records = await _records_as_of_batch(db, "mlb", pairs)
+    for g in games_list:
+        g["home_record"] = records.get((g.get("home_team_id"), str(g.get("game_date")), _season_id))
+        g["away_record"] = records.get((g.get("away_team_id"), str(g.get("game_date")), _season_id))
 
     # If a date was requested, overlay live data from MLB API
     if date:
@@ -1143,7 +1160,7 @@ async def mlb_nearest_date(
         JOIN mlb.seasons s ON s.id = g.season_id
         WHERE s.year = :year
           AND (g.date AT TIME ZONE 'America/Chicago')::date < :date
-          AND g.game_type IN ('R', 'P', 'D', 'W', 'C', 'A')
+          AND g.game_type IN ('R', 'P', 'D', 'W', 'C', 'A', 'F', 'L')
         ORDER BY game_date DESC
         LIMIT 1
         """
@@ -1157,7 +1174,7 @@ async def mlb_nearest_date(
         FROM mlb.games g
         JOIN mlb.seasons s ON s.id = g.season_id
         WHERE s.year < :year
-          AND g.game_type IN ('R', 'P', 'D', 'W', 'C', 'A')
+          AND g.game_type IN ('R', 'P', 'D', 'W', 'C', 'A', 'F', 'L')
         ORDER BY s.year DESC, game_date DESC
         LIMIT 1
         """
@@ -1172,7 +1189,7 @@ async def mlb_nearest_date(
         JOIN mlb.seasons s ON s.id = g.season_id
         WHERE s.year = :year
           AND (g.date AT TIME ZONE 'America/Chicago')::date > :date
-          AND g.game_type IN ('R', 'P', 'D', 'W', 'C', 'A')
+          AND g.game_type IN ('R', 'P', 'D', 'W', 'C', 'A', 'F', 'L')
         ORDER BY game_date ASC
         LIMIT 1
         """
@@ -1186,7 +1203,7 @@ async def mlb_nearest_date(
         FROM mlb.games g
         JOIN mlb.seasons s ON s.id = g.season_id
         WHERE s.year > :year
-          AND g.game_type IN ('R', 'P', 'D', 'W', 'C', 'A')
+          AND g.game_type IN ('R', 'P', 'D', 'W', 'C', 'A', 'F', 'L')
         ORDER BY s.year ASC, game_date ASC
         LIMIT 1
         """
@@ -1202,7 +1219,7 @@ async def mlb_nearest_date(
         JOIN mlb.seasons s ON s.id = g.season_id
         WHERE s.year = :year
           AND (g.date AT TIME ZONE 'America/Chicago')::date > :date
-          AND g.game_type IN ('R', 'P', 'D', 'W', 'C', 'A')
+          AND g.game_type IN ('R', 'P', 'D', 'W', 'C', 'A', 'F', 'L')
         ORDER BY game_date ASC
         LIMIT 1
         """
@@ -1217,7 +1234,7 @@ async def mlb_nearest_date(
         JOIN mlb.seasons s ON s.id = g.season_id
         WHERE s.year = :year
           AND (g.date AT TIME ZONE 'America/Chicago')::date < :date
-          AND g.game_type IN ('R', 'P', 'D', 'W', 'C', 'A')
+          AND g.game_type IN ('R', 'P', 'D', 'W', 'C', 'A', 'F', 'L')
         ORDER BY game_date DESC
         LIMIT 1
         """
@@ -1241,7 +1258,7 @@ async def mlb_game_dates(
             FROM mlb.games g
             JOIN mlb.seasons s ON s.id = g.season_id
             WHERE s.year = :year
-              AND g.game_type IN ('R', 'P', 'D', 'W', 'C', 'A')
+              AND g.game_type IN ('R', 'P', 'D', 'W', 'C', 'A', 'F', 'L')
             ORDER BY game_date ASC
         """),
         {"year": year},
@@ -1283,6 +1300,10 @@ async def mlb_game_boxscore(
         g.home_pitcher_name,
         g.away_pitcher_name,
         g.venue,
+        g.roof_type,
+        g.temperature,
+        g.wind_speed,
+        g.weather_condition,
         g.home_wins,
         g.home_losses,
         g.away_wins,

@@ -11,6 +11,7 @@ from datetime import date, datetime, timedelta, timezone as dt_timezone
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.chat_tools._player_cache import get_nba_players, invalidate_nba_players
 from app.models.nba import (
     NBATeam,
     NBAPlayer,
@@ -84,9 +85,9 @@ async def _resolve_player_split(db: AsyncSession, player_name: str) -> dict:
     def _norm(s: str) -> str:
         return unicodedata.normalize("NFD", s).encode("ascii", "ignore").decode().lower()
     n = _norm(player_name)
-    r = await db.execute(text("SELECT id, name FROM nba.players"))
+    rows = await get_nba_players(db)   # cached (id, name) tuples
     best = None
-    for pid, name in r.all():
+    for pid, name in rows:
         if _norm(str(name)) == n:
             return {"name": name, "id": pid}
         if not best and n in _norm(str(name)):
@@ -254,6 +255,22 @@ TOOL_DEFINITIONS = [
                     "player_name": {"type": "string", "description": "Player full name"},
                     "season_year": {"type": "integer", "description": "Season year (defaults to current)"},
                     "limit": {"type": "integer", "description": "Recent games (default 10, max 20)"},
+                },
+                "required": ["player_name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_player_recent_stats",
+            "description": "Get an NBA player's stats over their most recent N games (you choose N, the model, based on context): points, rebounds, assists, steals, blocks, turnovers, FG/3PT/FT, plus-minus, fantasy points, games started. Returns window totals, per-game averages, and a game-by-game breakdown. Also returns the stored season fixed-window averages (last-5/10/15/30). Use for streaks, hot/cold form, and recent trend handicapping.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "player_name": {"type": "string", "description": "Player full name (accent-insensitive, e.g. 'Giannis Antetokounmpo' or 'Jose Calderon')"},
+                    "games": {"type": "integer", "description": "Number of most recent games to average/sum (default 5, max 50; use your judgment on window)"},
+                    "season_year": {"type": "integer", "description": "Season year (defaults to most recent season)"},
                 },
                 "required": ["player_name"],
             },
@@ -739,6 +756,180 @@ async def _get_player_game_logs(db: AsyncSession, args: dict) -> dict:
             "ft_att": row.free_throws_attempted,
         })
     return {"player": player.name, "season_year": year, "game_logs": games}
+
+
+
+async def _get_player_recent_stats(db: AsyncSession, args: dict) -> dict:
+    """An NBA player's stats over their most recent N games, summed from the
+    player_rolling_stats table (one row per player-game).
+
+    args:
+        player_name: str (required; accent-insensitive, e.g. 'Giannis')
+        games: int (optional; number of most recent games. default 5, max 50)
+        season_year: int (optional; default = most recent season with data)
+
+    Returns season to-date fixed-window averages (ppg_5/10/15/30, etc.) plus the
+    requested window: totals, per-game averages, and a game-by-game breakdown.
+    """
+    player_name = args.get("player_name", "")
+    n = min(max(int(args.get("games") or 5), 1), 50)
+    year = args.get("season_year") or await _resolve_season_year(db)
+
+    clean = player_name.strip()
+    if not clean:
+        return {"error": "player_name is required"}
+
+    # Accent-insensitive normalization (NFD + strip combining marks) so the
+    # LLM can type "Jokic", "Doncic", "Tatum" and still match Jokić/
+    # Dončić, and "Zubac" matches Ivica Zubac. The nba.players name column
+    # stores accented official names, and naive ilike '%jokic%' would miss them.
+    def _norm(s):
+        return "".join(
+            ch for ch in unicodedata.normalize("NFD", s.lower())
+            if not unicodedata.combining(ch)
+        )
+
+    q = _norm(clean)
+    q_first, _, q_rest = q.partition(" ")
+    q_last_tokens = [t for t in q_rest.split() if t] if q_rest else []
+
+    # Player snapshot is small (a few hundred names) — fetch it once and reuse
+    # for a short TTL via the shared cache (the scoring below runs in-memory on
+    # each call). Scoring in Python makes matching fully accent- and typo-robust
+    # (a DB ilike '%doncic%' would miss 'Dončić'). Cache is TTL-bounded +
+    # invalidated on roster/season ingest, so new players/trades show up fast.
+    all_players = await get_nba_players(db)
+
+    def _score(pname):
+        pn = _norm(pname)
+        pn_tokens = pn.split()
+        if pn == q:
+            return 5.0
+        if not q_last_tokens:
+            # Single-token query: a whole-name-token match is a strong match.
+            if q_first in pn_tokens:
+                return 4.0
+            return 1.0 if any(q_first in t for t in pn_tokens) else 0.0
+        # First + last (or last-token) query
+        if all(t in pn_tokens for t in q_last_tokens) and pn.startswith(q_first):
+            return 5.0
+        if all(t in pn for t in q_last_tokens):
+            return 3.0
+        if q_first in pn_tokens:
+            return 2.0
+        return 0.0
+
+    scored = sorted((( _score(name), pid, name) for pid, name in all_players),
+                    key=lambda x: (-x[0], x[2]))
+    top, player_id, best_name = scored[0] if scored else (0.0, None, None)
+    if player_id is None or top <= 0.0:
+        return {"error": f"Player not found: {clean}"}
+    player_name = best_name
+    # Only treat as ambiguous when two+ candidates TIE on a genuinely strong
+    # match (e.g. two distinct players sharing the same first+last name). A
+    # clear winner (score 5.0 vs a 3.0 also-ran) is resolved, not ambiguous.
+    if len(scored) > 1 and scored[0][0] >= 3 and scored[0][0] == scored[1][0]:
+        return {"error": f"Multiple players match '{clean}'",
+                "suggestions": [n for _, _, n in scored[:8]]}
+
+    sql = text("""
+        SELECT game_date, is_starter, minutes,
+               points, rebounds_total, assists, steals, blocks, turnovers,
+               plus_minus, fgm, fga, tpm, tpa, ftm, fta,
+               ppg_5, ppg_10, ppg_15, ppg_30, rpg_5, apg_5, mpg_5,
+               fg_pct_5, tp_pct_5, ft_pct_5, plus_minus_5, gp_5, spg_5, bpg_5, tpg_5,
+               cum_games, cum_points, cum_rebounds, cum_assists, cum_ppg
+        FROM nba.player_rolling_stats
+        WHERE player_id = :pid AND season_id = (SELECT id FROM nba.seasons WHERE year = :year)
+        ORDER BY game_date DESC
+        LIMIT :n
+    """)
+    r = await db.execute(sql, {"pid": player_id, "year": year, "n": n})
+    rows = r.mappings().all()
+    if not rows:
+        return {"error": f"No recent games found for {player_name}"}
+
+    def _f(v, nd=1):
+        if v is None:
+            return None
+        return round(float(v), nd)
+
+    tot = {"games": len(rows)}
+    for k in ("minutes", "points", "rebounds_total", "assists", "steals",
+              "blocks", "turnovers", "plus_minus", "fgm", "fga",
+              "tpm", "tpa", "ftm", "fta"):
+        tot[k] = sum((row[k] or 0) for row in rows)
+    tot["games_started"] = sum(1 for row in rows if row["is_starter"])
+
+    # Per-game averages over the window
+    g = len(rows)
+    avg = {
+        "ppg": round(tot["points"] / g, 1),
+        "rpg": round(tot["rebounds_total"] / g, 1),
+        "apg": round(tot["assists"] / g, 1),
+        "spg": round(tot["steals"] / g, 1),
+        "bpg": round(tot["blocks"] / g, 1),
+        "tpg": round(tot["turnovers"] / g, 1),
+        "mpg": round(tot["minutes"] / g, 1),
+        "fg_pct": round(tot["fgm"] / tot["fga"] * 100, 1) if tot["fga"] else None,
+        "tp_pct": round(tot["tpm"] / tot["tpa"] * 100, 1) if tot["tpa"] else None,
+        "ft_pct": round(tot["ftm"] / tot["fta"] * 100, 1) if tot["fta"] else None,
+    }
+    avg["plus_minus"] = round(tot["plus_minus"] / g, 1)
+    avg["fantasy_points"] = round(
+        (tot["points"] + 1.2 * tot["rebounds_total"] + 1.5 * tot["assists"]
+         + 3 * tot["steals"] + 3 * tot["blocks"] - tot["turnovers"]) / g, 1)
+
+    # Latest stored fixed-window averages (cross-check of the summed window)
+    # The table stores fg/tp/ft pct as 0-1 ratios; present them as percentages
+    # (×100) to match the "averages" block above.
+    latest = rows[0]
+    fixed = None
+    if n == 5 and latest["ppg_5"] is not None:
+        fixed = {"ppg": _f(latest["ppg_5"]), "rpg": _f(latest["rpg_5"]),
+                  "apg": _f(latest["apg_5"]), "mpg": _f(latest["mpg_5"]),
+                  "fg_pct_5": _f(latest["fg_pct_5"] * 100, 1),
+                  "tp_pct_5": _f(latest["tp_pct_5"] * 100, 1),
+                  "ft_pct_5": _f(latest["ft_pct_5"] * 100, 1),
+                  "plus_minus_5": _f(latest["plus_minus_5"]),
+                  "spg_5": _f(latest["spg_5"]), "bpg_5": _f(latest["bpg_5"]),
+                  "tpg_5": _f(latest["tpg_5"])}
+
+    # Recent fixed-window averages at the requested N where the table stores one
+    recent_fixed = None
+    if n == 10 and latest["ppg_10"] is not None:
+        recent_fixed = {"ppg_10": _f(latest["ppg_10"])}
+    elif n == 15 and latest["ppg_15"] is not None:
+        recent_fixed = {"ppg_15": _f(latest["ppg_15"])}
+    elif n == 30 and latest["ppg_30"] is not None:
+        recent_fixed = {"ppg_30": _f(latest["ppg_30"])}
+
+    games = [{
+        "date": str(row["game_date"]),
+        "starter": bool(row["is_starter"]),
+        "minutes": _f(row["minutes"]),
+        "points": row["points"],
+        "rebounds": row["rebounds_total"],
+        "assists": row["assists"],
+        "steals": row["steals"],
+        "blocks": row["blocks"],
+        "turnovers": row["turnovers"],
+        "plus_minus": row["plus_minus"],
+        "fg": f"{row['fgm'] or 0}-{row['fga'] or 0}",
+        "3pt": f"{row['tpm'] or 0}-{row['tpa'] or 0}",
+        "ft": f"{row['ftm'] or 0}-{row['fta'] or 0}",
+    } for row in rows]
+
+    return {
+        "player": player_name,
+        "season_year": year,
+        "window": f"last {n} games",
+        "totals": tot,
+        "averages": avg,
+        "stored_fixed_window_5": fixed,
+        "stored_fixed_window_n": recent_fixed,
+        "game_logs": games,
+    }
 
 
 
@@ -1461,6 +1652,7 @@ _TOOL_HANDLERS = {
     "get_head_to_head": _get_head_to_head,
     "get_player_stats": _get_player_stats,
     "get_player_game_logs": _get_player_game_logs,
+    "get_player_recent_stats": _get_player_recent_stats,
     "get_player_split_stats": _get_player_split_stats,
     "get_team_split_stats": _get_team_split_stats,
     "get_game_prediction": _get_game_prediction,

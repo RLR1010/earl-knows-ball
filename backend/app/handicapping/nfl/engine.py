@@ -163,24 +163,48 @@ CURRENT_NFL_YEAR = _resolve_live_nfl_year()
 
 
 def _load_model_for_year(model_type: str, year: int) -> Optional[xgb.Booster]:
-    """Load a per-year model for a specific calendar year."""
+    """Load a per-year model for a specific calendar year.
+
+    Falls back to the most recent available year's pkl when no model exists for
+    *year* (e.g. live prediction for a not-yet-trained season uses the previous
+    year's model). Returns ``None`` only when no year at or below *year* has a
+    pkl.
+    """
     paths = _resolve_year_pkl_paths(model_type)
-    p = paths.get(year)
-    if p and p.exists():
-        with open(p, "rb") as f:
-            model = pickle.load(f)
-        logger.info("Loaded %s model for year %d from %s", model_type, year, p)
-        return model
-    logger.warning("No %s model found for year %d", model_type, year)
-    return None
+    eff = _resolve_model_year(paths, year)
+    if eff is None:
+        logger.warning("No %s model found for year %d or earlier", model_type, year)
+        return None
+    p = paths[eff]
+    with open(p, "rb") as f:
+        model = pickle.load(f)
+    logger.info("Loaded %s model for year %d from %s", model_type, eff, p)
+    return model
 
 
 def _model_file_for_year(model_type: str, year: int) -> Optional[str]:
     """Return the basename of the pkl model file for *model_type*/*year*,
-    or ``None`` if it cannot be resolved. Stored on every pick."""
+    or ``None`` if it cannot be resolved. Stored on every pick.
+
+    Follows the same fallback as :func:`_load_model_for_year`: when no model
+    exists for *year*, returns the most recent available lower year's file.
+    """
     paths = _resolve_year_pkl_paths(model_type)
-    p = paths.get(year)
+    eff = _resolve_model_year(paths, year)
+    p = paths.get(eff) if eff is not None else None
     return p.name if (p is not None and p.name) else None
+
+
+def _resolve_model_year(paths: Dict[int, Path], year: int) -> Optional[int]:
+    """Return the effective model year for *year*: the exact year if a pkl
+    exists, otherwise the most recent available year below it (so live
+    prediction for a not-yet-trained season falls back to the previous year).
+    Returns ``None`` if no year at or below ``year`` has a pkl.
+    """
+    if year in paths:
+        return year
+    older = [y for y in paths if y < year]
+    return max(older) if older else None
 
 
 # ── Feature helpers ──────────────────────────────────────────────────────────────
@@ -581,6 +605,13 @@ async def batch_predict_upcoming_games(
 ) -> List[Dict[str, Any]]:
     """Predict multiple upcoming NFL games — returns a list of pick-card dicts.
     Matches the MLB ``batch_predict_upcoming_games`` pattern.
+
+    Includes preseason (``game_type='PRE'``) games in the prediction path, as the
+    ``nfl-lines-and-picks`` task is intended to predict all upcoming games (incl.
+    preseason). Preseason is NEVER fed to training/rolling stats — that's handled
+    upstream in the stats builders, which only read FINAL regular-season games.
+    Team-stats features still resolve to REG (the model's training stat language),
+    since ``nfl.team_rolling_stats`` has no preseason rows.
     """
     # Load model once for all games
     year = year or CURRENT_NFL_YEAR
@@ -590,10 +621,18 @@ async def batch_predict_upcoming_games(
     ou_model_file = _model_file_for_year("ou", year)
     dl = get_data_loader()
 
+    # Predicting upcoming games must include preseason. The task
+    # (``nfl-lines-and-picks``) is described as "predict upcoming games (incl.
+    # preseason)", so we always opt in here. We pass ``include_preseason`` (NOT
+    # ``game_type='PRE'``) so the team-stats lookup still resolves to REG (the
+    # model's training stat language — ``nfl.team_rolling_stats`` has no PRE
+    # rows), while PRE games themselves are no longer filtered out of the base
+    # query. Training/backtest paths never reach this function, so preseason
+    # stays excluded from training.
     results: List[Dict[str, Any]] = []
     for gid in game_ids:
         try:
-            df = dl.load_inference_data(game_ids=[gid])
+            df = dl.load_inference_data(game_ids=[gid], include_preseason=True)
             if df.empty:
                 logger.warning("No inference data for game %s", gid)
                 continue

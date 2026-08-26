@@ -70,7 +70,7 @@ async def list_plans(db: AsyncSession = Depends(get_db)):
     """Public endpoint — list all active subscription plans."""
     result = await db.execute(
         select(SubscriptionPlan)
-        .where(SubscriptionPlan.is_active == True)
+        .where(SubscriptionPlan.is_active == True, SubscriptionPlan.kind != "token_topup")
         .order_by(SubscriptionPlan.sort_order)
     )
     return result.scalars().all()
@@ -126,6 +126,13 @@ async def create_checkout_session(
     """Create a Stripe Checkout Session for subscription purchase.
     Falls back to mock mode when Stripe is not configured."""
     user = await get_current_user(request, db)
+
+    # Block users who are already members from opening a subscription checkout
+    if user.subscription_tier in ("premium", "premium_yearly"):
+        raise HTTPException(
+            status_code=409,
+            detail="You are already a premium member.",
+        )
 
     # Get plan
     result = await db.execute(
@@ -607,6 +614,23 @@ async def _handle_subscription_updated(subscription: dict, db: AsyncSession):
                 logger.info(f"User {user.id} has {active_count} other active subscription(s); not downgrading")
 
     await db.commit()
+
+
+async def cancel_subscription_at_stripe(stripe_sub_id: str):
+    """Cancel a Stripe subscription at the end of the current billing period.
+
+    Sets `cancel_at_period_end=True` on the Stripe Subscription so the customer
+    keeps their membership (and paid access) until the current cycle finishes,
+    then it rolls off automatically. Stripe fires a `customer.subscription.updated`
+    webhook now and a `customer.subscription.deleted` webhook at period end — the
+    latter runs the downgrade-to-free cleanup. Raises if Stripe isn't configured
+    or the call fails.
+    """
+    stripe = _get_stripe()
+    return stripe.Subscription.update(
+        stripe_sub_id,
+        cancel_at_period_end=True,
+    )
 
 
 async def _handle_subscription_deleted(subscription: dict, db: AsyncSession):

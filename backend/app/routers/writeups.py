@@ -13,7 +13,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.core.security import get_optional_current_user, user_is_premium
+from app.core.security import get_optional_current_user, require_admin, user_is_premium
 from app.models import User
 from app.writeups.mlb.generator import MLBWriteupGenerator
 from app.writeups.nfl.generator import NFLWriteupGenerator
@@ -237,6 +237,7 @@ async def generate_mlb_writeup(
     as_of_date: Optional[str] = Query(None),
     reasoning: str = Query("minimal", pattern="^(minimal|low|medium|high|xhigh|max|none|off|disabled)$"),  # thinking enabled + reasoning effort (default: minimal)
     db: AsyncSession = Depends(get_db),
+    _admin: User = Depends(require_admin),
 ):
     """Generate a write-up for an MLB game.
 
@@ -512,6 +513,7 @@ async def update_mlb_writeup(
     writeup_id: int,
     body: dict,
     db: AsyncSession = Depends(get_db),
+    _admin: User = Depends(require_admin),
 ):
     """Update a write-up's content (title, public_content, premium_content)."""
     updates = []
@@ -643,6 +645,7 @@ async def nfl_nearest_game_date(
 async def preview_nfl_writeup(
     game_id: int,
     db: AsyncSession = Depends(get_db),
+    _admin: User = Depends(require_admin),
 ):
     """Preview an NFL writeup (no DB save)."""
     from app.writeups.nfl.generator import NFLWriteupGenerator
@@ -656,6 +659,7 @@ async def preview_nfl_writeup(
 async def preview_public_nfl_writeup(
     game_id: int,
     db: AsyncSession = Depends(get_db),
+    _admin: User = Depends(require_admin),
 ):
     """Preview a public NFL writeup (no DB save, no picks)."""
     from app.writeups.nfl.generator import NFLWriteupGenerator
@@ -669,6 +673,7 @@ async def preview_public_nfl_writeup(
 async def generate_nfl_writeup(
     game_id: int,
     db: AsyncSession = Depends(get_db),
+    _admin: User = Depends(require_admin),
 ):
     """Generate and save a premium NFL writeup."""
     from app.writeups.nfl.generator import NFLWriteupGenerator
@@ -701,6 +706,7 @@ async def generate_nfl_writeup(
 async def generate_public_nfl_writeup(
     game_id: int,
     db: AsyncSession = Depends(get_db),
+    _admin: User = Depends(require_admin),
 ):
     """Generate and save a public-only NFL writeup (no picks)."""
     from app.writeups.nfl.generator import NFLWriteupGenerator
@@ -889,6 +895,7 @@ async def update_nfl_writeup(
     writeup_id: int,
     body: dict,
     db: AsyncSession = Depends(get_db),
+    _admin: User = Depends(require_admin),
 ):
     """Update an NFL writeup's content."""
     updates = []
@@ -1049,6 +1056,7 @@ async def nba_nearest_game_date(
 async def preview_nba_writeup(
     game_id: int,
     db: AsyncSession = Depends(get_db),
+    _admin: User = Depends(require_admin),
 ):
     """Preview NBA write-up research data without saving."""
     gen = NBAGameWriteupGenerator()
@@ -1063,6 +1071,7 @@ async def preview_nba_writeup(
 async def preview_nba_public_writeup(
     game_id: int,
     db: AsyncSession = Depends(get_db),
+    _admin: User = Depends(require_admin),
 ):
     """Preview public NBA write-up research data without saving."""
     gen = NBAGameWriteupGenerator()
@@ -1081,6 +1090,7 @@ async def generate_nba_writeup(
     game_id: int,
     historical: bool = Query(False),
     db: AsyncSession = Depends(get_db),
+    _admin: User = Depends(require_admin),
 ):
     """Generate and store a premium NBA write-up."""
     gen = NBAGameWriteupGenerator()
@@ -1104,6 +1114,7 @@ async def generate_nba_public_writeup(
     game_id: int,
     historical: bool = Query(False),
     db: AsyncSession = Depends(get_db),
+    _admin: User = Depends(require_admin),
 ):
     """Generate and store a public NBA write-up."""
     gen = NBAGameWriteupGenerator()
@@ -1293,6 +1304,7 @@ async def update_nba_writeup(
     research_brief: Optional[str] = Query(None),
     quality_checks: Optional[str] = Query(None),
     db: AsyncSession = Depends(get_db),
+    _admin: User = Depends(require_admin),
 ):
     """Update an NBA write-up."""
     updates: list[str] = []

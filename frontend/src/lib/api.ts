@@ -67,6 +67,8 @@ export interface Game {
   venue?: string;
   home_team?: string;
   away_team?: string;
+  home_record?: string | null;
+  away_record?: string | null;
   home_score?: number;
   away_score?: number;
   spread?: number | null;       // from home team perspective (+ = home underdog, - = home favorite)
@@ -82,6 +84,16 @@ export interface Game {
   result_spread?: string | null;
   result_over_under?: string | null;
   result_moneyline?: string | null;
+  // Cross-sport source for the home aggregation + Best Bets panel
+  sport?: string | null;
+  // Best Bets metadata (from GET /api/home/best-bets)
+  best_bet_type?: "ats" | "ou" | "ml" | null;
+  best_bet_label?: string | null;
+  best_bet_edge?: number | null;
+  best_bet_edge_pct?: number | null;
+  best_bet_confidence_pct?: number | null;
+  best_bet_implied_pct?: number | null;
+  best_bet_ev?: number | null;
 }
 
 export interface DepthChartEntry {
@@ -309,6 +321,12 @@ export const api = {
     },
     get: (id: number) => fetchAPI<Game>(`/api/games/${id}`),
     boxScore: (id: number) => fetchAPI<BoxScore | null>(`/api/games/${id}/box-score`),
+  },
+
+  // Best Bets (Earl's single best value pick per upcoming game)
+  bestBets: {
+    list: (params?: { sport?: "all" | "mlb" | "nba" | "nfl"; limit?: number }) =>
+      fetchAPI<Game[]>(`/api/home/best-bets?sport=${params?.sport ?? "all"}&limit=${params?.limit ?? 6}`),
   },
 
   // Auth

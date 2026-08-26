@@ -1,4 +1,5 @@
 import Link from "next/link";
+import type { Metadata } from "next";
 import TeamLogo from "@/components/TeamLogo";
 
 const NFL_TEAMS = [
@@ -110,6 +111,18 @@ function groupBy<T>(items: T[], key: (item: T) => string): Record<string, T[]> {
     groups[k].push(item);
   }
   return groups;
+}
+
+export async function generateMetadata({ params }: {
+  params: Promise<{ sport: string }>;
+}): Promise<Metadata> {
+  const { sport } = await params;
+  const label = sport.toUpperCase();
+  return {
+    title: `${label} Teams: Rosters, Depth Charts & Odds`,
+    description: `Browse ${label} teams, rosters, depth charts, odds and betting info on Earl Knows Ball.`,
+    alternates: { canonical: `https://earlknowsball.com/${sport}/teams` },
+  };
 }
 
 export default async function TeamsPage({

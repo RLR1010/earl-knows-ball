@@ -521,6 +521,7 @@ star_rolling AS (
         AND pgs.team_id   = sp.team_id
     JOIN nba.games g ON g.id = pgs.game_id
     WHERE g.season_id = sp.season_id
+      AND g.game_type != 'PRE'  -- star rolling features never include preseason
 ),
 star_agg AS (
     SELECT game_id, team_id, season_id,

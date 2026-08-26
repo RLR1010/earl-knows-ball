@@ -4,7 +4,7 @@ A strict, support-only AI assistant grounded in the Earl Knows Ball knowledge ba
 (FAQ + Terms & Conditions + Privacy Statement). Auth required.
 
 - Saves every user + assistant message to cs_messages (permanent support transcripts).
-- Enforces a per-user, per-calendar-month token budget (default 200,000),
+- Enforces a per-user, per-calendar-month token budget (default 100,000),
   adjustable via env EARL_CS_MONTHLY_TOKEN_LIMIT.
 - Model answers ONLY from the active knowledge base, never from world knowledge,
   and escalates to a human when it cannot answer.
@@ -29,8 +29,8 @@ from app.models.customer_service import CSMessage, CSKnowledge
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/cs", tags=["customer-service"])
 
-# Per-user, per-calendar-month CS token budget (tunable during testing).
-MONTHLY_TOKEN_LIMIT = int(os.environ.get("EARL_CS_MONTHLY_TOKEN_LIMIT", "200000"))
+# Per-user, per-calendar-month CS token budget.
+MONTHLY_TOKEN_LIMIT = int(os.environ.get("EARL_CS_MONTHLY_TOKEN_LIMIT", "100000"))
 # How many most-relevant knowledge entries to include in the system context.
 MAX_KB_CHUNKS = 10
 MODEL = getattr(settings, "deepseek_model", "deepseek-chat")

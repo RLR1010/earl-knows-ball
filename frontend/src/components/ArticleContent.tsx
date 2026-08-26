@@ -18,7 +18,7 @@ interface ArticleContentProps {
 /**
  * Renders an original article's markdown body with premium gating.
  *
- * Public articles render in full for everyone. Premium/ultimate articles are
+ * Public articles render in full for everyone. Premium articles are
  * gated with the shared <PremiumGate /> (paywall for non-members). The
  * server pass uses the public tier so premium bodies never ship anonymously;
  * for subscribed members this component re-fetches the full body with
@@ -34,8 +34,8 @@ export default function ArticleContent({
 }: ArticleContentProps) {
   const { user } = useAuth();
   const isPremiumMember =
-    user?.subscription_tier === "premium" || user?.subscription_tier === "ultimate";
-  const isPremiumContent = visibility === "premium" || visibility === "ultimate";
+    user?.subscription_tier === "premium" || user?.subscription_tier === "premium_yearly";
+  const isPremiumContent = visibility === "premium";
 
   const [fullContent, setFullContent] = useState<string | null>(null);
   useEffect(() => {

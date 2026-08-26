@@ -279,11 +279,13 @@ export default function MLBGameTabs({ gameId, game, formatOdds, boxscore, linesc
                     <th className="text-center py-1.5 px-2 w-7">BB</th>
                     <th className="text-center py-1.5 px-2 w-7">SO</th>
                     <th className="text-center py-1.5 px-2 w-8">LOB</th>
+                    <th className="text-center py-1.5 px-2 w-10">AVG</th>
                   </tr>
                 </thead>
                 <tbody>
                   {awayBatters.map((p: any, i: number) => {
                     const s = p?.stats?.batting || {};
+                    const ss = p?.seasonStats?.batting || {};
                     return (
                       <tr key={i} className="border-b border-white/5 hover:bg-white/[0.02]">
                         <td className="py-1 px-2 text-white text-xs font-medium">{p?.person?.fullName || "-"}</td>
@@ -295,6 +297,7 @@ export default function MLBGameTabs({ gameId, game, formatOdds, boxscore, linesc
                         <td className="py-1 px-2 text-gray-400 text-xs text-center">{s.baseOnBalls ?? "-"}</td>
                         <td className="py-1 px-2 text-gray-400 text-xs text-center">{s.strikeOuts ?? "-"}</td>
                         <td className="py-1 px-2 text-gray-400 text-xs text-center">{s.leftOnBase ?? "-"}</td>
+                        <td className="py-1 px-2 text-gray-400 text-xs text-center" title={`Season AVG${ss.atBats ? ` (${ss.atBats} AB)` : ""}`}>{ss.avg ?? "-"}</td>
                       </tr>
                     );
                   })}
@@ -320,11 +323,13 @@ export default function MLBGameTabs({ gameId, game, formatOdds, boxscore, linesc
                     <th className="text-center py-1.5 px-2 w-7">BB</th>
                     <th className="text-center py-1.5 px-2 w-7">SO</th>
                     <th className="text-center py-1.5 px-2 w-7">HR</th>
+                    <th className="text-center py-1.5 px-2 w-10">ERA</th>
                   </tr>
                 </thead>
                 <tbody>
                   {awayPitcherList.map((p: any, i: number) => {
                     const ps = p?.stats?.pitching || {};
+                    const pss = p?.seasonStats?.pitching || {};
                     return (
                       <tr key={i} className="border-b border-white/5 hover:bg-white/[0.02]">
                         <td className="py-1 px-2 text-white text-xs font-medium">{p?.person?.fullName || "-"}</td>
@@ -335,6 +340,7 @@ export default function MLBGameTabs({ gameId, game, formatOdds, boxscore, linesc
                         <td className="py-1 px-2 text-gray-400 text-xs text-center">{ps.baseOnBalls ?? "-"}</td>
                         <td className="py-1 px-2 text-gray-400 text-xs text-center">{ps.strikeOuts ?? "-"}</td>
                         <td className="py-1 px-2 text-gray-400 text-xs text-center">{ps.homeRuns ?? "-"}</td>
+                        <td className="py-1 px-2 text-gray-400 text-xs text-center" title="Season ERA">{pss.era ?? "-.--"}</td>
                       </tr>
                     );
                   })}
@@ -361,11 +367,13 @@ export default function MLBGameTabs({ gameId, game, formatOdds, boxscore, linesc
                     <th className="text-center py-1.5 px-2 w-7">BB</th>
                     <th className="text-center py-1.5 px-2 w-7">SO</th>
                     <th className="text-center py-1.5 px-2 w-8">LOB</th>
+                    <th className="text-center py-1.5 px-2 w-10">AVG</th>
                   </tr>
                 </thead>
                 <tbody>
                   {homeBatters.map((p: any, i: number) => {
                     const s = p?.stats?.batting || {};
+                    const ss = p?.seasonStats?.batting || {};
                     return (
                       <tr key={i} className="border-b border-white/5 hover:bg-white/[0.02]">
                         <td className="py-1 px-2 text-white text-xs font-medium">{p?.person?.fullName || "-"}</td>
@@ -377,6 +385,7 @@ export default function MLBGameTabs({ gameId, game, formatOdds, boxscore, linesc
                         <td className="py-1 px-2 text-gray-400 text-xs text-center">{s.baseOnBalls ?? "-"}</td>
                         <td className="py-1 px-2 text-gray-400 text-xs text-center">{s.strikeOuts ?? "-"}</td>
                         <td className="py-1 px-2 text-gray-400 text-xs text-center">{s.leftOnBase ?? "-"}</td>
+                        <td className="py-1 px-2 text-gray-400 text-xs text-center" title={`Season AVG${ss.atBats ? ` (${ss.atBats} AB)` : ""}`}>{ss.avg ?? "-"}</td>
                       </tr>
                     );
                   })}
@@ -402,11 +411,13 @@ export default function MLBGameTabs({ gameId, game, formatOdds, boxscore, linesc
                     <th className="text-center py-1.5 px-2 w-7">BB</th>
                     <th className="text-center py-1.5 px-2 w-7">SO</th>
                     <th className="text-center py-1.5 px-2 w-7">HR</th>
+                    <th className="text-center py-1.5 px-2 w-10">ERA</th>
                   </tr>
                 </thead>
                 <tbody>
                   {homePitcherList.map((p: any, i: number) => {
                     const ps = p?.stats?.pitching || {};
+                    const pss = p?.seasonStats?.pitching || {};
                     return (
                       <tr key={i} className="border-b border-white/5 hover:bg-white/[0.02]">
                         <td className="py-1 px-2 text-white text-xs font-medium">{p?.person?.fullName || "-"}</td>
@@ -417,6 +428,7 @@ export default function MLBGameTabs({ gameId, game, formatOdds, boxscore, linesc
                         <td className="py-1 px-2 text-gray-400 text-xs text-center">{ps.baseOnBalls ?? "-"}</td>
                         <td className="py-1 px-2 text-gray-400 text-xs text-center">{ps.strikeOuts ?? "-"}</td>
                         <td className="py-1 px-2 text-gray-400 text-xs text-center">{ps.homeRuns ?? "-"}</td>
+                        <td className="py-1 px-2 text-gray-400 text-xs text-center" title="Season ERA">{pss.era ?? "-.--"}</td>
                       </tr>
                     );
                   })}
@@ -547,7 +559,7 @@ export default function MLBGameTabs({ gameId, game, formatOdds, boxscore, linesc
         const raw = val.value;
         const dv = raw !== null && raw !== undefined
           ? (typeof raw === "number"
-              ? (Number.isInteger(raw) ? raw.toLocaleString() : raw.toFixed(4))
+              ? (Number.isInteger(raw) ? raw.toLocaleString() : raw.toFixed(3))
               : String(raw))
           : "—";
         const dn = val.display_name || fallbackKey || "";
@@ -556,7 +568,7 @@ export default function MLBGameTabs({ gameId, game, formatOdds, boxscore, linesc
       const raw = val;
       const dv = raw !== null && raw !== undefined
         ? (typeof raw === "number"
-            ? (Number.isInteger(raw) ? raw.toLocaleString() : raw.toFixed(2))
+            ? (Number.isInteger(raw) ? raw.toLocaleString() : raw.toFixed(3))
             : String(raw))
         : "—";
       return { displayValue: dv, displayName: fallbackKey || "", description: undefined };

@@ -109,12 +109,16 @@ WITH betting_agg AS (
         blc.game_id,
         blc.opening_spread,
         blc.opening_ou,
+        blc.opening_home_ml,
+        blc.opening_away_ml,
         blc.closing_spread,
         blc.closing_ou,
         blc.closing_home_ml                   AS home_moneyline,
         blc.closing_away_ml                   AS away_moneyline,
         blc.closing_spread_home_odds          AS spread_home_odds,
         blc.closing_spread_away_odds          AS spread_away_odds,
+        blc.opening_spread_home_odds          AS opening_spread_home_odds,
+        blc.opening_spread_away_odds          AS opening_spread_away_odds,
         blc.closing_over_odds                 AS over_odds,
         blc.closing_under_odds                AS under_odds,
         blc.closing_home_implied_probability  AS home_implied_probability,
@@ -167,12 +171,16 @@ team_games AS (
         CONCAT(at.name, ' ', at.abbreviation)                                   AS away_team,
         ba.opening_spread,
         ba.opening_ou,
+        ba.opening_home_ml,
+        ba.opening_away_ml,
         ba.closing_spread,
         ba.closing_ou,
         ba.home_moneyline,
         ba.away_moneyline,
         ba.spread_home_odds,
         ba.spread_away_odds,
+        ba.opening_spread_home_odds,
+        ba.opening_spread_away_odds,
         ba.over_odds,
         ba.under_odds,
         ba.home_implied_probability,
@@ -270,6 +278,10 @@ team_games AS (
         COALESCE(h_actv_st.st_pts, 0) - COALESCE(hcs.cum_ppg, 0)  AS h_starter_pts_minus_team,
         COALESCE(h_actv_st.st_reb, 0) - COALESCE(hcs.cum_reb_pg, 0) AS h_starter_reb_minus_team,
         COALESCE(h_actv_st.st_ast, 0) - COALESCE(hcs.cum_ast_pg, 0) AS h_starter_ast_minus_team,
+        -- home starters' per-game-rate (games-PLAYED denominator) vs team season total
+        COALESCE(h_actv_st.st_pts_gp, 0) - COALESCE(hcs.cum_ppg, 0) AS h_starter_pts_gp_minus_team,
+        COALESCE(h_actv_st.st_reb_gp, 0) - COALESCE(hcs.cum_reb_pg, 0) AS h_starter_reb_gp_minus_team,
+        COALESCE(h_actv_st.st_ast_gp, 0) - COALESCE(hcs.cum_ast_pg, 0) AS h_starter_ast_gp_minus_team,
         -- Away team cumulative stats (backward-looking, season-to-date)
         acs.games_played           AS a_games_played,
         acs.cum_ppg                AS a_cum_ppg,
@@ -362,6 +374,10 @@ team_games AS (
         COALESCE(a_actv_st.st_pts, 0) - COALESCE(acs.cum_ppg, 0)  AS a_starter_pts_minus_team,
         COALESCE(a_actv_st.st_reb, 0) - COALESCE(acs.cum_reb_pg, 0) AS a_starter_reb_minus_team,
         COALESCE(a_actv_st.st_ast, 0) - COALESCE(acs.cum_ast_pg, 0) AS a_starter_ast_minus_team,
+        -- away starters' per-game-rate (games-PLAYED denominator) vs team season total
+        COALESCE(a_actv_st.st_pts_gp, 0) - COALESCE(acs.cum_ppg, 0) AS a_starter_pts_gp_minus_team,
+        COALESCE(a_actv_st.st_reb_gp, 0) - COALESCE(acs.cum_reb_pg, 0) AS a_starter_reb_gp_minus_team,
+        COALESCE(a_actv_st.st_ast_gp, 0) - COALESCE(acs.cum_ast_pg, 0) AS a_starter_ast_gp_minus_team,
         pts_h.cum_ppg              AS h_prior_cum_ppg,
         pts_h.cum_oppg             AS h_prior_cum_oppg,
         pts_h.cum_margin_pg        AS h_prior_cum_margin_pg,
@@ -636,17 +652,23 @@ team_games AS (
             THEN g.id ELSE COALESCE(a_prio.prior_game_id, g.id) END AS eff
     ) aeff ON true
     LEFT JOIN LATERAL (
+        -- 🔴 FIX 2026-08-24: active/roster totals are per-team-GAME, not a sum of
+        -- per-player rates. Old code did SUM(prs.cum_ppg/rpg/apg) (each player's own
+        -- per-game avg), which over-counts players that missed games and lets the
+        -- "active" sum exceed the team total (impossible, active is a subset of team).
+        -- Correct: SUM(player season TOTALS) / team games_played, so active <= team.
         SELECT
-            COALESCE(SUM(prs.cum_ppg), 0) AS actv_pts,
-            COALESCE(SUM(prs.cum_rpg), 0) AS actv_reb,
-            COALESCE(SUM(prs.cum_apg), 0) AS actv_ast,
-            COUNT(prs.cum_ppg)            AS actv_n
+            COALESCE(SUM(prs.cum_points), 0)    / NULLIF(hcs.games_played, 0) AS actv_pts,
+            COALESCE(SUM(prs.cum_rebounds), 0)  / NULLIF(hcs.games_played, 0) AS actv_reb,
+            COALESCE(SUM(prs.cum_assists), 0)   / NULLIF(hcs.games_played, 0) AS actv_ast,
+            COUNT(prs.cum_points)               AS actv_n
         FROM nba.active_players ap
         LEFT JOIN LATERAL (
-            SELECT prs.cum_ppg, prs.cum_rpg, prs.cum_apg
+            SELECT prs.cum_points, prs.cum_rebounds, prs.cum_assists
             FROM nba.player_rolling_stats prs
             WHERE prs.player_id = ap.player_id
               AND prs.game_id < g.id
+              AND prs.season_id = g.season_id   -- 🔴 season-scoped: no cross-season leak
             ORDER BY prs.game_id DESC
             LIMIT 1
         ) prs ON true
@@ -658,16 +680,22 @@ team_games AS (
     -- is_starter on the effective active roster. Same pts/ast/reb sums.
     LEFT JOIN LATERAL (
         SELECT
-            COALESCE(SUM(prs.cum_ppg), 0) AS st_pts,
-            COALESCE(SUM(prs.cum_rpg), 0) AS st_reb,
-            COALESCE(SUM(prs.cum_apg), 0) AS st_ast,
-            COUNT(prs.cum_ppg)            AS st_n
+            COALESCE(SUM(prs.cum_points), 0)    / NULLIF(hcs.games_played, 0) AS st_pts,
+            COALESCE(SUM(prs.cum_rebounds), 0)  / NULLIF(hcs.games_played, 0) AS st_reb,
+            COALESCE(SUM(prs.cum_assists), 0)   / NULLIF(hcs.games_played, 0) AS st_ast,
+            COUNT(prs.cum_points)               AS st_n,
+            -- per-game-rate (games-PLAYED denominator) variant: each starter's own
+            -- season avg in the games he actually played, summed over the 5 starters
+            COALESCE(SUM(prs.cum_ppg), 0)       AS st_pts_gp,
+            COALESCE(SUM(prs.cum_rpg), 0)       AS st_reb_gp,
+            COALESCE(SUM(prs.cum_apg), 0)       AS st_ast_gp
         FROM nba.active_players ap
         LEFT JOIN LATERAL (
-            SELECT prs.cum_ppg, prs.cum_rpg, prs.cum_apg
+            SELECT prs.cum_points, prs.cum_rebounds, prs.cum_assists, prs.cum_ppg, prs.cum_rpg, prs.cum_apg
             FROM nba.player_rolling_stats prs
             WHERE prs.player_id = ap.player_id
               AND prs.game_id < g.id
+              AND prs.season_id = g.season_id   -- 🔴 season-scoped: no cross-season leak
             ORDER BY prs.game_id DESC
             LIMIT 1
         ) prs ON true
@@ -677,16 +705,17 @@ team_games AS (
     ) h_actv_st ON true
     LEFT JOIN LATERAL (
         SELECT
-            COALESCE(SUM(prs.cum_ppg), 0) AS actv_pts,
-            COALESCE(SUM(prs.cum_rpg), 0) AS actv_reb,
-            COALESCE(SUM(prs.cum_apg), 0) AS actv_ast,
-            COUNT(prs.cum_ppg)            AS actv_n
+            COALESCE(SUM(prs.cum_points), 0)    / NULLIF(acs.games_played, 0) AS actv_pts,
+            COALESCE(SUM(prs.cum_rebounds), 0)  / NULLIF(acs.games_played, 0) AS actv_reb,
+            COALESCE(SUM(prs.cum_assists), 0)   / NULLIF(acs.games_played, 0) AS actv_ast,
+            COUNT(prs.cum_points)               AS actv_n
         FROM nba.active_players ap
         LEFT JOIN LATERAL (
-            SELECT prs.cum_ppg, prs.cum_rpg, prs.cum_apg
+            SELECT prs.cum_points, prs.cum_rebounds, prs.cum_assists
             FROM nba.player_rolling_stats prs
             WHERE prs.player_id = ap.player_id
               AND prs.game_id < g.id
+              AND prs.season_id = g.season_id   -- 🔴 season-scoped: no cross-season leak
             ORDER BY prs.game_id DESC
             LIMIT 1
         ) prs ON true
@@ -695,16 +724,21 @@ team_games AS (
     ) a_actv ON true
     LEFT JOIN LATERAL (
         SELECT
-            COALESCE(SUM(prs.cum_ppg), 0) AS st_pts,
-            COALESCE(SUM(prs.cum_rpg), 0) AS st_reb,
-            COALESCE(SUM(prs.cum_apg), 0) AS st_ast,
-            COUNT(prs.cum_ppg)            AS st_n
+            COALESCE(SUM(prs.cum_points), 0)    / NULLIF(acs.games_played, 0) AS st_pts,
+            COALESCE(SUM(prs.cum_rebounds), 0)  / NULLIF(acs.games_played, 0) AS st_reb,
+            COALESCE(SUM(prs.cum_assists), 0)   / NULLIF(acs.games_played, 0) AS st_ast,
+            COUNT(prs.cum_points)               AS st_n,
+            -- per-game-rate (games-PLAYED denominator) variant
+            COALESCE(SUM(prs.cum_ppg), 0)       AS st_pts_gp,
+            COALESCE(SUM(prs.cum_rpg), 0)       AS st_reb_gp,
+            COALESCE(SUM(prs.cum_apg), 0)       AS st_ast_gp
         FROM nba.active_players ap
         LEFT JOIN LATERAL (
-            SELECT prs.cum_ppg, prs.cum_rpg, prs.cum_apg
+            SELECT prs.cum_points, prs.cum_rebounds, prs.cum_assists, prs.cum_ppg, prs.cum_rpg, prs.cum_apg
             FROM nba.player_rolling_stats prs
             WHERE prs.player_id = ap.player_id
               AND prs.game_id < g.id
+              AND prs.season_id = g.season_id   -- 🔴 season-scoped: no cross-season leak
             ORDER BY prs.game_id DESC
             LIMIT 1
         ) prs ON true
@@ -1138,6 +1172,13 @@ class NBADataLoader:
             c for c in df.columns
             if c.startswith(("h_prior_", "a_prior_")) or c.endswith("_raw")
         ]
+        # The catalog already registers most `*_raw` display columns, so the
+        # `*_raw` keep above can re-add them -> `df[keep]` returned DUPLICATE
+        # columns. A duplicate column makes `row["x_raw"]` resolve to a 2-element
+        # pandas Series instead of a scalar; that Series repr strings into
+        # features_json as garbage like "x_raw 3.1 x_raw 3.1 Name: 23222".
+        # Dedupe while preserving order:
+        keep = list(dict.fromkeys(keep))
         return df[keep].copy()
 
 
@@ -1463,9 +1504,8 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
     #   * At the START of the season (few games), BLEND from the prior year's
     #     split; as the season progresses, transition to the team's actual
     #     current-season performance.
-    #   * vs-conference features (vs_east/vs_west) are intentionally EXCLUDED
-    #     here — they are marked is_trainable=false in nba.features and don't
-    #     help training.
+    #   * vs-conference features (vs_east/vs_west) were removed 2026-08-24 (Rich):
+    #     never computed, always NULL, pick-card-only noise. Deleted from nba.features.
     #
     #  IMPLEMENTATION:
     #   * Build a per-(team,venue) game log for every game in df (only the
@@ -1730,6 +1770,16 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
     df["spread_movement"] = df["opening_spread"] - df["closing_spread"]
     df["ou_movement"] = df["closing_ou"] - df["opening_ou"]
 
+    # ── Moneyline movement: closing - opening, from the HOME team's perspective ──
+    # Raw American-odds points (mirrors MLB's ml_movement). home_moneyline /
+    # away_moneyline ARE the current (closing) values. Sign: a POSITIVE value
+    # means the closing home ML is less negative / more positive than opening
+    # (book pushed odds TOWARD the home team). Also add the away-side point-change
+    # and an implied-probability movement so the model can read both raw-point and
+    # probability-scale shifts.
+    df["ml_movement"] = df["home_moneyline"] - df["opening_home_ml"]
+    df["away_ml_movement"] = df["away_moneyline"] - df["opening_away_ml"]
+
     def _implied_prob(moneyline: pd.Series) -> pd.Series:
         """Convert American moneyline odds to implied probability."""
         moneyline = moneyline.astype(float)
@@ -1744,6 +1794,52 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
 
     df["h_implied"] = _implied_prob(df["home_moneyline"])
     df["a_implied"] = _implied_prob(df["away_moneyline"])
+
+    # Opening implied probability + implied-probability movement (closing - opening,
+    # home side). Mirrors MLB's ml_implied_movement. Feature survives as 0.0 when
+    # either side is missing so the model isn't poisoned with NaN gaps.
+    df["h_open_implied"] = _implied_prob(df["opening_home_ml"])
+    df["a_open_implied"] = _implied_prob(df["opening_away_ml"])
+    df["ml_implied_movement"] = (df["h_implied"] - df["h_open_implied"]).fillna(0.0)
+
+    # ── Spread-odds (juice) movement + combined market move ──────────────────
+    # spread_movement measures the line move in POINTS; the juice on that spread
+    # can also move independently (e.g. line anchors at -5.5 but the price goes
+    # -110 → -130). Both are responses to the SAME money flow / sharp-vs-public
+    # imbalance, so we convert both to HOME-COVER PROBABILITY units and combine
+    # them into one coherent signal: market_move_home.
+    #
+    #   spread_movement_implied  = spread_movement / K  (K≈14.0 pts per prob-unit,
+    #                               same calibration as implied_margin).
+    #   juice_movement_implied   = vig-free home cover prob(closing) -
+    #                              vig-free home cover prob(opening).
+    #   market_move_home         = sum of the two. Positive → market moved toward
+    #                              the HOME team covering. Line & juice in the same
+    #                              direction compound the signal; conflicting
+    #                              movement (reverse line movement) partially
+    #                              cancels, which is itself a signal.
+    #
+    # Data caveat: seasons 17-29 have opening==closing for both line and juice
+    # (historical backfill limitation), so these are 0.0 there and only carry real
+    # variance for 2020-21 onward.
+    df["spread_movement_implied"] = df["spread_movement"] / 14.0
+
+    def _vigfree(home_odds: pd.Series, away_odds: pd.Series) -> pd.Series:
+        """Normalize two-side juice into a home-cover probability (vig removed)."""
+        hp = _implied_prob(home_odds)
+        ap = _implied_prob(away_odds)
+        denom = hp + ap
+        return (hp / denom.replace(0.0, np.nan))
+
+    open_home_cover = _vigfree(
+        df["opening_spread_home_odds"], df["opening_spread_away_odds"]
+    )
+    close_home_cover = _vigfree(df["spread_home_odds"], df["spread_away_odds"])
+    df["juice_movement_implied"] = (close_home_cover - open_home_cover).fillna(0.0)
+
+    df["market_move_home"] = (
+        df["spread_movement_implied"] + df["juice_movement_implied"]
+    ).fillna(0.0)
 
     # ── Implied point margin from ML win-probability edge ────────────────────
     # implied_margin = (h_implied - a_implied) * K, in points, positive = home

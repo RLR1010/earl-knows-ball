@@ -54,9 +54,11 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
 
   useEffect(() => {
     if (!loading && !isAdmin) {
-      router.push("/login");
+      // Send back to the current admin page after they finish logging in.
+      const target = pathname && pathname !== "/admin" ? pathname : "/admin";
+      router.push(`/login?redirect=${encodeURIComponent(target)}`);
     }
-  }, [loading, isAdmin, router]);
+  }, [loading, isAdmin, router, pathname]);
 
   if (loading) {
     return (
@@ -72,9 +74,9 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
 
   return (
     <div className="min-h-screen bg-[#0a0a0f]">
-      <div className="flex">
+      <div className="flex items-start">
         {/* Sidebar */}
-        <aside className="w-64 h-screen bg-black/40 border-r border-white/10 fixed left-0 top-[80px] z-40 flex flex-col">
+        <aside className="w-64 bg-black/40 border-r border-white/10 flex flex-col min-h-screen">
           {/* Home icon: first row of the sidebar, above the menus */}
           <div className="flex-none px-5 pt-5 pb-3">
             <a
@@ -89,7 +91,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
             </a>
           </div>
 
-          <nav className="flex-1 overflow-y-auto px-3 space-y-1">
+          <nav className="flex-1 px-3 space-y-1">
             {NAV_GROUPS.map((group) => {
               const isGroupActive = group.items.some(
                 (item) =>
@@ -141,7 +143,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
         </aside>
 
         {/* Main content */}
-        <main className="ml-64 flex-1 min-h-screen p-8">
+        <main className="flex-1 min-h-screen p-8">
           {children}
         </main>
       </div>

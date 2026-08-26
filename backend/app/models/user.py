@@ -13,7 +13,7 @@ class User(Base):
     email = Column(String(255), unique=True, nullable=False, index=True)
     password_hash = Column(String(255), nullable=True)  # nullable — no longer used, legacy only
     display_name = Column(String(100), nullable=True)
-    subscription_tier = Column(String(20), default="free")  # free, premium, ultimate
+    subscription_tier = Column(String(20), default="free")  # free, premium, premium_yearly
     is_active = Column(Boolean, default=True)
     is_admin = Column(Boolean, default=False)
     email_verified = Column(Boolean, default=False)

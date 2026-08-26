@@ -1,5 +1,6 @@
 "use client";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { useState, type FormEvent } from "react";
 import { useAuth } from "@/lib/auth-context";
 import { useSeo } from "@/components/Seo";
@@ -18,6 +19,24 @@ export default function LoginPage() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
+
+  // Where to send the user after a successful login. Priority:
+  //   1. an explicit ?redirect= target (e.g. /chat, or the admin page they
+  //      were trying to reach) — the page they intended to go to
+  //   2. the previous page in history (they landed here from somewhere)
+  //   3. the home page — NOT chat.
+  // Reads window.location at submit-time (client event) so this page stays
+  // statically prerenderable (no useSearchParams / Suspense needed).
+  const resolveDestination = () => {
+    const redirect = new URLSearchParams(window.location.search).get("redirect");
+    if (redirect && redirect.startsWith("/") && !redirect.startsWith("//")) {
+      return { to: redirect, back: false };
+    }
+    if (window.history.length > 1 && document.referrer) {
+      return { to: null, back: true };
+    }
+    return { to: "/", back: false };
+  };
 
   const handleSendCode = async (e: FormEvent) => {
     e.preventDefault();
@@ -41,7 +60,12 @@ export default function LoginPage() {
     setBusy(true);
     try {
       await verifyCode(email, code);
-      router.push("/chat");
+      const { to, back } = resolveDestination();
+      if (back && !to) {
+        router.back();
+      } else {
+        router.push(to ?? "/");
+      }
     } catch (err: any) {
       setError(err?.message || "Invalid or expired code.");
     } finally {
@@ -149,6 +173,18 @@ export default function LoginPage() {
           </button>
         </form>
       )}
+
+      <p className="text-xs text-gray-500 text-center leading-relaxed">
+        By signing in, you agree to our{" "}
+        <Link href="/terms" className="text-earl-400 hover:text-earl-300 underline">
+          Terms &amp; Conditions
+        </Link>{" "}
+        and{" "}
+        <Link href="/privacy" className="text-earl-400 hover:text-earl-300 underline">
+          Privacy Policy
+        </Link>
+        .
+      </p>
     </div>
   );
 }

@@ -1,9 +1,19 @@
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import field_validator, ValidationError
 
 
 class Settings(BaseSettings):
     app_name: str = "EarlKnowsBall"
-    database_url: str = "postgresql+asyncpg://earl:earl_dev_pass@localhost:5432/earl_knows_football"
+    # 🔴 REQUIRED (no weak default). We intentionally do NOT ship a fallback
+    # password/DSN here: if it's missing, Settings() raises at import time so a
+    # misconfigured deploy fails loudly instead of silently connecting with a
+    # publicly-knowable credential (hardening, 2026-08-24).
+    database_url: str
+    # Admin/DDL connection (superuser) used ONLY by ingestion/backfill/migration
+    # scripts that legitimately run TRUNCATE/DROP/CREATE. Web/API traffic uses
+    # `database_url` (least-privilege `earl_web` role). Falls back to
+    # `database_url` for backward compatibility if ADMIN_DATABASE_URL is unset.
+    admin_database_url: str | None = None
 
     @property
     def database_url_sync(self) -> str:
@@ -27,7 +37,7 @@ class Settings(BaseSettings):
     cognee_url: str = "http://localhost:8000"
 
     # JWT
-    jwt_secret: str = "change-me-in-production"
+    jwt_secret: str  # REQUIRED — set JWT_SECRET in .env; no weak default (hardened 2026-08-24)
     jwt_algorithm: str = "HS256"
     jwt_expire_minutes: int = 1440  # 24h
 
@@ -47,7 +57,31 @@ class Settings(BaseSettings):
     base_url: str = "http://localhost:3000"
     admin_email: str = "admin@earlknowsball.com"
 
-    model_config = {"env_file": ".env"}
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    @field_validator("jwt_secret")
+    @classmethod
+    def _jwt_secret_not_weak(cls, v: str) -> str:
+        """Reject missing/known-weak JWT secrets so a misconfig fails fast."""
+        weak = {str(), "change-me-in-production", "secret", "changeme", "your-secret-key"}
+        if v in weak or len(v) < 32:
+            raise ValueError(
+                "jwt_secret must be >=32 chars and not a known default — set a strong "
+                "JWT_SECRET in .env (generate with: openssl rand -base64 48)"
+            )
+        return v
+
+    @field_validator("database_url")
+    @classmethod
+    def _database_url_not_weak_default(cls, v: str) -> str:
+        """Reject the known dev fallback DSN so it can never run in prod."""
+        weak = ("earl:earl_dev_pass",)
+        if any(w in v for w in weak):
+            raise ValueError(
+                "database_url must not use the dev default credential (earl:earl_dev_pass) — "
+                "set DATABASE_URL in .env to a real role (e.g. earl_web)."
+            )
+        return v
 
 
 settings = Settings()

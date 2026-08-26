@@ -88,7 +88,7 @@ export default function GameChatModal({
     `** — or is there anything in particular about it you want to discuss?`;
 
   const isPremium =
-    user?.subscription_tier === "premium" || user?.subscription_tier === "ultimate";
+    user?.subscription_tier === "premium" || user?.subscription_tier === "premium_yearly";
 
   // Auth gate: when the modal opens (and auth has loaded), route by status.
   //  - not logged in        -> LoginModal (no chat)

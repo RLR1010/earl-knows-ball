@@ -4,10 +4,16 @@
 Source: nba.player_game_stats (raw boxscore) joined with nba.games for season_id and
 the US-EASTERN game_date ((g.date AT TIME ZONE 'America/New_York')::date per TOOLS.md).
 
-Semantics (no look-ahead):
-  * Each row is FOR game G. cum_*/ppg_5/... values are computed from the player's
-    games STRICTLY BEFORE G (excluding G itself). Reading row-for-G gives you the
-    player's form "entering" game G.
+Semantics (INCLUSIVE, no look-ahead):
+  * Each row is FOR game G. cum_*/ppg_5/... values INCLUDE game G's own stats
+    (i.e. cum_* at row G = season total THROUGH G; ppg_5 at row G = avg of the
+    last 5 games ending at G). This matches mlb.player_batting_rolling_stats and
+    every other rolling/team table in the system. Leak-safety is the DATA
+    LOADER's job: it reads the PRIOR row (prev_game_id[_season], or
+    `game_id < g.id LIMIT 1`) to get "through the last completed game" without
+    peeking at G. The builder must NOT shift stats to represent "form entering
+    G" (that was the OLD exclusive bug -- one game staler than every other
+    table; FIXED 2026-08-25).
   * prev_game_id[_season] = the player's prior game id (cross-season / within-season).
 
 This is idempotent: it REPLACES the table (TRUNCATE + full rebuild) because it's
@@ -61,6 +67,7 @@ SOURCE_SQL = """
     FROM nba.player_game_stats pgs
     JOIN nba.games g ON g.id = pgs.game_id
     WHERE g.status IN ('FINAL', 'POST', 'PLAYIN')
+      AND g.game_type != 'PRE'  -- rolling/cumulative stats never include preseason
 """.strip()
 
 # NBA status enum is SCHEDULED/IN_PROGRESS/FINAL/POSTPONED/CANCELLED (no POST/PLAYIN;
@@ -95,8 +102,8 @@ COLUMNS = [
 
 
 SOURCE_SQL = SOURCE_SQL.replace(
-    "WHERE g.status IN ('FINAL', 'POST', 'PLAYIN')",
-    "WHERE g.status = 'FINAL' AND pgs.points IS NOT NULL",  # exclude DNP placeholder rows (NULL points)
+    "WHERE g.status IN ('FINAL', 'POST', 'PLAYIN')\n      AND g.game_type != 'PRE'",
+    "WHERE g.status = 'FINAL' AND pgs.points IS NOT NULL\n      AND g.game_type != 'PRE'",  # exclude DNP placeholder rows (NULL points)
 )
 
 
@@ -139,59 +146,83 @@ def build(engine, full=True):
     df["prev_game_date_season"] = gs["game_date"].shift(1)
 
     # ── season-to-date cumulative, ENTERING this game (shift by 1 within season) ──
+    # 🔴 FIX 2026-08-24: the cumsum MUST keep the (player, season) grouping so the
+    # running total resets each season, for the leak-safe "season-to-date" semantics.
+    # The old code re-grouped by player_id ALONE (`.groupby(df["player_id"])`), which
+    # summed the shifted season-openers across the player's ENTIRE career -> career
+    # cumulatives, defeating the table's purpose (look up season stats at a moment in
+    # time) and inflating pick-card "active/starters vs team" sums. We pass the actual
+    # df column Series (index-aligned with the shifted series) so the season boundary
+    # stays in the cumsum.
+    gpk = [df["player_id"], df["season_id"]]
+    # 🔴 FIX 2026-08-25 (INCLUSIVE): cumulative stats INCLUDE the current row's
+    # own game. Rows must NOT represent "form entering this game" (that was the
+    # OLD exclusive bug: .shift(1) made each row's cum = through the PREVIOUS
+    # game, one game staler than MLB/NFL/team tables). Remove the shift so
+    # cum_* at game G = season total THROUGH game G. Leak-safety is the data
+    # loader's job (reads prior row via game_id < g.id / prev_game_id pointer).
     for stat, col in [("cum_points", "points"), ("cum_rebounds", "rebounds_total"),
                       ("cum_assists", "assists"), ("cum_minutes", "minutes")]:
-        df[stat] = gs[col].shift(1).fillna(0).groupby(df["player_id"], sort=False).cumsum()
-    # games played entering game (shifted cumsum of 1 within season)
+        df[stat] = df[col].fillna(0).groupby(gpk, sort=False).cumsum()
+    # games played THROUGH this game (unshifted cumsum of 1 within season): row G = N
     df["ones"] = 1
-    df["cum_games"] = gs["ones"].shift(1).fillna(0).groupby(df["player_id"], sort=False).cumsum().astype(int)
+    df["cum_games"] = df["ones"].fillna(0).groupby(gpk, sort=False).cumsum().astype(int)
 
-    def _avg_entering(stat_col):
-        # cumulative FG/TP/FT pct entering game = cum made / cum attempted (shifted)
-        made = gs[stat_col + "m"].shift(1).fillna(0).groupby(df["player_id"], sort=False).cumsum()
-        att = gs[stat_col + "a"].shift(1).fillna(0).groupby(df["player_id"], sort=False).cumsum()
+    def _avg_pct(stat_col):
+        # cumulative FG/TP/FT pct through this game = cum made / cum attempted (inclusive, season-scoped)
+        made = df[stat_col + "m"].fillna(0).groupby(gpk, sort=False).cumsum()
+        att = df[stat_col + "a"].fillna(0).groupby(gpk, sort=False).cumsum()
         return (made / att.replace(0, float("nan"))).fillna(0.0)
 
-    df["cum_fg_pct"] = _avg_entering("fg")
-    df["cum_tp_pct"] = _avg_entering("tp")
-    df["cum_ft_pct"] = _avg_entering("ft")
-    df["cum_ppg"] = (df["cum_points"] / df["cum_games"].replace(0, 1)).round(3)
-    df["cum_rpg"] = (df["cum_rebounds"] / df["cum_games"].replace(0, 1)).round(3)
-    df["cum_apg"] = (df["cum_assists"] / df["cum_games"].replace(0, 1)).round(3)
-    df["cum_mpg"] = (df["cum_minutes"] / df["cum_games"].replace(0, 1)).round(2)
+    df["cum_fg_pct"] = _avg_pct("fg")
+    df["cum_tp_pct"] = _avg_pct("tp")
+    df["cum_ft_pct"] = _avg_pct("ft")
+    df["cum_ppg"] = (df["cum_points"] / df["cum_games"]).round(3)
+    df["cum_rpg"] = (df["cum_rebounds"] / df["cum_games"]).round(3)
+    df["cum_apg"] = (df["cum_assists"] / df["cum_games"]).round(3)
+    df["cum_mpg"] = (df["cum_minutes"] / df["cum_games"]).round(2)
 
-    # ── rolling windows, ENTERING this game (last N prior games) ──
+    # ── rolling windows, INCLUSIVE of this game (last N games THROUGH current row) ──
 
-    # ⚠️ CORRECT per-player rolling: shift within player, then ROLL within player.
-    # A bare "g[col].shift(1).rolling(w).mean()" would roll across ALL players
-    # (shift() returns a plain Series, losing the grouped context) -> mixing players.
-    # We must re-group the shifted series by player and use .transform() so the
-    # window stays per-player AND aligns back to the original row index.
-    _id = df["player_id"]
+    # 🔴 FIX 2026-08-25 (INCLUSIVE): rolling windows INCLUDE the current row's own
+    # game (ppg_5 at row G = avg of games G-4..G). The OLD code shifted the stat
+    # values (.shift(1)) so windows excluded the current game ("last N prior"),
+    # one game staler than MLB/NFL/team tables.
+    #
+    # We use the per-(player, season) GroupBy.transform: `gs_roll["col"]...` gives
+    # the current row's value at each position (INCLUSIVE, no shift), is aligned
+    # back to the original row index, and the window never bleeds across players OR
+    # across season boundaries. Season-scoping matches MLB's populate_batting_rolling
+    # (`PARTITION BY p.player_id, p.season_id` for w5/w15/w30), so a player's ppg_5
+    # at the start of season N reflects ONLY season N's games, never last season's.
+    # The OLD code grouped by player_id ONLY, so the first ~4 games of every season
+    # blended last season's games into ppg_5/fg_pct_5/etc. — cross-season noise that
+    # leaked into the model (esp. mid-season call-ups + every season-opener).
+    # Leak-safety stays in the loader.
+    gs_roll = df.groupby(["player_id", "season_id"], sort=False)
     for w in WINDOWS:
-        shifted = g["points"].shift(1)
-        df[f"ppg_{w}"] = shifted.groupby(_id).transform(
+        df[f"ppg_{w}"] = gs_roll["points"].transform(
             lambda s: s.rolling(w, min_periods=1).mean()
         ).round(2)
 
-    df["rpg_5"] = g["rebounds_total"].shift(1).groupby(_id).transform(lambda s: s.rolling(5, min_periods=1).mean()).round(2)
-    df["apg_5"] = g["assists"].shift(1).groupby(_id).transform(lambda s: s.rolling(5, min_periods=1).mean()).round(2)
-    df["mpg_5"] = g["minutes"].shift(1).groupby(_id).transform(lambda s: s.rolling(5, min_periods=1).mean()).round(2)
-    df["spg_5"] = g["steals"].shift(1).groupby(_id).transform(lambda s: s.rolling(5, min_periods=1).mean()).round(2)
-    df["bpg_5"] = g["blocks"].shift(1).groupby(_id).transform(lambda s: s.rolling(5, min_periods=1).mean()).round(2)
-    df["tpg_5"] = g["turnovers"].shift(1).groupby(_id).transform(lambda s: s.rolling(5, min_periods=1).mean()).round(2)
-    df["plus_minus_5"] = g["plus_minus"].shift(1).groupby(_id).transform(lambda s: s.rolling(5, min_periods=1).mean()).round(2)
+    df["rpg_5"] = gs_roll["rebounds_total"].transform(lambda s: s.rolling(5, min_periods=1).mean()).round(2)
+    df["apg_5"] = gs_roll["assists"].transform(lambda s: s.rolling(5, min_periods=1).mean()).round(2)
+    df["mpg_5"] = gs_roll["minutes"].transform(lambda s: s.rolling(5, min_periods=1).mean()).round(2)
+    df["spg_5"] = gs_roll["steals"].transform(lambda s: s.rolling(5, min_periods=1).mean()).round(2)
+    df["bpg_5"] = gs_roll["blocks"].transform(lambda s: s.rolling(5, min_periods=1).mean()).round(2)
+    df["tpg_5"] = gs_roll["turnovers"].transform(lambda s: s.rolling(5, min_periods=1).mean()).round(2)
+    df["plus_minus_5"] = gs_roll["plus_minus"].transform(lambda s: s.rolling(5, min_periods=1).mean()).round(2)
 
-    # FG/TP/FT % over last 5 = sum(made)/sum(attempt), per player, entering game
+    # FG/TP/FT % over last 5 = sum(made)/sum(attempt), per player+season, INCLUSIVE of this game
     def _pct_5(made_col, att_col):
-        made = g[made_col].shift(1).groupby(_id).transform(lambda s: s.rolling(5, min_periods=1).sum())
-        att = g[att_col].shift(1).groupby(_id).transform(lambda s: s.rolling(5, min_periods=1).sum())
+        made = gs_roll[made_col].transform(lambda s: s.rolling(5, min_periods=1).sum())
+        att = gs_roll[att_col].transform(lambda s: s.rolling(5, min_periods=1).sum())
         return (made / att.replace(0, float("nan"))).fillna(0.0).round(3)
 
     df["fg_pct_5"] = _pct_5("fgm", "fga")
     df["tp_pct_5"] = _pct_5("tpm", "tpa")
     df["ft_pct_5"] = _pct_5("ftm", "fta")
-    df["gp_5"] = g["ones"].shift(1).groupby(_id).transform(
+    df["gp_5"] = gs_roll["ones"].transform(
         lambda s: s.rolling(5, min_periods=1).sum()
     ).fillna(0).astype(int)
 

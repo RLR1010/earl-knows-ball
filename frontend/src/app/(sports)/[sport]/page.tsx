@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import SportUpcomingGames from "@/components/SportUpcomingGames";
 import RecentContent from "@/components/RecentContent";
 import DailyPicksSection from "@/components/DailyPicksSection";
+import BestBetsPanel from "@/components/BestBetsPanel";
 import type { CardSport } from "@/components/ScheduleGameCard";
 
 const SPORT_INFO: Record<string, { name: string }> = {
@@ -57,6 +58,16 @@ export default async function SportHomePage({ params }: { params: Promise<{ spor
 
   return (
     <div className="space-y-16">
+      {/* Earl's Best Picks — sport-filtered single value pick per game */}
+      <BestBetsPanel
+        sport={sport as "mlb" | "nba" | "nfl"}
+        showSport={false}
+        limit={4}
+        containerClassName=""
+        title="Earl's Best Picks"
+        hideIfEmpty
+      />
+
       {/* Upcoming Games */}
       <SportUpcomingGames sport={sport as CardSport} />
 

@@ -11,6 +11,9 @@ export default function Footer() {
           <Link href="/faq" className="text-gray-400 hover:text-white transition">
             FAQ
           </Link>
+          <Link href="/pricing" className="text-gray-400 hover:text-white transition">
+            Premium Membership
+          </Link>
           <Link href="/terms" className="text-gray-400 hover:text-white transition">
             Terms &amp; Conditions
           </Link>
@@ -18,6 +21,14 @@ export default function Footer() {
             Privacy Policy
           </Link>
         </div>
+
+        {/* Disclaimer */}
+        <p className="text-xs leading-relaxed text-gray-500 max-w-3xl mx-auto text-center mb-6">
+          Earl Knows Ball is for <span className="text-gray-400">entertainment purposes only</span>. All
+          predictions, picks, and analysis are opinions and are not guaranteed to be accurate. There is no
+          guarantee of winning or profit. If you or someone you know has a gambling problem, call 1-800-GAMBLER
+          (1-800-426-2537) or visit <Link href="https://www.ncpgambling.org" className="text-gray-400 hover:text-white underline underline-offset-2 transition">ncpgambling.org</Link>.
+        </p>
 
         {/* Copyright */}
         <p className="text-xs text-gray-500">

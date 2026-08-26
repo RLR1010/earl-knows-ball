@@ -129,7 +129,7 @@ function CompactGate({ children }: { children: ReactNode }) {
   }
 
   const isPremium =
-    user?.subscription_tier === "premium" || user?.subscription_tier === "ultimate";
+    user?.subscription_tier === "premium" || user?.subscription_tier === "premium_yearly";
 
   if (!user || !isPremium) {
     return (

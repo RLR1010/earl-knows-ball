@@ -141,7 +141,13 @@ from app.models.mlb.game_prediction import MLBGamePrediction
 
 logger = logging.getLogger("earl.mlb_handicapping")
 
-CURRENT_YEAR = 2026
+# MLB is a calendar-year sport (the 2026 season runs spring-fall 2026), so the
+# "current" model year is simply the current calendar year. Deriving it from
+# today means next season needs NO code change: when the 2027 season's games
+# start appearing, ``year = CURRENT_YEAR`` becomes 2027 and the model-loading
+# fallback in ``_load_model_for_year``/``_model_file_for_year`` uses the 2027
+# model once trained, otherwise the previous year's (2026).
+CURRENT_YEAR = date.today().year
 
 MODELS_DIR = Path.home() / ".openclaw" / "workspace" / "earl-knows-football" / "data" / "models" / "mlb"
 
@@ -198,29 +204,48 @@ def _resolve_year_pkl_paths(model_type: str) -> Dict[int, Path]:
 def _load_model_for_year(model_type: str, year: int) -> Any:
     """Load the pickled XGBoost model for *model_type* and *year* from disk.
 
-    Raises ``FileNotFoundError`` if the file cannot be found.
+    Falls back to the most recent available year's pkl when no model exists for
+    *year* (e.g. live prediction for a not-yet-trained season uses the previous
+    year's model). Raises ``FileNotFoundError`` only when no year at or below
+    *year* has a pkl.
     """
     paths = _resolve_year_pkl_paths(model_type)
-    p = paths.get(year)
-    if p is None:
+    eff = _resolve_model_year(paths, year)
+    if eff is None:
         raise FileNotFoundError(
             f"No pkl file for mlb/{model_type} year {year}. "
             f"Available years: {sorted(paths.keys())}"
         )
-    logger.info("  Loading %s model for year %s from %s", model_type, year, p)
+    p = paths[eff]
+    logger.info("  Loading %s model for year %s from %s", model_type, eff, p)
     with open(p, "rb") as fh:
         return pickle.load(fh)
 
 
 def _model_file_for_year(model_type: str, year: int) -> Optional[str]:
     """Return the basename of the pkl model file for *model_type*/*year*
-    (e.g. ``a1b2c3-2026.pkl``), or ``None`` if it cannot be resolved.
+    (e.g. ``a1b2c3-2025.pkl``), or ``None`` if it cannot be resolved.
 
+    Follows the same fallback as :func:`_load_model_for_year`: when no model
+    exists for *year*, returns the most recent available lower year's file.
     Stored on every pick for model provenance/audit.
     """
     paths = _resolve_year_pkl_paths(model_type)
-    p = paths.get(year)
+    eff = _resolve_model_year(paths, year)
+    p = paths.get(eff) if eff is not None else None
     return p.name if p is not None else None
+
+
+def _resolve_model_year(paths: Dict[int, Path], year: int) -> Optional[int]:
+    """Return the effective model year for *year*: the exact year if a pkl
+    exists, otherwise the most recent available year below it (so live
+    prediction for a not-yet-trained season falls back to the previous year).
+    Returns ``None`` if no year at or below ``year`` has a pkl.
+    """
+    if year in paths:
+        return year
+    older = [y for y in paths if y < year]
+    return max(older) if older else None
 
 
 # ═══════════════════════════════════════════════════════════════════

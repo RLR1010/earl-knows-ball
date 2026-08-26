@@ -4,10 +4,12 @@ from sqlalchemy.orm import declarative_base, sessionmaker
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 
 from app.core.config import settings
-from app.db_urls import ASYNC_DATABASE_URL as DB_URLS_ASYNC
+from app.db_urls import ASYNC_DATABASE_URL as DB_URLS_ASYNC, ASYNC_ADMIN_DATABASE_URL as DB_URLS_ADMIN_ASYNC
 
 database_url = settings.database_url
+admin_database_url = settings.admin_database_url or database_url
 logger = logging.getLogger("earl.database")
+
 
 # Create async engine with search_path set for all connections.
 # statement_timeout=20min: guards against orphaned/wedged backends (seen down
@@ -27,6 +29,22 @@ async_engine = create_async_engine(
 )
 
 async_session = async_sessionmaker(async_engine, expire_on_commit=False)
+
+# Admin (superuser) async engine + session — DDL-capable ingestion/backfill/
+# migration scripts ONLY. Never wire HTTP/API routers to this.
+admin_async_engine = create_async_engine(
+    admin_database_url,
+    connect_args={"server_settings": {
+        "search_path": "nfl, nba, mlb, public",
+        "statement_timeout": "1200000",
+    }},
+    pool_pre_ping=True,
+    pool_recycle=300,
+    pool_size=10,
+    max_overflow=5,
+)
+
+admin_async_session = async_sessionmaker(admin_async_engine, expire_on_commit=False)
 
 # Sync engine for scheduler and other non-async operations.
 # IMPORTANT: psycopg2 breaks if the options value uses single quotes around the

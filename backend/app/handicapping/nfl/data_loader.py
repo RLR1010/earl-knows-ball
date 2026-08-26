@@ -579,6 +579,7 @@ class NFLDataLoader:
         include_upcoming: bool = False,
         game_ids: Optional[List[int]] = None,
         game_type: Optional[str] = None,
+        include_preseason: bool = False,
     ) -> str:
         """Construct the SQL query with optional filters.
 
@@ -615,6 +616,13 @@ class NFLDataLoader:
             game_type = self.game_type
         if game_type:
             conditions.append(f"g.game_type = '{game_type}'")
+        elif include_preseason:
+            # Live prediction of upcoming games explicitly opts in to preseason
+            # (game_type='PRE'). Training/backtest paths NEVER set this flag, so
+            # preseason stays excluded there (see below). We allow all three real
+            # types here so a mixed set of upcoming games can be predicted at
+            # once (e.g. preseason week + early regular season).
+            conditions.append("g.game_type IN ('REG', 'POST', 'PRE')")
         else:
             # NEVER include preseason games. Callers of the default/backtest
             # path don't pass a game_type, and preseason results must never
@@ -648,6 +656,7 @@ class NFLDataLoader:
         include_upcoming: bool = False,
         game_ids: Optional[List[int]] = None,
         game_type: Optional[str] = None,
+        include_preseason: bool = False,
     ) -> pd.DataFrame:
         """Execute the game query and return raw DataFrame."""
         sql = self._build_query(
@@ -657,6 +666,7 @@ class NFLDataLoader:
             include_upcoming=include_upcoming,
             game_ids=game_ids,
             game_type=game_type,
+            include_preseason=include_preseason,
         )
         t0 = time.time()
         df = pd.read_sql(sql, self.engine)
@@ -672,6 +682,7 @@ class NFLDataLoader:
         include_upcoming: bool = False,
         game_ids: Optional[List[int]] = None,
         game_type: Optional[str] = None,
+        include_preseason: bool = False,
     ) -> pd.DataFrame:
         """Load raw NFL game data from the database.
 
@@ -687,6 +698,11 @@ class NFLDataLoader:
             Include non-final games (scheduled, in-progress).
         game_ids : list of int, optional
             Only these specific game IDs.
+        include_preseason : bool, optional
+            If True, allow preseason (``game_type='PRE'``) games in the base
+            game filter. Used ONLY by live upcoming-game prediction
+            (``nfl-lines-and-picks``). Training/backtest paths never set this,
+            so preseason stays excluded from training.
         """
         if status is None and not include_upcoming:
             status = "FINAL"
@@ -696,6 +712,8 @@ class NFLDataLoader:
             limit=limit,
             include_upcoming=include_upcoming,
             game_ids=game_ids,
+            game_type=game_type,
+            include_preseason=include_preseason,
         )
 
     def load_all_games(
@@ -719,6 +737,7 @@ class NFLDataLoader:
         feature_names: Optional[List[str]] = None,
         game_ids: Optional[List[int]] = None,
         game_type: Optional[str] = None,
+        include_preseason: bool = False,
         build_features_fn=None,
         **build_kwargs,
     ) -> pd.DataFrame:
@@ -753,6 +772,7 @@ class NFLDataLoader:
             include_upcoming=include_upcoming,
             game_ids=game_ids,
             game_type=game_type,
+            include_preseason=include_preseason,
         )
 
         if df.empty:
@@ -1224,6 +1244,7 @@ class NFLDataLoader:
         game_ids: List[int],
         feature_names: Optional[List[str]] = None,
         game_type: Optional[str] = None,
+        include_preseason: bool = False,
     ) -> pd.DataFrame:
         """Load features for specific games (inference without labels).
 
@@ -1234,15 +1255,22 @@ class NFLDataLoader:
         feature_names :
             Feature columns to return (defaults to DB trainable features).
         game_type :
-            If given (e.g. ``'PRE'``), only load features for games of that
-            type and pull matching game_type stats. Falls back to the
-            constructor-level game_type when ``None``.
+            If given, only load features for games of that type and pull
+            matching game_type stats. Falls back to the constructor-level
+            game_type when ``None``.
+        include_preseason :
+            If True, relax the base game filter to allow preseason
+            (``game_type='PRE'``) games. Intended for live upcoming-game
+            prediction (``nfl-lines-and-picks``). Leave ``game_type`` unset so
+            team stats resolve to REG (the model's training stat language),
+            since ``nfl.team_rolling_stats`` has no PRE rows.
         """
         return self.load_data(
             game_ids=game_ids,
             include_upcoming=True,
             feature_names=feature_names,
             game_type=game_type,
+            include_preseason=include_preseason,
         )
 
     def get_feature_columns(

@@ -118,7 +118,7 @@ export default function ChatPage() {
       .then((me) => {
         if (cancelled) return;
         const tier = me?.subscription_tier;
-        setLivePremium(tier === "premium" || tier === "ultimate");
+        setLivePremium(tier === "premium" || tier === "premium_yearly");
       })
       .catch(() => !cancelled && setLivePremium(false));
     return () => {
@@ -422,7 +422,7 @@ export default function ChatPage() {
   // isPremium derives from the LIVE token verify (livePremium) when available,
   // falling back to the auth context's user object.
   const contextPremium =
-    user?.subscription_tier === "premium" || user?.subscription_tier === "ultimate";
+    user?.subscription_tier === "premium" || user?.subscription_tier === "premium_yearly";
   const isPremium = livePremium ?? contextPremium;
   const showGate = !token || !isPremium;
 

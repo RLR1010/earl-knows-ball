@@ -59,7 +59,7 @@ export default function ChatCardLink({
           router.push(href);
         }
       }}
-      className={`relative block text-center transition ${
+      className={`relative flex flex-col text-center transition ${
         chatOpen
           ? "pointer-events-none select-none bg-white/5"
           : "cursor-pointer bg-white/5 hover:bg-white/[0.09]"

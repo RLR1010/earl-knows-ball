@@ -13,6 +13,8 @@ export interface ScheduleGameLike {
   id: number;
   away_team?: string | null;
   home_team?: string | null;
+  away_record?: string | null;
+  home_record?: string | null;
   away_score?: number | null;
   home_score?: number | null;
   status?: string | null;
@@ -202,34 +204,54 @@ export default function ScheduleGameCard({
       date={game.date}
       context={buildGameContext(sport, game)}
       hideChat={isFinal}
-      className="border border-white/10 rounded-xl p-3"
+      className="border border-white/10 rounded-xl p-3 h-full"
     >
-      <div className="flex items-center justify-center gap-1.5 text-lg">
-        {game.away_team && (
-          <TeamLogo abbr={game.away_team} sport={sport} size={20} />
-        )}
-        <div className={`font-semibold ${awayWon ? "text-earl-400" : "text-gray-300"}`}>
-          {game.away_team ?? ""}
+      <div className="flex items-center justify-center gap-4 text-lg">
+        {/* Away team: logo inline with abbreviation; record centered UNDER the abbreviation */}
+        <div className="grid grid-cols-[20px_auto] gap-1.5 items-start">
+          {game.away_team && (
+            <TeamLogo abbr={game.away_team} sport={sport} size={20} />
+          )}
+          <div className="flex flex-col items-center gap-0.5 min-w-[52px]">
+            <span className={`font-semibold ${awayWon ? "text-earl-400" : "text-gray-300"}`}>
+              {game.away_team ?? ""}
+            </span>
+            {game.away_record ? (
+              <span className="text-[10px] text-gray-500 leading-tight" title="Record at game time">
+                {game.away_record}
+              </span>
+            ) : null}
+          </div>
         </div>
 
-        {isFinal && <span className="font-bold text-white">{game.away_score}</span>}
-        {isLive && game.away_score != null && (
-          <span className="font-bold text-red-400">{game.away_score}</span>
-        )}
-
-        <span className="text-gray-500 font-medium">@</span>
-
-        {isFinal && <span className="font-bold text-white">{game.home_score}</span>}
-        {isLive && game.home_score != null && (
-          <span className="font-bold text-red-400">{game.home_score}</span>
-        )}
-
-        <div className={`font-semibold ${homeWon ? "text-earl-400" : "text-gray-300"}`}>
-          {game.home_team ?? ""}
+        <div className="flex items-center gap-2 mx-1">
+          {isFinal && <span className="font-bold text-white">{game.away_score}</span>}
+          {isLive && game.away_score != null && (
+            <span className="font-bold text-red-400">{game.away_score}</span>
+          )}
+          <span className="text-gray-500 font-medium">@</span>
+          {isFinal && <span className="font-bold text-white">{game.home_score}</span>}
+          {isLive && game.home_score != null && (
+            <span className="font-bold text-red-400">{game.home_score}</span>
+          )}
         </div>
-        {game.home_team && (
-          <TeamLogo abbr={game.home_team} sport={sport} size={20} />
-        )}
+
+        {/* Home team: logo inline with abbreviation; record centered UNDER the abbreviation */}
+        <div className="grid grid-cols-[auto_20px] gap-1.5 items-start">
+          <div className="flex flex-col items-center gap-0.5 min-w-[52px]">
+            <span className={`font-semibold ${homeWon ? "text-earl-400" : "text-gray-300"}`}>
+              {game.home_team ?? ""}
+            </span>
+            {game.home_record ? (
+              <span className="text-[10px] text-gray-500 leading-tight" title="Record at game time">
+                {game.home_record}
+              </span>
+            ) : null}
+          </div>
+          {game.home_team && (
+            <TeamLogo abbr={game.home_team} sport={sport} size={20} />
+          )}
+        </div>
       </div>
 
       {/* Status/time */}
@@ -264,7 +286,9 @@ export default function ScheduleGameCard({
       </div>
 
       {/* Betting lines + premium picks (shared footer, identical across schedule cards) */}
-      <SchedulePicksFooter game={game} />
+      <div className="mt-auto">
+        <SchedulePicksFooter game={game} />
+      </div>
     </ChatCardLink>
   );
 }

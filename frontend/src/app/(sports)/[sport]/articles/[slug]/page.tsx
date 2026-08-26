@@ -2,6 +2,8 @@ import Link from "next/link";
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import ArticleContent from "@/components/ArticleContent";
+import JsonLd from "@/components/JsonLd";
+import { articleStructuredData } from "@/lib/structured-data";
 import { COMPUTE_URL } from "@/lib/backend-url";
 
 interface PublicArticle {
@@ -103,8 +105,17 @@ export default async function SportArticleDetailPage({
       })
     : "";
 
+  const articleLd = await articleStructuredData(
+    normalizedSport,
+    article.slug || slug,
+    article.title,
+    article.seo_description || article.summary || "",
+    article.published_at
+  );
+
   return (
     <div className="max-w-4xl mx-auto px-4 py-12">
+      <JsonLd data={articleLd} />
       <div className="mb-6 text-sm text-gray-400">
         <Link
           href={normalizedSport === "all" ? "/" : `/${normalizedSport}`}

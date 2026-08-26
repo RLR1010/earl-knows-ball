@@ -39,11 +39,10 @@ FAQ = [
         "never guaranteed to win.",
     ),
     (
-        "What is the difference between the Free, Premium, and Ultimate plans?",
+        "What is the difference between the Free and Premium plans?",
         "Free gives you limited access to picks and basic features. Premium unlocks full writeups, "
-        "detailed handicapping info, and expanded chat. Ultimate provides everything in Premium "
-        "plus the most advanced features and the deepest research. You can see the full comparison "
-        "and upgrade on the Pricing page inside your account.",
+        "detailed handicapping info, and expanded chat. You can see the full comparison and upgrade "
+        "on the Pricing page inside your account.",
     ),
     (
         "What payment methods do you accept?",
@@ -52,22 +51,23 @@ FAQ = [
     ),
     (
         "How do I cancel my subscription?",
-        "You can cancel anytime from your account (Account or Billing settings). Cancellation takes "
-        "effect at the end of your current billing period, so you keep Premium or Ultimate access "
-        "until then. After that you'll downgrade to the Free plan automatically.",
+        "You can cancel anytime by visiting your profile at https://earlknowsball.com/profile. "
+        "Cancellation takes effect at the end of your current billing period, so you keep Premium "
+        "access until then. After that you'll downgrade to the Free plan automatically.",
     ),
     (
         "Do you offer refunds?",
-        "Refunds are handled on a case-by-case basis in line with our Terms & Conditions. If you "
+        "We do not offer refunds for our service in line with our Terms & Conditions. If you "
         "believe you were incorrectly charged, or the Service did not work as described, please "
         "contact customer support and we'll review your request.",
     ),
     (
-        "Is betting advice legal?",
-        "Earl Knows Ball is a sports analytics and information service. We do not offer gambling, "
-        "financial, or professional advice, and you must be of legal age to gamble in your "
-        "jurisdiction. Always bet responsibly. If you or someone you know has a gambling problem, "
-        "call 1-800-GAMBLER or contact your local responsible-gambling resource.",
+        "Is it legal for me to use this service?",
+        "Earl Knows Ball is a sports analytics and information service, and is for entertainment "
+        "purposes only. We do not offer gambling, financial, or professional advice, and you must "
+        "be of legal age to gamble in your jurisdiction. Always bet responsibly. If you or someone "
+        "you know has a gambling problem, call 1-800-GAMBLER or contact your local responsible-"
+        "gambling resource.",
     ),
     (
         "Do your picks guarantee wins?",

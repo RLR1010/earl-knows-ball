@@ -24,7 +24,7 @@ export default function PremiumGate({ children, title, message }: PremiumGatePro
     );
   }
 
-  const isPremium = user?.subscription_tier === "premium" || user?.subscription_tier === "ultimate";
+  const isPremium = user?.subscription_tier === "premium" || user?.subscription_tier === "premium_yearly";
 
   if (!user || !isPremium) {
     return (

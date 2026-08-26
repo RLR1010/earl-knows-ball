@@ -2,6 +2,7 @@
 
 import { useState, type FormEvent, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
+import Link from "next/link";
 import { useAuth } from "@/lib/auth-context";
 
 interface LoginModalProps {
@@ -211,6 +212,17 @@ export default function LoginModal({ open, onClose, onSuccess }: LoginModalProps
                 </button>
               </form>
             )}
+            <p className="text-xs text-gray-500 text-center leading-relaxed mt-2">
+              By signing in, you agree to our{" "}
+              <Link href="/terms" className="text-earl-400 hover:text-earl-300 underline">
+                Terms &amp; Conditions
+              </Link>{" "}
+              and{" "}
+              <Link href="/privacy" className="text-earl-400 hover:text-earl-300 underline">
+                Privacy Policy
+              </Link>
+              .
+            </p>
           </div>
         </div>
       </div>

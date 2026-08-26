@@ -58,13 +58,28 @@ export default function AdminSubscriptions() {
   useEffect(() => { fetchSubscriptions(); }, [fetchSubscriptions]);
 
   const handleUpdateStatus = async (subId: string, newStatus: string) => {
+    // Canceling now actually cancels the customer's Stripe subscription and
+    // stops their billing — require an explicit confirmation to avoid an
+    // accidental click killing a paying customer's membership.
+    if (newStatus === "canceled") {
+      const ok = window.confirm(
+        "Cancel this subscription at Stripe?\n\n" +
+        "The customer keeps their membership until the end of the current billing cycle, " +
+        "then it rolls off and they stop being billed. This is a real billing action."
+      );
+      if (!ok) return;
+    }
     try {
       const res = await fetch(`/api/admin/subscriptions/${subId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token()}` },
         body: JSON.stringify({ status: newStatus }),
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) {
+        let msg = `HTTP ${res.status}`;
+        try { const j = await res.json(); if (j?.detail) msg = j.detail; } catch {}
+        throw new Error(msg);
+      }
       fetchSubscriptions();
       setSelectedSub(null);
     } catch (e: any) {

@@ -68,5 +68,17 @@ async def require_premium(user: User = Depends(get_current_user)) -> User:
     return user
 
 
+async def require_admin(user: User = Depends(get_current_user)) -> User:
+    """Require an authenticated, active admin user.
+    Admin-only mutation endpoints (writeup edits, moderation, admin content ops)
+    must depend on this so anonymous/non-admin users cannot mutate data.
+    """
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    if not user.is_active:
+        raise HTTPException(status_code=403, detail="Account disabled")
+    return user
+
+
 def user_is_premium(user: User) -> bool:
-    return user is not None and user.subscription_tier in ("premium", "ultimate")
+    return user is not None and user.subscription_tier in ("premium", "premium_yearly")

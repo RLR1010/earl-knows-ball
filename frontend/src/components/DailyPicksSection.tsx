@@ -42,7 +42,7 @@ export default function DailyPicksSection({ sport }: { sport: string }) {
   const [article, setArticle] = useState<DailyPickArticle | null | undefined>(undefined);
   const { user } = useAuth();
   const isPremiumMember =
-    user?.subscription_tier === "premium" || user?.subscription_tier === "ultimate";
+    user?.subscription_tier === "premium" || user?.subscription_tier === "premium_yearly";
 
   useEffect(() => {
     let active = true;
@@ -62,7 +62,7 @@ export default function DailyPicksSection({ sport }: { sport: string }) {
   }, [sport]);
 
   const excerpt = article?.summary;
-  const isPremium = article?.visibility === "premium" || article?.visibility === "ultimate";
+  const isPremium = article?.visibility === "premium";
   const detailHref = `/${sport}/articles/${article?.slug || article?.id}`;
 
   return (

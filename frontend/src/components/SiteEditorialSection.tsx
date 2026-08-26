@@ -41,7 +41,7 @@ export default function SiteEditorialSection() {
   const [articles, setArticles] = useState<AllSportArticle[] | null | undefined>(undefined);
   const { user } = useAuth();
   const isPremiumMember =
-    user?.subscription_tier === "premium" || user?.subscription_tier === "ultimate";
+    user?.subscription_tier === "premium" || user?.subscription_tier === "premium_yearly";
 
   useEffect(() => {
     let active = true;
@@ -61,7 +61,7 @@ export default function SiteEditorialSection() {
   }, []);
 
   return (
-    <section aria-label="Latest Editorial" className="max-w-5xl mx-auto px-4 mb-12">
+    <section aria-label="Latest Editorial" className="max-w-6xl mx-auto px-4 mb-12">
       <div className="flex items-center justify-between mb-5">
         <h2 className="font-display text-2xl font-bold text-white tracking-tight flex items-center gap-2">
           <span className="inline-flex h-6 items-center rounded-md bg-gradient-to-r from-earl-600 to-earl-500 px-2 text-xs font-black uppercase tracking-widest text-white">
@@ -86,7 +86,7 @@ export default function SiteEditorialSection() {
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {articles.map((a) => {
-            const isPremium = a.visibility === "premium" || a.visibility === "ultimate";
+            const isPremium = a.visibility === "premium";
             const href = `/${a.sport}/articles/${a.slug || a.id}`;
             return (
               <Link

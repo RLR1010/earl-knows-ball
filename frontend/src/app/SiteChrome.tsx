@@ -55,7 +55,8 @@ export default function SiteChrome({ children }: { children: React.ReactNode }) 
     hideSportChrome || pathname.endsWith("/chat");
   // The chat page manages its own width/padding/height (it's an app-style layout),
   // so <main> should not add site padding there even though the header shows.
-  const paddedMain = activeSport && !hideSportChrome && !pathname.endsWith("/chat");
+  // Everything else gets ONE consistent in-between content column (max-w-6xl).
+  const paddedMain = !pathname.endsWith("/chat");
 
   return (
     <>
@@ -166,7 +167,7 @@ export default function SiteChrome({ children }: { children: React.ReactNode }) 
         </header>
 
         {/* ── Main Content ───────────────────────────────────────── */}
-        <main className={`flex-1 w-full ${paddedMain ? "max-w-7xl mx-auto px-2 sm:px-4 py-6" : ""}`}>
+        <main className={`flex-1 w-full ${paddedMain ? "max-w-6xl mx-auto px-2 sm:px-4 py-6" : ""}`}>
           {children}
         </main>
         <Footer />

@@ -19,6 +19,7 @@ from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import async_session, Base, engine
+from app.chat_tools._player_cache import invalidate_mlb_players
 from app.models.mlb import (
     MLBTeam,
     MLBSeason,
@@ -918,6 +919,9 @@ async def load_all() -> dict:
         total_players = await _count_players(db)
         results["players"] = total_players
         logger.info(f"  Total distinct players: {total_players}")
+        # Roster/player data changed → drop the resolver cache so new signings,
+        # call-ups, trades, and team updates show up immediately (no TTL wait).
+        invalidate_mlb_players()
 
         # Steps 2-3: Season stats
         logger.info("\n[Steps 2-3] Loading batting & pitching stats...")

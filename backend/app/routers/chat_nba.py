@@ -116,8 +116,8 @@ async def chat_nba(
     Yields status events ('status') during research, then the final answer ('answer').
     """
 
-    # Check token limit for premium/ultimate users
-    if current_user.subscription_tier in ("premium", "ultimate"):
+    # Check token limit for premium users
+    if current_user.subscription_tier in ("premium", "premium_yearly"):
         allowed, _ = await check_token_limit(current_user, db)
         if not allowed:
             async def limit_error_stream():

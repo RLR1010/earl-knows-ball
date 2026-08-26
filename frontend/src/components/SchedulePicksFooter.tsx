@@ -60,7 +60,7 @@ export default function SchedulePicksFooter({ game, spreadLabel = "Spread" }: Pr
             </span>
             <span className="mx-2 text-gray-700">|</span>
             <span>
-              {formatMoneyline(game.home_moneyline)}/{formatMoneyline(game.away_moneyline)}
+              {formatMoneyline(game.away_moneyline)}/{formatMoneyline(game.home_moneyline)}
             </span>
             {game.over_under != null && (
               <>

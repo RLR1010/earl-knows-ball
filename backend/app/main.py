@@ -66,10 +66,19 @@ app = FastAPI(lifespan=lifespan,
     
 )
 
-# ── CORS (allow frontend from any origin) ────────────────────────────
+# ── CORS (tightened 2026-08-24) ───────────────────────────────────────
+# Production is SAME-ORIGIN (Caddy serves earlknowsball.com → Next.js on 3000
+# and rewrites /api/* to the backend on the same host), so CORS is effectively
+# not exercised in prod. We still allow the real frontend origin(s) explicitly
+# (apex + localhost dev) instead of a blanket "*" with credentials, which
+# browsers reject anyway and which mistakenly suggests any origin may carry our
+# cookies. Do NOT set allow_origins=["*"] with allow_credentials=True here.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "https://earlknowsball.com",
+        "http://localhost:3000",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -97,6 +106,7 @@ from app.routers import (
     stats,
     subscriptions,
     teams,
+    seo,
     admin,
     writeups,
     original_articles,
@@ -125,6 +135,7 @@ _LEGACY_USER_FACING = [
     teams,
     token_usage,
     customer_service,
+    seo,
 ]
 
 _COMPUTE_FACING = [

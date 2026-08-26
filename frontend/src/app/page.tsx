@@ -1,6 +1,9 @@
 import type { Metadata } from "next";
 import UpcomingGames from "@/components/UpcomingGames";
+import BestBetsPanel from "@/components/BestBetsPanel";
 import SiteEditorialSection from "@/components/SiteEditorialSection";
+import JsonLd from "@/components/JsonLd";
+import { websiteStructuredData } from "@/lib/structured-data";
 
 export const metadata: Metadata = {
   title: "Earl Knows Ball — AI-Powered Sports Handicapping & Picks",
@@ -26,6 +29,7 @@ export const metadata: Metadata = {
 export default function Home() {
   return (
     <div className="space-y-16">
+      <JsonLd data={websiteStructuredData()} />
       {/* ── Hero: Portrait | Screenshot | Bullet points ──────────── */}
       <section className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-[1fr_auto_1fr] gap-6 lg:gap-8 items-center py-12">
         {/* Merged graphic — shown only where the three columns won't fit (below lg) */}
@@ -98,6 +102,16 @@ export default function Home() {
 
       {/* Site-wide "All" editorial articles */}
       <SiteEditorialSection />
+
+      {/* Earl's Best Bets across all sports (single highest-value pick per game) */}
+      <BestBetsPanel
+        sport="all"
+        showSport
+        limit={6}
+        containerClassName="max-w-6xl mx-auto px-4"
+        title="Earl's Best Bets"
+        subtitle="One value pick per upcoming game, ranked by edge (model confidence vs. implied odds)."
+      />
 
       {/* Upcoming games across all sports */}
       <UpcomingGames />

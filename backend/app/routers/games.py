@@ -98,6 +98,9 @@ class GameOut(BaseModel):
     venue: str | None = None
     roof_type: str | None = None
     surface: str | None = None
+    temperature: int | None = None
+    wind_speed: int | None = None
+    weather_condition: str | None = None
     home_team: str | None = None
     away_team: str | None = None
     home_score: int | None = None
@@ -204,6 +207,71 @@ async def _nfl_team_record_as_of(db, team_id, game_date, season_id):
         return {"wins": 0, "losses": 0}
 
 
+
+async def _records_as_of_batch(db, schema: str, pairs):
+    """Batched record-as-of-date for many (team_id, game_date, season_id) tuples.
+    Returns dict keyed by (team_id, str(date), season_id) -> "W-L" (or None if no games).
+    Works for mlb / nba / nfl games tables (all share home/away_team_id, scores, season_id, date).
+    """
+    table = f"{schema}.games"
+    # dedupe
+    seen = set()
+    unique = []
+    for team_id, gdate, sid in pairs:
+        if not team_id or not gdate or not sid:
+            continue
+        # Normalize gdate to a datetime.date object (asyncpg requires real dates for date params).
+        import datetime as _datetime
+        if isinstance(gdate, str):
+            gdate = _datetime.date.fromisoformat(gdate[:10])
+        elif isinstance(gdate, _datetime.datetime):
+            gdate = gdate.date()
+        key = (team_id, str(gdate), sid)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append((team_id, gdate, sid))
+    if not unique:
+        return {}
+    records = {}
+    try:
+        from sqlalchemy.sql import text as _text
+        # Normalize the game-date to a plain date for consistent keying.
+        from_sql = " UNION ALL ".join(
+            f"SELECT {int(team_id)} AS tid, CAST(:d{i} AS date) AS g_date, {int(sid)} AS sid"
+            for i, (team_id, gdate, sid) in enumerate(unique)
+        )
+        params = {f"d{i}": gdate for i, (_, gdate, _) in enumerate(unique)}
+        sql = f"""
+        WITH pairs AS ({from_sql})
+        SELECT p.tid, p.sid, p.g_date,
+               COALESCE(SUM(CASE WHEN (g.home_team_id=p.tid AND g.home_score>g.away_score)
+                                     OR (g.away_team_id=p.tid AND g.away_score>g.home_score)
+                                THEN 1 ELSE 0 END),0) AS wins,
+               COALESCE(SUM(CASE WHEN (g.home_team_id=p.tid AND g.home_score<g.away_score)
+                                     OR (g.away_team_id=p.tid AND g.away_score<g.home_score)
+                                THEN 1 ELSE 0 END),0) AS losses
+        FROM pairs p
+        LEFT JOIN {table} g
+          ON (g.home_team_id=p.tid OR g.away_team_id=p.tid)
+         AND g.season_id = p.sid
+         AND g.date < (p.g_date + INTERVAL '1 day')
+         AND ((g.home_team_id=p.tid AND g.home_score IS NOT NULL)
+              OR (g.away_team_id=p.tid AND g.away_score IS NOT NULL))
+        GROUP BY p.tid, p.sid, p.g_date
+        """
+        rows = (await db.execute(_text(sql), params)).mappings().all()
+        for r in rows:
+            key = (int(r.tid), str(r.g_date), int(r.sid))
+            w = int(r.wins or 0)
+            l = int(r.losses or 0)
+            records[key] = f"{w}-{l}"
+    except Exception as exc:  # pragma: no cover - defensive
+        import logging
+        logging.getLogger("records_as_of").error(f"_records_as_of_batch failed: {exc}")
+    return records
+
+
 async def _game_to_out(
     game: Game,
     spread: float | None = None,
@@ -229,6 +297,9 @@ async def _game_to_out(
         venue=game.venue,
         roof_type=game.roof_type,
         surface=game.surface,
+        temperature=game.temperature,
+        wind_speed=game.wind_speed,
+        weather_condition=game.weather_condition,
         home_team=game.home_team.abbreviation if game.home_team else None,
         away_team=game.away_team.abbreviation if game.away_team else None,
         home_score=game.home_score,
@@ -341,6 +412,21 @@ async def list_games(
         await _game_to_out(g, **latest_lines.get(g.id, {}))
         for g in games
     ])
+
+    # Team records at the time of each game (batched, matches game-detail behavior)
+    if games:
+        _pairs = []
+        for _g in games:
+            if _g.home_team_id:
+                _pairs.append((_g.home_team_id, _g.date, _g.season_id))
+            if _g.away_team_id:
+                _pairs.append((_g.away_team_id, _g.date, _g.season_id))
+        _records = await _records_as_of_batch(db, "nfl", _pairs)
+        for _o in out:
+            _g = next((x for x in games if x.id == _o.get("id")), None)
+            _o["home_record"] = _records.get((_g.home_team_id, str(_g.date.date()), _g.season_id)) if _g and _g.home_team_id else None
+            _o["away_record"] = _records.get((_g.away_team_id, str(_g.date.date()), _g.season_id)) if _g and _g.away_team_id else None
+
     _nfl_games_store(cache_key, out)
     return JSONResponse(content=out, headers={"Cache-Control": "public, max-age=30"})
 
@@ -950,10 +1036,7 @@ async def get_nfl_prediction_stats(
     situational = _safe_json(pred.situational_json)
     shap = _safe_json(pred.shap_json)
     # Attach pick_card_section so the frontend can group stats into
-    # Home/Away/Game Context/Betting Lines sections.
-    features = await _attach_sections(db, "nba", features or {})
-    # Attach pick_card_section so the frontend can group stats into
-    # Home/Away/Game Context/Betting Lines sections.
+    # Home/Away/Game Context/Betting Lines sections (mirrors MLB).
     features = await _attach_sections(db, "nfl", features or {})
 
     # Get season/year info
@@ -1022,6 +1105,9 @@ async def get_nba_prediction_stats(
     away_stats = _safe_json(pred.away_stats_json)
     situational = _safe_json(pred.situational_json)
     shap = _safe_json(pred.shap_json)
+    # Attach pick_card_section so the frontend can group stats into
+    # Home/Away/Game Context/Betting Lines sections (mirrors MLB).
+    features = await _attach_sections(db, "nba", features or {})
 
     abs_margin = abs(pred.predicted_margin or 0)
     pred_total_raw = pred.predicted_total or 0

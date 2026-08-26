@@ -15,6 +15,11 @@ from datetime import date, datetime, timedelta, timezone as dt_timezone
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.chat_tools._player_cache import (
+    get_mlb_players,
+    get_mlb_token_index,
+    invalidate_mlb_players,
+)
 from app.models.mlb import (
     MLBTeam,
     MLBPlayer,
@@ -384,6 +389,23 @@ TOOL_DEFINITIONS = [
                 "properties": {
                     "player_name": {"type": "string", "description": "Player name (accent/typo tolerant)"},
                     "days": {"type": "integer", "description": "Trailing window in days (default 30, max 90)"},
+                },
+                "required": ["player_name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_player_recent_stats",
+            "description": "Get a hitter's stats over their most recent N GAMES (you pick N, the model, based on context - default 5, max 50) directly from the rolling player-game table: PA, AB, hits, HR, RBI, runs, BB, K, total bases, plus window AVG/OBP/SLG/OPS and K%/BB%, with a game-by-game breakdown. Unlike get_player_recent_form (which is a N-day calendar window), this sums the player's last N actual games. Also returns the stored fixed-window rate (last 5/15/30 games). Great for form/streaks.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "player_name": {"type": "string", "description": "Player name (accent/typo tolerant)"},
+                    "team": {"type": "string", "description": "Optional team name or abbreviation to disambiguate same-name players"},
+                    "games": {"type": "integer", "description": "Number of most recent games to sum/average (default 5, max 50; use your judgment)"},
+                    "season": {"type": "integer", "description": "Season year (defaults to most recent)"},
                 },
                 "required": ["player_name"],
             },
@@ -1184,43 +1206,72 @@ async def _search_players(db: AsyncSession, name: str, team_abbr: str = "", limi
     q_set = set(q_tokens)
     team_abbr = (team_abbr or "").upper()
 
-    rows = (await db.execute(text(
-        """
-        SELECT p.id, p.name, p.position, p.team_id, p.bats,
-               t.abbreviation AS team_abbr,
-               EXISTS (
-                   SELECT 1 FROM mlb.batting_game_stats bgs
-                   JOIN mlb.games g ON g.id = bgs.game_id
-                   WHERE bgs.player_id = p.id AND g.season_id = 21
-               ) AS has_season_data
-        FROM mlb.players p
-        LEFT JOIN mlb.teams t ON t.id = p.team_id
-        """
-    ))).fetchall()
-    if not rows:
+    # Snapshot comes from the shared TTL-bounded cache: it holds mlb.players +
+    # team abbr + active-season flag (computed against the LATEST season, not a
+    # hardcoded id) AND precomputed NFD/suffix-stripped name artifacts (_core,
+    # _tokens) plus a token->index map. Only players sharing a token with the
+    # query run the (expensive) SequenceMatcher scorer; everyone else is skipped.
+    cached = await get_mlb_players(db)
+    if not cached:
         return []
+    by_token = get_mlb_token_index()
+
+    core_query = _norm_name(_strip_suffix(name))           # suffix-stripped, NFD
+    q_tokens_local = core_query.split()
+    q_tokens = q.split()  # full query tokens (include suffix token)
+
+    # Cheap candidate gate: indices whose tokens intersect the query, plus (to
+    # catch typos where NO token overlaps) any player whose first token shares a
+    # 2-char prefix with a query token, and any player whose LAST-NAME token is
+    # fuzzy-close (>=0.66) to a query token. Only this small subset runs the
+    # expensive SequenceMatcher scorer below (skips ~99% of the roster per call).
+    query_tokens = set(q_tokens) | set(q_tokens_local)
+    candidate_idx = set()
+    for t in query_tokens:
+        candidate_idx.update(by_token.get(t, ()))
+    # Only fall through to the fuzzy last-name gate when the token gate found
+    # nothing (pure-typo case e.g. "ohtnai"). If any token matched, the rosters
+    # already hit those players is tiny and we avoid the full 6k scan.
+    if not candidate_idx and core_query.split():
+        q_last2 = core_query.split()[-1][:2]
+        for i, d in enumerate(cached):
+            dl = d["_last"]
+            if not dl:
+                continue
+            if dl[:2] == q_last2:
+                candidate_idx.add(i)
+                continue
+            for qt in q_tokens_local:
+                if difflib.SequenceMatcher(None, qt, dl).ratio() >= 0.66:
+                    candidate_idx.add(i)
+                    break
 
     results = []
-    for pid, rname, pos, team_id, bats, tabbr, has_season_data in rows:
-        pn = _norm_name(rname or "")
-        ptokens = pn.split()
+    for i in candidate_idx:
+        d = cached[i]
+        rname = d["name"] or ""
+        pid = d["player_id"]
+        pos = d["position"]
+        team_id = d["team_id"]
+        bats = d["bats"]
+        tabbr = d["team_abbr"]
+        has_season_data = d["has_season_data"]
+        player_norm = _norm_name(rname)          # full normalized player name
+        ptokens = player_norm.split()
         if not ptokens:
             continue
-        # core name (suffix-stripped, NFD) so "Jr.\" doesn't penalize a suffixed
-        # player when the user omits the suffix (fixes Tatis/Guerrero/Young/etc.)
-        core_candidate = _norm_name(_strip_suffix(rname or ""))
-        core_query = _norm_name(_strip_suffix(name))
-        q_tokens_local = core_query.split()
+        # suffix-stripped core name precomputed by the cache
+        core_candidate = d["_core"]
         c_tokens = core_candidate.split()
 
-        exact = (pn == q)  # full normalized match (query includes suffix)
+        exact = (player_norm == q)  # full normalized match (query includes suffix)
         # core overlap + similarity on suffix-stripped names
         core_exact = (core_candidate == core_query)
         overlap = len(set(q_tokens) & set(ptokens))
         core_overlap = len(set(q_tokens_local) & set(c_tokens))
 
         # Levenshtein-ish similarity on both full and core names
-        ratio = difflib.SequenceMatcher(None, q, pn).ratio()
+        ratio = difflib.SequenceMatcher(None, q, player_norm).ratio()
         core_ratio = difflib.SequenceMatcher(None, core_query, core_candidate).ratio()
 
         tok_ratio = max(
@@ -1799,6 +1850,109 @@ async def _get_player_recent_form(db: AsyncSession, args: dict) -> dict:
     }
 
 
+async def _get_player_recent_stats(db: AsyncSession, args: dict) -> dict:
+    """A batter's stats over their most recent N games, summed from the
+    player_batting_rolling_stats table (one row per player-game).
+
+    args:
+        player_name: str (required)
+        team: str (optional; team name/abbr to disambiguate)
+        games: int (optional; number of most recent games. default 5, max 50)
+        season: int (optional; season year, defaults to the most recent season)
+
+    Returns window totals (PA/AB/H/RBI/HR/BB/K/TB), rates (AVG/OBP/SLG/OPS/K%
+    /BB%) and a game-by-game breakdown, plus the stored fixed-window
+    AVG/OBP/SLG/OPS at 5/15/30 games where available.
+    """
+    player_name = args.get("player_name", "")
+    team_abbr = args.get("team", "") or ""
+    n = min(max(int(args.get("games") or 5), 1), 50)
+    season_year = args.get("season")
+
+    player = await _resolve_hitter(db, player_name, team_abbr=team_abbr)
+    if not player:
+        return {"error": f"Player not found: {player_name}", "suggestions": [{"name": s["name"], "team": s["team"], "position": s["position"], "player_id": s["player_id"]} for s in await _search_players(db, player_name, team_abbr=team_abbr, limit=5)]}
+
+    season_filter = ""
+    params = {"pid": player.id, "n": n}
+    if season_year:
+        params["year"] = season_year
+        season_filter = " AND season_id = (SELECT id FROM mlb.seasons WHERE year = :year)"
+
+    sql = text("""
+        SELECT game_date, pa, at_bats, runs, hits, doubles, triples,
+               home_runs, runs_batted_in, walks, strikeouts, total_bases,
+               sacrifice_flies, hit_by_pitch,
+               avg_this, obp_this, slg_this, ops_this,
+               avg_5, avg_15, avg_30, obp_5, obp_15, obp_30,
+               slg_5, slg_15, slg_30, ops_5, ops_15, ops_30
+        FROM mlb.player_batting_rolling_stats
+        WHERE player_id = :pid""" + season_filter + """
+        ORDER BY game_date DESC
+        LIMIT :n
+    """)
+    rows = (await db.execute(sql, params)).mappings().all()
+    if not rows:
+        return {"error": f"No recent batting games found for {player.name}"}
+
+    def _f(v, nd=3):
+        if v is None:
+            return None
+        return round(float(v), nd)
+
+    g = len(rows)
+    t = {k: sum((row[k] or 0) for row in rows) for k in (
+        "pa", "at_bats", "runs", "hits", "doubles", "triples", "home_runs",
+        "runs_batted_in", "walks", "strikeouts", "total_bases",
+        "sacrifice_flies", "hit_by_pitch")}
+
+    ab = t["at_bats"]
+    pa = t["pa"]
+    avg = round(t["hits"] / ab, 3) if ab else None
+    obp_den = t["at_bats"] + t["walks"] + t["hit_by_pitch"] + t["sacrifice_flies"]
+    obp = round((t["hits"] + t["walks"] + t["hit_by_pitch"]) / obp_den, 3) if obp_den else None
+    slg = round(t["total_bases"] / ab, 3) if ab else None
+    # OPS = OBP + SLG (traditional definition; matches the stored ops_5/15/30)
+    ops = round((obp or 0) + (slg or 0), 3) if (obp is not None and slg is not None) else None
+    k_pct = round(t["strikeouts"] / pa * 100, 1) if pa else None
+    bb_pct = round(t["walks"] / pa * 100, 1) if pa else None
+
+    latest = rows[0]
+    fixed = None
+    if n == 5 and latest["avg_5"] is not None:
+        fixed = {"avg": _f(latest["avg_5"]), "obp": _f(latest["obp_5"]),
+                  "slg": _f(latest["slg_5"]), "ops": _f(latest["ops_5"])}
+    elif n == 15 and latest["avg_15"] is not None:
+        fixed = {"avg": _f(latest["avg_15"]), "obp": _f(latest["obp_15"]),
+                  "slg": _f(latest["slg_15"]), "ops": _f(latest["ops_15"])}
+    elif n == 30 and latest["avg_30"] is not None:
+        fixed = {"avg": _f(latest["avg_30"]), "obp": _f(latest["obp_30"]),
+                  "slg": _f(latest["slg_30"]), "ops": _f(latest["ops_30"])}
+
+    games = [{
+        "date": str(row["game_date"]),
+        "pa": row["pa"], "ab": row["at_bats"], "runs": row["runs"],
+        "hits": row["hits"], "doubles": row["doubles"], "triples": row["triples"],
+        "hr": row["home_runs"], "rbi": row["runs_batted_in"], "bb": row["walks"],
+        "k": row["strikeouts"], "tb": row["total_bases"],
+        "avg_this": _f(row["avg_this"]), "obp_this": _f(row["obp_this"]),
+        "slg_this": _f(row["slg_this"]), "ops_this": _f(row["ops_this"]),
+    } for row in rows]
+
+    return {
+        "player": player.name,
+        "team_abbr": await _team_abbr_of(db, player),
+        "season": season_year,
+        "window": f"last {n} games",
+        "games": g,
+        "totals": t,
+        "rates": {"avg": avg, "obp": obp, "slg": slg, "ops": ops,
+                   "k_pct": k_pct, "bb_pct": bb_pct},
+        "stored_fixed_window": fixed,
+        "game_logs": games,
+    }
+
+
 async def _get_team_season_futures(db: AsyncSession, args: dict) -> dict:
     """Team season futures odds from mlb.team_props.
 
@@ -2002,6 +2156,7 @@ _TOOL_MAP = {
     "get_player_split_stats": _get_player_split_stats,
     "get_bullpen_stats": _get_bullpen_stats,
     "get_player_recent_form": _get_player_recent_form,
+    "get_player_recent_stats": _get_player_recent_stats,
     "search_players": _search_players_tool,
     "get_game_prediction": _get_game_prediction,
     "get_team_splits": _get_team_splits,

@@ -11,6 +11,7 @@ import re
 from datetime import datetime, timezone
 
 import httpx
+from app.chat_tools._player_cache import invalidate_nba_players
 from sqlalchemy import select, text, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -230,6 +231,9 @@ async def ingest_rosters(db: AsyncSession) -> dict:
                 await db.rollback()
 
     logger.info(f"Rosters done: {stats['updated']} updated, {stats['new']} new, {stats['skipped']} skipped, {stats['errors']} errors")
+    # Roster/player data changed → drop the resolver cache so new signings, call-ups,
+    # trades, and name/team updates show up immediately (no need to wait for its TTL).
+    invalidate_nba_players()
     return stats
 
 

@@ -255,19 +255,31 @@ def _resolve_year_pkl_paths(model_type: str) -> Dict[int, Path]:
 
 
 def _load_model_for_year(year: int, model_type: str) -> Optional[xgb.Booster]:
-    """Load a per-year XGBoost model from pickle."""
+    """Load a per-year XGBoost model from pickle.
+
+    Falls back to the most recent available year's pkl when no model exists for
+    *year* (e.g. live prediction for a not-yet-trained season uses the previous
+    year's model). Returns ``None`` only when no year at or below *year* has a
+    pkl.
+    """
     paths = _resolve_year_pkl_paths(model_type)
-    p = paths.get(year)
-    if p is None or not p.exists():
-        logger.warning("  No %s model found for %s (checked %s)", model_type, year, p)
+    eff = _resolve_model_year(paths, year)
+    if eff is None:
+        logger.warning(
+            "  No %s model found for %s or earlier; available years: %s",
+            model_type, year, sorted(paths.keys()),
+        )
         return None
+    p = paths[eff]
     try:
         with open(p, "rb") as fh:
             model = pickle.load(fh)
-        logger.info("  Loaded %s model for %s: %s", model_type, year, p.name)
+        logger.info("  Loaded %s model for %s: %s", model_type, eff, p.name)
         return model
     except Exception as exc:
-        logger.error("  Failed to load %s model for %s: %s", model_type, year, exc)
+        logger.error(
+            "  Failed to load %s model for %s: %s", model_type, eff, exc
+        )
         return None
 
 
@@ -284,9 +296,14 @@ def _get_models_for_season(year: int) -> Dict[str, Optional[xgb.Booster]]:
 
 def _model_file_for_year(year: int, model_type: str) -> Optional[str]:
     """Return the basename of the pkl model file for *model_type*/*year*,
-    or ``None`` if it cannot be resolved. Stored on every pick."""
+    or ``None`` if it cannot be resolved. Stored on every pick.
+
+    Follows the same fallback as :func:`_load_model_for_year`: when no model
+    exists for *year*, returns the most recent available lower year's file.
+    """
     paths = _resolve_year_pkl_paths(model_type)
-    p = paths.get(year)
+    eff = _resolve_model_year(paths, year)
+    p = paths.get(eff) if eff is not None else None
     return p.name if (p is not None and p.name) else None
 
 
@@ -296,6 +313,18 @@ def _model_file_map(year: int) -> Dict[str, Optional[str]]:
         "ats": _model_file_for_year(year, "ats"),
         "ou": _model_file_for_year(year, "ou"),
     }
+
+
+def _resolve_model_year(paths: Dict[int, Path], year: int) -> Optional[int]:
+    """Return the effective model year for *year*: the exact year if a pkl
+    exists, otherwise the most recent available year below it (so live
+    prediction for a not-yet-trained season falls back to the previous year).
+    Returns ``None`` if no year at or below ``year`` has a pkl.
+    """
+    if year in paths:
+        return year
+    older = [y for y in paths if y < year]
+    return max(older) if older else None
 
 
 # ── Year evaluation ──────────────────────────────────────────────────────────────

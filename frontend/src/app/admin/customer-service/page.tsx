@@ -30,7 +30,7 @@ interface CsListResponse {
 
 const TIER_COLORS: Record<string, string> = {
   premium: "bg-amber-900/30 text-amber-400",
-  ultimate: "bg-purple-900/30 text-purple-400",
+  premium_yearly: "bg-purple-900/30 text-purple-400",
   free: "bg-gray-800 text-gray-400",
 };
 
