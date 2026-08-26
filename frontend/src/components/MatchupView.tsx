@@ -68,47 +68,82 @@ function fmtVal(v: unknown): string {
   return String(n);
 }
 
-/** Glanceable per-team trend chips (normalized across sports). */
-export function TrendChips({ trends }: { trends: Record<string, unknown> | null }) {
+/** Glanceable per-team trend chips (sport-specific, mapped to real data shapes). */
+export function TrendChips({ trends, sport }: { trends: Record<string, unknown> | null; sport: Sport }) {
   if (!trends) return <p className="text-xs text-gray-500">No trend data available.</p>;
   const chips: { label: string; value: React.ReactNode; good?: boolean }[] = [];
 
-  // NBA-style
+  const pct = (v: unknown) => {
+    const n = num(v);
+    return n === null || n > 1.5 ? null : `${(n * 100).toFixed(0)}%`;
+  };
+
+  // ---- NBA (last_5 / last_10 are N-game rolling windows) ----
   if (trends.last_10 && typeof trends.last_10 === "object") {
     const l10 = trends.last_10 as Record<string, unknown>;
-    const l5 = (trends.last_5 as Record<string, unknown>) ?? undefined;
-    const record = (o: Record<string, unknown>) =>
-      typeof o.wins === "number" ? `${o.wins}-${num(o.losses) ?? 0}` : null;
-    const rec10 = record(l10);
+    const l5 = (trends.last_5 as Record<string, unknown>) ?? null;
+    const rec = (o: Record<string, unknown> | null, n: number) => {
+      if (!o || typeof o.wins !== "number") return null;
+      return `${o.wins}-${n - o.wins}`;
+    };
+    const rec10 = rec(l10, 10);
     if (rec10) chips.push({ label: "Last 10", value: rec10 });
-    if (l5) {
-      const a = typeof l5.ats_wins === "number" ? l5.ats_wins : null;
-      const total = typeof l5.ats_total === "number" ? l5.ats_total : null;
-      if (a !== null && total) chips.push({ label: "ATS L5", value: `${a}-${total - a}` });
-      const ou = typeof l5.ou_over_wins === "number" ? l5.ou_over_wins : null;
-      if (ou !== null && total) chips.push({ label: "Over L5", value: `${ou}/${total}` });
-    }
-    const rw5 = (trends.recent_weighted_5 ?? {}) as Record<string, unknown>;
-    const nr = num(l10.net_rating ?? rw5.net_rating);
+    const rec5 = rec(l5, 5);
+    if (rec5) chips.push({ label: "L5", value: rec5 });
+
+    const ats = (o: Record<string, unknown> | null, n: number) => {
+      if (!o || typeof o.ats_wins !== "number") return null;
+      return `${o.ats_wins}-${n - o.ats_wins}`;
+    };
+    const ats10 = ats(l10, 10);
+    if (ats10) chips.push({ label: "ATS L10", value: ats10 });
+    const ats5 = ats(l5, 5);
+    if (ats5) chips.push({ label: "ATS L5", value: ats5 });
+
+    const ovr = (o: Record<string, unknown> | null, n: number) => {
+      if (!o || typeof o.ou_over_wins !== "number") return null;
+      return `${o.ou_over_wins}-${n - o.ou_over_wins}`;
+    };
+    const ovr10 = ovr(l10, 10);
+    if (ovr10) chips.push({ label: "Over L10", value: ovr10 });
+    const ovr5 = ovr(l5, 5);
+    if (ovr5) chips.push({ label: "Over L5", value: ovr5 });
+
+    const nr = num(l10.net_rating);
     if (nr !== null) {
-      chips.push({ label: "Net rtg", value: `${nr > 0 ? "+" : ""}${nr}`, good: nr > 0 });
+      chips.push({ label: "Net rtg L10", value: `${nr > 0 ? "+" : ""}${nr}`, good: nr > 0 });
     }
+    const pace = num(l10.pace);
+    if (pace !== null) chips.push({ label: "Pace", value: pace });
+
+    // Weighted recent scoring (last-3-weighted)
+    const w3 = (trends.recent_weighted_3 ?? {}) as Record<string, unknown>;
+    const wppg = num(w3.ppg);
+    if (wppg !== null) chips.push({ label: "PPG (recent)", value: wppg });
   }
 
-  // MLB-style
+  // ---- MLB (latest_summary holds fixed-window pitch/hit metrics) ----
   if (trends.latest_summary && typeof trends.latest_summary === "object") {
     const s = trends.latest_summary as Record<string, unknown>;
-    const rr = num(s.runs_game);
-    if (rr !== null) chips.push({ label: "Runs/G", value: rr });
-    const wp = num(s.win_pct);
-    if (wp !== null && wp <= 1) chips.push({ label: "Win%", value: `${(wp * 100).toFixed(0)}%` });
-    const slp = num(s.slg);
-    if (slp !== null) chips.push({ label: "SLG", value: slp });
+    const wp = pct(s.win_pct_10 ?? s.win_pct_5 ?? s.win_pct);
+    if (wp) chips.push({ label: "Win% L10", value: wp });
+    const ov = pct(s.over_pct_10 ?? s.over_pct_5);
+    if (ov) chips.push({ label: "Over% L10", value: ov });
+    const ops = num(s.ops10 ?? s.ops5);
+    if (ops !== null) chips.push({ label: "OPS L10", value: ops });
+    const slg = num(s.slg10 ?? s.slg5);
+    if (slg !== null) chips.push({ label: "SLG L10", value: slg });
+    const avg = num(s.avg10 ?? s.avg5);
+    if (avg !== null) chips.push({ label: "AVG L10", value: avg });
+    const era = num(s.era10 ?? s.era5);
+    if (era !== null) chips.push({ label: "ERA L10", value: era });
+    const whip = num(s.whip10 ?? s.whip5);
+    if (whip !== null) chips.push({ label: "WHIP L10", value: whip });
+    const k9 = num(s.k9_10 ?? s.k9_5);
+    if (k9 !== null) chips.push({ label: "K/9 L10", value: k9 });
   }
 
-  if (chips.length === 0) {
-    return <p className="text-xs text-gray-500">No trending stats for this team yet.</p>;
-  }
+  if (chips.length === 0) return <p className="text-xs text-gray-500">No trending stats for this team yet.</p>;
   return (
     <div className="flex flex-wrap gap-1.5">
       {chips.map((c) => (
@@ -156,7 +191,7 @@ export function MatchupTrendsGrid({
                 </span>
               </div>
             </div>
-            <TrendChips trends={team.trends} />
+            <TrendChips trends={team.trends} sport={sport} />
           </div>
         );
       })}
@@ -164,7 +199,10 @@ export function MatchupTrendsGrid({
   );
 }
 
-/** Side-by-side comparison table with the better side highlighted. */
+/** Side-by-side comparison table with the better side highlighted.
+ * Row values are keyed by team ABBREVIATION (e.g. {DET:0.241, TB:0.26}),
+ * so we index with homeAbbr/awayAbbr — NEVER teamA/teamB, which may be
+ * "Full Name (ABBR)" for some sports (MLB) vs plain abbr (NBA). */
 export function MatchupComparisonTable({
   compare,
   teamA,
@@ -181,8 +219,8 @@ export function MatchupComparisonTable({
   const metrics = Object.keys(compare).filter((k) => k !== "team_a" && k !== "team_b");
   const rows = metrics.map((key) => {
     const row = compare[key] ?? {};
-    const av = num(row[teamA]);
-    const bv = num(row[teamB]);
+    const av = num(row[homeAbbr]);
+    const bv = num(row[awayAbbr]);
     const lowerBetter = LOWER_IS_BETTER.has(key);
     let aBest = false;
     let bBest = false;
