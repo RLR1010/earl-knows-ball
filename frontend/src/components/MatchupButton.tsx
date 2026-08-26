@@ -53,7 +53,7 @@ export default function MatchupButton({
         onMouseUp={stop}
         onPointerDown={stop}
         data-matchup-button
-        className={`absolute top-2 left-2 z-20 flex h-7 w-7 items-center justify-center rounded-full border-2 border-orange-400 bg-gray-800/90 text-[9px] font-black uppercase tracking-tight text-orange-300 shadow-lg shadow-black/40 transition hover:border-amber-300 hover:text-amber-300 hover:scale-105 ${className}`}
+        className={`absolute top-2 left-2 z-20 flex h-7 w-7 items-center justify-center rounded-full border border-amber-500/30 bg-amber-500/15 text-[9px] font-bold uppercase tracking-tight text-amber-300 shadow-md shadow-black/30 transition hover:bg-amber-500/25 hover:text-amber-200 hover:scale-105 ${className}`}
       >
         VS
       </button>
