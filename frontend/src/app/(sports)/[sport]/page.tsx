@@ -3,6 +3,7 @@ import SportUpcomingGames from "@/components/SportUpcomingGames";
 import RecentContent from "@/components/RecentContent";
 import DailyPicksSection from "@/components/DailyPicksSection";
 import BestBetsPanel from "@/components/BestBetsPanel";
+import StandingsWidget from "@/components/StandingsWidget";
 import type { CardSport } from "@/components/ScheduleGameCard";
 
 const SPORT_INFO: Record<string, { name: string }> = {
@@ -65,6 +66,15 @@ export default async function SportHomePage({ params }: { params: Promise<{ spor
         limit={4}
         containerClassName=""
         title="Earl's Best Picks"
+        hideIfEmpty
+      />
+
+      {/* Standings / Down-the-Stretch frames */}
+      <StandingsWidget
+        sport={sport as "nfl" | "nba" | "mlb"}
+        containerClassName=""
+        title={`${SPORT_INFO[sport]?.name ?? sport.toUpperCase()} Standings`}
+        subtitle="W-L · Games back · Streak · Last 10"
         hideIfEmpty
       />
 

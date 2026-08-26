@@ -3,7 +3,7 @@
 import math
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -475,3 +475,174 @@ def _best_leg(g: dict):
         if best is None or edge > best["edge"]:
             best = {"type": market, "edge": edge, "conf": conf, "implied": implied}
     return best
+
+
+# ---------------------------------------------------------------------------
+# Standings / Down-the-Stretch frames
+# ---------------------------------------------------------------------------
+
+# Sport -> team grouping column + games status (all three schemas are parallel).
+_SPORT_TEAM_COL = {"nfl": "conference", "nba": "conference", "mlb": "league"}
+_VALID_SPORTS = tuple(_SPORT_TEAM_COL.keys())
+
+
+@router.get("/home/standings")
+async def home_standings(
+    sport: str = Query(..., description="nfl | nba | mlb"),
+    season_year: int | None = Query(None, description="Season year; defaults to the latest season with finals"),
+    conference: str | None = Query(None, description="Optional league/conference filter (AFC, NFC, East, West, AL, NL)"),
+    division: str | None = Query(None, description="Optional division filter (North, South, East, West, Atlantic, ...)"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Standings for a sport's latest (or given) season, grouped by
+    conference/league then division, with down-the-stretch frames:
+    W-L, pct, games back, current streak, last-10, home/road split, and
+    points for/against + differential.
+
+    Games back is computed per-group vs. the best win pct in that group's
+    division (MLB uses the leader of each division; NFL/NBA use divisional
+    leaders per the traditional "games back to lead the division" framing).
+    """
+    sport = (sport or "").strip().lower()
+    if sport not in _VALID_SPORTS:
+        raise HTTPException(status_code=400, detail=f"Invalid sport '{sport}'. Choose one of: {', '.join(_VALID_SPORTS)}.")
+
+    # Resolve the season id. If not given, pick the latest season that has any
+    # final game (so an off-season year won't return an empty table).
+    if season_year is None:
+        season_sql = f"""
+            SELECT s.id, s.year
+            FROM {sport}.seasons s
+            WHERE EXISTS (SELECT 1 FROM {sport}.games g WHERE g.season_id = s.id AND lower(g.status::text) = 'final')
+            ORDER BY s.year DESC
+            LIMIT 1
+        """
+        res = await db.execute(text(season_sql))
+        season = res.mappings().first()
+        if not season:
+            return {"sport": sport, "season": None, "conferences": [], "teams": []}
+        season_id, season_year = season["id"], season["year"]
+    else:
+        season_res = await db.execute(text(f"SELECT id FROM {sport}.seasons WHERE year = :y"), {"y": season_year})
+        season_row = season_res.mappings().first()
+        if not season_row:
+            raise HTTPException(status_code=404, detail=f"No season found for {sport} year {season_year}.")
+        season_id = season_row["id"]
+
+    group_col = _SPORT_TEAM_COL[sport]
+
+    # One pass over all final games of the season to build per-team aggregates.
+    games_sql = f"""
+        SELECT
+            g.home_team_id AS team_id,
+            g.date,
+            g.home_score, g.away_score,
+            'home' AS side,
+            CASE WHEN g.home_score > g.away_score THEN 1 ELSE 0 END AS won
+        FROM {sport}.games g
+        WHERE g.season_id = :sid AND lower(g.status::text) = 'final'
+        UNION ALL
+        SELECT
+            g.away_team_id AS team_id,
+            g.date,
+            g.home_score, g.away_score,
+            'away' AS side,
+            CASE WHEN g.away_score > g.home_score THEN 1 ELSE 0 END AS won
+        FROM {sport}.games g
+        WHERE g.season_id = :sid AND lower(g.status::text) = 'final'
+    """
+    rows = (await db.execute(text(games_sql), {"sid": season_id})).mappings().all()
+    if not rows:
+        return {"sport": sport, "season": season_year, "conferences": [], "teams": []}
+
+    # teams + grouping
+    teams_sql = f"""
+        SELECT id, name, abbreviation, \"{group_col}\" AS \"group\", division, logo_url
+        FROM {sport}.teams
+    """
+    teams = {t["id"]: dict(t) for t in (await db.execute(text(teams_sql))).mappings().all()}
+
+    # Aggregate per team
+    agg = {}
+    for r in rows:
+        tid = r["team_id"]
+        a = agg.setdefault(tid, {"games": 0, "wins": 0, "losses": 0, "home_w": 0, "home_l": 0, "away_w": 0, "away_l": 0, "pf": 0, "pa": 0, "results": []})
+        a["games"] += 1
+        a["wins"] += r["won"]
+        a["losses"] += (1 - r["won"])
+        if r["side"] == "home":
+            a["home_w"] += r["won"]
+            a["home_l"] += (1 - r["won"])
+        else:
+            a["away_w"] += r["won"]
+            a["away_l"] += (1 - r["won"])
+        a["pf"] += r["home_score"] if r["side"] == "home" else r["away_score"]
+        a["pa"] += r["away_score"] if r["side"] == "home" else r["home_score"]
+        a["results"].append((r["date"], r["won"]))
+
+    # Sort results chronologically per team to derive streak + last-10.
+    def _streak_last10(res):
+        res = sorted(res, key=lambda x: x[0])
+        streak = 0
+        for _, won in reversed(res):
+            if won:
+                streak = streak + 1 if streak >= 0 else 1
+            else:
+                streak = streak - 1 if streak <= 0 else -1
+        last10 = res[-10:]
+        l10_w = sum(1 for _, won in last10 if won)
+        return streak, l10_w, len(last10)
+
+    # Assemble team rows
+    team_rows = []
+    for tid, a in agg.items():
+        streak, l10_w, l10_g = _streak_last10(a["results"])
+        t = teams.get(tid)
+        if not t:
+            continue
+        team_rows.append({
+            "team_id": tid,
+            "team_name": t["name"],
+            "abbreviation": t["abbreviation"],
+            "logo_url": t.get("logo_url"),
+            "group": t.get("group"),
+            "division": t.get("division"),
+            "games": a["games"],
+            "wins": a["wins"],
+            "losses": a["losses"],
+            "win_pct": round(a["wins"] / a["games"], 3) if a["games"] else 0.0,
+            "streak": streak,
+            "last10": {"wins": l10_w, "losses": l10_g - l10_w},
+            "home": {"wins": a["home_w"], "losses": a["home_l"]},
+            "away": {"wins": a["away_w"], "losses": a["away_l"]},
+            "points_for": a["pf"],
+            "points_against": a["pa"],
+            "diff": a["pf"] - a["pa"],
+        })
+
+    # Group into conferences/leagues, then divisions, computing games back
+    # per division (vs. division leader by win pct).
+    groups = {}
+    for r in team_rows:
+        groups.setdefault(r["group"], {})
+        groups[r["group"]].setdefault(r["division"], []).append(r)
+
+    conferences = []
+    for gname in sorted(groups.keys()):
+        divisions = []
+        for dname, members in sorted(groups[gname].items()):
+            members.sort(key=lambda x: (-x["wins"], x["losses"]))
+            leader_pct = members[0]["win_pct"] if members else 0.0
+            for r in members:
+                # games back vs division leader using win pct (NFL/NBA-style).
+                r["games_back"] = round((leader_pct - r["win_pct"]) * r["games"] / 2, 1) if leader_pct > 0 else 0.0
+            divisions.append({"division": dname, "teams": members})
+        conferences.append({"name": gname, "divisions": divisions})
+
+    if conference:
+        conferences = [c for c in conferences if c["name"] == conference]
+    if division:
+        for c in conferences:
+            c["divisions"] = [d for d in c["divisions"] if d["division"] == division]
+
+    return {"sport": sport, "season": season_year, "conferences": conferences, "teams": team_rows}

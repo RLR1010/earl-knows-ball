@@ -274,6 +274,45 @@ export interface TokenUsageResponse {
   extra_token_balance: number;
 }
 
+// Standings (feature #1: Standings / Down-The-Stretch frames)
+export interface StandingsTeam {
+  team_id: number;
+  team_name: string;
+  abbreviation: string;
+  logo_url: string | null;
+  group: string | null; // conference/league
+  division: string | null;
+  games: number;
+  wins: number;
+  losses: number;
+  win_pct: number;
+  streak: number; // + = winning streak, - = losing streak
+  last10: { wins: number; losses: number };
+  home: { wins: number; losses: number };
+  away: { wins: number; losses: number };
+  points_for: number;
+  points_against: number;
+  diff: number;
+  games_back: number;
+}
+
+export interface StandingsDivision {
+  division: string | null;
+  teams: StandingsTeam[];
+}
+
+export interface StandingsConference {
+  name: string | null;
+  divisions: StandingsDivision[];
+}
+
+export interface StandingsResponse {
+  sport: string;
+  season: number | null;
+  conferences: StandingsConference[];
+  teams: StandingsTeam[];
+}
+
 export const api = {
   // Teams
   teams: {
@@ -327,6 +366,21 @@ export const api = {
   bestBets: {
     list: (params?: { sport?: "all" | "mlb" | "nba" | "nfl"; limit?: number }) =>
       fetchAPI<Game[]>(`/api/home/best-bets?sport=${params?.sport ?? "all"}&limit=${params?.limit ?? 6}`),
+  },
+
+  standings: {
+    get: (params?: {
+      sport: "nfl" | "nba" | "mlb";
+      seasonYear?: number;
+      conference?: string;
+      division?: string;
+    }) =>
+      fetchAPI<StandingsResponse>(
+        `/api/home/standings?sport=${params?.sport}` +
+          (params?.seasonYear ? `&season_year=${params.seasonYear}` : "") +
+          (params?.conference ? `&conference=${encodeURIComponent(params.conference)}` : "") +
+          (params?.division ? `&division=${encodeURIComponent(params.division)}` : "")
+      ),
   },
 
   // Auth

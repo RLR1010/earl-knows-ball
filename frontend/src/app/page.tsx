@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import UpcomingGames from "@/components/UpcomingGames";
 import BestBetsPanel from "@/components/BestBetsPanel";
+import StandingsWidget from "@/components/StandingsWidget";
 import SiteEditorialSection from "@/components/SiteEditorialSection";
 import JsonLd from "@/components/JsonLd";
 import { websiteStructuredData } from "@/lib/structured-data";
@@ -115,6 +116,11 @@ export default function Home() {
 
       {/* Upcoming games across all sports */}
       <UpcomingGames />
+
+      {/* Standings / Down-the-Stretch frames for each league */}
+      <StandingsWidget sport="nfl" title="NFL Standings" containerClassName="max-w-6xl mx-auto px-4" hideIfEmpty />
+      <StandingsWidget sport="nba" title="NBA Standings" containerClassName="max-w-6xl mx-auto px-4" hideIfEmpty />
+      <StandingsWidget sport="mlb" title="MLB Standings" containerClassName="max-w-6xl mx-auto px-4" hideIfEmpty />
     </div>
   );
 }
