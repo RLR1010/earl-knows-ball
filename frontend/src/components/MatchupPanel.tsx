@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { RefreshCw, AlertTriangle } from "lucide-react";
 import TeamLogo from "./TeamLogo";
-import { MatchupTrendsGrid, MatchupComparisonTable, MatchupPremiumTable } from "./MatchupView";
+import { MatchupTrendsGrid, MatchupComparisonTable } from "./MatchupView";
 import { api, MatchupResponse } from "../lib/api";
 
 type Sport = "nfl" | "nba" | "mlb";
@@ -119,19 +119,6 @@ export default function MatchupPanel({
               {data.comparison_error ?? "Comparison data unavailable."}
             </div>
           )}
-        </section>
-
-        <section>
-          <div className="mb-2 flex items-center gap-2">
-            <span className="text-xs font-bold uppercase tracking-widest text-gray-400">Advanced handicapping</span>
-            <span className="h-px flex-1 bg-gray-800" />
-          </div>
-          <MatchupPremiumTable
-            stats={data.premium_stats ?? null}
-            premium={data.viewer_premium ?? false}
-            homeAbbr={home.abbr}
-            awayAbbr={away.abbr}
-          />
         </section>
       </div>
     </div>

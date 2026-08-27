@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { X, RefreshCw, AlertTriangle } from "lucide-react";
 import TeamLogo from "./TeamLogo";
-import { MatchupTrendsGrid, MatchupComparisonTable, MatchupPremiumTable } from "./MatchupView";
+import { MatchupTrendsGrid, MatchupComparisonTable } from "./MatchupView";
 import { api, MatchupResponse } from "../lib/api";
 
 type Sport = "nfl" | "nba" | "mlb";
@@ -165,15 +165,6 @@ export default function MatchupModal({
                   />
                 </section>
               )}
-
-              <section>
-                <MatchupPremiumTable
-                  stats={data.premium_stats ?? null}
-                  premium={data.viewer_premium ?? false}
-                  homeAbbr={home.abbr}
-                  awayAbbr={away.abbr}
-                />
-              </section>
             </div>
           )}
         </div>

@@ -1,6 +1,5 @@
 "use client";
 
-import { Lock } from "lucide-react";
 import TeamLogo from "./TeamLogo";
 import { MatchupResponse } from "../lib/api";
 
@@ -43,10 +42,28 @@ const THREE_DECIMAL = new Set([
   "obp10",
   "slg10",
   "ops10",
+  "ops15",
+  "ops20",
   "whip5",
   "whip10",
+]);
+
+// Metrics that are plain numbers (ratings, margins, ratios, per-9 rates) — show
+// as 2-decimal numbers, never as a percentage. Consistency CV uses the sentinel
+// "_raw" so it renders as-is (0.07) not 7%.
+const NUMBER_SET = new Set([
+  "ortg",
+  "drtg",
+  "efg_pct",
+  "pace",
+  "ast_ratio",
+  "ats_margin",
+  "net_rating",
   "k9_5",
   "k9_10",
+  "bb9_5",
+  "bb9_10",
+  "_raw",
 ]);
 
 const METRIC_LABELS: Record<string, string> = {
@@ -125,6 +142,8 @@ function fmtVal(v: unknown, metric?: string): string {
   if (n === null) return String(v ?? "—");
   // 3-decimal set (AVG/OBP/SLG/OPS/K rate/BB rate/WHIP) -> 0.241, 1.372
   if (metric && THREE_DECIMAL.has(metric)) return n.toFixed(3);
+  // Plain-number set (ratings, margins, ratios, per-9 rates, CV) -> 2 decimals
+  if (metric && NUMBER_SET.has(metric)) return n.toFixed(2).replace(/\.?0+$/, "");
   // ERA-style: values between 1.5 and 10 -> 2 decimals
   if (n > 1.5 && n < 10 && metric && (metric.includes("ERA") || metric.includes("WHIP"))) {
     return n.toFixed(2);
@@ -244,7 +263,16 @@ function buildTrendRows(
       });
     }
     row("Net rating L10", ["last_10", "net_rating"], false, "Net Rating");
+    row("Off rating L10", ["last_10", "ortg"], false, "ortg");
+    row("Def rating L10", ["last_10", "drtg"], true, "drtg");
+    row("eFG% L10", ["last_10", "efg_pct"], false, "efg_pct");
     row("Pace", ["last_10", "pace"], false, "pace");
+    row("AST ratio L5", ["last_5", "ast_ratio"], false, "ast_ratio");
+    row("ATS margin L10", ["last_10", "ats_margin"], false, "ats_margin");
+    row("Off rating vs league", ["year_adjusted", "off_rating"], false, "ortg");
+    row("Def rating vs league", ["year_adjusted", "def_rating"], true, "drtg");
+    // Consistency: low CV = reliable team
+    row("PPG consistency (CV)", ["consistency", "ppg_cv10"], true, "_raw");
     // ATS / Over: display X-Y where higher win count is better.
     const ats = (o: Record<string, unknown>) => (typeof o.ats_wins === "number" ? o.ats_wins : null);
     const hwAts = ats(h.l10), awAts = ats(a.l10);
@@ -259,6 +287,21 @@ function buildTrendRows(
         displayB: fmt(awAts),
       });
     }
+    // Over record L10
+    const over = (o: Record<string, unknown>) =>
+      typeof o.ou_over_wins === "number" ? o.ou_over_wins : null;
+    const hwOver = over(h.l10), awOver = over(a.l10);
+    if (hwOver !== null || awOver !== null) {
+      const fmt = (w: number | null) => (w === null ? null : `${w}-${10 - w}`);
+      rows.push({
+        av: hwOver, bv: awOver,
+        aBest: hwOver !== null && awOver !== null ? hwOver > awOver : false,
+        bBest: hwOver !== null && awOver !== null ? awOver > hwOver : false,
+        label: "Over L10",
+        displayA: fmt(hwOver),
+        displayB: fmt(awOver),
+      });
+    }
   }
 
   if (sport === "mlb") {
@@ -269,10 +312,15 @@ function buildTrendRows(
     row("Win% L10", ["latest_summary", "win_pct_10"], false, "win_pct_10");
     row("Over% L10", ["latest_summary", "over_pct_10"], false, "over_pct_10");
     row("AVG L10", ["latest_summary", "avg10"], false, "avg10");
-    row("OPS L10", ["latest_summary", "ops10"], false, "ops10");
+    row("OBP L10", ["latest_summary", "obp10"], false, "obp10");
     row("SLG L10", ["latest_summary", "slg10"], false, "slg10");
+    row("OPS L10", ["latest_summary", "ops10"], false, "ops10");
+    row("OPS L15", ["latest_summary", "ops15"], false, "ops15");
+    row("OPS L20", ["latest_summary", "ops20"], false, "ops20");
     row("ERA L10", ["latest_summary", "era10"], true, "era10");
+    row("ERA L15", ["latest_summary", "era15"], true, "era15");
     row("WHIP L10", ["latest_summary", "whip10"], true, "whip10");
+    row("BB/9 L10", ["latest_summary", "bb9_10"], true, "bb9_10");
     row("K/9 L10", ["latest_summary", "k9_10"], false, "k9_10");
   }
 
@@ -356,63 +404,6 @@ export function MatchupComparisonTable({
   });
 
   return <ThreeColTable rows={rows} homeAbbr={homeAbbr} awayAbbr={awayAbbr} note="= better on that stat" />;
-}
-
-/** Premium-only advanced handicapping stats (head-to-head style).
- * Rendered for premium subscribers; free/anonymous viewers see a locked
- * teaser instead (the advanced data is stripped at the API, not just hidden).
- * @param stats  rows from the endpoint's `premium_stats`.
- * @param premium whether this viewer can see the values.
- * @param homeAbbr / awayAbbr for the column headers.
- */
-export function MatchupPremiumTable({
-  stats,
-  premium,
-  homeAbbr,
-  awayAbbr,
-}: {
-  stats: { label: string; av: number | null; bv: number | null; lower: boolean }[] | null;
-  premium: boolean;
-  homeAbbr: string;
-  awayAbbr: string;
-}) {
-  if (!premium || !stats || stats.length === 0) {
-    return (
-      <div className="rounded-xl border border-amber-500/30 bg-gradient-to-br from-amber-500/10 to-transparent px-4 py-4">
-        <div className="flex items-center gap-2">
-          <span className="flex h-5 w-5 items-center justify-center rounded bg-amber-500/20 text-[10px] text-amber-300">
-            <Lock size={12} />
-          </span>
-          <span className="text-xs font-bold uppercase tracking-widest text-amber-300">Premium · Advanced Handicapping</span>
-        </div>
-        <p className="mt-2 text-xs text-gray-400">
-          Unlock deeper efficiency &amp; consistency metrics (offensive/defensive rating, eFG%, ATS margin, consistency
-          index, and longer-window pitching/hitting reads) plus full head-to-head numbers with an Earl premium
-          membership.
-        </p>
-      </div>
-    );
-  }
-  const rows = stats.map((s) => {
-    let aBest = false;
-    let bBest = false;
-    if (s.av !== null && s.bv !== null) {
-      aBest = s.lower ? s.av < s.bv : s.av > s.bv;
-      bBest = s.lower ? s.bv < s.av : s.bv > s.av;
-    }
-    return { av: s.av, bv: s.bv, aBest, bBest, label: s.label, metricKey: s.label };
-  });
-  return (
-    <div className="space-y-1">
-      <div className="mb-1 flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest text-amber-300/80">
-        <span className="flex h-4 w-4 items-center justify-center rounded bg-amber-500/20 text-amber-300">
-          <Lock size={9} />
-        </span>
-        Premium · Advanced
-      </div>
-      <ThreeColTable rows={rows} homeAbbr={homeAbbr} awayAbbr={awayAbbr} note="= better · Premium" />
-    </div>
-  );
 }
 
 
