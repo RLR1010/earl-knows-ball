@@ -65,6 +65,10 @@ TOOL_DEFINITIONS = [
                         "type": "string",
                         "description": "Full team name (e.g., 'Texas Rangers', 'Chicago Cubs')",
                     },
+                    "season": {
+                        "type": "integer",
+                        "description": "Season year (e.g. 2022). Omit for the current season.",
+                    },
                 },
                 "required": ["team_name"],
             },
@@ -82,6 +86,10 @@ TOOL_DEFINITIONS = [
                         "type": "string",
                         "description": "Full team name (e.g., 'Texas Rangers')",
                     },
+                    "season": {
+                        "type": "integer",
+                        "description": "Season year (e.g. 2022). Omit for the current season.",
+                    },
                 },
                 "required": ["team_name"],
             },
@@ -98,6 +106,10 @@ TOOL_DEFINITIONS = [
                     "team_name": {
                         "type": "string",
                         "description": "Full team name (e.g., 'Texas Rangers')",
+                    },
+                    "season": {
+                        "type": "integer",
+                        "description": "Season year (e.g. 2022). Omit for the current season.",
                     },
                 },
                 "required": ["team_name"],
@@ -166,7 +178,7 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "get_head_to_head",
-            "description": "Get head-to-head results between two teams in the current season.",
+            "description": "Get head-to-head results between two teams. Optionally pass a season year; returns the season's meetings plus an aggregate record (who leads the series, W-L, run differential).",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -177,6 +189,10 @@ TOOL_DEFINITIONS = [
                     "team2": {
                         "type": "string",
                         "description": "Second team name (e.g., 'Boston Red Sox')",
+                    },
+                    "season": {
+                        "type": "integer",
+                        "description": "Season year (e.g. 2022). Omit for the current season.",
                     },
                     "limit": {
                         "type": "integer",
@@ -208,13 +224,17 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "get_player_stats",
-            "description": "Get batting or pitching stats for a specific player by name.",
+            "description": "Get batting or pitching stats for a specific player by name. Returns the CURRENT season by default, or a specific HISTORICAL season (e.g. 2022) when the user asks about that year. Use this for questions like 'what was his OPS last year' or 'his 2022 numbers' - pass the year as season.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "player_name": {
                         "type": "string",
                         "description": "Player full name (e.g., 'Shohei Ohtani', 'Aaron Judge')",
+                    },
+                    "season": {
+                        "type": "integer",
+                        "description": "Optional MLB season year (e.g. 2022). Omit for the current season. Always set this when the user asks about a specific past season.",
                     },
                 },
                 "required": ["player_name"],
@@ -301,8 +321,111 @@ TOOL_DEFINITIONS = [
                         "type": "string",
                         "description": "Full team name",
                     },
+                    "season": {
+                        "type": "integer",
+                        "description": "Season year (e.g. 2022). Omit for the current season.",
+                    },
                 },
                 "required": ["team_name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_team_game_log",
+            "description": "Query a team's game log by any combination of filters: calendar date range or month, home/away, day/night, result (win/loss), or opponent. Answers questions like 'how many games did the Astros win in April', 'their record on the road in day games', 'how they've done vs the Yankees'. Returns an aggregate record (wins/losses/run differential) plus the per-game list. Use this when the question is about a specific date range or a slice of the schedule, not a full-season stat.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "team_name": {
+                        "type": "string",
+                        "description": "Full team name or abbreviation (e.g. 'Houston Astros' or 'HOU')",
+                    },
+                    "season": {
+                        "type": "integer",
+                        "description": "Season year (e.g. 2022). Omit for the current season.",
+                    },
+                    "month": {
+                        "type": "integer",
+                        "description": "Calendar month 1-12 to filter to (e.g. 4 for April). Mutually exclusive with start_date/end_date.",
+                    },
+                    "start_date": {
+                        "type": "string",
+                        "description": "Start date inclusive (ISO: YYYY-MM-DD). Use for a custom date range like a stretch of the season.",
+                    },
+                    "end_date": {
+                        "type": "string",
+                        "description": "End date inclusive (ISO: YYYY-MM-DD). Omit to go through today.",
+                    },
+                    "home_or_away": {
+                        "type": "string",
+                        "enum": ["home", "away", "all"],
+                        "description": "Filter to home games, away games, or all (default 'all').",
+                    },
+                    "day_night": {
+                        "type": "string",
+                        "enum": ["day", "night", "all"],
+                        "description": "Filter to day games, night games, or all (default 'all').",
+                    },
+                    "result": {
+                        "type": "string",
+                        "enum": ["win", "loss", "all"],
+                        "description": "Filter to wins or losses only (default 'all').",
+                    },
+                    "opponent": {
+                        "type": "string",
+                        "description": "Filter to games vs this opponent team name or abbreviation.",
+                    },
+                },
+                "required": ["team_name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_player_game_log",
+            "description": "Query a player's per-game batting log by any combination of filters: calendar date range or month, home/away, day/night, or opponent. Answers questions like 'how does he hit in September', 'his numbers on the road in day games', or 'what he did against a specific team'. Returns the aggregate line (avg/obp/slg/ops, HR, RBI, AB) plus the per-game list. Use this when the question is about a player across a date range or a slice of their games, not a single season total.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "player_name": {
+                        "type": "string",
+                        "description": "Player full name (e.g. 'Jose Altuve')",
+                    },
+                    "season": {
+                        "type": "integer",
+                        "description": "Season year (e.g. 2022). Omit for the current season.",
+                    },
+                    "month": {
+                        "type": "integer",
+                        "description": "Calendar month 1-12 to filter to (e.g. 9 for September). Mutually exclusive with start_date/end_date.",
+                    },
+                    "start_date": {
+                        "type": "string",
+                        "description": "Start date inclusive (ISO: YYYY-MM-DD).",
+                    },
+                    "end_date": {
+                        "type": "string",
+                        "description": "End date inclusive (ISO: YYYY-MM-DD). Omit to go through today.",
+                    },
+                    "home_or_away": {
+                        "type": "string",
+                        "enum": ["home", "away", "all"],
+                        "description": "Filter to games at home, on the road, or all (default 'all').",
+                    },
+                    "day_night": {
+                        "type": "string",
+                        "enum": ["day", "night", "all"],
+                        "description": "Filter to day games, night games, or all (default 'all').",
+                    },
+                    "opponent": {
+                        "type": "string",
+                        "description": "Filter to games vs this opponent team name or abbreviation.",
+                    },
+                },
+                "required": ["player_name"],
             },
         },
     },
@@ -481,6 +604,66 @@ TOOL_DEFINITIONS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "query_player_stats",
+            "description": (
+                "GENERAL-PURPOSE allowlisted MLB player-stats query engine (batting + "
+                "pitching). Express ANY hitter/pitcher stat question as a structured spec. "
+                "stats (batting): hits, home_runs, runs_batted_in, at_bats, runs, doubles, "
+                "triples, base_on_balls, strikeouts, stolen_bases, caught_stealing, "
+                "plate_appearances, total_bases, avg, obp, slg, ops. stats (pitching): wins, "
+                "losses, saves, holds, strikeouts, innings_pitched, earned_runs, "
+                "hits_allowed, walks_allowed, home_runs_allowed, era, whip, strikeouts_per_9, "
+                "strikeout_walk_ratio. filters: season_year/home_or_away/opponent (venue/opp "
+                "only for batting)/min_innings (pitching leaderboard qualification, e.g. 162), "
+                "min_at_bats (batting leaderboard qualification, e.g. 400). "
+                "group_by=['player']+top+order for leaderboards. Unsupported fields return an "
+                "error, never SQL."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "stats": {"type": "array", "items": {"type": "string"}, "description": "Stat name(s)"},
+                    "aggregate": {"type": "string", "enum": ["sum", "avg", "max", "count"]},
+                    "group_by": {"type": "array", "items": {"type": "string", "enum": ["player"]}},
+                    "filters": {"type": "object", "description": "season_year(int)/home_or_away(home|away)/opponent"},
+                    "player_name": {"type": "string"},
+                    "top": {"type": "integer"},
+                    "order": {"type": "string", "enum": ["desc", "asc"]},
+                },
+                "required": ["stats"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "query_team_stats",
+            "description": (
+                "GENERAL-PURPOSE allowlisted MLB team-stats query engine. stats (records from "
+                "games): wins, losses, win_pct, runs_scored, runs_allowed, run_margin. "
+                "stats (pitching from pitcher_game_stats): era, innings_pitched, earned_runs, "
+                "pitchers_runs_allowed, hits_allowed, walks_allowed, strikeouts, "
+                "home_runs_allowed (pitching source filterable by month/home_or_away/opponent). "
+                "stats (rolling form from team_rolling_stats): win_pct_5, win_pct_10, "
+                "wins_last_10, avg_runs_scored, avg_runs_allowed, avg_ops_5, avg_ops_10, "
+                "era_5, era_10, over_pct_5, spread_pct_5. filters: team/season_year "
+                "(all sources) + month (1-12)/home_or_away (home|away)/opponent (pitching only). "
+                "Unsupported fields return an error, never SQL."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "stats": {"type": "array", "items": {"type": "string"}, "description": "Stat name(s)"},
+                    "filters": {"type": "object", "description": "team/season_year"},
+                    "aggregate": {"type": "string", "enum": ["sum", "avg", "max", "count"]},
+                },
+                "required": ["stats"],
+            },
+        },
+    },
 ]
 
 # ---------------------------------------------------------------------------
@@ -577,7 +760,7 @@ async def _get_team_stats(db: AsyncSession, args: dict) -> dict:
     if not team:
         return {"error": f"Team not found: {team_name}"}
 
-    season = await _resolve_current_season(db)
+    season, season_label = await _resolve_season(db, args)
     if not season:
         return {"error": "No current season found"}
 
@@ -634,7 +817,7 @@ async def _get_team_batting_stats(db: AsyncSession, args: dict) -> dict:
     if not team:
         return {"error": f"Team not found: {team_name}"}
 
-    season = await _resolve_current_season(db)
+    season, season_label = await _resolve_season(db, args)
     if not season:
         return {"error": "No current season found"}
 
@@ -705,7 +888,7 @@ async def _get_team_pitching_stats(db: AsyncSession, args: dict) -> dict:
     if not team:
         return {"error": f"Team not found: {team_name}"}
 
-    season = await _resolve_current_season(db)
+    season, season_label = await _resolve_season(db, args)
     if not season:
         return {"error": "No current season found"}
 
@@ -1026,19 +1209,20 @@ async def _get_head_to_head(db: AsyncSession, args: dict) -> dict:
     if not t1 or not t2:
         return {"error": f"Could not find teams: {team1} / {team2}"}
 
-    season = await _resolve_current_season(db)
+    season, season_label = await _resolve_season(db, args)
     if not season:
-        return {"error": "No current season found"}
+        return {"error": "No season found"}
 
     sql = text("""
         SELECT
-            g.id, g.date, g.status, g.home_score, g.away_score,
+            g.id, g.date, g.status, g.home_score, g.away_score, g.home_team_id, g.away_team_id,
             g.venue, ht.name AS home_team, at.name AS away_team
         FROM mlb.games g
         JOIN mlb.teams ht ON ht.id = g.home_team_id
         JOIN mlb.teams at ON at.id = g.away_team_id
         WHERE ((g.home_team_id = :t1 AND g.away_team_id = :t2)
             OR (g.home_team_id = :t2 AND g.away_team_id = :t1))
+          AND g.status = 'FINAL'
           AND g.season_id = :sid
         ORDER BY g.date DESC
         LIMIT :lim
@@ -1047,7 +1231,22 @@ async def _get_head_to_head(db: AsyncSession, args: dict) -> dict:
     rows = result.fetchall()
 
     games = []
+    t1_wins = 0
+    t2_wins = 0
+    t1_pts = 0
+    t2_pts = 0
     for r in rows:
+        if r.status == "FINAL" and r.home_score is not None and r.away_score is not None:
+            home_team = r.home_team
+            if r.home_team_id == t1.id or r.away_team_id == t1.id:
+                t1_score = r.home_score if r.home_team_id == t1.id else r.away_score
+                t2_score = r.away_score if r.home_team_id == t1.id else r.home_score
+                t1_pts += t1_score
+                t2_pts += t2_score
+                if t1_score > t2_score:
+                    t1_wins += 1
+                else:
+                    t2_wins += 1
         winner = None
         if r.status == "FINAL" and r.home_score is not None and r.away_score is not None:
             winner = r.home_team if r.home_score > r.away_score else r.away_team
@@ -1062,7 +1261,19 @@ async def _get_head_to_head(db: AsyncSession, args: dict) -> dict:
             "venue": r.venue,
         })
 
-    return {"team1": t1.name, "team2": t2.name, "season": season.year, "games": games}
+    return {
+        "team1": t1.name,
+        "team2": t2.name,
+        "season": season_label,
+        "aggregate": {
+            "games": len(rows),
+            "team1_wins": t1_wins,
+            "team2_wins": t2_wins,
+            "team1_score": t1_pts,
+            "team2_score": t2_pts,
+        },
+        "games": games,
+    }
 
 
 async def _get_injuries(db: AsyncSession, args: dict) -> list[dict] | dict:
@@ -1099,6 +1310,7 @@ async def _get_injuries(db: AsyncSession, args: dict) -> list[dict] | dict:
 
 async def _get_player_stats(db: AsyncSession, args: dict) -> dict:
     player_name = args.get("player_name", "")
+    season_year = args.get("season")
     stmt = select(MLBPlayer).where(
         MLBPlayer.name.ilike(f"%{player_name}%")
     ).limit(5)
@@ -1108,11 +1320,24 @@ async def _get_player_stats(db: AsyncSession, args: dict) -> dict:
         return {"error": f"Player not found: {player_name}"}
 
     player = players[0]
-    season = await _resolve_current_season(db)
+
+    # Resolve which season to report: explicit year takes precedence (so a
+    # user asking 'his 2022 OPS' gets 2022, not the current season), else
+    # fall back to the current season.
+    season = None
+    season_label = None
+    if season_year:
+        season = (await db.execute(select(MLBSeason).where(MLBSeason.year == season_year))).scalar_one_or_none()
+        if season:
+            season_label = str(season_year)
+    if season is None:
+        season = await _resolve_current_season(db)
+        season_label = str(season.year) if season else None
 
     data = {"player": player.name, "team_id": player.team_id, "position": player.position}
 
     if season:
+        data["season"] = season_label
         # Batting season stats
         sql = text("""
             SELECT
@@ -1496,7 +1721,7 @@ async def _get_team_splits(db: AsyncSession, args: dict) -> dict:
     if not team:
         return {"error": f"Team not found: {team_name}"}
 
-    season = await _resolve_current_season(db)
+    season, season_label = await _resolve_season(db, args)
     if not season:
         return {"error": "No current season found"}
 
@@ -1509,7 +1734,7 @@ async def _get_team_splits(db: AsyncSession, args: dict) -> dict:
 
     return {
         "team": team.name,
-        "season": season.year,
+        "season": season_label or season.year,
         "splits": [
             {
                 "split_type": s.split_type,
@@ -1527,6 +1752,294 @@ async def _get_team_splits(db: AsyncSession, args: dict) -> dict:
             }
             for s in (splits or [])
         ],
+    }
+
+
+# Shared helpers for the game-log tools ----------------------------------------------------
+
+def _build_date_where(season, month, start_date, end_date):
+    """Return (sqlfrag, params) constraining mlb.games.date to the requested window.
+
+    season: resolved MLBSeason (or None). When a month is given and no explicit
+    date range, we also constrain the calendar year to the season's year so e.g.
+    "April of 2022" correctly scopes to April 2022, not April of the current season.
+    """
+    frags = []
+    params = {}
+    if start_date:
+        frags.append("g.date >= :start_date")
+        params["start_date"] = start_date
+    if end_date:
+        frags.append("g.date <= :end_date")
+        params["end_date"] = end_date
+    if month is not None:
+        frags.append("EXTRACT(MONTH FROM g.date) = :month")
+        params["month"] = month
+        if season and not start_date and not end_date:
+            frags.append("EXTRACT(YEAR FROM g.date) = :year")
+            params["year"] = season.year
+    return " AND ".join(frags), params
+
+
+async def _resolve_season(db, args):
+    """Resolve the requested season explicitly, falling back to the current season.
+    Returns (season, label)."""
+    season_year = args.get("season")
+    if season_year:
+        stmt = select(MLBSeason).where(MLBSeason.year == season_year)
+        season = (await db.execute(stmt)).scalar_one_or_none()
+        if season:
+            return season, str(season.year)
+    season = await _resolve_current_season(db)
+    return season, (str(season.year) if season else None)
+
+
+def _game_result(g, tid):
+    """Return 'win'/'loss' for team tid from a games row."""
+    if g.home_team_id == tid:
+        return "win" if g.home_score > g.away_score else "loss"
+    return "win" if g.away_score > g.home_score else "loss"
+
+
+async def _get_team_game_log(db: AsyncSession, args: dict) -> dict:
+    if not db.in_transaction():
+        pass
+    team_name = args.get("team_name", "")
+    team = await _resolve_team(db, team_name)
+    if not team:
+        return {"error": f"Team not found: {team_name}"}
+
+    season, season_label = await _resolve_season(db, args)
+    if not season:
+        return {"error": "No current season found"}
+
+    month = args.get("month")
+    start_date = args.get("start_date")
+    end_date = args.get("end_date")
+    hod = (args.get("home_or_away") or "all").lower()
+    day_night = (args.get("day_night") or "all").lower()
+    result_filter = (args.get("result") or "all").lower()
+    opponent = args.get("opponent")
+
+    date_where, params = _build_date_where(season, month, start_date, end_date)
+    params["tid"] = team.id
+    params["sid"] = season.id
+
+    team_frag = "(g.home_team_id = :tid OR g.away_team_id = :tid)"
+    home_frag = ""
+    if hod == "home":
+        home_frag = " AND g.home_team_id = :tid"
+    elif hod == "away":
+        home_frag = " AND g.away_team_id = :tid"
+
+    dn_frag = ""
+    if day_night == "day":
+        dn_frag = " AND LOWER(COALESCE(g.day_night, '')) = 'day'"
+    elif day_night == "night":
+        dn_frag = " AND LOWER(COALESCE(g.day_night, '')) = 'night'"
+
+    opp_frag = ""
+    opp_team = None
+    if opponent:
+        opp_team = await _resolve_team(db, opponent)
+        if not opp_team:
+            return {"error": f"Opponent team not found: {opponent}"}
+        params["oid"] = opp_team.id
+        opp_frag = " AND (g.home_team_id = :oid OR g.away_team_id = :oid)"
+
+    where = [f"{team_frag}{home_frag}"]
+    if date_where:
+        where.append(date_where)
+    if dn_frag:
+        where.append(dn_frag.lstrip(" AND "))
+    if opp_frag:
+        where.append(opp_frag.lstrip(" AND "))
+    where_sql = " AND ".join(f"({w})" for w in where)
+
+    sql = text(f"""
+        SELECT
+            g.id, g.date, g.home_team_id, g.away_team_id,
+            g.home_score, g.away_score, g.day_night
+        FROM mlb.games g
+        WHERE {where_sql}
+          AND g.season_id = :sid
+          AND g.status = 'FINAL'
+        ORDER BY g.date
+    """)
+    result = await db.execute(sql, params)
+    rows = result.fetchall()
+
+    # Apply result filter in Python (win/loss is a derived property).
+    if result_filter in ("win", "loss"):
+        rows = [r for r in rows if _game_result(r, team.id) == result_filter]
+
+    wins = sum(1 for r in rows if _game_result(r, team.id) == "win")
+    losses = sum(1 for r in rows if _game_result(r, team.id) == "loss")
+    runs_scored = sum(
+        (r.home_score if r.home_team_id == team.id else r.away_score) for r in rows
+    )
+    runs_allowed = sum(
+        (r.away_score if r.home_team_id == team.id else r.home_score) for r in rows
+    )
+
+    games_list = []
+    for r in rows[:20]:
+        games_list.append({
+            "game_id": r.id,
+            "date": str(r.date),
+            "home": r.home_team_id == team.id,
+            "opponent": r.away_team_id if r.home_team_id == team.id else r.home_team_id,
+            "result": _game_result(r, team.id),
+            "runs_scored": r.home_score if r.home_team_id == team.id else r.away_score,
+            "runs_allowed": r.away_score if r.home_team_id == team.id else r.home_score,
+            "day_night": r.day_night,
+        })
+
+    return {
+        "team": team.name,
+        "season": season_label,
+        "filters": {
+            "month": month,
+            "start_date": start_date,
+            "end_date": end_date,
+            "home_or_away": hod,
+            "day_night": day_night,
+            "result": result_filter,
+            "opponent": opp_team.name if opp_team else None,
+        },
+        "games_played": len(rows),
+        "wins": wins,
+        "losses": losses,
+        "win_pct": round(wins / len(rows), 3) if rows else None,
+        "runs_scored": runs_scored,
+        "runs_allowed": runs_allowed,
+        "run_differential": runs_scored - runs_allowed,
+        "games": games_list,
+    }
+
+
+async def _get_player_game_log(db: AsyncSession, args: dict) -> dict:
+    player_name = args.get("player_name", "")
+    stmt = select(MLBPlayer).where(MLBPlayer.name.ilike(f"%{player_name}%")).limit(1)
+    result = await db.execute(stmt)
+    player = result.scalars().first()
+    if not player:
+        return {"error": f"Player not found: {player_name}"}
+
+    season, season_label = await _resolve_season(db, args)
+    if not season:
+        return {"error": "No current season found"}
+
+    month = args.get("month")
+    start_date = args.get("start_date")
+    end_date = args.get("end_date")
+    hod = (args.get("home_or_away") or "all").lower()
+    day_night = (args.get("day_night") or "all").lower()
+    opponent = args.get("opponent")
+
+    date_where, params = _build_date_where(season, month, start_date, end_date)
+    params["pid"] = player.id
+    params["sid"] = season.id
+
+    home_frag = ""
+    if hod == "home":
+        home_frag = " AND team_side = 'home'"
+    elif hod == "away":
+        home_frag = " AND team_side = 'away'"
+
+    dn_frag = ""
+    if day_night == "day":
+        dn_frag = " AND LOWER(COALESCE(g.day_night, '')) = 'day'"
+    elif day_night == "night":
+        dn_frag = " AND LOWER(COALESCE(g.day_night, '')) = 'night'"
+
+    opp_frag = ""
+    opp_team = None
+    if opponent:
+        opp_team = await _resolve_team(db, opponent)
+        if not opp_team:
+            return {"error": f"Opponent team not found: {opponent}"}
+        params["oid"] = opp_team.id
+        opp_frag = " AND (g.home_team_id = :oid OR g.away_team_id = :oid)"
+
+    where = ["1=1"]
+    if date_where:
+        where.append(date_where)
+    if home_frag:
+        where.append(home_frag.lstrip(" AND "))
+    if dn_frag:
+        where.append(dn_frag.lstrip(" AND "))
+    if opp_frag:
+        where.append(opp_frag.lstrip(" AND "))
+    where_sql = " AND ".join(f"({w})" for w in where)
+
+    sql = text(f"""
+        SELECT
+            g.id AS game_id, g.date, g.home_team_id, g.away_team_id, g.day_night,
+            b.team_side, b.at_bats, b.hits, b.doubles, b.triples, b.home_runs,
+            b.runs_batted_in, b.runs, b.base_on_balls, b.strikeouts,
+            b.avg, b.obp, b.slg, b.ops
+        FROM mlb.batting_game_stats b
+        JOIN mlb.games g ON g.id = b.game_id
+        WHERE {where_sql}
+          AND b.player_id = :pid
+          AND g.season_id = :sid
+          AND g.status = 'FINAL'
+        ORDER BY g.date
+    """)
+    result = await db.execute(sql, params)
+    rows = result.fetchall()
+
+    games = len(rows)
+    ab = sum(r.at_bats or 0 for r in rows)
+    hits = sum(r.hits or 0 for r in rows)
+    dbl = sum(r.doubles or 0 for r in rows)
+    trp = sum(r.triples or 0 for r in rows)
+    hr = sum(r.home_runs or 0 for r in rows)
+    rbi = sum(r.runs_batted_in or 0 for r in rows)
+    runs = sum(r.runs or 0 for r in rows)
+    bb = sum(r.base_on_balls or 0 for r in rows)
+    so = sum(r.strikeouts or 0 for r in rows)
+
+    games_list = []
+    for r in rows[:25]:
+        games_list.append({
+            "game_id": r.game_id,
+            "date": str(r.date),
+            "home": r.team_side == "home",
+            "away": r.team_side == "away",
+            "at_bats": r.at_bats,
+            "hits": r.hits,
+            "home_runs": r.home_runs,
+            "rbi": r.runs_batted_in,
+            "avg": round(r.avg, 3) if r.avg else None,
+            "ops": round(r.ops, 3) if r.ops else None,
+        })
+
+    return {
+        "player": player.name,
+        "season": season_label,
+        "filters": {
+            "month": month,
+            "start_date": start_date,
+            "end_date": end_date,
+            "home_or_away": hod,
+            "day_night": day_night,
+            "opponent": opp_team.name if opp_team else None,
+        },
+        "games_played": games,
+        "at_bats": ab,
+        "hits": hits,
+        "doubles": dbl,
+        "triples": trp,
+        "home_runs": hr,
+        "rbi": rbi,
+        "runs": runs,
+        "walks": bb,
+        "strikeouts": so,
+        "avg": round(hits / ab, 3) if ab else None,
+        "ops": round((hits + bb) / (ab + bb) + (hits + dbl + 2 * trp + 3 * hr) / ab, 3) if ab and (ab + bb) else None,
+        "games_list": games_list,
     }
 
 
@@ -2141,6 +2654,16 @@ async def _get_game_writeup(db: AsyncSession, args: dict) -> dict:
         "prop_content": row.prop_content,
     }
 
+async def _get_player_query(db: AsyncSession, args: dict) -> dict:
+    from . import mlb_query
+    return await mlb_query._run_query_player_stats(db, args)
+
+
+async def _get_team_query(db: AsyncSession, args: dict) -> dict:
+    from . import mlb_query
+    return await mlb_query._run_query_team_stats(db, args)
+
+
 _TOOL_MAP = {
     "search_teams": _search_teams,
     "get_team_stats": _get_team_stats,
@@ -2160,6 +2683,8 @@ _TOOL_MAP = {
     "search_players": _search_players_tool,
     "get_game_prediction": _get_game_prediction,
     "get_team_splits": _get_team_splits,
+    "get_team_game_log": _get_team_game_log,
+    "get_player_game_log": _get_player_game_log,
     "search_articles": _search_articles_tool,
     "get_team_trends": _get_team_trends,
     "get_team_comparison": _get_team_comparison,
@@ -2168,6 +2693,8 @@ _TOOL_MAP = {
     "get_team_season_futures": _get_team_season_futures,
     "get_player_season_props": _get_player_season_props,
     "get_game_weather": _get_game_weather,
+    "query_player_stats": _get_player_query,
+    "query_team_stats": _get_team_query,
 }
 
 
