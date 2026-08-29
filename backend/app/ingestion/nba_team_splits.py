@@ -50,9 +50,23 @@ def _empty_agg() -> dict:
     }
 
 
-def _possession(h_fga, h_fta, h_tov, h_oreb, a_oreb) -> float:
-    """Team possessions estimate using the standard NBA possession formula."""
-    return h_fga + 0.44 * h_fta + h_tov - h_oreb + 0.5 * (a_oreb)
+def _possession(h_fga, h_fta, h_tov, h_oreb, h_dreb,
+                a_fga, a_fta, a_tov, a_oreb, a_dreb,
+                h_fgm, a_fgm) -> float:
+    """basketball-reference refined game possessions (avg of both teams).
+
+    Mirrors the weighted formula used on basketball-reference/NBA.com. The old
+    proxy (FGA + 0.44*FTA + TO - ORB, or the no-ORB variant) over-counted
+    possessions and inflated pace, especially for high-ORB teams.
+        tm_poss = FGA + 0.4*FTA - 1.08*(ORB/(ORB+OppDRB))*(FGA-FGM) + TOV
+    """
+    def _tm(fga, fta, fgm, oreb, dreb, tov, opp_oreb, opp_dreb):
+        if (oreb + opp_dreb) <= 0:
+            return fga + 0.4 * fta + tov
+        return fga + 0.4 * fta - 1.08 * (oreb / (oreb + opp_dreb)) * (fga - fgm) + tov
+    h = _tm(h_fga, h_fta, h_fgm, h_oreb, h_dreb, h_tov, a_oreb, a_dreb)
+    a = _tm(a_fga, a_fta, a_fgm, a_oreb, a_dreb, a_tov, h_oreb, h_dreb)
+    return 0.5 * (h + a)
 
 
 def _finalize(sp: str, agg: dict) -> dict:
@@ -169,8 +183,15 @@ async def build_team_splits(
             "tov": g.get("home_total_turnovers") or 0,
             "fouls": g.get("home_fouls") or 0,
         }
-        pace_home = _possession(home_agg_fields["fga"], home_agg_fields["fta"],
-                                home_agg_fields["tov"], 0, 0)
+        pace_home = _possession(
+            g.get("home_field_goals_attempted") or 0, g.get("home_free_throws_attempted") or 0,
+            g.get("home_total_turnovers") or 0, g.get("home_offensive_rebounds") or 0,
+            (g.get("home_rebounds") or 0) - (g.get("home_offensive_rebounds") or 0),
+            g.get("away_field_goals_attempted") or 0, g.get("away_free_throws_attempted") or 0,
+            g.get("away_total_turnovers") or 0, g.get("away_offensive_rebounds") or 0,
+            (g.get("away_rebounds") or 0) - (g.get("away_offensive_rebounds") or 0),
+            g.get("home_field_goals_made") or 0, g.get("away_field_goals_made") or 0,
+        )
         _apply(agg, season_key(g["season_id"]), home_splits, home_id, {
             "win": 1 if margin > 0 else 0, "loss": 1 if margin < 0 else 0,
             "ats": _ats_home(margin, spread), "ou": _ou(combined, total),
@@ -194,8 +215,15 @@ async def build_team_splits(
             "tov": g.get("away_total_turnovers") or 0,
             "fouls": g.get("away_fouls") or 0,
         }
-        pace_away = _possession(away_agg_fields["fga"], away_agg_fields["fta"],
-                                away_agg_fields["tov"], 0, 0)
+        pace_away = _possession(
+            g.get("away_field_goals_attempted") or 0, g.get("away_free_throws_attempted") or 0,
+            g.get("away_total_turnovers") or 0, g.get("away_offensive_rebounds") or 0,
+            (g.get("away_rebounds") or 0) - (g.get("away_offensive_rebounds") or 0),
+            g.get("home_field_goals_attempted") or 0, g.get("home_free_throws_attempted") or 0,
+            g.get("home_total_turnovers") or 0, g.get("home_offensive_rebounds") or 0,
+            (g.get("home_rebounds") or 0) - (g.get("home_offensive_rebounds") or 0),
+            g.get("away_field_goals_made") or 0, g.get("home_field_goals_made") or 0,
+        )
         _apply(agg, season_key(g["season_id"]), away_splits, away_id, {
             "win": 1 if aws > hs else 0, "loss": 1 if aws < hs else 0,
             # away covers when home margin < spread  (spread is home-perspective)

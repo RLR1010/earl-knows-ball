@@ -171,7 +171,28 @@ WITH team_games AS (
         COALESCE(g.away_blocks, 0)     AS opp_blk,
         COALESCE(g.away_total_turnovers, 0)  AS opp_tov,
         COALESCE(g.away_fouls, 0)      AS opp_pf,
-        g.home_estimated_possessions  AS poss_est,
+        -- basketball-reference refined possession count for this game's TEAM (home)
+        CASE WHEN g.home_offensive_rebounds IS NOT NULL
+                  AND (g.home_offensive_rebounds + (g.away_rebounds - g.away_offensive_rebounds)) > 0
+             THEN g.home_field_goals_attempted
+                  + 0.4 * g.home_free_throws_attempted
+                  - 1.08 * (g.home_offensive_rebounds::float
+                            / (g.home_offensive_rebounds + (g.away_rebounds - g.away_offensive_rebounds)))
+                  * (g.home_field_goals_attempted - g.home_field_goals_made)
+                  + COALESCE(g.home_total_turnovers, 0)
+             ELSE g.home_field_goals_attempted + 0.4 * g.home_free_throws_attempted + COALESCE(g.home_total_turnovers, 0)
+        END AS bbr_poss,
+        -- ... and for the OPPONENT (away), mirror structure
+        CASE WHEN g.away_offensive_rebounds IS NOT NULL
+                  AND (g.away_offensive_rebounds + (g.home_rebounds - g.home_offensive_rebounds)) > 0
+             THEN g.away_field_goals_attempted
+                  + 0.4 * g.away_free_throws_attempted
+                  - 1.08 * (g.away_offensive_rebounds::float
+                            / (g.away_offensive_rebounds + (g.home_rebounds - g.home_offensive_rebounds)))
+                  * (g.away_field_goals_attempted - g.away_field_goals_made)
+                  + COALESCE(g.away_total_turnovers, 0)
+             ELSE g.away_field_goals_attempted + 0.4 * g.away_free_throws_attempted + COALESCE(g.away_total_turnovers, 0)
+        END AS bbr_opp_poss,
         (g.home_score - g.away_score)  AS margin
     FROM nba.games g
     WHERE g.status = 'FINAL'
@@ -214,7 +235,28 @@ WITH team_games AS (
         COALESCE(g.home_blocks, 0)     AS opp_blk,
         COALESCE(g.home_total_turnovers, 0)  AS opp_tov,
         COALESCE(g.home_fouls, 0)      AS opp_pf,
-        g.away_estimated_possessions  AS poss_est,
+        -- basketball-reference refined possession count for this game's TEAM (away)
+        CASE WHEN g.away_offensive_rebounds IS NOT NULL
+                  AND (g.away_offensive_rebounds + (g.home_rebounds - g.home_offensive_rebounds)) > 0
+             THEN g.away_field_goals_attempted
+                  + 0.4 * g.away_free_throws_attempted
+                  - 1.08 * (g.away_offensive_rebounds::float
+                            / (g.away_offensive_rebounds + (g.home_rebounds - g.home_offensive_rebounds)))
+                  * (g.away_field_goals_attempted - g.away_field_goals_made)
+                  + COALESCE(g.away_total_turnovers, 0)
+             ELSE g.away_field_goals_attempted + 0.4 * g.away_free_throws_attempted + COALESCE(g.away_total_turnovers, 0)
+        END AS bbr_poss,
+        -- ... and for the OPPONENT (home), mirror structure
+        CASE WHEN g.home_offensive_rebounds IS NOT NULL
+                  AND (g.home_offensive_rebounds + (g.away_rebounds - g.away_offensive_rebounds)) > 0
+             THEN g.home_field_goals_attempted
+                  + 0.4 * g.home_free_throws_attempted
+                  - 1.08 * (g.home_offensive_rebounds::float
+                            / (g.home_offensive_rebounds + (g.away_rebounds - g.away_offensive_rebounds)))
+                  * (g.home_field_goals_attempted - g.home_field_goals_made)
+                  + COALESCE(g.home_total_turnovers, 0)
+             ELSE g.home_field_goals_attempted + 0.4 * g.home_free_throws_attempted + COALESCE(g.home_total_turnovers, 0)
+        END AS bbr_opp_poss,
         (g.away_score - g.home_score)  AS margin
     FROM nba.games g
     WHERE g.status = 'FINAL'
@@ -231,7 +273,7 @@ CUM_SUM_COLS = [
     "points", "points_allowed", "margin",
     "fgm", "fga", "fgm3", "fga3", "ftm", "fta",
     "reb", "ast", "stl", "blk", "tov", "pf",
-    "off_reb", "poss_est",
+    "off_reb", "bbr_poss", "bbr_opp_poss",
     "opp_fgm", "opp_fga", "opp_fgm3", "opp_fga3",
     "opp_ftm", "opp_fta", "opp_reb", "opp_ast",
     "opp_stl", "opp_blk", "opp_tov", "opp_pf",
@@ -296,24 +338,24 @@ def _compute_tier3(gs: int, row: dict) -> dict:
     opp_tov = row.get("cum_opp_tov", 0) or 0
     opp_reb = row.get("cum_opp_reb", 0) or 0
 
-    # Estimated possessions. ESPN's authoritative team possession count is
-    # stored per-game (home_estimated_possessions / away_estimated_possessions)
-    # and summed into cum_poss_est here. When present it fixes the historical
-    # bug where possessions used FGA + 0.44*FTA + TOV (no offensive-rebound
-    # subtraction), which inflated possessions ~14% and compressed ORTG/DRTG
-    # toward ~100. Fall back to the corrected Dean-Oliver form if missing.
-    cum_poss = row.get("cum_poss_est", 0) or 0
-    cum_orb = row.get("cum_off_reb", 0) or 0
+    # basketball-reference refined possessions, summed per game from the CTE
+    # (derived from box-score columns present in every FINAL game, so coverage is
+    # ~always complete; no ESPN/Dean-Oliver gating needed).
+    cum_poss  = row.get("cum_bbr_poss", 0) or 0
+    cum_opp   = row.get("cum_bbr_opp_poss", 0) or 0
+    cum_orb   = row.get("cum_off_reb", 0) or 0
     cum_opp_orb = row.get("cum_opp_off_reb", 0) or 0
-    # Only trust ESPN's estimated possessions if they actually cover ~all of the
-    # team's games. A sparse per-game value (2016-17-era ESPN gaps) makes the
-    # summed cum_poss_est far too small -> absurd ORTG/DRTG. Fall back to the
-    # corrected Dean-Oliver form (which has real ORB everywhere) otherwise.
     poss_est_games = int(row.get("poss_est_games", 0) or 0)
-    if cum_poss > 0 and poss_est_games >= 0.9 * max(gs, 1):
+    if cum_poss > 0 and cum_opp > 0:
+        # Exact basketball-reference method: team possessions for ORTG, opponent
+        # possessions for DRTG, pace = avg of the two per game.
         poss = cum_poss
-        # Opponent pace mirrors our own (NBA pacing convention).
-        opp_poss = cum_poss
+        opp_poss = cum_opp
+    elif poss_est_games >= 0.9 * max(gs, 1):
+        # Defensive fallback if BBRef columns are somehow absent for a season:
+        # correct Dean-Oliver form (subtracts real ORB).
+        poss = max(fga + 0.44 * fta + tov - cum_orb, 1)
+        opp_poss = max(opp_fga + 0.44 * opp_fta + opp_tov - cum_opp_orb, 1)
     else:
         poss = max(fga + 0.44 * fta + tov - cum_orb, 1)
         opp_poss = max(opp_fga + 0.44 * opp_fta + opp_tov - cum_opp_orb, 1)
@@ -552,8 +594,8 @@ def _populate(
 
     def _per_game_ortg(r):
         r_pts = r.get("points", 0) or 0
-        # ESPN's authoritative estimated possessions for the team, when present.
-        r_poss = r.get("poss_est", 0) or 0
+        # basketball-reference refined possessions for this game's team.
+        r_poss = r.get("bbr_poss", 0) or 0
         if r_poss <= 0:
             # Fallback: Dean-Oliver possessions (subtract offensive rebounds so
             # offensive boards don't inflate the count).
@@ -568,9 +610,9 @@ def _populate(
 
     def _per_game_drtg(r):
         r_pts = r.get("points_allowed", 0) or 0
-        # Defensive possessions use the team's own (opponent-mirrored) estimated
+        # Defensive possessions use the opponent's basketball-reference refined
         # possessions, matching the standard NBA pacing convention.
-        r_poss = r.get("poss_est", 0) or 0
+        r_poss = r.get("bbr_opp_poss", 0) or 0
         if r_poss <= 0:
             # Fallback via opponent box-score possessions.
             r_opp_fga = r.get("opp_fga", 0) or 0
@@ -627,13 +669,11 @@ def _populate(
     df[cum_sum_cols] = grouped[cum_sum_cols].cumsum()
     df["games_played"] = grouped.cumcount() + 1
 
-    # Running count of games with a REAL ESPN possession value, per team-season.
-    # Computed from df_raw (raw poss_est still has NaN for uncovered games,
-    # since df at this point has had poss_est filled to 0). Used to gate
-    # ESPN-possession-preference in _compute_tier3: if ESPN only covered a
-    # fraction of a team's games, the summed cum_poss_est is far too small and
-    # yields absurd ORTG/DRTG. Must cover ~all games to trust it.
-    df["poss_est_games"] = df_raw.groupby(["team_id", "season_id"], sort=False)["poss_est"].transform(
+    # Running count of games with a REAL BBRef possession value, per team-season.
+    # Computed from df_raw (raw bbr_poss still has NaN for any uncovered game,
+    # since df at this point has had bbr_poss filled to 0). With the CTE box-derived
+    # formula this is ~always complete; kept only as a safety gate for the fallback.
+    df["poss_est_games"] = df_raw.groupby(["team_id", "season_id"], sort=False)["bbr_poss"].transform(
         lambda s: s.notna().astype(int).cumsum()
     )
 
@@ -664,9 +704,9 @@ def _populate(
         }
         for col in cum_sum_cols:
             val = row[col] if col in row else 0
-            # Possessions is fractional; keep it float. Everything else rounds
+            # Possessions are fractional; keep them float. Everything else rounds
             # to int (count-based stats).
-            if col in ("poss_est",):
+            if col in ("bbr_poss", "bbr_opp_poss"):
                 r[f"cum_{col}"] = float(val) if val is not None else 0.0
             else:
                 r[f"cum_{col}"] = int(val) if val is not None else 0

@@ -209,7 +209,6 @@ base AS (
         g.home_free_throws_attempted       AS fta,
         g.home_rebounds                    AS reb,
         g.home_offensive_rebounds          AS orb,
-        g.home_estimated_possessions       AS espn_poss,
         g.home_assists                     AS ast,
         g.home_steals                      AS stl,
         g.home_blocks                      AS blk,
@@ -221,7 +220,6 @@ base AS (
         g.away_free_throws_attempted       AS opp_fta,
         g.away_rebounds                   AS opp_reb,
         g.away_offensive_rebounds          AS opp_orb,
-        g.away_estimated_possessions       AS opp_espn_poss,
         g.away_total_turnovers             AS opp_tov,
         g.away_score                       AS opp_score,
         COALESCE(blc.closing_spread, blc.opening_spread) AS closing_spread,
@@ -253,7 +251,6 @@ base AS (
         g.away_free_throws_attempted       AS fta,
         g.away_rebounds                    AS reb,
         g.away_offensive_rebounds          AS orb,
-        g.away_estimated_possessions       AS espn_poss,
         g.away_assists                     AS ast,
         g.away_steals                      AS stl,
         g.away_blocks                      AS blk,
@@ -265,7 +262,6 @@ base AS (
         g.home_free_throws_attempted       AS opp_fta,
         g.home_rebounds                   AS opp_reb,
         g.home_offensive_rebounds          AS opp_orb,
-        g.home_estimated_possessions       AS opp_espn_poss,
         g.home_total_turnovers             AS opp_tov,
         g.home_score                       AS opp_score,
         COALESCE(blc.closing_spread, blc.opening_spread) AS closing_spread,
@@ -309,17 +305,26 @@ pg_poss AS (
              WHEN b.points + b.points_allowed > b.closing_ou THEN 1
              WHEN b.points + b.points_allowed < b.closing_ou THEN 0
              ELSE NULL END AS ou_won,
-        -- per-game possessions, preferring ESPN's authoritative estimated
-        -- possession count when available. Fallback (exact Dean-Oliver):
-        --   poss = fga - oreb + 0.44*fta + tov   (oreb real; tov included)
-        -- Legacy code used oreb proxy (reb*0.245) and omitted TOV, which both
-        -- inflated possessions and compressed ORTG/DRTG toward ~100.
-        CASE WHEN b.espn_poss IS NOT NULL AND b.espn_poss > 0 THEN b.espn_poss
-             WHEN (b.fga IS NULL OR b.fta IS NULL OR b.reb IS NULL) THEN NULL
-             ELSE b.fga - COALESCE(b.orb, b.reb * 0.245) + 0.44 * b.fta + COALESCE(b.tov, 0) END AS poss,
-        CASE WHEN b.opp_espn_poss IS NOT NULL AND b.opp_espn_poss > 0 THEN b.opp_espn_poss
-             WHEN (b.opp_fga IS NULL OR b.opp_fta IS NULL OR b.opp_reb IS NULL) THEN NULL
-             ELSE b.opp_fga - COALESCE(b.opp_orb, b.opp_reb * 0.245) + 0.44 * b.opp_fta + COALESCE(b.opp_tov, 0) END AS opp_poss
+        -- per-game basketball-reference refined possessions, computed from box
+        -- scores (present in every FINAL game). Team possessions (poss) drive
+        -- ORTG; opponent possessions (opp_poss) drive DRTG. The weighted formula
+        -- matches basketball-reference/NBA.com; the old ESPN estimate and the
+        -- Dean-Oliver cut both over-counted possessions (they subtracted the
+        -- full offensive rebound), which compressed ORTG/DRTG toward ~100.
+        --   poss = fga + 0.4*fta - 1.08*(orb/(orb+opp_drb))*(fga-fgm) + tov
+        --   opp_drb = opp_reb - opp_orb
+        CASE WHEN (b.fga IS NULL OR b.fta IS NULL OR b.reb IS NULL OR b.orb IS NULL) THEN NULL
+             WHEN (b.orb + (b.opp_reb - b.opp_orb)) <= 0 THEN b.fga + 0.4 * b.fta + COALESCE(b.tov, 0)
+             ELSE b.fga + 0.4 * b.fta
+                  - 1.08 * (b.orb::float / (b.orb + (b.opp_reb - b.opp_orb)))
+                  * (b.fga - b.fgm)
+                  + COALESCE(b.tov, 0) END AS poss,
+        CASE WHEN (b.opp_fga IS NULL OR b.opp_fta IS NULL OR b.opp_reb IS NULL OR b.opp_orb IS NULL) THEN NULL
+             WHEN (b.opp_orb + (b.reb - b.orb)) <= 0 THEN b.opp_fga + 0.4 * b.opp_fta + COALESCE(b.opp_tov, 0)
+             ELSE b.opp_fga + 0.4 * b.opp_fta
+                  - 1.08 * (b.opp_orb::float / (b.opp_orb + (b.reb - b.orb)))
+                  * (b.opp_fga - b.opp_fgm)
+                  + COALESCE(b.opp_tov, 0) END AS opp_poss
     FROM base b
 ),
 pg AS (
@@ -484,17 +489,28 @@ rolling AS (
                       ROWS BETWEEN 9 PRECEDING AND CURRENT ROW)
 ),
 
--- Top-3 scorers per (team, season) by season PPG (games_played >= 10)
+-- Top-3 scorers per (team, season): derive DIRECTLY from player_game_stats
+-- (player_season_stats no longer carries per-team rows after the 2026-08-28 rebuild
+--  switched it to one combined row per player-season with team_id=NULL).
+-- Rank by season PPG (points per game), gate on >=10 games played (minutes>0).
+-- OPTION A (2026-08-28): keep corrected source (player_game_stats) but restore PPG
+-- ranking to preserve the original model's star-feature semantics (total-points
+-- ranking regressed NBA ATS ML accuracy 67.48%->66.18%; Rich approved restore to PPG).
 star_prep AS (
     SELECT player_id, team_id, season_id, rk
     FROM (
-        SELECT player_id, team_id, season_id,
+        SELECT pgs.player_id, pgs.team_id, g.season_id AS season_id,
                ROW_NUMBER() OVER (
-                   PARTITION BY team_id, season_id
-                   ORDER BY points_per_game DESC, player_id
+                   PARTITION BY pgs.team_id, g.season_id
+                   ORDER BY SUM(pgs.points)/COUNT(*) DESC, pgs.player_id
                ) AS rk
-        FROM nba.player_season_stats
-        WHERE games_played >= 10
+        FROM nba.player_game_stats pgs
+        JOIN nba.games g ON g.id = pgs.game_id
+        WHERE g.game_type = 'REG'
+          AND pgs.minutes IS NOT NULL AND pgs.minutes <> ''
+          AND (pgs.minutes ~ '^[0-9]+$' OR pgs.minutes ~ '^[0-9]+:[0-9]+$')
+        GROUP BY pgs.player_id, pgs.team_id, g.season_id
+        HAVING COUNT(*) >= 10
     ) s
     WHERE rk <= 3
 ),
