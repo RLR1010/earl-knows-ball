@@ -171,28 +171,30 @@ WITH team_games AS (
         COALESCE(g.away_blocks, 0)     AS opp_blk,
         COALESCE(g.away_total_turnovers, 0)  AS opp_tov,
         COALESCE(g.away_fouls, 0)      AS opp_pf,
-        -- basketball-reference refined possession count for this game's TEAM (home)
-        CASE WHEN g.home_offensive_rebounds IS NOT NULL
-                  AND (g.home_offensive_rebounds + (g.away_rebounds - g.away_offensive_rebounds)) > 0
-             THEN g.home_field_goals_attempted
-                  + 0.4 * g.home_free_throws_attempted
-                  - 1.08 * (g.home_offensive_rebounds::float
-                            / (g.home_offensive_rebounds + (g.away_rebounds - g.away_offensive_rebounds)))
-                  * (g.home_field_goals_attempted - g.home_field_goals_made)
-                  + COALESCE(g.home_total_turnovers, 0)
-             ELSE g.home_field_goals_attempted + 0.4 * g.home_free_throws_attempted + COALESCE(g.home_total_turnovers, 0)
-        END AS bbr_poss,
-        -- ... and for the OPPONENT (away), mirror structure
-        CASE WHEN g.away_offensive_rebounds IS NOT NULL
-                  AND (g.away_offensive_rebounds + (g.home_rebounds - g.home_offensive_rebounds)) > 0
-             THEN g.away_field_goals_attempted
-                  + 0.4 * g.away_free_throws_attempted
-                  - 1.08 * (g.away_offensive_rebounds::float
-                            / (g.away_offensive_rebounds + (g.home_rebounds - g.home_offensive_rebounds)))
-                  * (g.away_field_goals_attempted - g.away_field_goals_made)
-                  + COALESCE(g.away_total_turnovers, 0)
-             ELSE g.away_field_goals_attempted + 0.4 * g.away_free_throws_attempted + COALESCE(g.away_total_turnovers, 0)
-        END AS bbr_opp_poss,
+        -- basketball-reference game possessions: the single symmetric weight
+        -- (0.5*(TmPoss+OppPoss)) computed per game, identical for both team rows.
+        -- The official BBRef constant is 1.07 (not 1.08/Dean-Oliver).
+        (  ( CASE WHEN g.home_offensive_rebounds IS NOT NULL
+                     AND (g.home_offensive_rebounds + (g.away_rebounds - g.away_offensive_rebounds)) > 0
+                THEN g.home_field_goals_attempted
+                     + 0.4 * g.home_free_throws_attempted
+                     - 1.07 * (g.home_offensive_rebounds::float
+                               / (g.home_offensive_rebounds + (g.away_rebounds - g.away_offensive_rebounds)))
+                     * (g.home_field_goals_attempted - g.home_field_goals_made)
+                     + COALESCE(g.home_total_turnovers, 0)
+                ELSE g.home_field_goals_attempted + 0.4 * g.home_free_throws_attempted + COALESCE(g.home_total_turnovers, 0)
+           END )
+         + ( CASE WHEN g.away_offensive_rebounds IS NOT NULL
+                     AND (g.away_offensive_rebounds + (g.home_rebounds - g.home_offensive_rebounds)) > 0
+                THEN g.away_field_goals_attempted
+                     + 0.4 * g.away_free_throws_attempted
+                     - 1.07 * (g.away_offensive_rebounds::float
+                               / (g.away_offensive_rebounds + (g.home_rebounds - g.home_offensive_rebounds)))
+                     * (g.away_field_goals_attempted - g.away_field_goals_made)
+                     + COALESCE(g.away_total_turnovers, 0)
+                ELSE g.away_field_goals_attempted + 0.4 * g.away_free_throws_attempted + COALESCE(g.away_total_turnovers, 0)
+           END )
+        ) * 0.5 AS bbr_poss,
         (g.home_score - g.away_score)  AS margin
     FROM nba.games g
     WHERE g.status = 'FINAL'
@@ -235,28 +237,29 @@ WITH team_games AS (
         COALESCE(g.home_blocks, 0)     AS opp_blk,
         COALESCE(g.home_total_turnovers, 0)  AS opp_tov,
         COALESCE(g.home_fouls, 0)      AS opp_pf,
-        -- basketball-reference refined possession count for this game's TEAM (away)
-        CASE WHEN g.away_offensive_rebounds IS NOT NULL
-                  AND (g.away_offensive_rebounds + (g.home_rebounds - g.home_offensive_rebounds)) > 0
-             THEN g.away_field_goals_attempted
-                  + 0.4 * g.away_free_throws_attempted
-                  - 1.08 * (g.away_offensive_rebounds::float
-                            / (g.away_offensive_rebounds + (g.home_rebounds - g.home_offensive_rebounds)))
-                  * (g.away_field_goals_attempted - g.away_field_goals_made)
-                  + COALESCE(g.away_total_turnovers, 0)
-             ELSE g.away_field_goals_attempted + 0.4 * g.away_free_throws_attempted + COALESCE(g.away_total_turnovers, 0)
-        END AS bbr_poss,
-        -- ... and for the OPPONENT (home), mirror structure
-        CASE WHEN g.home_offensive_rebounds IS NOT NULL
-                  AND (g.home_offensive_rebounds + (g.away_rebounds - g.away_offensive_rebounds)) > 0
-             THEN g.home_field_goals_attempted
-                  + 0.4 * g.home_free_throws_attempted
-                  - 1.08 * (g.home_offensive_rebounds::float
-                            / (g.home_offensive_rebounds + (g.away_rebounds - g.away_offensive_rebounds)))
-                  * (g.home_field_goals_attempted - g.home_field_goals_made)
-                  + COALESCE(g.home_total_turnovers, 0)
-             ELSE g.home_field_goals_attempted + 0.4 * g.home_free_throws_attempted + COALESCE(g.home_total_turnovers, 0)
-        END AS bbr_opp_poss,
+        -- basketball-reference game possessions (single symmetric value, same as
+        -- the home row; constant 1.07).
+        (  ( CASE WHEN g.away_offensive_rebounds IS NOT NULL
+                     AND (g.away_offensive_rebounds + (g.home_rebounds - g.home_offensive_rebounds)) > 0
+                THEN g.away_field_goals_attempted
+                     + 0.4 * g.away_free_throws_attempted
+                     - 1.07 * (g.away_offensive_rebounds::float
+                               / (g.away_offensive_rebounds + (g.home_rebounds - g.home_offensive_rebounds)))
+                     * (g.away_field_goals_attempted - g.away_field_goals_made)
+                     + COALESCE(g.away_total_turnovers, 0)
+                ELSE g.away_field_goals_attempted + 0.4 * g.away_free_throws_attempted + COALESCE(g.away_total_turnovers, 0)
+           END )
+         + ( CASE WHEN g.home_offensive_rebounds IS NOT NULL
+                     AND (g.home_offensive_rebounds + (g.away_rebounds - g.away_offensive_rebounds)) > 0
+                THEN g.home_field_goals_attempted
+                     + 0.4 * g.home_free_throws_attempted
+                     - 1.07 * (g.home_offensive_rebounds::float
+                               / (g.home_offensive_rebounds + (g.away_rebounds - g.away_offensive_rebounds)))
+                     * (g.home_field_goals_attempted - g.home_field_goals_made)
+                     + COALESCE(g.home_total_turnovers, 0)
+                ELSE g.home_field_goals_attempted + 0.4 * g.home_free_throws_attempted + COALESCE(g.home_total_turnovers, 0)
+           END )
+        ) * 0.5 AS bbr_poss,
         (g.away_score - g.home_score)  AS margin
     FROM nba.games g
     WHERE g.status = 'FINAL'
@@ -273,7 +276,7 @@ CUM_SUM_COLS = [
     "points", "points_allowed", "margin",
     "fgm", "fga", "fgm3", "fga3", "ftm", "fta",
     "reb", "ast", "stl", "blk", "tov", "pf",
-    "off_reb", "bbr_poss", "bbr_opp_poss",
+    "off_reb", "bbr_poss",
     "opp_fgm", "opp_fga", "opp_fgm3", "opp_fga3",
     "opp_ftm", "opp_fta", "opp_reb", "opp_ast",
     "opp_stl", "opp_blk", "opp_tov", "opp_pf",
@@ -338,31 +341,30 @@ def _compute_tier3(gs: int, row: dict) -> dict:
     opp_tov = row.get("cum_opp_tov", 0) or 0
     opp_reb = row.get("cum_opp_reb", 0) or 0
 
-    # basketball-reference refined possessions, summed per game from the CTE
-    # (derived from box-score columns present in every FINAL game, so coverage is
-    # ~always complete; no ESPN/Dean-Oliver gating needed).
-    cum_poss  = row.get("cum_bbr_poss", 0) or 0
-    cum_opp   = row.get("cum_bbr_opp_poss", 0) or 0
+    # basketball-reference game possessions, summed per game from the CTE.
+    # BBRef uses ONE symmetric game possession (0.5*(TmPoss+OppPoss), constant
+    # 1.07) for BOTH ORTG and DRTG, so the single cum_bbr_poss drives both.
+    poss = row.get("cum_bbr_poss", 0) or 0
+    opp_poss = max(poss, 1)  # same symmetric count for both ratings (BBRef)
     cum_orb   = row.get("cum_off_reb", 0) or 0
     cum_opp_orb = row.get("cum_opp_off_reb", 0) or 0
-    poss_est_games = int(row.get("poss_est_games", 0) or 0)
-    if cum_poss > 0 and cum_opp > 0:
-        # Exact basketball-reference method: team possessions for ORTG, opponent
-        # possessions for DRTG, pace = avg of the two per game.
-        poss = cum_poss
-        opp_poss = cum_opp
-    elif poss_est_games >= 0.9 * max(gs, 1):
-        # Defensive fallback if BBRef columns are somehow absent for a season:
-        # correct Dean-Oliver form (subtracts real ORB).
+    if not (poss > 0):
+        # Defensive fallback if BBRef column is somehow absent: Dean-Oliver.
         poss = max(fga + 0.44 * fta + tov - cum_orb, 1)
         opp_poss = max(opp_fga + 0.44 * opp_fta + opp_tov - cum_opp_orb, 1)
-    else:
-        poss = max(fga + 0.44 * fta + tov - cum_orb, 1)
-        opp_poss = max(opp_fga + 0.44 * opp_fta + opp_tov - cum_opp_orb, 1)
-    avg_poss = (poss + opp_poss) / 2.0 if gs > 0 else 0
+    avg_poss = poss if gs > 0 else 0
 
-    # Pace = average team possessions per game.
-    est_pace = _div(poss + opp_poss, 2 * gs, 2)
+    # Pace Factor = possessions per 48 minutes (BBRef). TmMP/5 = the "five-man
+    # unit" minutes, ~48 for regulation, higher in OT games. row carries the
+    # cumulated team minutes (cum_team_min) when provided; fall back to games x 48.
+    cum_min = row.get("cum_team_min", 0) or 0
+    if cum_min > 0 and gs > 0:
+        # PaceFactor = 48*(TmPoss+OppPoss)/(2*(TmMP/5)). Since avg_poss already
+        # holds 0.5*(TmPoss+OppPoss), (TmPoss+OppPoss)=2*avg_poss and the 2s
+        # cancel: Pace = 48*avg_poss/(TmMP/5).
+        est_pace = _div(48.0 * avg_poss, cum_min / 5.0, 2)
+    else:
+        est_pace = _div(avg_poss, gs, 2)
 
     ortg = _div(pts, _div(poss, 100, 2))
     drtg = _div(opp, _div(opp_poss, 100, 2), 2)
@@ -531,6 +533,36 @@ def _populate(
     df = pd.read_sql(team_game_sql, engine)
     logger.info("Loaded %d per-game team rows.", len(df))
 
+    # ── Per-game team minutes (for the BBRef per-48 Pace Factor) ──
+    # TmMP = total player-minutes for the row's team in that game (~240 reg,
+    # more in OT). Parsed from player_game_stats "MM:SS" strings.
+    mins_sql = """
+        SELECT pgs.game_id, pgs.team_id, pgs.minutes
+        FROM nba.player_game_stats pgs
+        JOIN nba.games g ON g.id = pgs.game_id
+        WHERE g.status = 'FINAL'
+          AND pgs.minutes IS NOT NULL AND pgs.minutes != ''
+    """
+    if seasons:
+        season_list = ", ".join(str(s) for s in seasons)
+        mins_sql = mins_sql.replace("WHERE g.status = 'FINAL'",
+                                    f"WHERE g.status = 'FINAL' AND g.season_id IN ({season_list})")
+    pgs = pd.read_sql(mins_sql, engine)
+    if not pgs.empty:
+        tm = pgs["minutes"].astype(str).str.extract(r"^(\d+):?(\d*)$")
+        tm[0] = pd.to_numeric(tm[0], errors="coerce").fillna(0)
+        tm[1] = pd.to_numeric(tm[1], errors="coerce").fillna(0)
+        pgs["team_minutes"] = tm[0] + tm[1] / 60.0
+        pgs = pgs.groupby(["game_id", "team_id"], as_index=False)["team_minutes"].sum()
+        df = df.merge(
+            pgs[["game_id", "team_id", "team_minutes"]],
+            on=["game_id", "team_id"], how="left",
+        )
+        df["team_minutes"] = df["team_minutes"].fillna(0.0)
+    else:
+        df["team_minutes"] = 0.0
+    logger.info("Per-game team minutes loaded (%d rows).", len(pgs))
+
     if df.empty:
         logger.warning("No team-game data found — nothing to process.")
         return summary
@@ -610,9 +642,8 @@ def _populate(
 
     def _per_game_drtg(r):
         r_pts = r.get("points_allowed", 0) or 0
-        # Defensive possessions use the opponent's basketball-reference refined
-        # possessions, matching the standard NBA pacing convention.
-        r_poss = r.get("bbr_opp_poss", 0) or 0
+        # BBRef uses the SAME symmetric game possession for ORTG and DRTG.
+        r_poss = r.get("bbr_poss", 0) or 0
         if r_poss <= 0:
             # Fallback via opponent box-score possessions.
             r_opp_fga = r.get("opp_fga", 0) or 0
@@ -669,6 +700,9 @@ def _populate(
     df[cum_sum_cols] = grouped[cum_sum_cols].cumsum()
     df["games_played"] = grouped.cumcount() + 1
 
+    # Cumulative team minutes (BBRef Pace Factor denominator). Include own row.
+    df["cum_team_min"] = grouped["team_minutes"].cumsum()
+
     # Running count of games with a REAL BBRef possession value, per team-season.
     # Computed from df_raw (raw bbr_poss still has NaN for any uncovered game,
     # since df at this point has had bbr_poss filled to 0). With the CTE box-derived
@@ -706,12 +740,13 @@ def _populate(
             val = row[col] if col in row else 0
             # Possessions are fractional; keep them float. Everything else rounds
             # to int (count-based stats).
-            if col in ("bbr_poss", "bbr_opp_poss"):
+            if col in ("bbr_poss",):
                 r[f"cum_{col}"] = float(val) if val is not None else 0.0
             else:
                 r[f"cum_{col}"] = int(val) if val is not None else 0
 
         r["poss_est_games"] = int(row["poss_est_games"]) if "poss_est_games" in row else gs
+        r["cum_team_min"] = float(row.get("cum_team_min", 0) or 0)
 
         tier2 = _compute_tier2(gs, r)
         tier3 = _compute_tier3(gs, r)

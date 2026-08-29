@@ -53,17 +53,17 @@ def _empty_agg() -> dict:
 def _possession(h_fga, h_fta, h_tov, h_oreb, h_dreb,
                 a_fga, a_fta, a_tov, a_oreb, a_dreb,
                 h_fgm, a_fgm) -> float:
-    """basketball-reference refined game possessions (avg of both teams).
+    """basketball-reference game possessions (avg of both teams).
 
-    Mirrors the weighted formula used on basketball-reference/NBA.com. The old
-    proxy (FGA + 0.44*FTA + TO - ORB, or the no-ORB variant) over-counted
-    possessions and inflated pace, especially for high-ORB teams.
-        tm_poss = FGA + 0.4*FTA - 1.08*(ORB/(ORB+OppDRB))*(FGA-FGM) + TOV
+    Mirrors the official basketball-reference/NBA.com formula with the 1.07
+    constant (not 1.08/Dean-Oliver). Returns the single symmetric game value
+    used for both ORTG and DRTG.
+        tm_poss = FGA + 0.4*FTA - 1.07*(ORB/(ORB+OppDRB))*(FGA-FGM) + TOV
     """
     def _tm(fga, fta, fgm, oreb, dreb, tov, opp_oreb, opp_dreb):
         if (oreb + opp_dreb) <= 0:
             return fga + 0.4 * fta + tov
-        return fga + 0.4 * fta - 1.08 * (oreb / (oreb + opp_dreb)) * (fga - fgm) + tov
+        return fga + 0.4 * fta - 1.07 * (oreb / (oreb + opp_dreb)) * (fga - fgm) + tov
     h = _tm(h_fga, h_fta, h_fgm, h_oreb, h_dreb, h_tov, a_oreb, a_dreb)
     a = _tm(a_fga, a_fta, a_fgm, a_oreb, a_dreb, a_tov, h_oreb, h_dreb)
     return 0.5 * (h + a)

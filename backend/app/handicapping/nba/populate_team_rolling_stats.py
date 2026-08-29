@@ -305,26 +305,47 @@ pg_poss AS (
              WHEN b.points + b.points_allowed > b.closing_ou THEN 1
              WHEN b.points + b.points_allowed < b.closing_ou THEN 0
              ELSE NULL END AS ou_won,
-        -- per-game basketball-reference refined possessions, computed from box
-        -- scores (present in every FINAL game). Team possessions (poss) drive
-        -- ORTG; opponent possessions (opp_poss) drive DRTG. The weighted formula
-        -- matches basketball-reference/NBA.com; the old ESPN estimate and the
-        -- Dean-Oliver cut both over-counted possessions (they subtracted the
-        -- full offensive rebound), which compressed ORTG/DRTG toward ~100.
-        --   poss = fga + 0.4*fta - 1.08*(orb/(orb+opp_drb))*(fga-fgm) + tov
-        --   opp_drb = opp_reb - opp_orb
-        CASE WHEN (b.fga IS NULL OR b.fta IS NULL OR b.reb IS NULL OR b.orb IS NULL) THEN NULL
-             WHEN (b.orb + (b.opp_reb - b.opp_orb)) <= 0 THEN b.fga + 0.4 * b.fta + COALESCE(b.tov, 0)
-             ELSE b.fga + 0.4 * b.fta
-                  - 1.08 * (b.orb::float / (b.orb + (b.opp_reb - b.opp_orb)))
-                  * (b.fga - b.fgm)
-                  + COALESCE(b.tov, 0) END AS poss,
-        CASE WHEN (b.opp_fga IS NULL OR b.opp_fta IS NULL OR b.opp_reb IS NULL OR b.opp_orb IS NULL) THEN NULL
-             WHEN (b.opp_orb + (b.reb - b.orb)) <= 0 THEN b.opp_fga + 0.4 * b.opp_fta + COALESCE(b.opp_tov, 0)
-             ELSE b.opp_fga + 0.4 * b.opp_fta
-                  - 1.08 * (b.opp_orb::float / (b.opp_orb + (b.reb - b.orb)))
-                  * (b.opp_fga - b.opp_fgm)
-                  + COALESCE(b.opp_tov, 0) END AS opp_poss
+        -- per-game basketball-reference game possessions, computed from box
+        -- scores (present in every FINAL game). BBRef uses ONE symmetric game
+        -- possession, 0.5*(TmPoss+OppPoss), with constant 1.07, for BOTH ORTG
+        -- and DRTG and Pace. So poss and opp_poss carry the same value here.
+        --   TmPoss(fga,fta,fgm,orb,dreb,tov) = fga + 0.4*fta
+        --        - 1.07*(orb/(orb+opp_dreb))*(fga-fgm) + tov
+        ( 0.5 * (
+            ( CASE WHEN (b.fga IS NULL OR b.fta IS NULL OR b.reb IS NULL OR b.orb IS NULL) THEN NULL
+                   WHEN (b.orb + (b.opp_reb - b.opp_orb)) <= 0
+                        THEN b.fga + 0.4 * b.fta + COALESCE(b.tov, 0)
+                   ELSE b.fga + 0.4 * b.fta
+                        - 1.07 * (b.orb::float / (b.orb + (b.opp_reb - b.opp_orb)))
+                        * (b.fga - b.fgm)
+                        + COALESCE(b.tov, 0) END )
+            +
+            ( CASE WHEN (b.opp_fga IS NULL OR b.opp_fta IS NULL OR b.opp_reb IS NULL OR b.opp_orb IS NULL) THEN NULL
+                   WHEN (b.opp_orb + (b.reb - b.orb)) <= 0
+                        THEN b.opp_fga + 0.4 * b.opp_fta + COALESCE(b.opp_tov, 0)
+                   ELSE b.opp_fga + 0.4 * b.opp_fta
+                        - 1.07 * (b.opp_orb::float / (b.opp_orb + (b.reb - b.orb)))
+                        * (b.opp_fga - b.opp_fgm)
+                        + COALESCE(b.opp_tov, 0) END )
+        ) ) AS poss,
+        -- opp_poss = same symmetric possession (BBRef convention)
+        0.5 * (
+            ( CASE WHEN (b.opp_fga IS NULL OR b.opp_fta IS NULL OR b.opp_reb IS NULL OR b.opp_orb IS NULL) THEN NULL
+                   WHEN (b.opp_orb + (b.reb - b.orb)) <= 0
+                        THEN b.opp_fga + 0.4 * b.opp_fta + COALESCE(b.opp_tov, 0)
+                   ELSE b.opp_fga + 0.4 * b.opp_fta
+                        - 1.07 * (b.opp_orb::float / (b.opp_orb + (b.reb - b.orb)))
+                        * (b.opp_fga - b.opp_fgm)
+                        + COALESCE(b.opp_tov, 0) END )
+            +
+            ( CASE WHEN (b.fga IS NULL OR b.fta IS NULL OR b.reb IS NULL OR b.orb IS NULL) THEN NULL
+                   WHEN (b.orb + (b.opp_reb - b.opp_orb)) <= 0
+                        THEN b.fga + 0.4 * b.fta + COALESCE(b.tov, 0)
+                   ELSE b.fga + 0.4 * b.fta
+                        - 1.07 * (b.orb::float / (b.orb + (b.opp_reb - b.opp_orb)))
+                        * (b.fga - b.fgm)
+                        + COALESCE(b.tov, 0) END )
+        ) AS opp_poss
     FROM base b
 ),
 pg AS (
