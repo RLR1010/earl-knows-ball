@@ -4333,29 +4333,35 @@ async def data_loader_load_game(
             pick_card = (m[5] if m and len(m) > 5 else None)
 
             raw_k = raw_key(feat) if raw_key is not None else feat
+            # Primary display value = the BLENDED model-consumed feature (row[feat]).
+            # For NBA the loader keeps a pristine raw twin (<feat>_raw) in the same
+            # row; we surface it as raw_value for reference but never let it replace
+            # the value the model actually consumes (it was misleading before — a
+            # blended a_wins_10=4.125 rendered as its raw 1.0).
+            model_disp = _safe_val(row.get(feat)) if feat in row.index else None
             raw = _safe_val(row.get(raw_k))
             # Model-facing value: mirror the engine's _extract_feature_vector logic.
-            # Use the RAW value when it is present (non-None, non-NaN); only fall
-            # back to the engine imputer when the raw value is truly missing.
+            # Use the BLENDED value when present (non-None, non-NaN); only fall
+            # back to the engine imputer when the blended value is truly missing.
             # (This prevents the panel from showing an imputed fallback like
             # season ERA for a day/night split the row actually HAS.)
             is_raw_missing = (
-                raw is None
-                or (isinstance(raw, float) and raw != raw)  # NaN
+                model_disp is None
+                or (isinstance(model_disp, float) and model_disp != model_disp)  # NaN
             )
             if feat in model_ats:
                 try:
                     if not is_raw_missing:
-                        model_value = raw
+                        model_value = model_disp
                     else:
                         model_value = _impute(row, feat)
                 except Exception:
-                    model_value = raw
+                    model_value = model_disp
                 is_imputed = is_raw_missing and (model_value is not None)
-                value = model_value if model_value is not None else raw
+                value = model_value if model_value is not None else model_disp
             else:
                 is_imputed = False
-                value = raw
+                value = model_disp
 
             features.append({
                 "name": feat,
