@@ -123,14 +123,20 @@ def _game_split_types(g: dict, home_team_id, away_team_id, team_id, div: str) ->
     splits = []
     # home / away
     splits.append("home" if team_id == home_team_id else "away")
-    # temperature
+    # roof first (need it to know whether temperature is meaningful)
+    roof_splits = _roof_bucket(g.get("roof_type"))
+    # temperature is ONLY meaningful for outdoor (or unknown/open) venues. For
+    # dome/retractable, the game is indoors/climate-controlled regardless of the
+    # recorded ambient temperature, so we do NOT bucket cold/mild/warm (Rich's rule:
+    # retractable roof = comfortable or closed).
+    is_indoor = bool("dome" in roof_splits)  # dome/retractable -> ['dome']
     t = g.get("temperature")
-    tb = _temp_bucket(t)
-    splits.extend(tb)
-    if t is not None and t < 40 and _roof_bucket(g.get("roof_type")) == ["outdoor"]:
+    if not is_indoor:
+        splits.extend(_temp_bucket(t))
+    if t is not None and t < 40 and (not is_indoor) and roof_splits == ["outdoor"]:
         splits.append("outdoor_cold")
     # roof
-    splits.extend(_roof_bucket(g.get("roof_type")))
+    splits.extend(roof_splits)
     # surface
     splits.extend(_surface_bucket(g.get("surface")))
     # precipitation (real game-time condition from Open-Meteo backfill: Rain,
@@ -160,9 +166,7 @@ def _empty_agg():
         "rush_attempts": 0, "rush_yards": 0, "rush_tds": 0,
         "targets": 0, "receptions": 0, "receiving_yards": 0, "receiving_tds": 0,
         "fumbles": 0,
-        "fantasy_std": 0.0, "fantasy_half": 0.0, "fantasy_ppr": 0.0,
         "def_points_allowed": 0, "def_tackles": 0, "def_sacks": 0, "def_takeaways": 0,
-        "def_fantasy_pts": 0.0,
     }
 
 
@@ -179,14 +183,6 @@ def _merge(agg: dict, row) -> None:
         v = row.get(rcol)
         if v:
             agg[acol] += int(v)
-    # fantasy
-    for fcol in ("fantasy_points_std", "fantasy_points_half", "fantasy_points_ppr", "def_fantasy_pts"):
-        v = row.get(fcol)
-        if v is not None:
-            if fcol == "def_fantasy_pts":
-                agg[fcol] += float(v)
-            else:
-                agg[fcol.replace("fantasy_points_", "fantasy_")] += float(v)
     # def_tackles: weekly stats store 'tackles'? use interceptions+fumbles_recovered as takeaways approx
     tkl = float(row.get("tackles") or 0)
     agg["def_tackles"] += int(tkl)
@@ -236,7 +232,6 @@ async def build_player_splits(db: AsyncSession, season_ids: Optional[Sequence[in
                pws.rush_attempts, pws.rush_yards, pws.rush_tds,
                pws.targets, pws.receptions, pws.receiving_yards, pws.receiving_tds,
                pws.fumbles, pws.interceptions, pws.fumbles_recovered, pws.sacks,
-               pws.fantasy_points_std, pws.fantasy_points_half, pws.fantasy_points_ppr,
                pws.points_allowed, pws.snaps_defense,
                g.home_team_id, g.away_team_id, g.date, g.temperature, g.roof_type,
                g.surface, g.weather_condition, g.season_id AS g_season_id
@@ -291,10 +286,8 @@ async def build_player_splits(db: AsyncSession, season_ids: Optional[Sequence[in
                     "targets": fin["targets"], "receptions": fin["receptions"],
                     "receiving_yards": fin["receiving_yards"], "receiving_tds": fin["receiving_tds"],
                     "fumbles": fin["fumbles"],
-                    "fantasy_std": fin["fantasy_std"], "fantasy_half": fin["fantasy_half"], "fantasy_ppr": fin["fantasy_ppr"],
                     "def_points_allowed": fin["def_points_allowed"], "def_tackles": fin["def_tackles"],
                     "def_sacks": fin["def_sacks"], "def_takeaways": fin["def_takeaways"],
-                    "def_fantasy_pts": fin["def_fantasy_pts"],
                     "ypc": fin["ypc"], "ypr": fin["ypr"],
                 })
                 pg += 1

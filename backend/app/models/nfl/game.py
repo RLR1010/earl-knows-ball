@@ -34,6 +34,9 @@ class Game(Base):
     temperature = Column(Integer, nullable=True)
     wind_speed = Column(Integer, nullable=True)
     weather_condition = Column(String(100), nullable=True)
+    # Time of possession (seconds, ESPN core team stats). 2026-08-29.
+    home_time_of_possession_secs = Column(Integer, nullable=True)
+    away_time_of_possession_secs = Column(Integer, nullable=True)
 
     season = relationship("Season", backref="games")
     home_team = relationship("Team", foreign_keys=[home_team_id], backref="home_games")

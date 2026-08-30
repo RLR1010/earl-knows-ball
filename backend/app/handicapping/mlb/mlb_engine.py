@@ -8,7 +8,7 @@ Architecture
   • Pickled model files are year-specific, stored at
     ~/.openclaw/workspace/earl-knows-football/data/models/mlb/{uuid}-{year}.pkl.
     The filenames live in mlb.training_runs.pkl_filename (comma-separated,
-    one per year); the current run is marked is_current = TRUE.
+    one per year); the live run is marked is_live = TRUE.
   • No on-the-fly training in the engine.
   • Every route uses the same DataFrame-driven pipeline so inference and
     backtesting are structurally identical.
@@ -426,11 +426,13 @@ async def _inference_feature_names(db: AsyncSession) -> list:
     return _projection_columns(sorted(names))
 
 
-def _extract_feature_vector(row: pd.Series, model_type: str) -> Optional[np.ndarray]:
-    """Extract the feature vector of ``model_type`` features from one row.
+def _extract_model_features(row: pd.Series, model_type: str) -> List[float]:
+    """Return the ordered list of MODEL-INPUT feature values for ``model_type``.
 
-    Feature columns come from ``mlb.features`` (live_ats/live_ou).
-    Returns ``None`` if any required feature is missing or NaN.
+    This is the single source of truth for what actually enters inference
+    (including imputation). Both the numpy vector (for the model) and the
+    persisted ``features_used_json`` (for live-vs-backtest comparison) are
+    derived from this, so they can never drift apart.
     """
     cols = _get_features()[model_type]
     vals = []
@@ -442,7 +444,7 @@ def _extract_feature_vector(row: pd.Series, model_type: str) -> Optional[np.ndar
 
         # ── Model-path imputation ────────────────────────────────────
         # The raw data layer (build_features) preserves real values / NULL.
-        # THIS is the ONLY place missing values become numbers for the model,
+        # THIS is the only place missing values become numbers for the model,
         # using a reasoned prior — never a blind 0 that the model could read
         # as "dominant here". The user-facing pick card NEVER sees these fills:
         # it reads the raw row, so a missing stat stays blank/None there.
@@ -455,7 +457,25 @@ def _extract_feature_vector(row: pd.Series, model_type: str) -> Optional[np.ndar
         else:
             v = 0.0
         vals.append(float(v))
-    return np.array(vals, dtype=np.float32)
+    return vals
+
+
+def _model_feature_dict(row: pd.Series, model_type: str) -> Dict[str, float]:
+    """{feature_name: final_value} of the model-input vector (post-imputation).
+
+    Used to persist ``features_used_json`` for a TRUE comparison of the exact
+    feature values live inference consumed vs what backtest/training sees.
+    """
+    return dict(zip(_get_features()[model_type], _extract_model_features(row, model_type)))
+
+
+def _extract_feature_vector(row: pd.Series, model_type: str) -> Optional[np.ndarray]:
+    """Extract the feature vector of ``model_type`` features from one row.
+
+    Feature columns come from ``mlb.features`` (live_ats/live_ou).
+    Returns ``None`` if any required feature is missing or NaN.
+    """
+    return np.array(_extract_model_features(row, model_type), dtype=np.float32)
 
 
 def _impute_feature(row: pd.Series, c: str) -> Optional[float]:
@@ -545,6 +565,35 @@ def _nanok(v) -> Optional[float]:
     except (TypeError, ValueError):
         return None
     return f if math.isfinite(f) else None
+
+
+def _features_used_json(
+    feat_dicts: Dict[str, Dict[str, float]],
+) -> str:
+    """Serialize the EXACT model-input feature vector (name->value) that went
+    into inference, for comparison between live API and backtest paths.
+
+    ``feat_dicts`` maps model type ("ats"/"ou") to {feature_name: value}.
+    NaN/None values are kept as None so a missing feature is visible, but
+    non-finite floats are coerced to None. This is the ground-truth record of
+    what the model actually consumed, distinct from the pick-card
+    ``features_json``.
+    """
+    out: Dict[str, Dict[str, Optional[float]]] = {}
+    for model_type, feats in feat_dicts.items():
+        clean = {}
+        for name, v in feats.items():
+            if v is None:
+                clean[name] = None
+            else:
+                try:
+                    f = float(v)
+                except (TypeError, ValueError):
+                    clean[name] = None
+                else:
+                    clean[name] = f if math.isfinite(f) else None
+        out[model_type] = clean
+    return json.dumps(out, default=str)
 
 
 
@@ -669,6 +718,13 @@ async def batch_predict_upcoming_games(
             ats_feats = _extract_feature_vector(row_s, "ats")
             ou_feats = _extract_feature_vector(row_s, "ou")
 
+            # Persist the EXACT model-input vector (post-imputation) for a true
+            # live-inference vs backtest comparison of feature values.
+            feats_used = _features_used_json({
+                "ats": _model_feature_dict(row_s, "ats"),
+                "ou": _model_feature_dict(row_s, "ou"),
+            })
+
             if ats_feats is not None and ats_model:
                 pred_margin = float(ats_model.predict(ats_feats[np.newaxis, :])[0])
             else:
@@ -716,6 +772,7 @@ async def batch_predict_upcoming_games(
                 shap_info=shap_info,
                 ats_model_file=ats_model_file,
                 ou_model_file=ou_model_file,
+                features_used_json=feats_used,
             )
 
             # Commit after EACH game so the DELETE+INSERT row locks on
@@ -757,6 +814,7 @@ async def _save_api_prediction(
     shap_info: Dict[str, Any] | None = None,
     ats_model_file: str | None = None,
     ou_model_file: str | None = None,
+    features_used_json: str | None = None,
 ) -> int:
     """Save a live (pre-game) prediction to ``mlb.game_predictions``.
 
@@ -873,6 +931,7 @@ async def _save_api_prediction(
         ),
         splits_json=json.dumps(_build_mlb_splits(_row_dict)),
         features_json=_extract_pick_card_features(row, pick_card_features_meta) if pick_card_features_meta else None,
+        features_used_json=features_used_json,
         shap_json=json.dumps(shap_info, default=str) if shap_info else None,
         ats_model_file=ats_model_file,
         ou_model_file=ou_model_file,
@@ -992,6 +1051,13 @@ async def _backtest_single_season(
         feats_ats = _extract_feature_vector(row, "ats")
         feats_ou = _extract_feature_vector(row, "ou")
 
+        # Persist the EXACT model-input vector (post-imputation) for a true
+        # live-inference vs backtest comparison of feature values.
+        feats_used = _features_used_json({
+            "ats": _model_feature_dict(row, "ats"),
+            "ou": _model_feature_dict(row, "ou"),
+        })
+
         pred_margin = float(ats_model.predict(feats_ats[np.newaxis, :])[0]) if feats_ats is not None else 0.0
         pred_total = float(ou_model.predict(feats_ou[np.newaxis, :])[0]) if feats_ou is not None else 0.0
 
@@ -1053,6 +1119,7 @@ async def _backtest_single_season(
             shap_info=shap_info,
             ats_model_file=ats_model_file,
             ou_model_file=ou_model_file,
+            features_used_json=feats_used,
         )
 
     await db.commit()
@@ -1211,6 +1278,7 @@ async def _save_backtest_prediction(
     shap_info: Dict[str, Any] | None = None,
     ats_model_file: str | None = None,
     ou_model_file: str | None = None,
+    features_used_json: str | None = None,
 ) -> int:
     """Save a single game\'s prediction to ``mlb.game_predictions``.
 
@@ -1367,6 +1435,7 @@ async def _save_backtest_prediction(
         ),
         splits_json=json.dumps(_build_mlb_splits(_row_dict)),
         features_json=_extract_pick_card_features(row, pick_card_features_meta) if pick_card_features_meta else None,
+        features_used_json=features_used_json,
         shap_json=json.dumps(shap_info, default=str) if shap_info else None,
         ats_model_file=ats_model_file,
         ou_model_file=ou_model_file,

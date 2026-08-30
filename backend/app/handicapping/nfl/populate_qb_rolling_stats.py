@@ -215,7 +215,7 @@ WITH qb_games AS (
     WHERE p.position = 'QB'
       AND pws.game_id IS NOT NULL
       AND s.year IS NOT NULL
-      AND g.game_type = :game_type
+      AND g.game_type IN ('REG', 'POST')  -- include playoffs so postseason rolls carry into them
 )
 """
 
@@ -267,7 +267,7 @@ SELECT
     COUNT(*) OVER w_cum            AS games_played
 
 FROM qb_games
-WINDOW w_cum AS (PARTITION BY player_id, season, game_type ORDER BY game_date, game_id
+WINDOW w_cum AS (PARTITION BY player_id, season ORDER BY game_date, game_id
                  ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
 ORDER BY player_id, season, game_date, game_id
 ON CONFLICT (player_id, season, game_id, game_type) DO UPDATE SET
@@ -411,11 +411,11 @@ SELECT
 
 FROM qb_games
 WINDOW
-    w3  AS (PARTITION BY player_id, season, game_type ORDER BY game_date, game_id
+    w3  AS (PARTITION BY player_id, season ORDER BY game_date, game_id
             ROWS BETWEEN 2 PRECEDING AND CURRENT ROW),
-    w5  AS (PARTITION BY player_id, season, game_type ORDER BY game_date, game_id
+    w5  AS (PARTITION BY player_id, season ORDER BY game_date, game_id
             ROWS BETWEEN 4 PRECEDING AND CURRENT ROW),
-    w10 AS (PARTITION BY player_id, season, game_type ORDER BY game_date, game_id
+    w10 AS (PARTITION BY player_id, season ORDER BY game_date, game_id
             ROWS BETWEEN 9 PRECEDING AND CURRENT ROW)
 ORDER BY player_id, season, game_date, game_id
 ON CONFLICT (player_id, season, game_id, game_type) DO UPDATE SET
@@ -545,8 +545,8 @@ def populate_qb_tables(
                 )
 
             with engine.begin() as conn:
-                logger.info("Running QB %s stats population (game_type=%s)...", table_key, game_type)
-                r = conn.execute(text(sql_to_run), {"game_type": game_type})
+                logger.info("Running QB %s stats population (REG+POST, playoffs roll in)...", table_key)
+                r = conn.execute(text(sql_to_run))
                 result[table_key] = r.rowcount
                 logger.info("Inserted/updated %d QB %s stat rows", r.rowcount, table_key)
 

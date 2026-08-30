@@ -52,6 +52,13 @@ MAX_GENERATIONS = int(os.environ.get("EARL_AUTO_GEN_MAX_PER_PASS", "3"))
 SLEEP_BETWEEN = float(os.environ.get("EARL_AUTO_GEN_SLEEP", "5.0"))
 VALID_SECTIONS = ("article", "daily_picks")
 
+# How many previously-published articles to feed back to the LLM as
+# "previous coverage" context so each generation is fresh and non-repetitive.
+# Set EARL_AUTO_GEN_RECENCY=0 to disable.
+RECENCY_LIMIT = int(os.environ.get("EARL_AUTO_GEN_RECENCY", "4"))
+# Max chars of each prior article's content to include in the context digest.
+RECENCY_CONTENT_CHARS = int(os.environ.get("EARL_AUTO_GEN_RECENCY_CHARS", "900"))
+
 
 def _is_due(cfg: dict, now: datetime) -> bool:
     """Decide whether a config is due for generation.
@@ -134,6 +141,7 @@ async def _load_active_configs() -> list[dict]:
                        generate_time, scope_type, team_id, team_abbr, team_name,
                        template_article_id, section, status,
                        reasoning, visibility, word_min, word_max, title_mode,
+                       recency_context,
                        last_generated_at
                 FROM public.auto_generation_configs
                 WHERE status = 'active'
@@ -177,6 +185,75 @@ async def _resolve_instructions(cfg: dict) -> str:
     return f"Write a {cfg.get('cadence', 'daily')} article for {cfg.get('sport', '')}."
 
 
+async def _load_previous_coverage(cfg: dict) -> list[dict]:
+    """Fetch the most recent published articles in this config's scope.
+
+    Scope matches how the config's articles land: same sport (and section).
+    For a cross-sport daily (sport='all'), this returns the prior cross-sport
+    articles specifically, so the model can see what it already covered.
+    """
+    if RECENCY_LIMIT <= 0:
+        return []
+    async with async_session() as db:
+        res = await db.execute(
+            text(
+                """
+                SELECT title, content, published_at
+                FROM public.original_articles
+                WHERE status = 'published'
+                  AND sport = :sport
+                  AND section = :section
+                ORDER BY published_at DESC NULLS LAST
+                LIMIT :limit
+                """
+            ),
+            {"sport": cfg["sport"], "section": cfg.get("section") or "article",
+             "limit": RECENCY_LIMIT},
+        )
+        return [dict(r) for r in res.mappings()]
+
+
+def _strip_markdown(text_in: str) -> str:
+    """Crudely strip markdown so the prior-content excerpts read as plain text."""
+    import re
+    if not text_in:
+        return ""
+    t = re.sub(r"#{1,6}\s*", "", text_in)
+    t = re.sub(r"[\*_`>~|]+|\[\]?\(\)", " ", t)
+    t = re.sub(r"\n{2,}", " ", t)
+    return t.strip()
+
+
+async def _build_recency_context(cfg: dict) -> str:
+    """Build a previous-coverage context block from the last N published articles.
+
+    Returns an empty string (nothing appended) when there's no recency data or
+    it's disabled. The block explicitly names the prior titles + a short content
+    excerpt and tells the model to write something new and different.
+    """
+    prevs = await _load_previous_coverage(cfg)
+    if not prevs:
+        return ""
+
+    lines = []
+    for p in prevs:
+        title = (p.get("title") or "").strip() or "(untitled)"
+        content = _strip_markdown(p.get("content") or "")[:RECENCY_CONTENT_CHARS]
+        excerpt = f" - {content}" if content else ""
+        lines.append(f"* {title}{excerpt}")
+
+    return (
+        "\n\nPREVIOUS COVERAGE — the following are articles this same page/feed "
+        "has ALREADY published (most recent first). This must be NEW and "
+        "DIFFERENT from all of them: pick a different angle, different subjects, "
+        "different framing, and a distinct headline. Do not simply rehash or "
+        "re-word these. If one of these already fully covered a topic, avoid "
+        "covering it again this week."
+        "\n" + "\n".join(lines)
+    )
+
+
+
 async def generate_config(cfg: dict) -> dict:
     sport = cfg["sport"]
     section = cfg.get("section") or "article"
@@ -184,6 +261,14 @@ async def generate_config(cfg: dict) -> dict:
         section = "article"
 
     instructions = await _resolve_instructions(cfg)
+
+    # Append previous-coverage context ONLY when this config has opted in
+    # (recency_context = TRUE in the admin auto-generation page), so the LLM
+    # writes something fresh and non-repetitive for recurring articles.
+    if cfg.get("recency_context"):
+        recency = await _build_recency_context(cfg)
+        if recency:
+            instructions = f"{instructions}{recency}"
 
     payload = {
         "instructions": instructions,

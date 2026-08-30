@@ -84,6 +84,8 @@ export interface Game {
   result_spread?: string | null;
   result_over_under?: string | null;
   result_moneyline?: string | null;
+  home_time_of_possession_secs?: number | null;
+  away_time_of_possession_secs?: number | null;
   // Cross-sport source for the home aggregation + Best Bets panel
   sport?: string | null;
   // Best Bets metadata (from GET /api/home/best-bets)
@@ -350,6 +352,78 @@ export interface MatchupResponse {
   comparison_error?: string | null;
 }
 
+export type ParlayKind = "ml" | "spread" | "total";
+
+export interface ParlayLeg {
+  game_id: number;
+  sport: string;
+  kind: ParlayKind;
+  label: string;
+  pick: string;
+  side: string | null;
+  prob: number | null;
+  odds: number | null;
+  decimal?: number;
+  ev: number | null;
+  model_file: string | null;
+  is_calibrated: boolean;
+  favorite_side?: string | null;
+  game_label: string;
+  game_date: string;
+}
+
+export interface ParlayGame {
+  game_id: number;
+  sport: string;
+  game_label: string;
+  home_abbr: string;
+  home_name: string;
+  away_abbr: string;
+  away_name: string;
+  date: string;
+  status: string;
+  favorite_side: string | null;
+  legs: Partial<Record<ParlayKind, ParlayLeg>>;
+}
+
+export interface ParlayTicket {
+  n_legs: number;
+  fair_probability: number;
+  fair_decimal: number;
+  fair_american: number;
+  book_decimal: number;
+  book_american: number;
+  combined_implied: number;
+  vig_drag: number;
+  ev_pct: number;
+  ev_dollars: number;
+  correlation_warnings: string[];
+  correlation_blocks: string[];
+  independent_note?: string;
+  legs: ParlayLeg[];
+}
+
+export interface ParlayLegInput extends ParlayLeg {}
+
+export interface SavedParlayTicket {
+  id: number;
+  name: string;
+  legs: ParlayLeg[];
+  created_at: string | null;
+  updated_at: string | null;
+}
+export interface ParlayCorrelation {
+  kind_a: string;
+  kind_b: string;
+  n: number;
+  p_a: number;
+  p_b: number;
+  p_joint: number;
+  p_indep: number;
+  corr: number;
+  is_block: boolean;
+}
+
 export const api = {
   // Teams
   teams: {
@@ -403,6 +477,26 @@ export const api = {
   bestBets: {
     list: (params?: { sport?: "all" | "mlb" | "nba" | "nfl"; limit?: number }) =>
       fetchAPI<Game[]>(`/api/home/best-bets?sport=${params?.sport ?? "all"}&limit=${params?.limit ?? 6}`),
+  },
+
+  // Parlay builder — upcoming games as selectable legs (ML / spread / total)
+  parlay: {
+    legs: (sport: "mlb" | "nfl" | "nba") =>
+      fetchAPI<{ sport: string; count: number; games: ParlayGame[]; correlations: Record<string, ParlayCorrelation> }>(`/api/parlay/legs?sport=${sport}`),
+    // Saved parlay tickets (premium, user-scoped, cross-sport)
+    listTickets: () => fetchAPI<{ tickets: SavedParlayTicket[] }>(`/api/parlay/tickets`),
+    getTicket: (id: number) => fetchAPI<SavedParlayTicket>(`/api/parlay/tickets/${id}`),
+    saveTicket: (payload: { name?: string; legs: ParlayLegInput[]; ticket_id?: number }) =>
+      fetchAPI<SavedParlayTicket>(`/api/parlay/tickets`, {
+        method: "POST",
+        body: JSON.stringify({
+          name: payload.name ?? "My Parlay",
+          legs: payload.legs,
+          ...(payload.ticket_id ? { ticket_id: payload.ticket_id } : {}),
+        }),
+      }),
+    deleteTicket: (id: number) =>
+      fetchAPI<{ deleted: boolean; ticket_id: number }>(`/api/parlay/tickets/${id}`, { method: "DELETE" }),
   },
 
   standings: {

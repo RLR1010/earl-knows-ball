@@ -63,7 +63,7 @@ async def get_optional_current_user(
 
 
 async def require_premium(user: User = Depends(get_current_user)) -> User:
-    if user.subscription_tier != "premium":
+    if not user_is_premium(user):
         raise HTTPException(status_code=403, detail="Premium subscription required")
     return user
 

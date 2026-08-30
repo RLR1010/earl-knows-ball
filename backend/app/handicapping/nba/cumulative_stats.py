@@ -374,9 +374,12 @@ def _compute_tier3(gs: int, row: dict) -> dict:
     efg = _div(fgm + 0.5 * fgm3, fga, 4)
     opp_efg = _div(opp_fgm + 0.5 * opp_fgm3, opp_fga, 4)
 
-    # Turnover rate = TOV / (FGA + 0.44*FTA + TOV)
-    tov_rate = _div(tov, poss, 4)
-    opp_tov_rate = _div(opp_tov, opp_poss, 4)
+    # Turnover rate (BBRef TOV%): TOV per 100 plays, where a play =
+    # FGA + 0.44*FTA + TOV (NOT the weighted possession).
+    tov_plays = fga + 0.44 * fta + tov
+    opp_tov_plays = opp_fga + 0.44 * opp_fta + opp_tov
+    tov_rate = _div(tov, tov_plays, 4)
+    opp_tov_rate = _div(opp_tov, opp_tov_plays, 4)
 
     # Free throw rate = FTA / FGA
     ft_rate = _div(fta, fga, 4)
@@ -392,8 +395,9 @@ def _compute_tier3(gs: int, row: dict) -> dict:
     # Steal rate = STL / opp_possessions
     stl_rate = _div(row.get("cum_stl", 0) or 0, opp_poss, 4)
 
-    # Block rate = BLK / opp_FGA
-    blk_rate = _div(row.get("cum_blk", 0) or 0, opp_fga, 4)
+    # Block rate (BBRef BLK%): blocks per opponent 2-POINT attempt
+    # (BLK/(OppFGA - Opp3PA)).
+    blk_rate = _div(row.get("cum_blk", 0) or 0, opp_fga - opp_fga3, 4)
 
     return {
         "cum_ortg":      ortg,

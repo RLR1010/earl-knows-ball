@@ -49,7 +49,7 @@ PGS_COLS = [
     "free_throws_made","free_throws_attempted","free_throw_pct",
     "rebounds_offensive","rebounds_defensive","rebounds_total","assists",
     "steals","blocks","turnovers","fouls_personal","points","plus_minus",
-    "fantasy_points","nba_game_id","nba_player_id","scraped_at",
+    "nba_game_id","nba_player_id","scraped_at",
 ]
 
 

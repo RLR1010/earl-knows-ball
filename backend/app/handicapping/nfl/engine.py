@@ -445,6 +445,34 @@ def _extract_feature_vector(
     return np.array([values], dtype=np.float32), names
 
 
+def _nfl_features_used_json(
+    ats_names, ats_feats, ou_names, ou_feats,
+) -> Optional[str]:
+    """Serialize the EXACT model-input feature vectors (name->value) that went
+    into NFL inference, for live-API vs backtest comparison. ``*_feats`` are the
+    2D arrays aligned to the model's feature_names; ``*_names`` their order.
+    Values are post-imputation (what the model actually consumed).
+    """
+    def _vec(names, feats):
+        if not names or feats is None:
+            return None
+        row = feats[0] if len(feats) else []
+        out = {}
+        for i, name in enumerate(names):
+            try:
+                v = float(row[i]) if i < len(row) else None
+            except (TypeError, ValueError):
+                v = None
+            out[name] = v if v is not None and math.isfinite(v) else None
+        return out
+
+    out = {}
+    av = _vec(ats_names, ats_feats);  ov = _vec(ou_names, ou_feats)
+    if av is not None: out["ats"] = av
+    if ov is not None: out["ou"] = ov
+    return json.dumps(out, default=str) if out else None
+
+
 # ── Main handicapper class ───────────────────────────────────────────────────────
 
 
@@ -723,6 +751,9 @@ async def batch_predict_upcoming_games(
                 "spread_away_odds": _float_safe(row.get("closing_spread_away_odds")),
                 "over_odds": _float_safe(row.get("closing_over_odds")),
                 "under_odds": _float_safe(row.get("closing_under_odds")),
+                "features_used_json": _nfl_features_used_json(
+                    ats_names, ats_feats, ou_names, ou_feats
+                ),
             }
             # Enrich with handicapper info
             pc_feats = _load_pick_card_feature_metadata()
@@ -955,6 +986,7 @@ async def _save_api_prediction(result: Dict[str, Any]) -> None:
             situational_json=json.dumps(situational) if situational else None,
             splits_json=json.dumps(splits) if splits else None,
             features_json=json.dumps(features, default=str) if features else None,
+            features_used_json=result.get("features_used_json"),
             shap_json=json.dumps(result.get("shap_info"), default=str)
             if result.get("shap_info")
             else None,
@@ -976,6 +1008,7 @@ async def _save_backtest_prediction(
     curve_data: dict = None,
     ats_model_file: str = None,
     ou_model_file: str = None,
+    features_used_json: str = None,
 ) -> None:
     """Save a single backtest prediction using the NFLGamePrediction ORM model.
 
@@ -1184,6 +1217,17 @@ async def _save_backtest_prediction(
         shap_json_str = json.dumps(shap_info, default=str) if shap_info else None
 
         # ── Save via ORM ────────────────────────────────────────────────────────
+        # Ensure features_used_json is populated (build from the local
+        # model-aligned vectors if the caller didn't pass it) so every backtest
+        # row records the exact model-input features for live-vs-backtest parity.
+        if not features_used_json:
+            try:
+                features_used_json = _nfl_features_used_json(
+                    ats_names, ats_feats, ou_names, ou_feats,
+                )
+            except Exception:
+                logger.debug("Could not build features_used_json", exc_info=True)
+
         if sync_sesh is not None:
             # Backtest called without db — use sync session from same DSN
             sync_sesh.execute(
@@ -1239,6 +1283,7 @@ async def _save_backtest_prediction(
                 situational_json=json.dumps(situational) if situational else None,
                 splits_json=json.dumps(splits) if splits else None,
                 features_json=features_json_str,
+                features_used_json=features_used_json,
                 shap_json=shap_json_str,
                 ats_model_file=ats_model_file,
                 ou_model_file=ou_model_file,
@@ -1302,6 +1347,7 @@ async def _save_backtest_prediction(
                 situational_json=json.dumps(situational) if situational else None,
                 splits_json=json.dumps(splits) if splits else None,
                 features_json=features_json_str,
+                features_used_json=features_used_json,
                 shap_json=shap_json_str,
                 ats_model_file=ats_model_file,
                 ou_model_file=ou_model_file,

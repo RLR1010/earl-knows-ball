@@ -17,6 +17,10 @@ const LOWER_IS_BETTER = new Set([
   "opp_avg",
   "Team ERA",
   "Team WHIP",
+  // NFL defensive stats — lower is better
+  "Defense PPG Allowed",
+  "Defense YPG Allowed",
+  "Def EPA/Play",
 ]);
 
 // Metrics that should always display as 3-decimal precision (hitting + some
@@ -64,6 +68,10 @@ const NUMBER_SET = new Set([
   "bb9_5",
   "bb9_10",
   "_raw",
+  // Advanced NFL rate stats — show as decimals, never as a percent (0.1 is NOT 10%)
+  "Off EPA/Play",
+  "Def EPA/Play",
+  "Turnover Differential (avg)",
 ]);
 
 const METRIC_LABELS: Record<string, string> = {
@@ -140,17 +148,19 @@ function num(v: unknown): number | null {
 function fmtVal(v: unknown, metric?: string): string {
   const n = num(v);
   if (n === null) return String(v ?? "—");
+  // Normalize negative zero so EPA/other rate stats don't show "-0"
+  const val = Object.is(n, -0) ? 0 : n;
   // 3-decimal set (AVG/OBP/SLG/OPS/K rate/BB rate/WHIP) -> 0.241, 1.372
-  if (metric && THREE_DECIMAL.has(metric)) return n.toFixed(3);
-  // Plain-number set (ratings, margins, ratios, per-9 rates, CV) -> 2 decimals
-  if (metric && NUMBER_SET.has(metric)) return n.toFixed(2).replace(/\.?0+$/, "");
+  if (metric && THREE_DECIMAL.has(metric)) return val.toFixed(3);
+  // Plain-number set (ratings, margins, ratios, per-9 rates, CV, EPA) -> 2 decimals
+  if (metric && NUMBER_SET.has(metric)) return val.toFixed(2).replace(/\.?0+$/, "") || "0";
   // ERA-style: values between 1.5 and 10 -> 2 decimals
-  if (n > 1.5 && n < 10 && metric && (metric.includes("ERA") || metric.includes("WHIP"))) {
-    return n.toFixed(2);
+  if (val > 1.5 && val < 10 && metric && (metric.includes("ERA") || metric.includes("WHIP"))) {
+    return val.toFixed(2);
   }
   // Small ratio -> percent (e.g. 0.24 -> 24%)
-  if (n > 0 && n <= 1.5 && n < 10) return `${(n * 100).toFixed(0)}%`;
-  return String(n);
+  if (val > 0 && val <= 1.5 && val < 10) return `${(val * 100).toFixed(0)}%`;
+  return String(val);
 }
 
 /** Shared 3-column side-by-side table (home | stat | away) with green = better.
@@ -325,9 +335,24 @@ function buildTrendRows(
   }
 
   if (sport === "nfl") {
-    // NFL trends populate once the regular season starts (rolling stats are
-    // REG+POST only; preseason has none).
-    row("Win% L10", ["last_10", "win_pct_10"], false, "win_pct_10");
+    // NFL rolling stats live in `latest_summary` under _r{N}-suffixed keys
+    // (e.g. win_pct_r10, off_pts_r5) from nfl.team_rolling_stats. NOTES:
+    //  - Rolling windows are REG+POST only; preseason games have none, so those
+    //    cards legitimately render "not available".
+    //  - The season is scoped to the viewed game (backend uses season_year), so
+    //    cards from completed seasons (2018-2025) show that season's trends.
+    row("Win% L10", ["latest_summary", "win_pct_r10"], false, "win_pct_r10");
+    row("Cover% L10", ["latest_summary", "cover_pct_r10"], false, "cover_pct_r10");
+    row("Over% L10", ["latest_summary", "ou_over_pct_r10"], false, "ou_over_pct_r10");
+    row("Points L10", ["latest_summary", "off_pts_r10"], false, "off_pts_r10");
+    row("Yards L10", ["latest_summary", "off_yds_r10"], false, "off_yds_r10");
+    row("Pass yds L10", ["latest_summary", "pass_yds_r10"], false, "pass_yds_r10");
+    row("Rush yds L10", ["latest_summary", "rush_yds_r10"], false, "rush_yds_r10");
+    row("YPP L10", ["latest_summary", "ypp_r10"], false, "ypp_r10");
+    row("Pts Allowed L10", ["latest_summary", "def_pts_r10"], true, "def_pts_r10");
+    row("Def yds L10", ["latest_summary", "def_yds_r10"], true, "def_yds_r10");
+    row("Point Diff L10", ["latest_summary", "point_diff_r10"], false, "point_diff_r10");
+    row("Trn Margin L10", ["latest_summary", "turnover_margin_r10"], false, "turnover_margin_r10");
   }
 
   return rows;

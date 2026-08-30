@@ -61,7 +61,8 @@ def pick_games(engine, season=None, recent=None, fouls=False):
     base += " ORDER BY g.date DESC"
     params = {}
     if season is not None:
-        base += " AND g.season_id = :season"
+        # insert season filter BEFORE the ORDER BY
+        base = base.replace(" ORDER BY g.date DESC", " AND g.season_id = :season ORDER BY g.date DESC")
         params["season"] = season
     if recent is not None:
         # most recent N by date

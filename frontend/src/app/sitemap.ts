@@ -69,7 +69,7 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
     const d = s as {
       static_routes?: string[];
       teams?: string[];
-      game_ids?: number[];
+      game_slugs?: string[];
       writeup_slugs?: string[];
       article_slugs?: string[];
     };
@@ -93,10 +93,10 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
       });
     }
 
-    // Game pick-card pages (current season)
-    for (const gid of d.game_ids ?? []) {
+    // Game pick-card pages (current season) — canonical readable slugs.
+    for (const slug of d.game_slugs ?? []) {
       sportEntries.push({
-        url: `${SITE_URL}${prefix}/games/${gid}`,
+        url: `${SITE_URL}${prefix}/games/${slug}`,
         changeFrequency: "daily",
         priority: 0.5,
       });

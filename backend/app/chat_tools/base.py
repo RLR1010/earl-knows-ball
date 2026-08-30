@@ -315,7 +315,6 @@ class ToolChatEngine:
             "get_depth_chart": ("Checking depth charts", subject),
             "get_player_stats": ("Looking up player stats", subject),
             "get_player_weekly_log": ("Checking weekly logs", subject),
-            "get_dfs_salaries": ("Checking DFS salaries", ""),
             "get_game_prediction": ("Running model predictions", ""),
             "get_team_schedule": ("Looking up the schedule", subject),
             "get_team_splits": ("Checking team splits", subject),

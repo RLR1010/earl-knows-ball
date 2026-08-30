@@ -24,7 +24,9 @@ Game = NBAGame
 
 SEASON_YEAR = 2019   # real 2019-20 -> season_id via ensure_season
 BUBBLE_START = date(2020, 7, 25)   # a few days before seeding tips, to catch any early games
-BUBBLE_END = date(2020, 8, 15)     # through the final seeding date
+# Extended through the NBA Finals (Lakers beat Heat Oct 11, 2020) so the bubble
+# PLAYOFF games (Aug 18 - Oct 11) get ingested too (classified POST by _game_type).
+BUBBLE_END = date(2020, 10, 12)    # through the Finals + 1 slack day
 
 
 def _game_status(comp):
@@ -32,14 +34,34 @@ def _game_status(comp):
     return st.get("state") or ""
 
 
-def _game_type(comp, season_year):
+def _game_type(comp, season_year, game_dt=None):
+    """Classify NFL/NBA style: POST for bubble playoffs, PLAYIN for the play-in.
+
+    ESPN does NOT put "playoff"/"play-in" in the status detail for these games
+    (it's just "Final"/"status_final"). The round is in competitions[0].notes[0]
+    .headline, e.g. "WEST 1ST ROUND - GAME 1", "WEST PLAY-IN - GAME 1",
+    "EAST CONFERENCE FINALS", "NBA FINALS". We rely on that headline, with the
+    bubble playoff start date (Aug 17, 2020) as a robust fallback boundary.
+    """
     st = comp.get("status", {}).get("type", {})
+    blurb = ""
+    notes = comp.get("notes") or []
+    if notes:
+        blurb = (notes[0].get("headline") or "").lower()
     detail = (st.get("detail") or "").lower()
     name = (st.get("name") or "").lower()
-    if "playoff" in detail or "playoff" in name:
-        return "POST"
-    if "play-in" in detail or "play-in" in name:
+    hay = " ".join([blurb, detail, name])
+    if "play-in" in hay:
         return "PLAYIN"
+    if ("playoff" in hay or "1st round" in blurb or "conference" in blurb
+            or "finals" in blurb or "semifinals" in blurb or "quarterfinal" in blurb):
+        return "POST"
+    # Robust fallback: any 2019-20 bubble game on/after Aug 17 2020 is a playoff game
+    # (postseason tipped Aug 17; Finals ended Oct 11, 2020).
+    if season_year == 2019 and game_dt is not None:
+        d = game_dt.date() if hasattr(game_dt, "date") else game_dt
+        if d >= date(2020, 8, 17) and d <= date(2020, 10, 15):
+            return "POST"
     return "REG"
 
 
@@ -88,7 +110,20 @@ async def backfill_bubble() -> dict:
                     game_status = "FINAL" if _game_status(comp) == "post" else (
                         "LIVE" if _game_status(comp) == "in"
                         else ("FINAL" if home_score is not None and away_score is not None else "SCHEDULED"))
-                    gt = _game_type(comp, SEASON_YEAR)
+                    gt = _game_type(comp, SEASON_YEAR, game_dt)
+
+                    # Guard: skip never-played/postponed placeholder rows. ESPN leaves
+                    # 0-0 "games" in the schedule for games that were postponed and later
+                    # rescheduled (e.g. the 2020 bubble boycott games Aug 26-29). Those are
+                    # NOT real games — the rescheduled version is served under a different
+                    # nba_game_id with real scores, and we must not store the 0-0 ghost.
+                    # A played game is FINAL with actual score values; treat any game that
+                    # isn't final, or that has both scores 0, as a placeholder and skip it.
+                    if (game_status != "FINAL"
+                            or home_score is None or away_score is None
+                            or (home_score == 0 and away_score == 0)):
+                        skipped += 1
+                        continue
 
                     existing = (await session.execute(
                         select(Game).where(Game.nba_game_id == str(game_id))

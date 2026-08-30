@@ -62,8 +62,7 @@ SOURCE_SQL = """
         pgs.turnovers,
         pgs.fouls_personal,
         pgs.points,
-        pgs.plus_minus,
-        pgs.fantasy_points
+        pgs.plus_minus
     FROM nba.player_game_stats pgs
     JOIN nba.games g ON g.id = pgs.game_id
     WHERE g.status IN ('FINAL', 'POST', 'PLAYIN')
@@ -89,7 +88,7 @@ COLUMNS = [
     "player_id", "game_id", "team_id", "season_id", "game_date", "is_starter", "position",
     "minutes_txt", "minutes", "points", "rebounds_offensive", "rebounds_defensive",
     "rebounds_total", "assists", "steals", "blocks", "turnovers", "fouls_personal",
-    "plus_minus", "fantasy_points",
+    "plus_minus",
     "fgm", "fga", "fg_pct", "tpm", "tpa", "tp_pct", "ftm", "fta", "ft_pct",
     "prev_game_id", "prev_game_date", "prev_game_id_season", "prev_game_date_season",
     "cum_games", "cum_points", "cum_rebounds", "cum_assists", "cum_minutes",

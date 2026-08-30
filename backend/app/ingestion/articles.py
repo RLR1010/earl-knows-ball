@@ -164,7 +164,7 @@ def _map_category(rss_cats: list[str], title: str, body: str) -> str:
     """Map RSS tags to our category system."""
     text = (title + " " + body).lower()
     if any(w in text for w in ["fantasy", "ppr", "rankings", "waiver"]):
-        return "fantasy_advice"
+        return "general"
     if any(w in text for w in ["betting", "spread", "over/under", "pick", "prop"]):
         return "betting_pick"
     if any(w in text for w in ["preview", "week ", "matchup"]):
@@ -172,12 +172,12 @@ def _map_category(rss_cats: list[str], title: str, body: str) -> str:
     if any(w in text for w in ["recap", "result", "score", "highlights"]):
         return "game_recap"
     if any(w in text for w in ["draft", "rookie", "prospect"]):
-        return "fantasy_advice"
+        return "general"
     if any(w in text for w in ["injury", "cart", "out for"]):
         return "general"
     for cat in rss_cats:
         if cat in ("fantasy", "fantasy football"):
-            return "fantasy_advice"
+            return "general"
         if cat in ("betting", "odds"):
             return "betting_pick"
         if cat in ("injury",):

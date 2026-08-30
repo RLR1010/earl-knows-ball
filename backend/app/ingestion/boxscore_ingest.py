@@ -178,18 +178,6 @@ def fetch_boxscore(mlb_game_id: int) -> Optional[dict]:
     return None
 
 
-def fetch_game_weather(mlb_game_id: int) -> Optional[dict]:
-    """Fetch weather data from MLB Stats API live feed."""
-    import urllib.request
-    url = f"https://statsapi.mlb.com/api/v1.1/game/{mlb_game_id}/feed/live"
-    try:
-        req = urllib.request.urlopen(url, timeout=15)
-        data = json.loads(req.read())
-        return data.get("gameData", {}).get("weather", {})
-    except Exception:
-        return None
-
-
 def lookup_player_id(conn, mlb_id: int, player_name: str) -> Optional[int]:
     """Find our player_id from mlb_id or name."""
     # Try by mlb_id first
@@ -529,67 +517,17 @@ async def refresh_boxscores_for_recent_games(conn) -> dict:
     except Exception as e:
         logger.warning(f"  Error updating prediction results: {e}")
 
-    # Step 2: Update weather for all recent games (even if boxscores already loaded)
-    logger.info("  Updating weather for recent games...")
-    weather_games = await conn.fetch("""
-        SELECT id, mlb_game_id
-        FROM mlb.games
-        WHERE date >= CURRENT_DATE - INTERVAL '2 days'
-          AND date <= CURRENT_DATE + INTERVAL '1 day'
-        ORDER BY date DESC
-        LIMIT 100
-    """)
-    weather_updated = 0
-    for wg in weather_games:
-        try:
-            wth = fetch_game_weather(wg["mlb_game_id"])
-            if wth:
-                temp_str = wth.get("temp", "")
-                condition = wth.get("condition")
-                wind_str = wth.get("wind", "")
-
-                # Parse temperature from string
-                try:
-                    temperature = int(temp_str) if temp_str else None
-                except (ValueError, TypeError):
-                    temperature = None
-
-                # Parse wind speed and direction from string like "5 mph, Out To CF"
-                wind_speed = None
-                wind_direction = None
-                if wind_str:
-                    try:
-                        wind_speed = int("".join(c for c in wind_str.split(",")[0] if c.isdigit() or c in ".-"))
-                    except (ValueError, IndexError):
-                        pass
-
-                    if "," in wind_str:
-                        wpart = wind_str.split(",", 1)[1].strip().lower()
-                        if "out" in wpart:
-                            wind_direction = "out"
-                        elif "in" in wpart:
-                            wind_direction = "in"
-                        if not wind_direction:
-                            if wpart.startswith("l") and "r" in wpart:
-                                wind_direction = "l_to_r"
-                            elif wpart.startswith("r") and "l" in wpart:
-                                wind_direction = "r_to_l"
-
-                await conn.execute("""
-                    UPDATE mlb.games
-                    SET temperature = $1, weather_condition = $2, wind_speed = $3, wind_direction = $4
-                    WHERE id = $5
-                """, temperature, condition, wind_speed, wind_direction, wg["id"])
-                weather_updated += 1
-        except Exception as e:
-            logger.warning(f"  Weather error for game {wg['id']}: {e}")
-    logger.info(f"  Weather updated for {weather_updated} games")
+    # NOTE: weather is intentionally NOT updated here. The dedicated
+    # mlb_weather_forecast task (mlb_games_weather_forecast) is the single
+    # source of truth for game weather and enforces the pregame freeze. The
+    # boxscore/raw feed would otherwise write ACTUAL post-game conditions over
+    # the frozen forecast, causing live picks (forecast) to diverge from the
+    # backtest (actual).
 
     return {
         "batting_rows": total_batting,
         "pitching_rows": total_pitching,
         "games_processed": len(games),
-        "weather_updated": weather_updated,
     }
 
 

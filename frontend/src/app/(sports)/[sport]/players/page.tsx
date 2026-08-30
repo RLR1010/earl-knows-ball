@@ -54,7 +54,7 @@ export default function PlayersPage() {
   useSeo({
     title: `${sportLabel} Players Roster | Earl Knows Ball`,
     description: `Browse ${sportLabel} player rosters, stats, and profiles on Earl Knows Ball.`,
-    keywords: `${sport}, ${sportLabel}, players, roster, stats, profiles, fantasy, Earl Knows Ball`,
+    keywords: `${sport}, ${sportLabel}, players, roster, stats, profiles, Earl Knows Ball`,
   });
 
   const [players, setPlayers] = useState<(Player | MLBPlayer | NBAPlayer)[]>([]);

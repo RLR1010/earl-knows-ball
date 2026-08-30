@@ -114,6 +114,7 @@ from app.routers import (
     auto_generation,
     token_usage,
     v1,
+    parlay,
 )
 
 # Routers grouped by role.
@@ -138,6 +139,7 @@ _LEGACY_USER_FACING = [
     customer_service,
     seo,
     matchup,
+    parlay,
 ]
 
 _COMPUTE_FACING = [

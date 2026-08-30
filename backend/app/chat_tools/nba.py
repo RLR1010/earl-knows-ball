@@ -97,19 +97,44 @@ async def _resolve_player_split(db: AsyncSession, player_name: str) -> dict:
     raise ValueError(f"Player not found: {player_name}")
 
 
+# Alternate ESPN abbreviations mapped to our CANONICAL abbreviation (ids 1-30).
+# ESPN-family sources (and test data) used these variants for a handful of teams,
+# and the duplicate rows they created (e.g. WSH=58, NO=57, UTAH=56, SA=59) carry
+# the alternate abbreviation. Canonical rows are ids 1-30 (matching
+# repair_nba_boxscores.py / nba_team_stats_espn.py).
+_ALT_ABBR = {
+    "GS": "GSW", "NY": "NYK", "SA": "SAS", "NO": "NOP", "PHO": "PHX",
+    "BK": "BKN", "UTAH": "UTA", "WSH": "WAS",
+    "CHO": "CHA", "NOH": "NOP", "NOK": "NOP",
+}
+
 async def _resolve_team_id(db: AsyncSession, name_or_abbr: str) -> int | None:
     clean = name_or_abbr.strip().lower()
+    # Normalize an alternate ESL abbreviation to its canonical form so the
+    # abbreviation exact-match hits the canonical team row (id 1-30).
+    canonical = _ALT_ABBR.get(clean.upper(), clean)
+    # Restrict to canonical team rows (id BETWEEN 1 AND 30). The nba.teams table
+    # contains ESPN-duplicate placeholder rows (e.g. WSH=58, NO=57, UTAH=56,
+    # SA=59) that share the SAME name as a canonical team; matching on name alone
+    # would otherwise throw MultipleResultsFound.
     for col in ("abbreviation", "name"):
         r = await db.execute(
-            text(f"SELECT id FROM nba.teams WHERE LOWER({col}) = :q"),
-            {"q": clean},
+            text(
+                f"SELECT id FROM nba.teams "
+                f"WHERE id BETWEEN 1 AND 30 AND LOWER({col}) = :q"
+            ),
+            {"q": canonical.lower()},
         )
         tid = r.scalar_one_or_none()
         if tid:
             return tid
     r = await db.execute(
-        text("SELECT id FROM nba.teams WHERE LOWER(name) LIKE :q OR LOWER(abbreviation) LIKE :q"),
-        {"q": f"%{clean}%"},
+        text(
+            "SELECT id FROM nba.teams "
+            "WHERE id BETWEEN 1 AND 30 AND "
+            "(LOWER(name) LIKE :q OR LOWER(abbreviation) LIKE :q)"
+        ),
+        {"q": f"%{canonical.lower()}%"},
     )
     return r.scalar_one_or_none()
 
@@ -217,13 +242,14 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "get_head_to_head",
-            "description": "Get head-to-head results between two NBA teams: recent meetings and scores.",
+            "description": "Get head-to-head results between two NBA teams: season meetings, aggregate series record (who leads, W-L, points) for a season. Pass season_year for any season (defaults to current).",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "team1": {"type": "string", "description": "Team name or abbreviation"},
                     "team2": {"type": "string", "description": "Team name or abbreviation"},
-                    "limit": {"type": "integer", "description": "Meetings to return (default 5, max 10)"},
+                    "season_year": {"type": "integer", "description": "Season year (defaults to current)"},
+                    "limit": {"type": "integer", "description": "Meetings to return (default 10, max 20)"},
                 },
                 "required": ["team1", "team2"],
             },
@@ -248,13 +274,19 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "get_player_game_logs",
-            "description": "Get game-by-game stats for an NBA player over a season: points, rebounds, assists, steals, blocks. Great for seeing streaks and trends.",
+            "description": "Get game-by-game stats for an NBA player over a season: points, rebounds, assists, steals, blocks. Filters by date range/month, home-or-away, or opponent to answer questions like 'how did he play in February' or 'his numbers vs the Lakers'. With no filters returns the most recent games.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "player_name": {"type": "string", "description": "Player full name"},
                     "season_year": {"type": "integer", "description": "Season year (defaults to current)"},
-                    "limit": {"type": "integer", "description": "Recent games (default 10, max 20)"},
+                    "limit": {"type": "integer", "description": "Max games to list (default 10, max 20)"},
+                    "month": {"type": "integer", "description": "Calendar month 1-12 to filter to (e.g. 2 for February)"},
+                    "start_date": {"type": "string", "description": "Start date inclusive (ISO YYYY-MM-DD)"},
+                    "end_date": {"type": "string", "description": "End date inclusive (ISO YYYY-MM-DD)"},
+                    "home_or_away": {"type": "string", "enum": ["home", "away", "all"], "description": "Filter home or away games (default 'all')"},
+                    "opponent": {"type": "string", "description": "Filter to games vs this opponent team name/abbr"},
+                    "game_type": {"type": "string", "enum": ["REG", "PST"], "description": "Regular season (REG) or playoffs (PST); default REG"},
                 },
                 "required": ["player_name"],
             },
@@ -264,7 +296,7 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "get_player_recent_stats",
-            "description": "Get an NBA player's stats over their most recent N games (you choose N, the model, based on context): points, rebounds, assists, steals, blocks, turnovers, FG/3PT/FT, plus-minus, fantasy points, games started. Returns window totals, per-game averages, and a game-by-game breakdown. Also returns the stored season fixed-window averages (last-5/10/15/30). Use for streaks, hot/cold form, and recent trend handicapping.",
+            "description": "Get an NBA player's stats over their most recent N games (you choose N, the model, based on context): points, rebounds, assists, steals, blocks, turnovers, FG/3PT/FT, plus-minus, games started. Returns window totals, per-game averages, and a game-by-game breakdown. Also returns the stored season fixed-window averages (last-5/10/15/30). Use for streaks, hot/cold form, and recent trend handicapping.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -348,6 +380,27 @@ TOOL_DEFINITIONS = [
                     "team_name": {"type": "string", "description": "Team name or abbreviation"},
                     "season_year": {"type": "integer", "description": "Season year (defaults to current)"},
                     "limit": {"type": "integer", "description": "Games to return (default 10, max 20)"},
+                },
+                "required": ["team_name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_team_game_log",
+            "description": "Query an NBA team's game log by filters: date range or month, home/away, result, or opponent. Answers 'how many games did the Lakers win in January', 'their record on the road', or 'how they've done vs the Celtics'. Returns the record plus the per-game list.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "team_name": {"type": "string", "description": "Team name or abbreviation"},
+                    "season_year": {"type": "integer", "description": "Season year (defaults to current)"},
+                    "month": {"type": "integer", "description": "Calendar month 1-12 to filter to (e.g. 1 for January)"},
+                    "start_date": {"type": "string", "description": "Start date inclusive (ISO YYYY-MM-DD)"},
+                    "end_date": {"type": "string", "description": "End date inclusive (ISO YYYY-MM-DD)"},
+                    "home_or_away": {"type": "string", "enum": ["home", "away", "all"], "description": "Filter home or away games (default 'all')"},
+                    "result": {"type": "string", "enum": ["win", "loss", "all"], "description": "Filter to wins or losses (default 'all')"},
+                    "opponent": {"type": "string", "description": "Filter to games vs this opponent team name/abbr"},
                 },
                 "required": ["team_name"],
             },
@@ -622,7 +675,9 @@ async def _get_head_to_head(db: AsyncSession, args: dict) -> dict:
     t2 = await _resolve_team_id(db, args.get("team2", ""))
     if not t1 or not t2:
         return {"error": "One or both teams not found"}
-    lim = min(args.get("limit", 5), 10)
+    year = args.get("season_year") or await _resolve_season_year(db)
+    sid = await _resolve_season_id(db, year)
+    lim = min(args.get("limit", 10), 20)
 
     sql = text("""
         SELECT g.*, ht.name AS home_name, at2.name AS away_name
@@ -632,14 +687,27 @@ async def _get_head_to_head(db: AsyncSession, args: dict) -> dict:
         WHERE ((g.home_team_id = :t1 AND g.away_team_id = :t2)
             OR (g.home_team_id = :t2 AND g.away_team_id = :t1))
           AND g.status = 'FINAL'
+          AND g.season_id = :sid
         ORDER BY g.date DESC LIMIT :lim
     """)
-    r = await db.execute(sql, {"t1": t1, "t2": t2, "lim": lim})
+    r = await db.execute(sql, {"t1": t1, "t2": t2, "sid": sid, "lim": lim})
     meetings = []
+    t1_wins = 0
+    t2_wins = 0
+    t1_pts = 0
+    t2_pts = 0
     for row in r.mappings():
-        winner = None
-        if row.home_score is not None and row.away_score is not None:
-            winner = row.home_name if row.home_score > row.away_score else row.away_name
+        p1 = row.home_score if row.home_team_id == t1 else row.away_score
+        p2 = row.away_score if row.home_team_id == t1 else row.home_score
+        if p1 is not None and p2 is not None:
+            t1_pts += p1
+            t2_pts += p2
+            if p1 > p2:
+                t1_wins += 1
+            else:
+                t2_wins += 1
+        winner_t1 = p1 is not None and p2 is not None and p1 > p2
+        winner = row.home_name if winner_t1 else row.away_name
         meetings.append({
             "date": str(row.date) if row.date else None,
             "home": row.home_name,
@@ -647,7 +715,19 @@ async def _get_head_to_head(db: AsyncSession, args: dict) -> dict:
             "score": f"{row.home_score}-{row.away_score}",
             "winner": winner,
         })
-    return {"meetings": meetings}
+    return {
+        "team1": args.get("team1"),
+        "team2": args.get("team2"),
+        "season_year": year,
+        "aggregate": {
+            "games": len(meetings),
+            "team1_wins": t1_wins,
+            "team2_wins": t2_wins,
+            "team1_points": t1_pts,
+            "team2_points": t2_pts,
+        },
+        "meetings": meetings,
+    }
 
 
 async def _get_player_stats(db: AsyncSession, args: dict) -> dict:
@@ -701,10 +781,52 @@ async def _get_player_stats(db: AsyncSession, args: dict) -> dict:
     }
 
 
+def _coerce_date(value):
+    """Coerce a user-supplied date ('2026-08-23', '2026/08/23', already a date) to a
+    datetime.date. The LLM passes dates as strings; asyncpg needs a date/datetime instance.
+    Returns None if it can't be parsed (callers treat None as unset)."""
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str):
+        for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%m/%d/%Y"):
+            try:
+                return datetime.strptime(value.strip(), fmt).date()
+            except (ValueError, TypeError):
+                continue
+        try:
+            return date.fromisoformat(value.strip())
+        except (ValueError, TypeError):
+            return None
+    return None
+
+
 async def _get_player_game_logs(db: AsyncSession, args: dict) -> dict:
+    """An NBA player's game log, optionally filtered by date range / month,
+    home-or-away, opponent, and game type. With no filters it returns the most
+    recent N games. With filters it aggregates the matching games (per-game
+    averages + totals) and lists them.
+
+    args:
+        player_name: str (required)
+        season_year: int (optional; default current season)
+        limit: int (optional; max games to list, default 10, max 20)
+        month: int (optional; calendar month 1-12)
+        start_date / end_date: str (optional; ISO YYYY-MM-DD inclusive)
+        home_or_away: 'home' | 'away' | 'all' (default 'all')
+        opponent: str (optional; opponent team name/abbr)
+        game_type: str (optional; default 'REG'; use 'PST' for playoffs)
+    """
     player_name = args.get("player_name", "")
     year = args.get("season_year") or await _resolve_season_year(db)
     lim = min(args.get("limit", 10), 20)
+    month = args.get("month")
+    start_date = args.get("start_date")
+    end_date = args.get("end_date")
+    hod = (args.get("home_or_away") or "all").lower()
+    opponent = args.get("opponent")
+    game_type = (args.get("game_type") or "REG").upper()
 
     clean = player_name.strip()
     parts = clean.lower().split(" ", 1)
@@ -719,7 +841,31 @@ async def _get_player_game_logs(db: AsyncSession, args: dict) -> dict:
     if not player:
         return {"error": f"Player not found: {player_name}"}
 
-    sql = text("""
+    frags = ["pgs.player_id = :pid", "g.season_id = (SELECT id FROM nba.seasons WHERE year = :year)"]
+    params = {"pid": player.id, "year": year, "lim": lim, "month": month,
+              "start_date": _coerce_date(start_date), "end_date": _coerce_date(end_date)}
+    if hod == "home":
+        frags.append("g.home_team_id = pgs.team_id")
+    elif hod == "away":
+        frags.append("g.away_team_id = pgs.team_id")
+    if month is not None:
+        frags.append("EXTRACT(MONTH FROM g.date) = :month")
+    if start_date:
+        frags.append("g.date >= :start_date")
+    if end_date:
+        frags.append("g.date <= :end_date")
+    if opponent:
+        oid = await _resolve_team_id(db, opponent)
+        if not oid:
+            return {"error": f"Opponent team not found: {opponent}"}
+        params["oid"] = oid
+        frags.append("(g.home_team_id = :oid OR g.away_team_id = :oid)")
+    if game_type:
+        frags.append("g.game_type = :gtype")
+        params["gtype"] = game_type
+    where = " AND ".join(frags)
+
+    sql = text(f"""
         SELECT pgs.*, g.date,
                ht.name AS opponent_name,
                CASE WHEN g.home_team_id = pgs.team_id THEN 'home' ELSE 'away' END AS venue
@@ -728,15 +874,37 @@ async def _get_player_game_logs(db: AsyncSession, args: dict) -> dict:
         LEFT JOIN nba.teams ht ON ht.id = CASE
             WHEN g.home_team_id = pgs.team_id THEN g.away_team_id
             ELSE g.home_team_id END
-        WHERE pgs.player_id = :pid AND g.season_id = (
-            SELECT id FROM nba.seasons WHERE year = :year
-        )
+        WHERE {where}
         ORDER BY g.date DESC
         LIMIT :lim
     """)
-    r = await db.execute(sql, {"pid": player.id, "year": year, "lim": lim})
+    r = await db.execute(sql, params)
+    rows = r.mappings().all()
+
+    aggregate = None
+    if any([month, start_date, end_date, hod != "all", opponent]):
+        n = len(rows)
+        def _s(key):
+            return sum((row[key] or 0) for row in rows)
+        pts, reb, ast, stl, blk = _s("points"), _s("rebounds_total"), _s("assists"), _s("steals"), _s("blocks")
+        fgm, fga = _s("field_goals_made"), _s("field_goals_attempted")
+        tpm, tpa = _s("three_pointers_made"), _s("three_pointers_attempted")
+        ftm, fta = _s("free_throws_made"), _s("free_throws_attempted")
+        aggregate = {
+            "games": n,
+            "points_per_game": round(pts / n, 1) if n else None,
+            "rebounds_per_game": round(reb / n, 1) if n else None,
+            "assists_per_game": round(ast / n, 1) if n else None,
+            "steals_per_game": round(stl / n, 1) if n else None,
+            "blocks_per_game": round(blk / n, 1) if n else None,
+            "field_goal_pct": round(fgm / fga, 3) if fga else None,
+            "three_point_pct": round(tpm / tpa, 3) if tpa else None,
+            "free_throw_pct": round(ftm / fta, 3) if fta else None,
+            "totals": {"points": pts, "rebounds": reb, "assists": ast, "steals": stl, "blocks": blk},
+        }
+
     games = []
-    for row in r.mappings():
+    for row in rows:
         games.append({
             "date": str(row.date) if row.date else None,
             "opponent": row.opponent_name,
@@ -748,14 +916,18 @@ async def _get_player_game_logs(db: AsyncSession, args: dict) -> dict:
             "steals": row.steals,
             "blocks": row.blocks,
             "turnovers": row.turnovers,
-            "fg_made": row.field_goals_made,
-            "fg_att": row.field_goals_attempted,
-            "three_made": row.three_pointers_made,
-            "three_att": row.three_pointers_attempted,
-            "ft_made": row.free_throws_made,
-            "ft_att": row.free_throws_attempted,
+            "fg": f"{row.field_goals_made}/{row.field_goals_attempted}",
+            "three": f"{row.three_pointers_made}/{row.three_pointers_attempted}",
+            "ft": f"{row.free_throws_made}/{row.free_throws_attempted}",
         })
-    return {"player": player.name, "season_year": year, "game_logs": games}
+    return {
+        "player": player.name,
+        "season_year": year,
+        "filters": {"month": month, "start_date": start_date, "end_date": end_date,
+                     "home_or_away": hod, "opponent": opponent, "game_type": game_type},
+        "aggregate": aggregate,
+        "game_logs": games,
+    }
 
 
 
@@ -876,9 +1048,6 @@ async def _get_player_recent_stats(db: AsyncSession, args: dict) -> dict:
         "ft_pct": round(tot["ftm"] / tot["fta"] * 100, 1) if tot["fta"] else None,
     }
     avg["plus_minus"] = round(tot["plus_minus"] / g, 1)
-    avg["fantasy_points"] = round(
-        (tot["points"] + 1.2 * tot["rebounds_total"] + 1.5 * tot["assists"]
-         + 3 * tot["steals"] + 3 * tot["blocks"] - tot["turnovers"]) / g, 1)
 
     # Latest stored fixed-window averages (cross-check of the summed window)
     # The table stores fg/tp/ft pct as 0-1 ratios; present them as percentages
@@ -1255,6 +1424,101 @@ async def _search_articles(db: AsyncSession, args: dict) -> dict:
             "published": a.get("published_at", ""),
         })
     return {"articles": results}
+
+
+async def _get_team_game_log(db: AsyncSession, args: dict) -> dict:
+    tid = await _resolve_team_id(db, args.get("team_name", ""))
+    if not tid:
+        return {"error": f"Team not found: {args.get('team_name', '')}"}
+    year = args.get("season_year") or await _resolve_season_year(db)
+    sid = await _resolve_season_id(db, year)
+
+    month = args.get("month")
+    start_date = args.get("start_date")
+    end_date = args.get("end_date")
+    hod = (args.get("home_or_away") or "all").lower()
+    result_filter = (args.get("result") or "all").lower()
+    opponent = args.get("opponent")
+
+    frags = ["(g.home_team_id = :tid OR g.away_team_id = :tid)", "g.season_id = :sid"]
+    if hod == "home":
+        frags.append("g.home_team_id = :tid")
+    elif hod == "away":
+        frags.append("g.away_team_id = :tid")
+    if month is not None:
+        frags.append("EXTRACT(MONTH FROM g.date) = :month")
+    if opponent:
+        oid = await _resolve_team_id(db, opponent)
+        if not oid:
+            return {"error": f"Opponent team not found: {opponent}"}
+        frags.append("(g.home_team_id = :oid OR g.away_team_id = :oid)")
+    if start_date:
+        frags.append("g.date >= :start_date")
+    if end_date:
+        frags.append("g.date <= :end_date")
+
+    params = {"tid": tid, "sid": sid, "month": month,
+              "start_date": _coerce_date(start_date), "end_date": _coerce_date(end_date)}
+    if opponent:
+        oid = await _resolve_team_id(db, opponent)
+        if not oid:
+            return {"error": f"Opponent team not found: {opponent}"}
+        params["oid"] = oid
+
+    where = " AND ".join(frags)
+    sql = text(f"""
+        SELECT g.id, g.date, g.home_team_id, g.away_team_id,
+               g.home_score, g.away_score, ht.name AS home_name, at2.name AS away_name
+        FROM nba.games g
+        JOIN nba.teams ht ON ht.id = g.home_team_id
+        JOIN nba.teams at2 ON at2.id = g.away_team_id
+        WHERE {where}
+          AND g.game_type = 'REG' AND g.status = 'FINAL'
+        ORDER BY g.date
+    """)
+    r = await db.execute(sql, params)
+    rows = r.mappings().all()
+
+    def result_for(row):
+        if row.home_team_id == tid:
+            return "win" if row.home_score > row.away_score else "loss"
+        return "win" if row.away_score > row.home_score else "loss"
+
+    if result_filter in ("win", "loss"):
+        rows = [row for row in rows if result_for(row) == result_filter]
+
+    wins = sum(1 for row in rows if result_for(row) == "win")
+    losses = sum(1 for row in rows if result_for(row) == "loss")
+    scored = sum((row.home_score if row.home_team_id == tid else row.away_score) for row in rows)
+    allowed = sum((row.away_score if row.home_team_id == tid else row.home_score) for row in rows)
+
+    games_list = []
+    for row in rows[:20]:
+        opp = row.away_name if row.home_team_id == tid else row.home_name
+        games_list.append({
+            "game_id": row.id,
+            "date": str(row.date),
+            "home": row.home_team_id == tid,
+            "opponent": opp,
+            "result": result_for(row),
+            "points_for": row.home_score if row.home_team_id == tid else row.away_score,
+            "points_against": row.away_score if row.home_team_id == tid else row.home_score,
+        })
+
+    return {
+        "team": args.get("team_name"),
+        "season_year": year,
+        "filters": {"month": month, "start_date": start_date, "end_date": end_date,
+                     "home_or_away": hod, "result": result_filter, "opponent": opponent},
+        "games_played": len(rows),
+        "wins": wins,
+        "losses": losses,
+        "win_pct": round(wins / len(rows), 3) if rows else None,
+        "points_for": scored,
+        "points_against": allowed,
+        "point_diff": scored - allowed,
+        "games": games_list,
+    }
 
 
 async def _get_team_schedule(db: AsyncSession, args: dict) -> dict:
@@ -1642,6 +1906,82 @@ async def _get_game_writeup(db: AsyncSession, args: dict) -> dict:
         "prop_content": row.prop_content,
     }
 
+# ─── Query-engine tools ───────────────────────────────────────────────────────
+
+{
+    "type": "function",
+    "function": {
+        "name": "query_player_stats",
+        "description": (
+            "GENERAL-PURPOSE allowlisted NBA player-stats query engine. Express ANY "
+            "offensive stat question as a structured spec. Use when no specific "
+            "get_* player tool fits (e.g. \"most assists since 2022\", \"LeBron scoring "
+            "in home games\", arbitrary aggregates). stats (allowed names): "
+            "points, minutes, field_goals_made/attempted, three_pointers_made/attempted, "
+            "free_throws_made/attempted, rebounds_offensive/defensive/total, assists, "
+            "steals, blocks, turnovers, fouls_personal, plus_minus, field_goal_pct, "
+            "three_pointer_pct, free_throw_pct. aggregate sum/avg/max/count. "
+            "filters: season_year(int, START year e.g. 2024=2024-25)/week/home_or_away/team/",
+            "opponent/game_type. top+order for leaderboards (group_by=['player']). To look\n"\
+            "up ONE specific player, pass the name in the TOP-LEVEL 'player_name' argument —\n"\
+            "do NOT put it inside 'filters' (filters only takes\n"\
+            "season_year/home_or_away/team/opponent/game_type). Unsupported fields return an\n"\
+            "error, never SQL."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "stats": {"type": "array", "items": {"type": "string"}, "description": "Stat name(s) to aggregate"},
+                "aggregate": {"type": "string", "enum": ["sum", "avg", "max", "count"]},
+                "group_by": {"type": "array", "items": {"type": "string", "enum": ["player"]}},
+                "filters": {"type": "object", "description": "season_year(int)/home_or_away/team/opponent/game_type"},
+                "player_name": {"type": "string", "description": "TOP-LEVEL single-player filter: the exact player name to look up (e.g. 'LeBron James'). Use this, NOT a key inside 'filters'. Omit for a whole-league leaderboard (pair with group_by/top)."},
+                "top": {"type": "integer"},
+                "order": {"type": "string", "enum": ["desc", "asc"]},
+            },
+            "required": ["stats"],
+        },
+    },
+},
+
+{
+    "type": "function",
+    "function": {
+        "name": "query_team_stats",
+        "description": (
+            "GENERAL-PURPOSE allowlisted NBA team-stats query engine. Express ANY "
+            "team stat question (records, scoring, rebounding, 3-pointers, rolling form). "
+            "stats (allowed): wins, losses, win_pct, points_for, points_against, "
+            "point_margin, field_goals_made/attempted, three_pointers_made/attempted, "
+            "free_throws_made/attempted, rebounds, assists, steals, blocks, turnovers, "
+            "fouls, offensive_rebounds, defensive_rebounds, points_in_paint, "
+            "win_pct_3/5, off_pts_5, def_pts_5, cover_pct_5, ou_over_pct_5. filters: "
+            "team/season_year/opponent/home_or_away. Data from nba.games (home/away "
+            "team columns) + team_rolling_stats. Unsupported fields return an error."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "stats": {"type": "array", "items": {"type": "string"}, "description": "Stat name(s)"},
+                "filters": {"type": "object", "description": "team/season_year/opponent/home_or_away"},
+                "top": {"type": "integer"},
+                "order": {"type": "string", "enum": ["desc", "asc"]},
+            },
+            "required": ["stats"],
+        },
+    },
+},
+
+async def _get_player_query(db: AsyncSession, args: dict) -> dict:
+    from . import nba_query
+    return await nba_query._run_query_player_stats(db, args)
+
+
+async def _get_team_query(db: AsyncSession, args: dict) -> dict:
+    from . import nba_query
+    return await nba_query._run_query_team_stats(db, args)
+
+
 _TOOL_HANDLERS = {
     "get_team_info": _get_team_info,
     "get_team_stats": _get_team_stats,
@@ -1651,7 +1991,7 @@ _TOOL_HANDLERS = {
     "get_game_writeup": _get_game_writeup,
     "get_head_to_head": _get_head_to_head,
     "get_player_stats": _get_player_stats,
-    "get_player_game_logs": _get_player_game_logs,
+    "get_player_game_logs": _get_player_game_logs,    "get_team_game_log": _get_team_game_log,
     "get_player_recent_stats": _get_player_recent_stats,
     "get_player_split_stats": _get_player_split_stats,
     "get_team_split_stats": _get_team_split_stats,
@@ -1664,6 +2004,8 @@ _TOOL_HANDLERS = {
     "get_team_season_futures": _get_team_season_futures,
     "get_player_season_props": _get_player_season_props,
     "get_game_player_props": _get_game_player_props,
+    "query_player_stats": _get_player_query,
+    "query_team_stats": _get_team_query,
 }
 
 

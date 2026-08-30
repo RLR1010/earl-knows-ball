@@ -50,7 +50,7 @@ def _extract_stat_value(stats: list[dict], name: str):
                     return float(dv)
                 elif name == "freeThrowPct":
                     return float(dv)
-                elif name in ("plusMinus", "fantasyPoints"):
+                elif name in ("plusMinus",):
                     return float(dv)
                 else:
                     return int(float(dv))
@@ -392,7 +392,7 @@ async def process_game(
                 try:
                     if name == "minutes":
                         return v
-                    elif name in ("fieldGoalPct", "threePointFieldGoalPct", "freeThrowPct", "plusMinus", "fantasyPoints"):
+                    elif name in ("fieldGoalPct", "threePointFieldGoalPct", "freeThrowPct", "plusMinus"):
                         return float(v)
                     else:
                         return int(float(v))
@@ -409,12 +409,12 @@ async def process_game(
                          free_throws_made, free_throws_attempted, free_throw_pct,
                          rebounds_offensive, rebounds_defensive, rebounds_total,
                          assists, steals, blocks, turnovers, fouls_personal,
-                         points, plus_minus, fantasy_points)
+                         points, plus_minus)
                     VALUES
                         (:game_id, :player_id, :team_id, :nba_game_id, :nba_player_id,
                          :min, :fgm, :fga, :fgp, :tpm, :tpa, :tpp, :ftm, :fta, :ftp,
                          :oreb, :dreb, :treb, :ast, :stl, :blk, :tov, :pf,
-                         :pts, :pm, :fp)
+                         :pts, :pm)
                     ON CONFLICT (game_id, player_id) DO NOTHING
                 """), {
                     "game_id": db_game_id,
@@ -442,7 +442,6 @@ async def process_game(
                     "pf": sv("personalFouls"),
                     "pts": sv("points"),
                     "pm": sv("plusMinus"),
-                    "fp": sv("fantasyPoints"),
                 })
                 total_rows += 1
             except Exception as e:

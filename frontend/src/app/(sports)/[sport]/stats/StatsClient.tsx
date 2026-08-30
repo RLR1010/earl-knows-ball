@@ -15,8 +15,7 @@ interface PlayerStatRow {
   rush_yards: number; rush_tds: number; yards_per_carry: number;
   targets: number; receptions: number; receiving_yards: number;
   receiving_tds: number; yards_per_rec: number; fumbles: number;
-  fumbles_lost: number; fantasy_points_ppr: number;
-  fantasy_points_std: number; fantasy_points_half: number; snaps_offense: number;
+  fumbles_lost: number; snaps_offense: number;
 }
 
 interface TeamStatRow {
@@ -98,7 +97,6 @@ const NFL_PLAYER_COLS = [
   { key: "receptions", label: "Rec", align: "right" as const },
   { key: "receiving_yards", label: "RecYds", align: "right" as const },
   { key: "receiving_tds", label: "RecTD", align: "right" as const },
-  { key: "fantasy_points_ppr", label: "FantPt", align: "right" as const },
 ];
 
 const NFL_TEAM_COLS = [
@@ -221,7 +219,6 @@ function NFLStats({ sport }: { sport: string }) {
                   <td className="px-3 py-2 text-right">{fmt(r.receptions)}</td>
                   <td className="px-3 py-2 text-right">{fmt(r.receiving_yards)}</td>
                   <td className="px-3 py-2 text-right text-green-400">{r.receiving_tds}</td>
-                  <td className="px-3 py-2 text-right font-semibold text-earl-400">{r.fantasy_points_ppr?.toFixed(1) ?? "-"}</td>
                 </tr>
               ))}
             </tbody>
@@ -497,7 +494,6 @@ const NBA_COLS = [
   { key: "free_throw_pct", label: "FT%", align: "right" as const },
   { key: "turnovers", label: "TOV", align: "right" as const },
   { key: "minutes_played", label: "MIN", align: "right" as const },
-  { key: "fantasy_points", label: "FanPt", align: "right" as const },
 ];
 
 function NBAStats({ sport }: { sport: string }) {
@@ -596,7 +592,7 @@ function NBAStats({ sport }: { sport: string }) {
                     if (["points_per_game", "assists_per_game", "rebounds_per_game"].includes(c.key)) {
                       return <td key={c.key} className="px-3 py-2 text-right font-semibold text-earl-400">{val !== null ? Number(val).toFixed(1) : "-"}</td>;
                     }
-                    return <td key={c.key} className={`px-3 py-2 text-right ${["points", "assists", "rebounds", "steals", "blocks", "fantasy_points"].includes(c.key) ? "font-semibold" : ""}`}>{val ?? "-"}</td>;
+                    return <td key={c.key} className={`px-3 py-2 text-right ${["points", "assists", "rebounds", "steals", "blocks"].includes(c.key) ? "font-semibold" : ""}`}>{val ?? "-"}</td>;
                   })}
                 </tr>
               ))

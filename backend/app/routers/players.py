@@ -140,7 +140,6 @@ async def get_player_profile(player_id: int, db: AsyncSession = Depends(get_db))
             func.sum(PlayerWeeklyStats.receptions).label("rec"),
             func.sum(PlayerWeeklyStats.receiving_yards).label("rec_yds"),
             func.sum(PlayerWeeklyStats.receiving_tds).label("rec_tds"),
-            func.sum(PlayerWeeklyStats.fantasy_points_ppr).label("fpts"),
             func.min(Season.year).label("first_year"),
             func.max(Season.year).label("last_year"),
         )
@@ -161,7 +160,6 @@ async def get_player_profile(player_id: int, db: AsyncSession = Depends(get_db))
             "rec": int(s.rec or 0),
             "rec_yds": int(s.rec_yds or 0),
             "rec_tds": int(s.rec_tds or 0),
-            "fantasy_ppr": float(s.fpts or 0),
         }
 
         # Recent seasons (last 3)
@@ -184,7 +182,6 @@ async def get_player_profile(player_id: int, db: AsyncSession = Depends(get_db))
                     func.sum(PlayerWeeklyStats.receptions).label("rec"),
                     func.sum(PlayerWeeklyStats.receiving_yards).label("recy"),
                     func.sum(PlayerWeeklyStats.receiving_tds).label("rectd"),
-                    func.sum(PlayerWeeklyStats.fantasy_points_ppr).label("fpts"),
                 ).where(
                     PlayerWeeklyStats.player_id == player.id,
                     PlayerWeeklyStats.season_id == sid,
@@ -203,7 +200,6 @@ async def get_player_profile(player_id: int, db: AsyncSession = Depends(get_db))
                     "rec": int(s2.rec or 0),
                     "rec_yds": int(s2.recy or 0),
                     "rec_tds": int(s2.rectd or 0),
-                    "fantasy_ppr": float(s2.fpts or 0),
                 })
 
     # Injury history

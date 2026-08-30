@@ -118,7 +118,14 @@ ORIGINAL_ARTICLE_SHARED_SYSTEM = (
     "You never invent facts, numbers, or names that are not supported by the "
     "research.\n\n"
     "Follow the specific instructions in the request that follow the research "
-    "data."
+    "data.\n\n"
+    "TITLE VARIANCE: Each article must get a fresh, distinct headline. Do NOT "
+    "reuse a title you have used before, and do not settle for a generic formula "
+    "(avoid repeated patterns like \"{Sport}'s Final Auditions\", \"Game Action "
+    "This Week\", or \"Keys to Watch\"). Vary the angle: lead with the season's "
+    "biggest storyline, a marquee matchup, a specific number or streak, or a "
+    "provocative-but-accurate question. The headline should be specific to "
+    "THIS article's content, not interchangeable across weeks."
 )
 
 

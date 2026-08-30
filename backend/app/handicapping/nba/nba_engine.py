@@ -544,6 +544,35 @@ def _extract_feature_vector(
     return np.array([values], dtype=np.float32), names
 
 
+def _nba_features_json(ats_vals, ats_names, ou_vals, ou_names) -> Optional[str]:
+    """Serialize the EXACT model-input feature vectors (name->value) that went
+    into NBA inference, for live-API vs backtest comparison.
+
+    ``*_vals`` are 2D arrays (or None) aligned to ``*_names``; values are
+    post-imputation (what the model actually consumed).
+    """
+    def _vec(vals, names):
+        if vals is None or names is None:
+            return None
+        row = vals[0] if len(vals) else []
+        out = {}
+        for i, name in enumerate(names):
+            try:
+                v = float(row[i]) if i < len(row) else None
+            except (TypeError, ValueError, IndexError):
+                v = None
+            out[name] = v if v is not None and math.isfinite(v) else None
+        return out
+
+    out = {}
+    av = _vec(ats_vals, ats_names);  ov = _vec(ou_vals, ou_names)
+    if av is not None:
+        out["ats"] = av
+    if ov is not None:
+        out["ou"] = ov
+    return json.dumps(out, default=str) if out else None
+
+
 # ═══════════════════════════════════════════════════════════════════════════════════
 # Handicapper module-level helpers (extracted from NBAHandicapper class)
 # ═══════════════════════════════════════════════════════════════════════════════════
@@ -705,6 +734,12 @@ async def _build_pick_card(
         shap_info["ou"] = compute_attribution(ou_model, ou_vals, ou_names, _pc_meta)
     if shap_info:
         pick_card["shap_info"] = shap_info
+
+    # Persist the EXACT model-input feature vector (post-imputation) for a true
+    # live-API vs backtest comparison of feature values.
+    fu = _nba_features_json(ats_vals, ats_names, ou_vals, ou_names)
+    if fu:
+        pick_card["features_used_json"] = fu
 
     return pick_card
 
@@ -1217,6 +1252,7 @@ async def _save_api_prediction(
         situational_json=situational_json,
         splits_json=splits_json,
         features_json=features_json_str,
+        features_used_json=pick_card.get("features_used_json"),
         shap_json=json.dumps(pick_card.get("shap_info"), default=str)
         if pick_card.get("shap_info")
         else None,
@@ -1493,6 +1529,12 @@ async def _save_backtest_prediction(
             situational_json=situational if isinstance(situational, str) else json.dumps(situational, default=str) if situational else None,
             splits_json=splits if isinstance(splits, str) else json.dumps(splits, default=str) if splits else None,
             features_json=features_json_str,
+            features_used_json=_nba_features_json(
+                ats_features[0] if ats_features else None,
+                ats_features[1] if ats_features else None,
+                ou_features[0] if ou_features else None,
+                ou_features[1] if ou_features else None,
+            ),
             shap_json=shap_json_str,
             ats_model_file=ats_model_file,
             ou_model_file=ou_model_file,

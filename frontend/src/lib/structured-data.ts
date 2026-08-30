@@ -27,6 +27,7 @@ interface GameMeta {
   away?: { name: string; abbr: string } | null;
   date?: string | null;
   status?: string | null;
+  slug?: string | null;
 }
 
 async function fetchSeoJson<T>(path: string): Promise<T | null> {
@@ -92,7 +93,9 @@ export async function gameStructuredData(
       name: meta.away.name,
       identifier: meta.away.abbr,
     },
-    url: `${SITE_URL}/${sport}/games/${gameId}`,
+    url: meta.slug
+      ? `${SITE_URL}/${sport}/games/${meta.slug}`
+      : `${SITE_URL}/${sport}/games/${gameId}`,
     organizer: {
       "@type": "Organization",
       name: "Earl Knows Ball",

@@ -74,6 +74,32 @@ async def run(started_at=None, game_type: str = "REG"):
     season = date.today().year
 
     async with async_session() as db:
+        # Step 0: ingest the POSTSEASON schedule so playoff games exist in
+        # nfl.games with game_type='POST' BEFORE any stats/rolling rebuild.
+        # Keeps future postseasons separated from REG (the 2016-2025 data was
+        # fixed once via migrate_nfl_postseason_game_type.py; this prevents
+        # re-contamination going forward). Idempotent and non-destructive:
+        # only ADDs POST games that aren't already present (the delete that used
+        # to wipe the season is commented out — see espn.py ingest_espn_schedule).
+        logger.info("[Step 0] Syncing NFL postseason schedule (seasontype=3)...")
+        try:
+            from app.ingestion.espn import ingest_espn_schedule
+            await ingest_espn_schedule(db, season_year=season, seasontype=3)
+            logger.info(f"  postseason schedule synced for {season}")
+        except Exception as e:
+            _e = str(e)
+            if "404" in _e or "Not Found" in _e or season > date.today().year:
+                logger.info(f"  postseason schedule: none yet for {season} (benign)")
+            elif "postseason has not begun" in _e.lower():
+                logger.info(f"  postseason schedule: not started yet ({season}) (benign)")
+            else:
+                logger.error(f"  Postseason schedule sync failed: {e}")
+                step_failures.append(f"postseason_schedule: {e}")
+                try:
+                    await db.rollback()
+                except Exception:
+                    pass
+
         # Step 1: nflverse player week stats (nfl.player_weekly_stats) — idempotent
         logger.info("[Step 1] Loading nflverse player weekly stats...")
         try:
@@ -210,6 +236,75 @@ async def run(started_at=None, game_type: str = "REG"):
     except Exception as e:
         logger.error(f"  qb_badweather_stats failed: {e}")
         step_failures.append(f"qb_badweather_stats: {e}")
+
+    # Step 10: complete player-stat detail (ESPN gap-fill) + rebuild ALL
+    # player rolling tables. nflverse (Step 1) only fills a ~5-col defensive
+    # subset; this ESPN core-API pass hydrates the full 39-col defensive/ST
+    # set for NEW games, then rebuilds defensive/skill/qb/kicker rolling so
+    # they stay fresh (they were previously NOT maintained by the refresh).
+    # gap_fill=True => additive ON CONFLICT DO UPDATE, never deletes.
+    logger.info("[Step 10] ESPN player detail gap-fill + defensive/skill/kicker rolling rebuild...")
+    try:
+        from app.ingestion.nfl_player_game_stats import _run as _nfl_player_run
+        # async, self-contained (own engine + psycopg2 conn); gap-fill is
+        # additive ON CONFLICT DO UPDATE and never deletes, so it safely
+        # complements the nflverse Step 1 for NEW games.
+        await _nfl_player_run([season], game_type=game_type, gap_fill=True)
+        logger.info("  ESPN player detail gap-fill done")
+    except Exception as e:
+        logger.error(f"  nfl player detail gap-fill failed: {e}")
+        step_failures.append(f"nfl_player_detail: {e}")
+
+    logger.info("[Step 10b] Rebuilding nfl.defensive_rolling_stats...")
+    try:
+        from app.database import engine as sync_engine
+        from app.handicapping.nfl.populate_defensive_rolling_stats import populate_defensive_rolling_stats
+        dr_res = await run_in_thread(populate_defensive_rolling_stats, sync_engine, [season], game_type)
+        logger.info(f"  defensive_rolling_stats: {dr_res}")
+    except Exception as e:
+        logger.error(f"  defensive_rolling_stats failed: {e}")
+        step_failures.append(f"defensive_rolling_stats: {e}")
+
+    logger.info("[Step 10c] Rebuilding nfl.skill_rolling_stats + kicker_rolling_stats...")
+    try:
+        from app.database import engine as sync_engine
+        from app.handicapping.nfl.populate_skill_rolling_stats import populate_skill_rolling_tables
+        sk_res = await run_in_thread(populate_skill_rolling_tables, sync_engine, game_type=game_type, seasons=[season])
+        logger.info(f"  skill_rolling_stats: {sk_res}")
+    except Exception as e:
+        logger.error(f"  skill_rolling_stats failed: {e}")
+        step_failures.append(f"skill_rolling_stats: {e}")
+
+    # Step 11: settle FINAL games' prediction results (ats/ou/ml_result) so
+    # schedule-card picks show Win (green) / Loss (red) / Push (grey).
+    # Idempotent - skips already-settled predictions (ats_result IS NULL guard).
+    logger.info("[Step 11] Settling NFL prediction results for final games...")
+    try:
+        from app.handicapping.nfl.settle_predictions import settle_nfl_predictions
+        import asyncpg as _asyncpg
+        from app.db_urls import PSYCOPG2_DATABASE_URL as _URL
+        _conn = await _asyncpg.connect(_URL)
+        try:
+            _n = await settle_nfl_predictions(_conn)
+            logger.info(f"  settled {_n} prediction result(s)")
+        finally:
+            await _conn.close()
+    except Exception as e:
+        logger.error(f"  settle prediction results failed: {e}")
+        step_failures.append(f"settle_prediction_results: {e}")
+
+    # Step 12: backfill time of possession for newly-final games (from ESPN core
+    # team stats). Idempotent - only processes games where nfl.games possession
+    # columns are still NULL (i.e. never fetched), updating both nfl.games (home/
+    # away) and nfl.game_stats (per-team) at once.
+    logger.info("[Step 12] Backfilling time of possession for final games...")
+    try:
+        from app.ingestion.nfl_team_stats_espn import backfill_time_of_possession
+        _pt = await backfill_time_of_possession()
+        logger.info(f"  TOP backfill: {_pt}")
+    except Exception as e:
+        logger.error(f"  TOP backfill failed: {e}")
+        step_failures.append(f"top_backfill: {e}")
 
     # Report the REAL outcome to task_runs
     if step_failures:

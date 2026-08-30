@@ -50,6 +50,10 @@ async def main() -> int:
 
     async with async_session() as db:
         result = await build_player_splits(db)
+        # build_player_splits does DELETE + batched INSERT but does NOT commit;
+        # without an explicit commit the whole refresh silently rolls back on
+        # session close (async_sessionmaker auto-rollback on close).
+        await db.commit()
     logger.info(
         f"NBA splits refresh done: players={result['players']}, "
         f"rows_written={result['rows_written']}, season_ids={result['season_ids']}"

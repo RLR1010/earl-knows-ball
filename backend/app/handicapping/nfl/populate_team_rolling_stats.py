@@ -193,9 +193,9 @@ CREATE INDEX IF NOT EXISTS idx_trs_game       ON nfl.team_rolling_stats (game_id
 
 
 POPULATE_SQL = """
--- Clean only rows of THIS game_type so PRE and REG can coexist side-by-side.
--- (A full TRUNCATE here would wipe preseason rows on every regular-season run.)
-DELETE FROM nfl.team_rolling_stats WHERE game_type = :game_type;
+-- Clean REG+POST rows so the combined (full-season, playoffs-roll-in) insert coexists
+-- cleanly. PRE rows are never built here (cumulative_game_stats has no PRE rows).
+DELETE FROM nfl.team_rolling_stats WHERE game_type IN ('REG', 'POST');
 
 -- Step 1: Per-game values by diffing cumulative totals from cumulative_game_stats.
 WITH per_game AS (
@@ -269,8 +269,8 @@ WITH per_game AS (
     JOIN nfl.teams t_home ON t_home.id = g.home_team_id
     JOIN nfl.teams t_away ON t_away.id = g.away_team_id
     LEFT JOIN nfl.betting_lines_consolidated bl ON c.game_id = bl.game_id
-    WHERE g.game_type = :game_type
-    WINDOW w AS (PARTITION BY c.season, c.season_type, c.team_abbr ORDER BY c.games_played
+    WHERE g.game_type IN ('REG', 'POST')  -- include playoffs so postseason rolls carry
+    WINDOW w AS (PARTITION BY c.season, c.team_abbr ORDER BY c.games_played
                  ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING)
 ),
 derived AS (
@@ -488,11 +488,11 @@ rolling AS (
     FROM derived
     -- INCLUDING current game's data (data loader processes completed games)
     WINDOW
-        w3  AS (PARTITION BY season, game_type, team_abbr ORDER BY games_played
+        w3  AS (PARTITION BY season, team_abbr ORDER BY games_played
                 ROWS BETWEEN 2 PRECEDING AND CURRENT ROW),
-        w5  AS (PARTITION BY season, game_type, team_abbr ORDER BY games_played
+        w5  AS (PARTITION BY season, team_abbr ORDER BY games_played
                 ROWS BETWEEN 4 PRECEDING AND CURRENT ROW),
-        w10 AS (PARTITION BY season, game_type, team_abbr ORDER BY games_played
+        w10 AS (PARTITION BY season, team_abbr ORDER BY games_played
                 ROWS BETWEEN 9 PRECEDING AND CURRENT ROW)
 ),
 -- Step 3: Season-to-date cumulative stats (including current game)
@@ -506,25 +506,25 @@ season_cumul AS (
         SUM(over_result::int) FILTER (WHERE over_result IS NOT NULL) OVER w_season AS cum_ou_overs,
         SUM(CASE WHEN over_result IS NOT NULL THEN 1 ELSE 0 END) OVER w_season AS cum_ou_games
     FROM derived
-    WINDOW w_season AS (PARTITION BY season, game_type, team_abbr ORDER BY games_played
+    WINDOW w_season AS (PARTITION BY season, team_abbr ORDER BY games_played
                         ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
 ),
 -- Step 4: Streaks via gaps-and-islands (including current game)
 islands AS (
     SELECT *,
-        ROW_NUMBER() OVER (PARTITION BY season, game_type, team_abbr ORDER BY games_played)
-            - ROW_NUMBER() OVER (PARTITION BY season, game_type, team_abbr, won ORDER BY games_played) AS win_grp,
-        ROW_NUMBER() OVER (PARTITION BY season, game_type, team_abbr ORDER BY games_played)
-            - ROW_NUMBER() OVER (PARTITION BY season, game_type, team_abbr, covered ORDER BY games_played) AS cover_grp,
-        ROW_NUMBER() OVER (PARTITION BY season, game_type, team_abbr ORDER BY games_played)
-            - ROW_NUMBER() OVER (PARTITION BY season, game_type, team_abbr, over_result ORDER BY games_played) AS ou_grp
+        ROW_NUMBER() OVER (PARTITION BY season, team_abbr ORDER BY games_played)
+            - ROW_NUMBER() OVER (PARTITION BY season, team_abbr, won ORDER BY games_played) AS win_grp,
+        ROW_NUMBER() OVER (PARTITION BY season, team_abbr ORDER BY games_played)
+            - ROW_NUMBER() OVER (PARTITION BY season, team_abbr, covered ORDER BY games_played) AS cover_grp,
+        ROW_NUMBER() OVER (PARTITION BY season, team_abbr ORDER BY games_played)
+            - ROW_NUMBER() OVER (PARTITION BY season, team_abbr, over_result ORDER BY games_played) AS ou_grp
     FROM derived
 ),
 streak_counts AS (
     SELECT *,
-        ROW_NUMBER() OVER (PARTITION BY season, game_type, team_abbr, won, win_grp ORDER BY games_played) AS win_streak_n,
-        ROW_NUMBER() OVER (PARTITION BY season, game_type, team_abbr, covered, cover_grp ORDER BY games_played) AS cover_streak_n,
-        ROW_NUMBER() OVER (PARTITION BY season, game_type, team_abbr, over_result, ou_grp ORDER BY games_played) AS ou_streak_n
+        ROW_NUMBER() OVER (PARTITION BY season, team_abbr, won, win_grp ORDER BY games_played) AS win_streak_n,
+        ROW_NUMBER() OVER (PARTITION BY season, team_abbr, covered, cover_grp ORDER BY games_played) AS cover_streak_n,
+        ROW_NUMBER() OVER (PARTITION BY season, team_abbr, over_result, ou_grp ORDER BY games_played) AS ou_streak_n
     FROM islands
 ),
 streaks AS (
@@ -608,7 +608,7 @@ INSERT INTO nfl.team_rolling_stats (
 )
 SELECT
     r.game_id, r.team_abbr, r.season, r.game_type, r.week, r.game_date, r.is_home, r.games_played,
-    LEAD(r.game_id) OVER (PARTITION BY r.team_abbr, r.season, r.game_type ORDER BY r.game_date) AS feeds_into_game_id,
+    LEAD(r.game_id) OVER (PARTITION BY r.team_abbr, r.season ORDER BY r.game_date) AS feeds_into_game_id,
     r.off_pts_r3, r.off_pts_r5, r.off_pts_r10,
     r.off_yds_r3, r.off_yds_r5, r.off_yds_r10,
     r.pass_yds_r3, r.pass_yds_r5, r.pass_yds_r10,
@@ -684,7 +684,7 @@ FROM rolling r
 LEFT JOIN season_cumul sc ON r.game_id = sc.game_id AND r.team_abbr = sc.team_abbr
 LEFT JOIN streaks st     ON r.game_id = st.game_id   AND r.team_abbr = st.team_abbr
 LEFT JOIN season_ranks sr ON r.game_id = sr.game_id AND r.team_abbr = sr.team_abbr
-WHERE r.game_type = :game_type;
+WHERE r.game_type IN ('REG', 'POST');
 """
 
 
@@ -697,10 +697,15 @@ def create_table() -> None:
 
 
 def populate(game_type: str = "REG") -> None:
-    """Populate nfl.team_rolling_stats for a given game_type (REG|PRE)."""
+    """Populate nfl.team_rolling_stats (REG+POST, playoffs roll into postseason).
+
+    `game_type` kept for backward-compat; ignored. Rows are always built over
+    REG+POST so playoff games carry the season's regular-season history. Preseason
+    (PRE) rows are never built (source has none).
+    """
     with SessionLocal() as session:
-        logger.info("Populating nfl.team_rolling_stats (game_type=%s)...", game_type)
-        result = session.execute(text(POPULATE_SQL), {"game_type": game_type})
+        logger.info("Populating nfl.team_rolling_stats (REG+POST, playoffs roll in)...")
+        result = session.execute(text(POPULATE_SQL))
         session.commit()
         if result.rowcount >= 0:
             logger.info("Populated %d rows", result.rowcount)

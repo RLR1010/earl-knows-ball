@@ -849,10 +849,10 @@ class NFLDataLoader:
                 LEFT JOIN nfl.games g ON t.game_id = g.id
                 LEFT JOIN nfl.teams ht ON g.home_team_id = ht.id
                 LEFT JOIN nfl.teams at ON g.away_team_id = at.id
-                WHERE t.game_type = %(gt)s
+                WHERE t.game_type IN ('REG', 'POST')  -- all lined seasons; POST rows feed playoff games with full-season history
                 ORDER BY t.season, t.week, t.team_abbr
             """
-            ts_df = pd.read_sql(CUM_SQL, self.engine, params={"gt": gt})
+            ts_df = pd.read_sql(CUM_SQL, self.engine)
             if not ts_df.empty:
                 team_stats = ts_df.dropna(subset=["feeds_into_game_id"])
                 team_stats["feeds_into_game_id"] = team_stats["feeds_into_game_id"].astype(int)
@@ -1098,17 +1098,18 @@ class NFLDataLoader:
                     WHERE qc.player_id = h_st.player_id
                       AND qc.season = s.year
                       AND qc.game_date < g.date::date
-                      AND qc.game_type = %(gt)s
+                      AND qc.game_type = g.game_type
                     ORDER BY qc.game_date DESC
                     LIMIT 1
                 ) h_cum ON true
                 -- Home QB prior-season fallback (for early-season games when
-                -- the current-season pre-game stat is not yet available)
+                -- the current-season pre-game stat is not yet available). Look back
+                -- to REGULAR-SEASON only (never the prior season's playoffs).
                 LEFT JOIN LATERAL (
                     SELECT * FROM nfl.qb_cumulative_stats qc
                     WHERE qc.player_id = h_st.player_id
                       AND qc.season = s.year - 1
-                      AND qc.game_type = %(gt)s
+                      AND qc.game_type = 'REG'
                     ORDER BY qc.game_date DESC
                     LIMIT 1
                 ) h_cum_prev ON true
@@ -1117,7 +1118,7 @@ class NFLDataLoader:
                     WHERE qr.player_id = h_st.player_id
                       AND qr.season = s.year
                       AND qr.game_date < g.date::date
-                      AND qr.game_type = %(gt)s
+                      AND qr.game_type = g.game_type
                     ORDER BY qr.game_date DESC
                     LIMIT 1
                 ) h_roll ON true
@@ -1125,7 +1126,7 @@ class NFLDataLoader:
                     SELECT * FROM nfl.qb_rolling_stats qr
                     WHERE qr.player_id = h_st.player_id
                       AND qr.season = s.year - 1
-                      AND qr.game_type = %(gt)s
+                      AND qr.game_type = 'REG'
                     ORDER BY qr.game_date DESC
                     LIMIT 1
                 ) h_roll_prev ON true
@@ -1141,16 +1142,16 @@ class NFLDataLoader:
                     WHERE qc.player_id = a_st.player_id
                       AND qc.season = s.year
                       AND qc.game_date < g.date::date
-                      AND qc.game_type = %(gt)s
+                      AND qc.game_type = g.game_type
                     ORDER BY qc.game_date DESC
                     LIMIT 1
                 ) a_cum ON true
-                -- Away QB prior-season fallback
+                -- Away QB prior-season fallback (regular-season only)
                 LEFT JOIN LATERAL (
                     SELECT * FROM nfl.qb_cumulative_stats qc
                     WHERE qc.player_id = a_st.player_id
                       AND qc.season = s.year - 1
-                      AND qc.game_type = %(gt)s
+                      AND qc.game_type = 'REG'
                     ORDER BY qc.game_date DESC
                     LIMIT 1
                 ) a_cum_prev ON true
@@ -1159,7 +1160,7 @@ class NFLDataLoader:
                     WHERE qr.player_id = a_st.player_id
                       AND qr.season = s.year
                       AND qr.game_date < g.date::date
-                      AND qr.game_type = %(gt)s
+                      AND qr.game_type = g.game_type
                     ORDER BY qr.game_date DESC
                     LIMIT 1
                 ) a_roll ON true
@@ -1167,7 +1168,7 @@ class NFLDataLoader:
                     SELECT * FROM nfl.qb_rolling_stats qr
                     WHERE qr.player_id = a_st.player_id
                       AND qr.season = s.year - 1
-                      AND qr.game_type = %(gt)s
+                      AND qr.game_type = 'REG'
                     ORDER BY qr.game_date DESC
                     LIMIT 1
                 ) a_roll_prev ON true
@@ -1178,7 +1179,7 @@ class NFLDataLoader:
                 ORDER BY g.date
             """
             with self.engine.connect() as conn:
-                qb_stats = pd.read_sql_query(QB_SQL, conn, params={"gt": gt})
+                qb_stats = pd.read_sql_query(QB_SQL, conn)
             logger.info(
                 "Loaded %d QB stat rows (%d-%d)",
                 len(qb_stats),

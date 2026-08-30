@@ -4,6 +4,9 @@ Pure read endpoints that arm the frontend's /robots.txt and /sitemap.xml
 (Next.js App Router routes) with the crawlable URL set. Served on the API
 box (user-facing reads) since it shares Postgres with compute.
 """
+import re
+from datetime import date as _date
+
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
@@ -59,14 +62,39 @@ async def team_meta(sport: str, abbr: str, db: AsyncSession = Depends(get_db)):
     return {"sport": sport, "abbreviation": abbr.upper(), "name": name}
 
 
+def _slugify(name: str) -> str:
+    """Turn a full team name into a URL-safe slug token.
+
+    "Chicago Cubs" -> "chicago-cubs", "St. Louis Cardinals" -> "st-louis-
+    cardinals", "New England Patriots" -> "new-england-patriots". Removes
+    punctuation (periods, apostrophes), lowercases, collapses whitespace.
+    """
+    s = re.sub(r"[^\w\s-]", "", name)          # drop punctuation incl. dots
+    s = s.strip().lower()
+    s = re.sub(r"[\s-]+", "-", s)              # spaces/dashes -> single dash
+    return s.strip("-")
+
+
+def _game_slug(sport: str, home: str, away: str, game_date, game_id) -> str:
+    """Canonical SEO slug: {home-full}-vs-{away-full}-{YYYY-MM-DD}-{id}.
+
+    Example (MLB): chicago-cubs-vs-st-louis-cardinals-2026-08-26-49070. The
+    trailing game id keeps the numeric identifier authoritative, so the URL is
+    both readable and unambiguous. The DATE here is the actual game date.
+    """
+    date_str = str(game_date or "")[:10]   # YYYY-MM-DD
+    return f"{_slugify(home)}-vs-{_slugify(away)}-{date_str}-{game_id}".lower()
+
+
 @router.get("/game-meta/{sport}/{game_id}")
 async def game_meta(sport: str, game_id: int, db: AsyncSession = Depends(get_db)):
     """Resolve home/away team names + game date for a pick-card / analysis URL.
 
     All sports keep `id`/`home_team_id`/`away_team_id`/`date` on {sport}.games
     and `id`/`name`/`abbreviation` on {sport}.teams, so one template works for
-    all three. Returns the matchup with human-readable names for the SEO title
-    ("Cubs vs Cardinals Prediction, Odds & Picks").
+    all three. Returns the matchup with human-readable names (built from the
+    full team names), the canonical SEO slug ({home}-vs-{away}-{date}-{id}),
+    and a rich, human-quality description for the page <meta> tag.
     """
     if sport not in VALID_SPORTS:
         return {"sport": sport, "home": None, "away": None}
@@ -84,12 +112,41 @@ async def game_meta(sport: str, game_id: int, db: AsyncSession = Depends(get_db)
     r = row.mappings().first()
     if not r:
         return {"sport": sport, "home": None, "away": None}
+
+    home_name, away_name = r["home_name"], r["away_name"]
+    game_date = r["game_date"]
+    slug = _game_slug(sport, home_name, away_name, game_date, game_id)
+
+    # Human-readable date for the description (e.g. "August 26, 2026").
+    description = None
+    if game_date is not None:
+        try:
+            d = game_date if isinstance(game_date, _date) else game_date.date()
+            date_label = d.strftime("%B %-d, %Y").replace(" 0", " ")
+        except Exception:
+            date_label = str(game_date)[:10]
+        description = (
+            f"{home_name} and {away_name} meet on {date_label}"
+            f" in this {sport.upper()} matchup. Get Earl Knows Ball's"
+            f" AI-powered prediction, projected odds, moneyline, ATS and"
+            f" over/under analysis, plus the stats and trends that matter"
+            f" before you bet."
+        )
+    else:
+        description = (
+            f"{home_name} vs {away_name} {sport.upper()} prediction from "
+            f"Earl Knows Ball: AI-powered picks, projected odds, moneyline, "
+            f"ATS and over/under analysis backed by stats and trends."
+        )
+
     return {
         "sport": sport,
-        "home": {"name": r["home_name"], "abbr": r["home_abbr"]},
-        "away": {"name": r["away_name"], "abbr": r["away_abbr"]},
-        "date": str(r["game_date"]) if r["game_date"] else None,
+        "home": {"name": home_name, "abbr": r["home_abbr"]},
+        "away": {"name": away_name, "abbr": r["away_abbr"]},
+        "date": str(game_date) if game_date else None,
         "status": r["status"],
+        "slug": slug,
+        "description": description,
     }
 
 
@@ -143,19 +200,29 @@ async def sitemap_data(db: AsyncSession = Depends(get_db)):
         """))
         team_abbrs = [r[0] for r in teams.all()]
 
-        # Current / upcoming games worth indexing. The game name (home vs
-        # away) is rendered client-side, so for SEO we just emit the game
-        # page URL; the frontend title is app-wide. Include games that are
-        # scheduled or final in the most recent season(s) — bounded by
-        # GAMES_LIMIT. Prefer the most recent season.
+        # Current / upcoming games worth indexing. Emit the canonical readable
+        # slug URL ({home}-vs-{away}-{date}-{id}) so the sitemap points at the
+        # exact canonical page for every game. Restrict to the 2022 season and
+        # newer (year in {sport}.seasons = the season's start year: 2022 for
+        # MLB, 2022-23 for NFL/NBA) so customers never see pre-2022 games.
         games = await db.execute(text(f"""
             SELECT g.id,
-                   (g.date AT TIME ZONE 'America/New_York')::date AS game_date
+                   ht.name AS home_name,
+                   at.name AS away_name,
+                   (g.date AT TIME ZONE 'America/New_York')::date AS game_date,
+                   g.date AS game_datetime
             FROM {sport}.games g
+            JOIN {sport}.teams ht ON ht.id = g.home_team_id
+            JOIN {sport}.teams at ON at.id = g.away_team_id
+            JOIN {sport}.seasons s ON s.id = g.season_id
+            WHERE s.year >= 2022
             ORDER BY g.date DESC
             LIMIT {GAMES_LIMIT}
         """))
-        game_ids = [r[0] for r in games.all()]
+        game_slugs = [
+            _game_slug(sport, r[1], r[2], r[4], r[0])
+            for r in games.all()
+        ]
 
         # Published writeups → /{sport}/analysis/{slug}.
         # The frontend links to analysis pages via `preview.slug || preview.writeup_id`
@@ -188,7 +255,7 @@ async def sitemap_data(db: AsyncSession = Depends(get_db)):
         result["sports"][sport] = {
             "static_routes": SPORT_STATIC_ROUTES,
             "teams": team_abbrs,
-            "game_ids": game_ids,
+            "game_slugs": game_slugs,
             "writeup_slugs": writeup_slugs,
             "article_slugs": article_slugs,
         }

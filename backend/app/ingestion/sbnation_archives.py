@@ -298,7 +298,7 @@ def _category_from_metadata(category_str: str, title: str, body: str) -> str:
     """Derive an article category from archive metadata + content keywords."""
     cat_lower = category_str.lower()
     if any(w in cat_lower for w in ["draft", "fantasy"]):
-        return "fantasy_advice"
+        return "general"
     if "analysis" in cat_lower or "film" in cat_lower:
         return "analysis"
     if "news" in cat_lower:

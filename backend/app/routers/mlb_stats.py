@@ -683,7 +683,6 @@ async def mlb_stats_players(
         "pass_tds": "home_runs",
         "rush_yards": "runs",
         "receiving_yards": "hits",
-        "fantasy_points_ppr": "runs_batted_in",
     }
     mapped_sort = sort_map.get(sort, sort)
     if mapped_sort not in BATTING_SORT_COLS:
@@ -716,9 +715,9 @@ async def mlb_stats_players(
         bs.obp AS yards_per_att,
         bs.slg AS passer_rating,
         bs.ops AS yards_per_rec,
-        bs.total_bases AS fantasy_points_ppr,
-        bs.plate_appearances AS fantasy_points_std,
-        bs.at_bats AS fantasy_points_half
+        bs.total_bases AS total_bases,
+        bs.plate_appearances AS plate_appearances,
+        bs.at_bats AS at_bats
     FROM mlb.batting_stats bs
     JOIN mlb.players p ON p.id = bs.player_id
     LEFT JOIN mlb.teams t ON t.id = bs.team_id
@@ -949,11 +948,12 @@ async def mlb_pitching_stats(
 
 @router.get("/mlb/seasons")
 async def mlb_seasons(db: AsyncSession = Depends(get_db)):
-    """Return years that have MLB games in the database."""
+    """Return years that have MLB games in the database (2022 season onward)."""
     result = await db.execute(
         text("""
             SELECT DISTINCT s.year FROM mlb.seasons s
             INNER JOIN mlb.games g ON g.season_id = s.id
+            WHERE s.year >= 2022
             ORDER BY s.year DESC
         """)
     )

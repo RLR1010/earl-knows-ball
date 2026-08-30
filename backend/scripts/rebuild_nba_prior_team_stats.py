@@ -28,6 +28,7 @@ CUM_SRC = [
     "cum_pace", "cum_efg_pct", "cum_opp_efg_pct", "cum_tov_rate",
     "cum_opp_tov_rate", "cum_ft_rate", "cum_3pa_rate", "cum_ast_ratio",
     "cum_stl_rate", "cum_blk_rate", "cum_win_pct",
+    "cum_adj_ortg", "cum_adj_drtg", "cum_sos",
 ]
 ROLL_SRC = [
     "rw3_ppg", "rw5_ppg", "rw3_net_rtg", "rw5_net_rtg", "rw3_efg_pct",

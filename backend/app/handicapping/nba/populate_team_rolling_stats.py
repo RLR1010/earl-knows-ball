@@ -535,40 +535,95 @@ star_prep AS (
     ) s
     WHERE rk <= 3
 ),
--- per-player rolling 5-game PPG (incl current) BUT only the rank-1 scorer's
--- independent rolling value, and the SUM of top-3 rolling values per game.
-star_rolling AS (
+-- per-star rolling 5-game PPG (incl current, over PLAYED games only). OPTION A fix
+-- (2026-08-29): star ACTIVE status now sourced from active_players roster status, and
+-- each rank-1..3 scorer gets a row for EVERY team-game (via schedule cross-join) so a
+-- star who is out (ill/injury/suspension) is recorded as active=0 with a carried-forward
+-- PPG rather than NULL (which the imputer was filling with the column mean).
+star5 AS MATERIALIZED (
     SELECT
-        sp.team_id, sp.season_id, sp.rk,
-        pgs.game_id, (g.date AT TIME ZONE 'America/New_York')::date AS game_date,
+        pgs.player_id, pgs.team_id, g.season_id, g.id AS game_id, g.date,
         AVG(pgs.points) OVER (
-            PARTITION BY sp.player_id, sp.season_id
-            ORDER BY g.date, pgs.game_id
+            PARTITION BY pgs.player_id, g.season_id
+            ORDER BY g.date, g.id
             ROWS BETWEEN 4 PRECEDING AND CURRENT ROW
         ) AS ppg_r5,
-        -- MINUTES>0 in THIS game => player is ACTIVE for availability
-        CASE WHEN pgs.minutes IS NOT NULL
-                  AND pgs.minutes <> ''
-                  AND (pgs.minutes ~ '^[0-9]+$'          -- "25"
-                       OR pgs.minutes ~ '^[0-9]+:[0-9]{2}$') -- "25:08" or "25:5"
-             THEN 1 ELSE 0 END AS active
-    FROM star_prep sp
-    JOIN nba.player_game_stats pgs
-        ON pgs.player_id = sp.player_id
-        AND pgs.team_id   = sp.team_id
+        -- sequential index of this star's PLAYED game (1,2,3,...) per season
+        ROW_NUMBER() OVER (
+            PARTITION BY pgs.player_id, g.season_id
+            ORDER BY g.date, g.id
+        ) AS play_idx
+    FROM nba.player_game_stats pgs
     JOIN nba.games g ON g.id = pgs.game_id
-    WHERE g.season_id = sp.season_id
-      AND g.game_type != 'PRE'  -- star rolling features never include preseason
+    WHERE g.game_type != 'PRE'
+      AND pgs.minutes IS NOT NULL AND pgs.minutes <> ''
+      AND (pgs.minutes ~ '^[0-9]+$' OR pgs.minutes ~ '^[0-9]+:[0-9]+$')
+),
+-- one row per (star, team-game), all REG/POST schedule games; carry the star's most
+-- recent played-game PPG forward to out-games; ACTIVE from roster status.
+star_sched AS (
+    -- every (star, team-game) plus a running count of the star's played games
+    SELECT
+        sp.player_id, sp.team_id, sp.season_id, sp.rk,
+        sg.id AS game_id, (sg.date AT TIME ZONE 'America/New_York')::date AS game_date,
+        -- running count of star's PLAYED games at-or-before this schedule game
+        count(s5cur.game_id) OVER (
+            PARTITION BY sp.player_id, sp.season_id
+            ORDER BY sg.date, sg.id
+            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+        ) AS played_cnt,
+        s5cur.ppg_r5 AS played_ppg_r5   -- non-NULL only on games the star actually PLAYED
+    FROM star_prep sp
+    JOIN nba.games sg                           -- every REG/POST game the team played
+        ON (sg.home_team_id = sp.team_id OR sg.away_team_id = sp.team_id)
+        AND sg.season_id   = sp.season_id
+        AND sg.game_type  != 'PRE'             -- star rolling features never include preseason
+    LEFT JOIN star5 s5cur                       -- this game's own played value (if star played it)
+        ON s5cur.player_id  = sp.player_id
+        AND s5cur.season_id = sp.season_id
+        AND s5cur.game_id   = sg.id
+),
+star_rolling AS (
+    SELECT
+        sc.player_id, sc.team_id, sc.season_id, sc.rk, sc.game_id, sc.game_date,
+        -- carried forward star PPG = ppg of the last played game (play_idx == played_cnt);
+        -- NULL only on cold-start (no prior played game yet).
+        s5carry.ppg_r5 AS ppg_r5,
+        sc.played_ppg_r5,
+        ap.status AS roster_status        -- PLAYED/DNP_CD/INACTIVE (or NULL if no roster data)
+    FROM star_sched sc
+    LEFT JOIN star5 s5carry
+        ON s5carry.player_id  = sc.player_id
+        AND s5carry.season_id = sc.season_id
+        AND s5carry.play_idx  = sc.played_cnt
+        AND sc.played_cnt > 0
+    LEFT JOIN nba.active_players ap             -- ACTIVE status from correctly-classified roster
+        ON ap.player_id = sc.player_id
+        AND ap.team_id  = sc.team_id
+        AND ap.game_id  = sc.game_id
+),
+-- resolve ACTIVE: prefer roster status; when the game has NO active_players data
+-- (seasons 16-25 are outside the active_players build range 26-35) fall back to
+-- pgs-minutes presence (a star who played a real boxscore = active).
+star_active_resolved AS (
+    SELECT team_id, season_id, rk, game_id, game_date, ppg_r5,
+           CASE
+               WHEN roster_status IN ('PLAYED','DNP_CD')      THEN 1   -- dressed & active
+               WHEN roster_status = 'INACTIVE'                THEN 0   -- ill/injured/suspended
+               WHEN played_ppg_r5 IS NOT NULL                 THEN 1   -- no roster data, but star played (seasons 16-25)
+               ELSE 0                                                 -- absent from roster = inactive
+           END AS active
+    FROM star_rolling
 ),
 star_agg AS (
     SELECT game_id, team_id, season_id,
            MAX(CASE WHEN rk = 1 THEN ppg_r5 END) AS star1_ppg_5,
            SUM(ppg_r5)                           AS star_ppg_5,
-           -- count of top-3 scorers who PLAYED (minutes>0) in this game
+           -- count of top-3 scorers ACTIVE (dressed) in this game
            SUM(active)                           AS stars_active,
            -- rank-1 scorer active?
            MAX(CASE WHEN rk = 1 THEN active END) AS star1_active
-    FROM star_rolling
+    FROM star_active_resolved
     GROUP BY game_id, team_id, season_id
 )
 

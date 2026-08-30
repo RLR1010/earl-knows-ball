@@ -12,12 +12,19 @@ training data). COVID seasons (30-32) allow extra dressed scratches via hardship
 Classification (builds ONLY REG + PLAYIN + POST games):
   - PLAYED   = pgs minutes > 0 (ground truth, game-scoped). Always included. If >13 played,
                ALL are kept (no artificial cap) and no DNP_CD is added.
-  - DNP_CD   = roster player with didNotPlay=True (dressed/active, healthy scratch) who did
-               NOT play, added up to 13 ACTIVE total; unlimited for COVID seasons.
-  - INACTIVE = intentionally empty (see note). Real pregame inactive/injury list needs
-               the live pregame availability feed, not this historical backfill.
+  - DNP_CD   = roster player with didNotPlay=True whose reason is a NON-HEALTH scratch
+               (COACH'S DECISION, REST, NOT WITH TEAM, PERSONAL, etc.) — dressed/active.
+               Added up to 13 ACTIVE total; unlimited for COVID seasons.
+  - INACTIVE = roster player with didNotPlay=True whose reason is a HEALTH/absence reason
+               (injury, illness, suspension, health & safety, etc.) — NOT dressed, NOT part
+               of the active 13-man roster. NEVER counts toward the 13 cap.
 
-Writes nba.active_players (status PLAYED|DNP_CD, reason, is_starter, src='postgame').
+ACTIVE vs INACTIVE split (Rich, 2026-08-29): a dressed(player didNotPlay=True) is ACTIVE
+only when the reason is a coach's/load/personal decision. Injury/illness/suspension/health
+reasons make the player INACTIVE (does not count toward the 13-man active cap). Classic
+boxscore designations: "DNP-COACH'S DECISION" = active; "DNP-LEFT ANKLE SPRAIN" = inactive.
+
+Writes nba.active_players (status PLAYED|DNP_CD|INACTIVE, reason, is_starter, src='postgame').
 Backup of the old table: nba.active_players_bak_20260822_1803 (270,021 rows).
 Idempotent per game (DELETE + re-insert). Resumable.
 """
@@ -101,13 +108,49 @@ def played_by_team_map(engine, gid):
     return out
 
 
+INACTIVE_REASON_KW = (
+    "ANKLE", "KNEE", "SHOULDER", "HIP", "FOOT", "HEEL", "TOE", "CALF", "HAMSTRING",
+    "WRIST", "THUMB", "FINGER", "FINGERS", "QUAD", "ACHILLES", "BACK", "RIB", "ABDOMEN",
+    "GROIN", "ELBOW", "ARM", "LEG", "HAND", "NECK", "CERVICAL", "CONCUSSION", "ILLNESS",
+    "INJURY", "SPRAIN", "STRAIN", "SORENESS", "CONTUSION", "FRACTURE", "TENDON",
+    "SPASMS", "HEALTH", "SAFETY", "SUSPENDED", "COVID", "DISLOCATION", "SURGERY",
+    "LACERATION", "ADDUCTOR", "BURSITIS", "MIGRAINE", "REHAB", "OUT", "PROTOCOL",
+    "ARTHRITIS", "ROTATOR", "MCL", "ACL", "LCL", "PCL", "MENISCUS", "PLANTAR",
+    "FASCIITIS", "ENTROPION", "RECONDITIONING", "CONDITIONING", "TENDINITIS",
+    "BURSITIS", "ILLNAESS",
+)
+
+
+def is_inactive_reason(reason):
+    """True when an ESPN didNotPlay reason means the player is NOT active (health/absence).
+
+    Rich (2026-08-29): an active player that did not play carries DNP-COACH'S DECISION.
+    Players NOT active carry health/absence notes (DNP-LEFT ANKLE SPRAIN, illness, suspension,
+    health & safety, rehab/reconditioning). We invert that: a didNotPlay=True player is
+    INACTIVE when the reason indicates health/availability (injury, illness, suspension,
+    health & safety, rehab) AND is NOT a coach/load/personal scratch. Coach's decision, REST,
+    PERSONAL, NOT WITH TEAM, LOAD MANAGEMENT (non-health) all stay ACTIVE (DNP_CD).
+    Empty/None reason can't prove ill -> defaults to ACTIVE (matches historic pre-reason builds).
+    """
+    if not reason:
+        return False  # cannot prove injury -> treat as active scratch (historic default)
+    u = reason.upper()
+    # Explicit non-health scratch keywords -> ACTIVE (DNP_CD). Keep these precise so they
+    # never collide with injury strings (e.g. "LEFT KNEE INJURY MANAGEMENT" must stay INACTIVE,
+    # so we match "LOAD MANAGEMENT" not bare "MANAGEMENT").
+    if any(k in u for k in ("COACH", "REST", "PERSONAL", "NOT WITH TEAM",
+                            "LOAD MANAGEMENT", "DND", "OUT - COMPANY")):
+        return False
+    return any(k in u for k in INACTIVE_REASON_KW)
+
+
 def is_played_minutes(m):
     m = (m or "").strip()
     return m not in ("", "-", "0", "0:00", "None")
 
 
-COVID_SEASONS = {30, 31, 32}
-ACTIVE_CAP = 13  # NBA hard cap for non-COVID REG/PLAYIN/POST
+COVID_SEASONS = {30, 31, 32}  # COVID/hardship seasons: ESPN documents >13 ACTIVE routinely (NBA relaxed the limit). Keep ALL dressed healthy scratches so the roster matches reality.
+ACTIVE_CAP = 13  # NBA hard cap for REG/PLAYIN/POST (non-COVID)
 
 
 def process_game(s, esid, tm_map, pl_map, abbr_cache, season_id, played_by_team):
@@ -160,8 +203,13 @@ def process_game(s, esid, tm_map, pl_map, abbr_cache, season_id, played_by_team)
             (our_team_id, pid, starter_by_pid.get(pid, False), "PLAYED", None)
             for pid in played
         ]
-        # 2) DNP_CD candidates from roster: didNotPlay=True, no pgs minutes, healthy scratch
-        dnp_candidates = []
+        # 2) Split didNotPlay=True players by reason (Rich, 2026-08-29):
+        #    - non-health scratch (COACH'S DECISION / REST / PERSONAL / NOT WITH TEAM...) ->
+        #      DNP_CD  = dressed/ACTIVE healthy scratch, counts toward the 13-man cap.
+        #    - health/absence reason (injury/illness/suspension/health...) ->
+        #      INACTIVE = NOT dressed, NEVER counts toward the 13-man cap.
+        dnp_candidates = []      # active healthy scratches (DNP_CD)
+        inactive_rows = []       # not active (INACTIVE)
         for en in roster.get("entries", []):
             espn_pid = en.get("playerId")
             if not espn_pid:
@@ -170,19 +218,26 @@ def process_game(s, esid, tm_map, pl_map, abbr_cache, season_id, played_by_team)
             if pid is None or pid in played:
                 continue
             if en.get("didNotPlay"):
-                dnp_candidates.append((pid, starter_by_pid.get(pid, False), en.get("reason")))
+                reason = en.get("reason")
+                starter = starter_by_pid.get(pid, False)
+                if is_inactive_reason(reason):
+                    inactive_rows.append((our_team_id, pid, starter, "INACTIVE", reason))
+                else:
+                    dnp_candidates.append((pid, starter, reason))
         # 3) ACTIVE roster rule (Rich, 2026-08-22): keep the 13-player hard cap, UNLESS
         #    more than 13 players actually recorded minutes (e.g. season-finale roster
         #    flexibility, two-way callups) — then keep ALL who actually played (authoritative).
+        #    INACTIVE players are added OUTSIDE the cap and never consume roster room.
         n_played = len(played_rows)
+        active.extend(played_rows)
+        active.extend(inactive_rows)
         if n_played > ACTIVE_CAP:
             # more than 13 truly played -> keep every played player, no DNP_CD (all used up)
-            active.extend(played_rows)
+            pass
         else:
-            active.extend(played_rows)
             room = ACTIVE_CAP - n_played        # fill up to 13 with dressed healthy scratches
             if is_covid:
-                room = len(dnp_candidates)      # COVID hardship: allow all dressed scratches too
+                room = len(dnp_candidates)      # COVID/hardship: ESPN shows >13 active; keep ALL dressed healthy scratches (matches reality)
             for pid, starter, reason in dnp_candidates[:room]:
                 active.append((our_team_id, pid, starter, "DNP_CD", reason))
     return active

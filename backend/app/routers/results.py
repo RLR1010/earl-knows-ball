@@ -106,7 +106,7 @@ def _model_conf_key(sport: str, pick_type: str) -> str:
     return "rl_conf_cal"
 
 
-def _calib_bin_spec(values, bin_count: int = 12):
+def _calib_bin_spec(values, bin_count: int = 12, min_games: int = 30):
     """Auto-derive a calibrated-confidence binning that spans the ACTUAL
     observed range of values, per sport per market.
 
@@ -115,6 +115,11 @@ def _calib_bin_spec(values, bin_count: int = 12):
     that grid collapsed almost everything into one 0.50 bucket and the chart
     showed no distribution. Instead, snap a padded [min, max] to a clean 0.005
     boundary and build `bin_count` equal-width bins across that actual range.
+
+    To avoid sparse, noisy spike-bins (e.g. 10 games spread across 5 bins), the
+    equal-width bins are then merged so that every returned bucket holds at
+    least `min_games`. Adjacent low-count bins collapse into their richer
+    neighbor, so the chart shows meaningful groups rather than noise fragments.
 
     Returns (edges, bin_index_fn) where edges is a list of (lo, hi, mid) tuples.
     Handles the degenerate all-equal case by falling back to a 0.05-wide grid
@@ -135,21 +140,85 @@ def _calib_bin_spec(values, bin_count: int = 12):
         lo, hi = max(0.0, c - 0.02), min(1.0, c + 0.02)
         width = hi - lo
 
-    edges = []
-    for i in range(bin_count):
-        lo_i = lo + (width / bin_count) * i
-        hi_i = lo + (width / bin_count) * (i + 1)
-        edges.append((round(lo_i, 4), round(hi_i, 4), round((lo_i + hi_i) / 2, 4)))
+    # 1) Build equal-width bin EDGES, keeping the raw boundary list.
+    raw_edges = [lo + (width / bin_count) * i for i in range(bin_count + 1)]
+
+    # 2) Count values per raw bin so we can merge sparse ones.
+    counts = [0] * bin_count
+    for v in vals:
+        idx = min(int((v - lo) / width * bin_count), bin_count - 1)
+        idx = max(idx, 0)
+        counts[idx] += 1
+
+    # 3) Merge adjacent bins that fall below the minimum count. Greedy: repeatedly
+    #    fold the sparsest under-filled bin into its neighbor with fewer games.
+    total = len(vals)
+    floor = max(min_games, int(total * 0.005))
+    # edges list of (lo, hi) intervals with their counts
+    intervals = [
+        (raw_edges[i], raw_edges[i + 1], counts[i]) for i in range(bin_count)
+    ]
+    changed = True
+    while changed:
+        changed = False
+        i = 0
+        while i < len(intervals):
+            if intervals[i][2] >= floor:
+                i += 1
+                continue
+            # merge with left or right neighbor (whichever is lighter)
+            if i > 0 and i + 1 < len(intervals):
+                left_n = intervals[i - 1][2]
+                right_n = intervals[i + 1][2]
+                merge_right = right_n <= left_n
+            elif i + 1 < len(intervals):
+                merge_right = True
+            elif i > 0:
+                merge_right = False
+            else:
+                i += 1
+                continue
+            if merge_right and i + 1 < len(intervals):
+                nxt = intervals[i + 1]
+                intervals[i] = (intervals[i][0], nxt[1], intervals[i][2] + nxt[2])
+                del intervals[i + 1]
+            elif i > 0:
+                prv = intervals[i - 1]
+                intervals[i - 1] = (prv[0], intervals[i][1], prv[2] + intervals[i][2])
+                del intervals[i]
+            else:
+                i += 1
+                continue
+            changed = True
+
+    # edge case: merged down to a single interval -> give it a couple of bins
+    if len(intervals) == 1:
+        lo0, hi0, n0 = intervals[0]
+        mid = (lo0 + hi0) / 2
+        edges = [
+            (round(mid - 0.02, 4), round(mid, 4), round((mid - 0.02 + mid) / 2, 4)),
+            (round(mid, 4), round(mid + 0.02, 4), round((mid + mid + 0.02) / 2, 4)),
+        ]
+    else:
+        edges = [
+            (round(a, 4), round(b, 4), round((a + b) / 2, 4)) for a, b, _n in intervals
+        ]
+
+    _lo, _hi = edges[0][0], edges[-1][1]
+    _width = _hi - _lo or 1e-9
 
     def _bucket_index(cf):
         if cf is None or cf != cf:
             return -1
-        if cf < lo:
+        if cf < _lo:
             return 0
-        if cf > hi:
-            return bin_count - 1
-        idx = int((cf - lo) / width * bin_count)
-        return min(max(idx, 0), bin_count - 1)
+        if cf > _hi:
+            return len(edges) - 1
+        # walk edges since they're non-uniform after merging
+        for i, (a, b, _m) in enumerate(edges):
+            if a <= cf < b or (i == len(edges) - 1 and cf <= b):
+                return i
+        return len(edges) - 1
 
     return edges, _bucket_index
 

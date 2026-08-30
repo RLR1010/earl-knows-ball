@@ -10,6 +10,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .mlb import _resolve_team, _resolve_hitter, _resolve_season, MLBSeason
+from ._query_guard import apply_limit, count_note, async_count
 
 AGG_WHITELIST = {"sum", "avg", "max", "count"}
 
@@ -92,6 +93,12 @@ async def _run_query_player_stats(db: AsyncSession, args: dict) -> dict:
     if agg not in AGG_WHITELIST:
         return {"error": f"aggregate '{agg}' not allowed"}
     filt = args.get("filters") or {}
+    # Defensive guard: a player reference inside 'filters' is silently IGNORED by this
+    # engine (single-player must use the TOP-LEVEL 'player_name' arg). Fail loudly
+    # instead of returning inflated whole-league data that looks correct.
+    for misplaced in ("player", "player_name", "player_id"):
+        if misplaced in filt:
+            return {"error": "Invalid query spec", "details": [f"'{misplaced}' inside 'filters' is ignored; pass the player name via the TOP-LEVEL 'player_name' argument instead"]}
     src, err = _detect_source(stats)
     if err:
         return {"error": "Invalid query spec", "details": err}
@@ -208,19 +215,32 @@ async def _run_query_player_stats(db: AsyncSession, args: dict) -> dict:
         if having:
             sql += " HAVING " + " AND ".join(having)
         sql += f" ORDER BY \"{stats[0]}\" {order.upper()} NULLS LAST"
-    if top:
-        try:
-            sql += f" LIMIT {int(top)}"
-        except (TypeError, ValueError):
-            return {"error": "'top' must be an integer"}
+    sql, limit = apply_limit(sql, top)
+    if sql is None:
+        return {"error": limit}
     r = await db.execute(text(sql), params)
     rows = [dict(x) for x in r.mappings().all()]
-    return {"result": rows, "aggregate": agg, "season": season.year if season else None,
-            "source": src, "stat_names": stats} if rows else {"result": [], "aggregate": agg, "season": season.year if season else None, "note": "No rows"}
+    out = {"result": rows, "aggregate": agg, "season": season.year if season else None,
+           "source": src, "stat_names": stats}
+    # accurate truncation note ONLY for leaderboards (group_by present); a single-player
+    # lookup is inherently one row and a note would mislead the model into thinking rows
+    # were cut off. Skip the parallel COUNT for narrow lookups too.
+    if group_exprs:
+        true_total = await async_count(db, sql, params)
+        cut = count_note(limit, len(rows), true_total)
+        if cut:
+            out["note"] = cut
+    if not rows:
+        out["note"] = "No rows"
+    return out
 
 
 def _g_join(alias, by_game=False):
-    return f"JOIN mlb.games g ON g.id = {alias}.game_id"
+    # Restrict to REGULAR-SEASON games: batting_game_stats/pitcher per-game tables carry
+    # NO game_type column, but mlb.games does. Without this, postseason games (D/L/W/F)
+    # get summed into season totals — e.g. Altuve 2022 OPS .920 (REG only) vs .884 (with
+    # 12 playoff games). Season lines must be regular season only.
+    return f"JOIN mlb.games g ON g.id = {alias}.game_id AND g.game_type = 'R'"
 
 
 
@@ -367,7 +387,7 @@ async def _run_query_team_stats(db: AsyncSession, args: dict) -> dict:
         for k in filt:
             if k not in MLB_PITCH_TEAM_FILTERS:
                 return {"error": f"unsupported filter '{k}' for pitching stats"}
-        base = "FROM mlb.pitcher_game_stats pgs JOIN mlb.games g ON g.id = pgs.game_id"
+        base = "FROM mlb.pitcher_game_stats pgs JOIN mlb.games g ON g.id = pgs.game_id AND g.game_type = 'R'"
         # team's games: pitcher's team must be one of the two contestants
         team_abbr = (
             await db.execute(text("SELECT abbreviation FROM mlb.teams WHERE id = :tid"),

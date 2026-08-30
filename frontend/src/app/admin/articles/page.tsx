@@ -175,7 +175,6 @@ export default function AdminArticles() {
           <option value="analysis">Analysis</option>
           <option value="game_preview">Game Preview</option>
           <option value="game_recap">Game Recap</option>
-          <option value="fantasy_advice">Fantasy</option>
           <option value="betting_pick">Betting</option>
           <option value="team_analysis">Team Analysis</option>
           <option value="general">General</option>

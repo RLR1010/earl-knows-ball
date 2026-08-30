@@ -30,3 +30,22 @@ backups/
 
 # Scratch/ad-hoc diagnostic scripts (never commit)
 backend/app/scripts/_*.py
+
+# Scratch/diagnostic (never commit) — ad-hoc audit/tmp/debug scripts
+backend/audit_*.py
+backend/tmp_*.py
+backend/_diag_*.py
+backend/_probe_*.py
+backend/_map_*.py
+backend/_test_*.py
+backend/_tmp_*.py
+backend/_tmp_diff_*.py
+backend/scripts_tmp/
+backend/app/scripts/bbref_cache/
+backend/app/scripts/srs_ref_test.py
+backend/new_*.py
+backend/5})*
+backend/test_lineup_*.py
+backend/tmp_diff_*.py
+backend/app/scripts/test_mlb_backtest_features.py
+backend/app/scripts/mlb_backtest_feature_parity_*.csv

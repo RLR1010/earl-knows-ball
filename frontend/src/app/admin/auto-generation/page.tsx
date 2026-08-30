@@ -45,6 +45,7 @@ interface Config {
   word_min: number | null;
   word_max: number | null;
   title_mode: "fixed" | "llm";
+  recency_context: boolean;
   generate_time: string | null;
   last_generated_at: string | null;
   created_at: string;
@@ -74,6 +75,7 @@ interface ConfigFormState {
   word_min: number;
   word_max: number;
   title_mode: "fixed" | "llm";
+  recency_context: boolean;
 }
 
 const EMPTY_FORM: ConfigFormState = {
@@ -92,6 +94,7 @@ const EMPTY_FORM: ConfigFormState = {
   word_min: 400,
   word_max: 700,
   title_mode: "fixed",
+  recency_context: false,
 };
 
 const REASONING_LABEL = {
@@ -233,6 +236,7 @@ export default function AutoGenerationPage() {
       word_min: cfg.word_min ?? 400,
       word_max: cfg.word_max ?? 700,
       title_mode: cfg.title_mode || "fixed",
+      recency_context: !!cfg.recency_context,
     });
     setModalOpen(true);
   };
@@ -261,6 +265,7 @@ export default function AutoGenerationPage() {
         word_min: form.word_min,
         word_max: form.word_max,
         title_mode: form.title_mode,
+        recency_context: !!form.recency_context,
       };
       const isEdit = editingId !== null;
       const res = await fetch(
@@ -443,6 +448,14 @@ export default function AutoGenerationPage() {
                         ✨ LLM Title
                       </span>
                     )}
+                    {cfg.recency_context && (
+                      <span
+                        className="inline-flex items-center px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide rounded bg-earl-500/15 border border-earl-500/25 text-earl-300 shrink-0"
+                        title="Feeds back previously-published articles so content stays fresh"
+                      >
+                        🔄 Fresh content
+                      </span>
+                    )}
                   </div>
                   {cfg.description && (
                     <p className="text-sm text-gray-400 mt-1 line-clamp-2">{cfg.description}</p>
@@ -532,6 +545,22 @@ export default function AutoGenerationPage() {
                   <option value="fixed">Fixed title (always the same)</option>
                   <option value="llm">LLM-generated title (varies each run)</option>
                 </select>
+              </ContentField>
+              <ContentField label="">
+                <label className="flex items-start gap-3 pt-6 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={form.recency_context}
+                    onChange={(e) => setForm({ ...form, recency_context: e.target.checked })}
+                    className="mt-0.5 h-4 w-4 accent-earl-500"
+                  />
+                  <span className="text-sm text-gray-300 leading-snug">
+                    Send previous-coverage context
+                    <span className="block text-xs text-gray-500 mt-0.5">
+                      Feeds back recently-published articles so each run is fresh &amp; non-repetitive
+                    </span>
+                  </span>
+                </label>
               </ContentField>
               <ContentField label="Description">
                 <input

@@ -619,8 +619,11 @@ TOOL_DEFINITIONS = [
                 "strikeout_walk_ratio. filters: season_year/home_or_away/opponent (venue/opp "
                 "only for batting)/min_innings (pitching leaderboard qualification, e.g. 162), "
                 "min_at_bats (batting leaderboard qualification, e.g. 400). "
-                "group_by=['player']+top+order for leaderboards. Unsupported fields return an "
-                "error, never SQL."
+                "group_by=['player']+top+order for leaderboards. To look up ONE specific\n"\
+                "player (career/season totals), pass the name in the TOP-LEVEL 'player_name'\n"\
+                "argument — do NOT put it inside 'filters' (filters only takes\n"\
+                "season_year/home_or_away/opponent). Unsupported fields return an error,\n"\
+                "never SQL."
             ),
             "parameters": {
                 "type": "object",
@@ -629,7 +632,7 @@ TOOL_DEFINITIONS = [
                     "aggregate": {"type": "string", "enum": ["sum", "avg", "max", "count"]},
                     "group_by": {"type": "array", "items": {"type": "string", "enum": ["player"]}},
                     "filters": {"type": "object", "description": "season_year(int)/home_or_away(home|away)/opponent"},
-                    "player_name": {"type": "string"},
+                    "player_name": {"type": "string", "description": "TOP-LEVEL single-player filter: the exact player name to look up (e.g. 'Aaron Judge'). Use this, NOT a key inside 'filters'. Omit for a whole-league leaderboard (pair with group_by/top)."},
                     "top": {"type": "integer"},
                     "order": {"type": "string", "enum": ["desc", "asc"]},
                 },
@@ -1757,6 +1760,27 @@ async def _get_team_splits(db: AsyncSession, args: dict) -> dict:
 
 # Shared helpers for the game-log tools ----------------------------------------------------
 
+def _coerce_date(value):
+    """Coerce a user-supplied date ('2026-08-23', '2026/08/23', already a date) to a
+    datetime.date. The LLM passes dates as strings; asyncpg needs a date/datetime instance.
+    Returns None if it can't be parsed (callers treat None as unset)."""
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str):
+        for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%m/%d/%Y"):
+            try:
+                return datetime.strptime(value.strip(), fmt).date()
+            except (ValueError, TypeError):
+                continue
+        try:
+            return date.fromisoformat(value.strip())
+        except (ValueError, TypeError):
+            return None
+    return None
+
+
 def _build_date_where(season, month, start_date, end_date):
     """Return (sqlfrag, params) constraining mlb.games.date to the requested window.
 
@@ -1768,10 +1792,10 @@ def _build_date_where(season, month, start_date, end_date):
     params = {}
     if start_date:
         frags.append("g.date >= :start_date")
-        params["start_date"] = start_date
+        params["start_date"] = _coerce_date(start_date)
     if end_date:
         frags.append("g.date <= :end_date")
-        params["end_date"] = end_date
+        params["end_date"] = _coerce_date(end_date)
     if month is not None:
         frags.append("EXTRACT(MONTH FROM g.date) = :month")
         params["month"] = month
@@ -1980,7 +2004,7 @@ async def _get_player_game_log(db: AsyncSession, args: dict) -> dict:
             b.runs_batted_in, b.runs, b.base_on_balls, b.strikeouts,
             b.avg, b.obp, b.slg, b.ops
         FROM mlb.batting_game_stats b
-        JOIN mlb.games g ON g.id = b.game_id
+        JOIN mlb.games g ON g.id = b.game_id AND g.game_type = 'R'
         WHERE {where_sql}
           AND b.player_id = :pid
           AND g.season_id = :sid
@@ -2320,7 +2344,7 @@ async def _get_player_recent_form(db: AsyncSession, args: dict) -> dict:
                sum(base_on_balls) AS bb,
                sum(strikeouts) AS k
         FROM mlb.batting_game_stats bg
-        JOIN mlb.games g ON g.id = bg.game_id
+        JOIN mlb.games g ON g.id = bg.game_id AND g.game_type = 'R'
         WHERE bg.player_id = :pid
           AND g.date >= now() - (:days * interval '1 day')
           AND g.status = 'FINAL'

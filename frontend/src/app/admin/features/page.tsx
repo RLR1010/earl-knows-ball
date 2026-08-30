@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, Fragment } from "react";
 import { useSeo } from "@/components/Seo";
 
 const SPORTS = ["nfl", "nba", "mlb"] as const;
@@ -40,6 +40,9 @@ export default function AdminFeatures() {
   const [edits, setEdits] = useState<Record<string, Partial<Feature>>>({});
   // Track which rows are currently saving (pending PATCH).
   const [saving, setSaving] = useState<Record<string, boolean>>({});
+  // True while a pick-card rebuild is running for the current sport.
+  const [rebuilding, setRebuilding] = useState(false);
+  const [rebuildMsg, setRebuildMsg] = useState<string | null>(null);
   const [search, setSearch] = useState("");
 
   const fetchFeatures = useCallback(async () => {
@@ -63,6 +66,40 @@ export default function AdminFeatures() {
   }, [sport]);
 
   useEffect(() => { fetchFeatures(); }, [fetchFeatures]);
+
+  // Rebuild stored pick-card feature JSON for all predicted games of this sport.
+  const rebuildPickCard = async () => {
+    if (rebuilding) return;
+    const ok = window.confirm(
+      `Rebuild pick-card feature JSON for every ${sportLabel[sport]} predicted game? This applies your current feature edits to the game details pages. It may take a minute or two.`
+    );
+    if (!ok) return;
+    setRebuilding(true);
+    setRebuildMsg("Rebuilding… this can take a minute or two.");
+    try {
+      const res = await fetch(`/api/admin/features/${sport}/rebuild-pickcard`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token()}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ sport }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        const r = data?.result ?? {};
+        setRebuildMsg(
+          `Rebuild complete: ${r.updated ?? 0}/${r.total ?? 0} rows updated${r.errors ? `, ${r.errors} errors` : ""} in ${r.elapsed_s ?? "?"}s. Refresh any game details page to see the changes.`
+        );
+      } else {
+        setRebuildMsg(`Rebuild failed (HTTP ${res.status}): ${data?.detail ?? "unknown error"}`);
+      }
+    } catch (e: any) {
+      setRebuildMsg(`Rebuild failed: ${e.message}`);
+    } finally {
+      setRebuilding(false);
+    }
+  };
 
   const setEdit = (name: string, patch: Partial<Feature>) => {
     setEdits((prev) => ({
@@ -117,13 +154,6 @@ export default function AdminFeatures() {
 
   // Compute a stable working order for the admin table from sort_order, falling
   // back to insertion order (features list) for rows the backfill hasn't ranked yet.
-  const orderedRows = [...features].sort((a, b) => {
-    const sa = a.sort_order ?? Number.MAX_SAFE_INTEGER;
-    const sb = b.sort_order ?? Number.MAX_SAFE_INTEGER;
-    if (sa !== sb) return sa - sb;
-    // stable tie-break by name so the order doesn't jitter
-    return (a.name ?? "").localeCompare(b.name ?? "");
-  });
 
   // Swap the display order (sort_order) of two rows and persist both.
   const reorder = async (a: Feature, b: Feature) => {
@@ -166,12 +196,41 @@ export default function AdminFeatures() {
 
   // Display rows in the admin-chosen sort_order so the order shown here matches
   // the Detailed Analysis Stats rendering. Filtering applied on top of ordering.
-  const filteredOrdered = orderedRows.filter(
-    (f) =>
-      !search ||
-      (f.name ?? "").toLowerCase().includes(search.toLowerCase()) ||
-      (f.display_name ?? "").toLowerCase().includes(search.toLowerCase())
-  );
+  const searchMatch = (f: Feature) =>
+    !search ||
+    (f.name ?? "").toLowerCase().includes(search.toLowerCase()) ||
+    (f.display_name ?? "").toLowerCase().includes(search.toLowerCase());
+
+  // Group features by pick card section, so reordering/section changes are
+  // confined to a visible group. Sections render in a stable order; ungrouped
+  // (null/"") features go to the end. Each group keeps its own sort_order.
+  const sectionOrder = [...PICK_CARD_SECTIONS, ""];
+  const sectionRank = (s: string | null | undefined) => {
+    const v = (s ?? "") || "";
+    const idx = sectionOrder.indexOf(v);
+    return idx === -1 ? sectionOrder.length : idx;
+  };
+  const groupedSections = [...features]
+    .filter(searchMatch)
+    .sort((a, b) => {
+      // Primary: group by section. Secondary: existing sort_order within the section.
+      const gr = sectionRank(a.pick_card_section) - sectionRank(b.pick_card_section);
+      if (gr !== 0) return gr;
+      const sa = a.sort_order ?? Number.MAX_SAFE_INTEGER;
+      const sb = b.sort_order ?? Number.MAX_SAFE_INTEGER;
+      if (sa !== sb) return sa - sb;
+      return (a.name ?? "").localeCompare(b.name ?? "");
+    })
+    .reduce<{ section: string; rows: Feature[] }[]>((groups, f) => {
+      const section = (f.pick_card_section ?? "") || "";
+      const last = groups[groups.length - 1];
+      if (last && last.section === section) {
+        last.rows.push(f);
+      } else {
+        groups.push({ section, rows: [f] });
+      }
+      return groups;
+    }, []);
 
   return (
     <div>
@@ -199,14 +258,32 @@ export default function AdminFeatures() {
             </button>
           ))}
         </div>
+        <button
+          onClick={rebuildPickCard}
+          disabled={rebuilding}
+          className={`ml-auto px-3 py-2 rounded-lg border text-sm font-medium transition-colors ${
+            rebuilding
+              ? "bg-earl-600/20 text-earl-400 border-earl-600/30 cursor-wait"
+              : "bg-earl-600/80 text-white border-earl-600 hover:bg-earl-600"
+          }`}
+        >
+          {rebuilding ? "Rebuilding…" : "Rebuild Pick Card"}
+        </button>
+        <span className="ml-2"></span>
         <input
           type="text"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Search features…"
-          className="ml-auto px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-earl-600/40"
+          className="px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-earl-600/40"
         />
       </div>
+
+      {rebuildMsg && (
+        <div className="text-xs mb-3 px-3 py-2 rounded-lg bg-white/[0.04] border border-white/10">
+          {rebuildMsg}
+        </div>
+      )}
 
       <div className="text-xs text-gray-500 mb-3">
         {loading ? "Loading…" : `${filtered.length} feature${filtered.length === 1 ? "" : "s"} (${sportLabel[sport].toUpperCase()})`}
@@ -231,7 +308,17 @@ export default function AdminFeatures() {
               </tr>
             </thead>
             <tbody>
-              {filteredOrdered.map((f, i) => {
+              {groupedSections.map((group) => (
+                <Fragment key={group.section}>
+                  <tr className="border-b border-white/5">
+                    <td colSpan={9} className="px-4 pt-3 pb-1 text-[11px] font-semibold uppercase tracking-wider">
+                      <span className="text-earl-400">
+                        {group.section ? group.section.replace(/_/g, " ") : "No section"}
+                      </span>
+                      <span className="ml-2 text-gray-500">({group.rows.length})</span>
+                    </td>
+                  </tr>
+                  {group.rows.map((f, i) => {
                 const e = edits[f.name] ?? {};
                 const displayName = (e.display_name !== undefined ? e.display_name : (f.display_name ?? "")) ?? "";
                 const description = (e.description !== undefined ? e.description : (f.description ?? "")) ?? "";
@@ -315,7 +402,7 @@ export default function AdminFeatures() {
                           type="button"
                           disabled={i === 0}
                           onClick={() =>
-                            i > 0 && reorder(f, filteredOrdered[i - 1])
+                            i > 0 && reorder(f, group.rows[i - 1])
                           }
                           title="Move up (earlier in Detailed Analysis)"
                           className="w-6 h-6 rounded bg-white/5 border border-white/10 text-xs text-gray-200 hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed"
@@ -324,10 +411,10 @@ export default function AdminFeatures() {
                         </button>
                         <button
                           type="button"
-                          disabled={i === filteredOrdered.length - 1}
+                          disabled={i === group.rows.length - 1}
                           onClick={() =>
-                            i < filteredOrdered.length - 1 &&
-                            reorder(f, filteredOrdered[i + 1])
+                            i < group.rows.length - 1 &&
+                            reorder(f, group.rows[i + 1])
                           }
                           title="Move down (later in Detailed Analysis)"
                           className="w-6 h-6 rounded bg-white/5 border border-white/10 text-xs text-gray-200 hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed"
@@ -361,7 +448,9 @@ export default function AdminFeatures() {
                     </td>
                   </tr>
                 );
-              })}
+                  })}
+                </Fragment>
+              ))}
             </tbody>
           </table>
           {filtered.length === 0 && (

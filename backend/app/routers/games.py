@@ -122,6 +122,9 @@ class GameOut(BaseModel):
     result_spread: str | None = None
     result_over_under: str | None = None
     result_moneyline: str | None = None
+    # Time of possession (seconds). 2026-08-29.
+    home_time_of_possession_secs: int | None = None
+    away_time_of_possession_secs: int | None = None
 
     model_config = {"from_attributes": True}
 
@@ -321,15 +324,25 @@ async def _game_to_out(
         result_spread=result_spread,
         result_over_under=result_over_under,
         result_moneyline=result_moneyline,
+        home_time_of_possession_secs=getattr(game, "home_time_of_possession_secs", None),
+        away_time_of_possession_secs=getattr(game, "away_time_of_possession_secs", None),
     )
 
 
 @router.get("/seasons")
 async def list_seasons(db: AsyncSession = Depends(get_db)):
-    """Return years that have game data in the database."""
+    """Return years that have game data in the database (2022 season onward).
+
+    Season.year in nfl.seasons is the season's start year: 2022 == the
+    2022-23 season. Restricted to >= 2022 per product rule (customers only see
+    back to the 2022 season).
+    """
     result = await db.execute(
         select(Season.year)
-        .where(Season.id.in_(select(Game.season_id).distinct()))
+        .where(
+            Season.id.in_(select(Game.season_id).distinct()),
+            Season.year >= 2022,
+        )
         .order_by(Season.year.desc())
     )
     years = [row[0] for row in result.all()]
@@ -554,7 +567,8 @@ async def _build_team_box_stats(
         gs_result = await db.execute(
             text("""
                 SELECT first_downs, third_down_attempts, third_down_conversions,
-                       fourth_down_attempts, fourth_down_conversions
+                       fourth_down_attempts, fourth_down_conversions,
+                       time_of_possession_secs
                 FROM nfl.game_stats
                 WHERE season = :season AND week = :week AND team_abbr = :abbr
             """),
@@ -569,6 +583,9 @@ async def _build_team_box_stats(
             fdc = gs_row.fourth_down_conversions or 0
             third_down_pct = round(tdc / tda * 100, 1) if tda > 0 else None
             fourth_down_pct = round(fdc / fda * 100, 1) if fda > 0 else None
+            _top = gs_row.time_of_possession_secs
+            if isinstance(_top, (int, float)) and _top > 0:
+                time_of_possession = f"{int(_top // 60)}:{int(_top % 60):02d}"
 
     return BoxScoreStats(
         total_yards=round(total_yards, 1),

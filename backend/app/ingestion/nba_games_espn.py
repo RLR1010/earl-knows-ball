@@ -80,7 +80,7 @@ async def ensure_season(year: int, session) -> int:
     if season:
         return season.id
 
-    new_season = Season(year=year, name=f"{year}-{year+1} NBA Season", is_regular_season=True)
+    new_season = Season(year=year)
     session.add(new_season)
     await session.flush()
     return new_season.id
@@ -104,9 +104,15 @@ async def ingest_nba_games(seasons: list[int] | None = None):
             for season_year in year_list:
                 season_id = await ensure_season(season_year, session)
 
-                # Determine date range for this season
-                start_date = datetime(season_year - 1, 10, 1)
-                end_date = datetime(season_year, 6, 30)
+                # Determine date range for this season. season_year is the START year
+                # (matches ensure_season + ingest_season: nba.seasons.year stores the
+                # season START year). Oct 1 of the start year through Jun 30 of the year
+                # AFTER it (e.g. 2026 => Oct 1 2026 - Jun 30 2027 = the 2026-27 season).
+                # FIXED 2026-08-28: this was season_year-1 .. season_year, which walked the
+                # season ENDING in season_year but stored it under season_year (off-by-one —
+                # it would have put the 2025-26 games under year 2026).
+                start_date = datetime(season_year, 10, 1)
+                end_date = datetime(season_year + 1, 6, 30)
                 current = start_date
 
                 print(f"\n{'='*50}")

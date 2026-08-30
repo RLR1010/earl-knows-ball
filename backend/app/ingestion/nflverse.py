@@ -33,8 +33,6 @@ COLUMN_MAP = {
     "fg_att": "field_goals_attempted",
     "pat_made": "extra_points_made",
     "pat_att": "extra_points_attempted",
-    "fantasy_points_ppr": "fantasy_points_ppr",
-    "fantasy_points": "fantasy_points_std",
 }
 
 

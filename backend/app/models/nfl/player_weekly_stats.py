@@ -53,12 +53,6 @@ class PlayerWeeklyStats(Base):
     extra_points_made = Column(Integer, default=0)
     extra_points_attempted = Column(Integer, default=0)
 
-    # Fantasy points
-    fantasy_points_ppr = Column(Float, default=0.0)
-    fantasy_points_half = Column(Float, default=0.0)
-    fantasy_points_std = Column(Float, default=0.0)
-    fantasy_points_dk = Column(Float, default=0.0)  # DraftKings scoring
-
     # Snaps
     snaps_offense = Column(Integer, nullable=True)
     snaps_defense = Column(Integer, nullable=True)

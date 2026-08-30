@@ -17,8 +17,6 @@ PLAYER_SORT_COLS = {
     "rush_attempts", "rush_yards", "rush_tds", "yards_per_carry",
     # Receiving
     "targets", "receptions", "receiving_yards", "receiving_tds", "yards_per_rec",
-    # Fantasy
-    "fantasy_points_ppr", "fantasy_points_std", "fantasy_points_half",
     # Misc
     "fumbles", "fumbles_lost", "games_played", "snaps_offense",
     "games",
@@ -97,9 +95,6 @@ async def player_stats(
             ELSE 0 END AS yards_per_rec,
         SUM(pws.fumbles)::int AS fumbles,
         SUM(pws.fumbles_lost)::int AS fumbles_lost,
-        COALESCE(SUM(pws.fantasy_points_ppr), 0)::numeric(10,1) AS fantasy_points_ppr,
-        COALESCE(SUM(pws.fantasy_points_std), 0)::numeric(10,1) AS fantasy_points_std,
-        COALESCE(SUM(pws.fantasy_points_half), 0)::numeric(10,1) AS fantasy_points_half,
         COALESCE(SUM(pws.snaps_offense), 0)::int AS snaps_offense
     FROM player_weekly_stats pws
     JOIN seasons s ON s.id = pws.season_id

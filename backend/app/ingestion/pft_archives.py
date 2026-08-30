@@ -159,7 +159,7 @@ def _guess_category(title: str, body: str) -> str:
     """Guess article category from title and body."""
     text = (title + " " + body).lower()
     if any(w in text for w in ["fantasy", "ppr", "rankings", "waiver"]):
-        return "fantasy_advice"
+        return "general"
     if any(w in text for w in ["betting", "spread", "over/under", "pick", "prop"]):
         return "betting_pick"
     if any(w in text for w in ["preview", "week ", "matchup", "schedule"]):
@@ -167,7 +167,7 @@ def _guess_category(title: str, body: str) -> str:
     if any(w in text for w in ["recap", "result", "score", "highlights"]):
         return "game_recap"
     if any(w in text for w in ["draft", "rookie", "prospect"]):
-        return "fantasy_advice"
+        return "general"
     return "news"
 
 

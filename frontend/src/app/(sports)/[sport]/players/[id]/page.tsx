@@ -36,7 +36,6 @@ interface PlayerProfile {
     pass_yds: number; pass_tds: number; pass_int: number;
     rush_yds: number; rush_tds: number;
     rec: number; rec_yds: number; rec_tds: number;
-    fantasy_ppr: number;
     // NFL/NBA/MLB generic
     home_runs?: number; rbi?: number; hits?: number; runs?: number;
     stolen_bases?: number; walks?: number;
@@ -49,7 +48,6 @@ interface PlayerProfile {
     pass_yds: number; pass_tds: number; pass_int: number;
     rush_yds: number; rush_tds: number;
     rec: number; rec_yds: number; rec_tds: number;
-    fantasy_ppr: number;
     // MLB batting
     avg?: number; obp?: number; slg?: number; ops?: number;
     home_runs?: number; runs_batted_in?: number; stolen_bases?: number;
@@ -217,7 +215,6 @@ export default function PlayerProfilePage() {
           <h2 className="font-display text-xl font-bold mb-4">Career Stats ({p.stats.first_year}–{p.stats.last_year})</h2>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             {statCell("Games", p.stats.games)}
-            {statCell("Fantasy PPR", p.stats.fantasy_ppr.toLocaleString(), true)}
             {p.position === "QB" && (
               <>{statCell("Pass Yds", p.stats.pass_yds.toLocaleString())}{statCell("Pass TD", p.stats.pass_tds)}{statCell("INT", p.stats.pass_int)}{statCell("Rush Yds", p.stats.rush_yds.toLocaleString())}{statCell("Rush TD", p.stats.rush_tds)}</>
             )}
@@ -259,7 +256,6 @@ export default function PlayerProfilePage() {
                   {p.position === "QB" && <><th className="px-3 py-2 text-right">Pass Yds</th><th className="px-3 py-2 text-right">TD</th><th className="px-3 py-2 text-right">INT</th></>}
                   {(p.position === "QB" || p.position === "RB") && <><th className="px-3 py-2 text-right">Rush Yds</th><th className="px-3 py-2 text-right">TD</th></>}
                   {(p.position === "RB" || p.position === "WR" || p.position === "TE") && <><th className="px-3 py-2 text-right">Rec</th><th className="px-3 py-2 text-right">Yds</th><th className="px-3 py-2 text-right">TD</th></>}
-                  <th className="px-3 py-2 text-right text-earl-400">PPR</th>
                 </tr>
               </thead>
               <tbody>
@@ -270,7 +266,6 @@ export default function PlayerProfilePage() {
                     {p.position === "QB" && <><td className="px-3 py-2 text-right">{s.pass_yds.toLocaleString()}</td><td className="px-3 py-2 text-right">{s.pass_tds}</td><td className="px-3 py-2 text-right">{s.pass_int ?? 0}</td></>}
                     {(p.position === "QB" || p.position === "RB") && <><td className="px-3 py-2 text-right">{s.rush_yds.toLocaleString()}</td><td className="px-3 py-2 text-right">{s.rush_tds}</td></>}
                     {(p.position === "RB" || p.position === "WR" || p.position === "TE") && <><td className="px-3 py-2 text-right">{s.rec}</td><td className="px-3 py-2 text-right">{s.rec_yds.toLocaleString()}</td><td className="px-3 py-2 text-right">{s.rec_tds}</td></>}
-                    <td className="px-3 py-2 text-right font-semibold text-earl-400">{s.fantasy_ppr.toFixed(1)}</td>
                   </tr>
                 ))}
               </tbody>

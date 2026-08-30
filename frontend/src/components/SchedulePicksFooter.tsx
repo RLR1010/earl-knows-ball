@@ -83,6 +83,7 @@ export default function SchedulePicksFooter({ game, spreadLabel = "Spread" }: Pr
             compact
             items={buildPickItems({
               spreadPick: game.pick_spread,
+              spread: game.spread,
               overUnder: game.pick_over_under,
               mlPick: game.pick_moneyline,
               atsEv: game.pick_ats_ev,

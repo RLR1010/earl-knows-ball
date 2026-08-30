@@ -81,6 +81,7 @@ class CreateConfigRequest(BaseModel):
     word_min: Optional[int] = None
     word_max: Optional[int] = None
     title_mode: str = "fixed"
+    recency_context: bool = False
 
 
 class FromArticleRequest(BaseModel):
@@ -103,6 +104,7 @@ class FromArticleRequest(BaseModel):
     word_min: Optional[int] = None
     word_max: Optional[int] = None
     title_mode: str = "fixed"
+    recency_context: bool = False
 
 
 class UpdateConfigRequest(BaseModel):
@@ -122,6 +124,7 @@ class UpdateConfigRequest(BaseModel):
     word_min: Optional[int] = None
     word_max: Optional[int] = None
     title_mode: Optional[str] = None
+    recency_context: Optional[bool] = None
 
 
 # --------------------------------------------------------------------------- #
@@ -285,12 +288,14 @@ async def create_config(req: CreateConfigRequest, db: AsyncSession = Depends(get
                  team_id, team_abbr, team_name, template_article_id, section, status,
                  reasoning, visibility, word_min, word_max,
                  title_mode,
+                 recency_context,
                  created_at, updated_at)
             VALUES
                 (:sport, :title, :description, :instructions, :cadence, :generate_time, :scope_type,
                  :team_id, :team_abbr, :team_name, :template_article_id, :section, :status,
                  :reasoning, :visibility, :word_min, :word_max,
                  :title_mode,
+                 :recency_context,
                  NOW(), NOW())
             RETURNING *
             """
@@ -314,6 +319,7 @@ async def create_config(req: CreateConfigRequest, db: AsyncSession = Depends(get
             "word_min": _coerce_word_range(req.word_min, req.word_max)[0],
             "word_max": _coerce_word_range(req.word_min, req.word_max)[1],
             "title_mode": _validate_enum(req.title_mode, TITLE_MODES, "title_mode", "fixed"),
+            "recency_context": bool(req.recency_context),
         },
     )
     await db.commit()
@@ -361,12 +367,14 @@ async def create_from_article(req: FromArticleRequest, db: AsyncSession = Depend
                  team_id, team_abbr, team_name, template_article_id, section, status,
                  reasoning, visibility, word_min, word_max,
                  title_mode,
+                 recency_context,
                  created_at, updated_at)
             VALUES
                 (:sport, :title, :description, :instructions, :cadence, :generate_time, :scope_type,
                  :team_id, :team_abbr, :team_name, :template_article_id, :section, 'active',
                  :reasoning, :visibility, :word_min, :word_max,
                  :title_mode,
+                 :recency_context,
                  NOW(), NOW())
             RETURNING *
             """
@@ -389,6 +397,7 @@ async def create_from_article(req: FromArticleRequest, db: AsyncSession = Depend
             "word_min": _coerce_word_range(req.word_min, req.word_max)[0],
             "word_max": _coerce_word_range(req.word_min, req.word_max)[1],
             "title_mode": _validate_enum(req.title_mode, TITLE_MODES, "title_mode", "fixed"),
+            "recency_context": bool(req.recency_context),
         },
     )
     await db.commit()
@@ -428,6 +437,8 @@ async def update_config(config_id: int, req: UpdateConfigRequest, db: AsyncSessi
         cur["visibility"] = _validate_enum(req.visibility, VISIBILITIES, "visibility", cur["visibility"])
     if req.title_mode is not None:
         cur["title_mode"] = _validate_enum(req.title_mode, TITLE_MODES, "title_mode", cur["title_mode"])
+    if req.recency_context is not None:
+        cur["recency_context"] = req.recency_context
     if req.word_min is not None:
         cur["word_min"] = req.word_min
     if req.word_max is not None:
@@ -467,6 +478,7 @@ async def update_config(config_id: int, req: UpdateConfigRequest, db: AsyncSessi
                 team_abbr=:team_abbr, team_name=:team_name, status=:status, section=:section,
                 reasoning=:reasoning, visibility=:visibility,
                 word_min=:word_min, word_max=:word_max, title_mode=:title_mode,
+                recency_context=:recency_context,
                 updated_at=NOW()
             WHERE id=:id
             """
@@ -489,6 +501,7 @@ async def update_config(config_id: int, req: UpdateConfigRequest, db: AsyncSessi
             "word_min": cur["word_min"],
             "word_max": cur["word_max"],
             "title_mode": cur["title_mode"],
+            "recency_context": cur["recency_context"],
         },
     )
     await db.commit()

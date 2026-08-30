@@ -347,11 +347,20 @@ function NFLBoxScore({ data }: { data: NFLBoxScore }) {
 }
 
 // ── Main Page ──
-export default function GameDetailPage() {
+export default function GameDetailPage({ gameId: gameIdProp }: { gameId?: string }) {
   const params = useParams<{ sport: string; id: string }>();
   const searchParams = useSearchParams();
-  const sport = params?.sport; const gameId = params?.id;
+  const sport = params?.sport;
+  // gameId comes in as a prop (numeric id resolved server-side from the slug),
+  // but fall back to reading the raw segment so the component stays usable if
+  // it's ever mounted without the wrapper.
+  const gameId = gameIdProp ?? params?.id ?? "";
   const isNfl = sport === "nfl";
+  // Legacy numeric-only param: strip to the bare id for the API calls below.
+  const numericGameId = gameId.includes("-")
+    ? (gameId.split("-").pop() ?? "")
+    : gameId;
+  const activeGameId = numericGameId || gameId;
   // Preserve the originating schedule context
   const returnYear = searchParams.get('year');
   const returnWeek = searchParams.get('week');
@@ -397,7 +406,7 @@ export default function GameDetailPage() {
   // the nfl/live-refresh task keeps synced from ESPN), not ESPN directly.
   useEffect(() => {
     if (!gameId || !isNfl) { if (!isNfl) return; }
-    const gid = parseInt(gameId);
+    const gid = parseInt(numericGameId);
 
     const fetchNfl = (): Promise<string> => {
       return Promise.all([
@@ -444,7 +453,7 @@ export default function GameDetailPage() {
   // NBA data fetching
   useEffect(() => {
     if (!gameId || sport !== "nba") return;
-    const gid = parseInt(gameId);
+    const gid = parseInt(numericGameId);
     Promise.all([
       fetch(`/api/handicapping/nba/predictions/${gid}`).then(r => r.json()).catch(() => null),
       fetch(`/api/nba/games/${gid}`).then(r => r.json()).catch(() => null),
@@ -462,7 +471,7 @@ export default function GameDetailPage() {
 
   if (sport === "nba") {
     const nbaPredForTabs = nbaPrediction || (nbaGameLine ? ({
-      game_id: parseInt(gameId || "0"),
+      game_id: parseInt(numericGameId || "0"),
       season: 0, week: 0,
       home_team: "",
       away_team: "",
@@ -475,7 +484,7 @@ export default function GameDetailPage() {
     }) as unknown as GamePrediction : null);
     return (
       <div>
-        <NBAGameTabs gameId={parseInt(gameId || "0")} prediction={nbaPredForTabs} />
+        <NBAGameTabs gameId={parseInt(numericGameId || "0")} prediction={nbaPredForTabs} />
         <div className="text-center pt-4">
           <Link href={backHref} className="text-sm text-earl-400 hover:text-earl-300 transition">← Back to Schedule</Link>
         </div>
@@ -492,7 +501,7 @@ export default function GameDetailPage() {
 
   // Build combined prediction (use real pred or line-only fallback)
   const predForTabs = prediction || (gameLine ? ({
-    game_id: parseInt(gameId || "0"),
+    game_id: parseInt(numericGameId || "0"),
     season: 0, week: nflBoxScore?.game?.week || 0,
     home_team: nflBoxScore?.game?.home_team || "",
     away_team: nflBoxScore?.game?.away_team || "",

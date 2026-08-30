@@ -44,7 +44,7 @@ if DB_DSN is None:
     raise SystemExit("DATABASE_URL not set in backend/.env")
 
 
-def main() -> int:
+def _backfill() -> dict:
     conn = psycopg2.connect(**DB_DSN)
     cur = conn.cursor()
 
@@ -55,7 +55,9 @@ def main() -> int:
     game_ids = [r[0] for r in cur.fetchall()]
     if not game_ids:
         print("No NBA prediction rows to backfill.")
-        return 0
+        cur.close()
+        conn.close()
+        return {"updated": 0, "total": 0, "errors": 0, "elapsed_s": 0.0}
 
     pc_feats = _load_pick_card_feature_metadata()
     print(f"pick-card feature metadata: {len(pc_feats)} features")
@@ -110,10 +112,26 @@ def main() -> int:
 
     cur.close()
     conn.close()
+    result = {
+        "updated": updated,
+        "total": len(game_ids),
+        "errors": errors,
+        "elapsed_s": round(time.time() - t_start, 1),
+    }
     print(
         f"DONE: {updated}/{len(game_ids)} rows updated, {errors} errors, "
-        f"in {time.time() - t_start:.1f}s"
+        f"in {result['elapsed_s']}s"
     )
+    return result
+
+
+def backfill_nba_pick_card_json() -> dict:
+    """Rebuild `features_json` for every NBA prediction row that has one."""
+    return _backfill()
+
+
+def main() -> int:
+    _backfill()
     return 0
 
 

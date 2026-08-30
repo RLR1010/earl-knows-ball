@@ -359,9 +359,18 @@ export default function TeamDetailPage() {
   // Fetch available seasons
   useEffect(() => {
     if (isMLB) {
-      const mlbYears = [2026,2025,2024,2023,2022,2021,2020,2019,2018,2017,2016,2015,2014,2013,2012,2011,2010,2009,2008,2007,2006];
-      setAvailableYears(mlbYears);
-      if (!mlbYears.includes(seasonYear)) setSeasonYear(2026);
+      // Pull real seasons from the backend (matches the schedule page
+      // convention), NOT a hardcoded list. The backend clamps to the 2022
+      // season onward, so the team page only offers years >= 2022.
+      fetch("/api/mlb/seasons")
+        .then((r) => r.json())
+        .then((mlbYears: number[]) => {
+          setAvailableYears(mlbYears);
+          if (mlbYears.length > 0 && !mlbYears.includes(seasonYear)) {
+            setSeasonYear(mlbYears[0]); // most recent season with games
+          }
+        })
+        .catch(() => {});
     } else if (sport === "nba") {
       // Pull real seasons from the backend (matches the schedule page convention), not a hardcoded list.
       fetch("/api/nba/seasons")

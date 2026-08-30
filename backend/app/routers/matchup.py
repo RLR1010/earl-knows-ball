@@ -64,19 +64,44 @@ async def matchup(
     except Exception:
         pass  # fall back to name/abbr lookups below
 
-    # 1) trends - reuse the same logic Earl's chat uses.
-    trends_home = await mod._get_team_trends(db, {"team_name": home or names["home"].get("name")})
-    trends_away = await mod._get_team_trends(db, {"team_name": away or names["away"].get("name")})
+    # 📌 Derive the SEASON the viewed game belongs to, and scope every query to it.
+    # Without this, NFL/NBA trend queries default to the calendar-latest season,
+    # which has no rolling data during preseason/offseason -> the matchup modal
+    # came back blank for NFL even on games from completed seasons.
+    season_year = None
+    if game_date is not None:
+        if sport == "nfl":
+            # NFL season spans Aug-Feb; Jan/Feb playoff games belong to the prior year's season.
+            season_year = game_date.year - 1 if game_date.month <= 1 else game_date.year
+        elif sport == "nba":
+            # NBA "YYYY-YY" season starts in year YYYY, ends up to June of the next year.
+            season_year = game_date.year - 1 if game_date.month <= 6 else game_date.year
+        else:  # mlb: single calendar year; comparison/trends ignore season, harmless.
+            season_year = game_date.year
 
-    # 2) splits.
-    try:
-        split_home = await mod._get_team_split_stats(db, {"team_name": home or names["home"].get("name")})
-    except Exception:
-        split_home = {"error": "splits unavailable"}
-    try:
-        split_away = await mod._get_team_split_stats(db, {"team_name": away or names["away"].get("name")})
-    except Exception:
-        split_away = {"error": "splits unavailable"}
+    # 1) trends - reuse the same logic Earl's chat uses.
+    trends_home = await mod._get_team_trends(
+        db, {"team_name": home or names["home"].get("name"), "season_year": season_year}
+    )
+    trends_away = await mod._get_team_trends(
+        db, {"team_name": away or names["away"].get("name"), "season_year": season_year}
+    )
+
+    # 2) splits. Only NBA exposes this today (NFL/MLB lack _get_team_split_stats).
+    split_home = split_away = {"error": "splits unavailable"}
+    if hasattr(mod, "_get_team_split_stats"):
+        try:
+            split_home = await mod._get_team_split_stats(
+                db, {"team_name": home or names["home"].get("name"), "season_year": season_year}
+            )
+        except Exception:
+            split_home = {"error": "splits unavailable"}
+        try:
+            split_away = await mod._get_team_split_stats(
+                db, {"team_name": away or names["away"].get("name"), "season_year": season_year}
+            )
+        except Exception:
+            split_away = {"error": "splits unavailable"}
 
     # 3) Side-by-side comparison.
     comparison = await mod._get_team_comparison(
@@ -84,6 +109,7 @@ async def matchup(
         {
             "team_a": names["home"].get("abbr") if game_id is not None else home,
             "team_b": names["away"].get("abbr") if game_id is not None else away,
+            "season_year": season_year,
         },
     )
 

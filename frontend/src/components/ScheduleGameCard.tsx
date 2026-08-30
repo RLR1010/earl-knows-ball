@@ -4,6 +4,7 @@ import Link from "next/link";
 import TeamLogo from "@/components/TeamLogo";
 import SchedulePicksFooter from "@/components/SchedulePicksFooter";
 import ChatCardLink from "@/components/ChatCardLink";
+import { buildGameSlug } from "@/lib/team-names";
 
 /** Type of sport this card renders for. Determines logo set + MLB innings/duration extras. */
 export type CardSport = "nfl" | "nba" | "mlb";
@@ -95,9 +96,31 @@ interface EarlsPickItem {
   result?: string | null;
 }
 
+/**
+ * Compute the pick display for the spread: team abbreviation plus the signed
+ * spread from the PICKED team's perspective (not the home team's).
+ *
+ * `spread` is the closing line, SIGNED for the HOME team (negative = home favored
+ * e.g. BUF -1.5, positive = away favored). So a pick of the away team flips the
+ * sign (PIT +1.5 when BUF is -1.5), while a home pick keeps it (BUF -1.5).
+ */
+function spreadPickDisplay(
+  team: string,
+  spread: number | null | undefined,
+  home: string | null | undefined,
+  away: string | null | undefined,
+): string {
+  if (spread == null || Math.abs(spread) < 0.05) return team; // Pick'em → no line
+  const isHome = team === home;
+  const fromTeamPerspective = isHome ? spread : -spread;
+  const sign = fromTeamPerspective > 0 ? "+" : "";
+  return `${team} ${sign}${fromTeamPerspective}`;
+}
+
 /** Build the three premium pick items (Spread / Over-Under / Moneyline) for a game. */
 export function buildPickItems(o: {
   spreadPick?: string | null;
+  spread?: number | null;
   overUnder?: string | null;
   mlPick?: string | null;
   atsEv?: number | null;
@@ -115,7 +138,7 @@ export function buildPickItems(o: {
   if (spreadTeam)
     items.push({
       label: o.spreadLabel ?? "Spread",
-      pick: spreadTeam,
+      pick: spreadPickDisplay(spreadTeam, o.spread, o.home, o.away),
       ev: o.atsEv,
       result: o.spreadResult,
     });
@@ -155,6 +178,7 @@ export function buildGameContext(
   const picks: string[] = [];
   const pickItems = buildPickItems({
     spreadPick: game.pick_spread,
+    spread: game.spread,
     overUnder: game.pick_over_under,
     mlPick: game.pick_moneyline,
     atsEv: game.pick_ats_ev,
@@ -195,9 +219,30 @@ export default function ScheduleGameCard({
   const awayWon = isFinal && (game.away_score ?? 0) > (game.home_score ?? 0);
   const isMlb = sport === "mlb";
 
+  // Upgrade a legacy numeric /games/{id} link to the canonical readable slug,
+  // so every internal game link points straight at the SEO URL. Slug-passing
+  // callers are left untouched; if team/date can't be resolved we keep the
+  // numeric link (the server still redirects it to canonical).
+  const finalHref = (() => {
+    const m = href.match(/([a-z]+)\/games\/([^?/]+)/);
+    const base = href.split("?")[0];
+    const qs = href.includes("?") ? "?" + href.split("?")[1] : "";
+    if (!m) return href;
+    const seg = m[2];
+    if (!/^\d+$/.test(seg)) return href; // already a slug
+    const slug = buildGameSlug(
+      sport,
+      game.home_team ?? "",
+      game.away_team ?? "",
+      game.date ?? "",
+      game.id
+    );
+    return slug ? `/${sport}/games/${slug}${qs}` : base + qs;
+  })();
+
   return (
     <ChatCardLink
-      href={href}
+      href={finalHref}
       sport={sport}
       gameId={game.id}
       homeTeam={game.home_team ?? ""}

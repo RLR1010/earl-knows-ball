@@ -269,21 +269,29 @@ async def train_model(
         ou_push = 0
 
         if not df_test.empty and len(df_test) > 0:
-            available_test = [c for c in feature_cols if c in df_test.columns]
-            _mask_t = df_test[available_test].isna()
+            # Reindex test to the SAME feature set the model was trained on (available),
+            # so dtest feature_names always match the model (fixes xgboost feature_names
+            # mismatch when a new feature is all-NaN for the holdout year but present in
+            # training years). Missing cols are filled with NaN then imputed.
+            df_test_t = df_test.copy()
+            for _c in available:
+                if _c not in df_test_t.columns:
+                    df_test_t[_c] = np.nan
+            available_test = [c for c in available]
+            _mask_t = df_test_t[available_test].isna()
             if _mask_t.any().any():
                 for feat in available_test:
-                    na = df_test[feat].isna()
+                    na = df_test_t[feat].isna()
                     if na.any():
-                        df_test.loc[na, feat] = df_test.loc[na, :].apply(
+                        df_test_t.loc[na, feat] = df_test_t.loc[na, :].apply(
                             lambda row: _impute_feature(row, feat), axis=1
                         )
-            df_test_clean = df_test.dropna(subset=available_test)
+            df_test_clean = df_test_t.dropna(subset=available_test)
 
             if len(df_test_clean) > 0:
-                X_test = df_test_clean[available].values
+                X_test = df_test_clean[available_test].values
                 y_test = df_test_clean["total_points"].values
-                dtest = xgb.DMatrix(X_test, feature_names=available)
+                dtest = xgb.DMatrix(X_test, feature_names=available_test)
                 pred_totals = model.predict(dtest)
 
                 ou_total = len(y_test)

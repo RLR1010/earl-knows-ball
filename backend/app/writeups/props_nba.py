@@ -128,7 +128,7 @@ async def fetch_player_season_stats(
                            steals, blocks, turnovers,
                            field_goal_pct, three_point_pct, free_throw_pct,
                            true_shooting_pct, plus_minus, efficiency,
-                           usage_pct, assists_turnover_ratio, fantasy_points
+                           usage_pct, assists_turnover_ratio
                     FROM nba.player_season_stats
                     WHERE player_id = :pid
                     ORDER BY season_id DESC NULLS LAST

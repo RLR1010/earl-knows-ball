@@ -59,21 +59,38 @@ async def fetch_schedule(game_date: date) -> list[dict]:
 
 
 async def fetch_lineups(game_pk: int) -> dict:
-    """Fetch starting lineups for a game from the authoritative boxscore endpoint.
+    """Fetch starting lineups for a game from the MLB Stats live-feed endpoint.
 
-    Uses /api/v1/game/{id}/boxscore teams.{away,home}.battingOrder, which lists
-    EXACTLY the 9 starting position players in batting order (works for historical
-    completed games). Also resolves the starting pitcher per side (pitchers[0]).
+    Uses /api/v1.1/game/{id}/feed/live -> liveData.boxscore.teams.{away,home}.battingOrder,
+    which lists EXACTLY the 9 starting position players in batting order. Unlike the
+    bare /boxscore endpoint, the live-feed exposes the authoritative confirmed lineup
+    as soon as the game is Pre-Game (lineups submitted, ~1-2h before first pitch), not
+    only after the game goes Live/Final. Falls back to the /boxscore endpoint.
+    Also resolves the starting pitcher per side (pitchers[0]).
     Each returned lineup entry carries the real MLB Stats API player_id.
     """
-    url = f"{STATS_API}/api/v1/game/{game_pk}/boxscore"
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        resp = await client.get(url)
-        if resp.status_code != 200:
-            return {"error": f"HTTP {resp.status_code}"}
-        data = resp.json()
-
-    teams_box = data.get("teams", {})
+    data = None
+    # Prefer the live-feed (authoritative boxscore lives here and is populated at Pre-Game).
+    for url in (
+        f"{STATS_API}/api/v1.1/game/{game_pk}/feed/live",
+        f"{STATS_API}/api/v1/game/{game_pk}/boxscore",
+    ):
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.get(url)
+                if resp.status_code != 200:
+                    continue
+                d = resp.json()
+        except Exception:
+            continue
+        # live-feed nests the boxscore at liveData.boxscore; boxscore is top-level
+        box = d.get("liveData", {}).get("boxscore") if "liveData" in d else d
+        teams_box = box.get("teams", {}) if box is not None else {}
+        if teams_box:
+            data = teams_box
+            break
+    if data is None:
+        return {"error": "unable to fetch boxscore"}
 
     result = {
         "game_pk": game_pk,
@@ -84,7 +101,7 @@ async def fetch_lineups(game_pk: int) -> dict:
     }
 
     for side_key in ["away", "home"]:
-        team_box = teams_box.get(side_key, {})
+        team_box = data.get(side_key, {})  # data is the boxscore teams dict
         batting_order = team_box.get("battingOrder", [])  # exactly the 9 starters
         players = team_box.get("players", {})
         lineup = []
@@ -117,7 +134,15 @@ async def fetch_lineups(game_pk: int) -> dict:
 
 
 async def save_lineups(db: AsyncSession, game_id: int, away_lineup: list[dict], home_lineup: list[dict]):
-    """Save lineups to the mlb.lineups table."""
+    """Save lineups to the mlb.lineups table.
+
+    Side-aware: only the side(s) that actually carry lineup data are deleted and
+    rewritten. A side with NO incoming lineup data is left untouched, so a
+    partial/one-sided pregame fetch (e.g. home lineups posted but away still
+    pending, or both not yet submitted on a Scheduled game) can NEVER wipe the
+    complete lineups a previous refresh already stored. This is what kept the
+    pregame lineups from persisting (a later partial fetch deleted them).
+    """
     from sqlalchemy import select, delete as sa_delete
     from app.models.mlb import MLBLineup
     from app.models.mlb.player import MLBPlayer
@@ -136,9 +161,6 @@ async def save_lineups(db: AsyncSession, game_id: int, away_lineup: list[dict], 
         for db_id, mlb_id in rows:
             mlb_to_db_id[mlb_id] = db_id
 
-    # Delete existing lineups for this game (we re-insert everything below)
-    await db.execute(sa_delete(MLBLineup).where(MLBLineup.game_id == game_id))
-
     now = datetime.now(timezone.utc)
 
     def _row(side: str, order: int, entry: dict) -> MLBLineup:
@@ -153,27 +175,37 @@ async def save_lineups(db: AsyncSession, game_id: int, away_lineup: list[dict], 
             updated_at=now,
         )
 
-    seen: set[tuple[str, int]] = set()
+    def _build(side: str, entries: list[dict]) -> list[MLBLineup]:
+        seen: set[int] = set()
+        rows: list[MLBLineup] = []
+        for entry in entries:
+            bo = entry.get("batting_order")
+            if entry.get("is_starting_pitcher"):
+                key = 0
+            elif bo is not None and 1 <= int(bo) <= 9:
+                key = int(bo)
+            else:
+                continue
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append(_row(side, key, entry))
+        return rows
 
-    def _add(side: str, bo: int, entry: dict):
-        key = (side, bo)
-        if key in seen:
-            return
-        seen.add(key)
-        db.add(_row(side, bo, entry))
-
-    for entry in away_lineup:
-        bo = entry["batting_order"]
-        if entry.get("is_starting_pitcher"):
-            _add("away", 0, entry)  # Starting pitcher
-        elif 1 <= bo <= 9:
-            _add("away", bo, entry)
-    for entry in home_lineup:
-        bo = entry["batting_order"]
-        if entry.get("is_starting_pitcher"):
-            _add("home", 0, entry)  # Starting pitcher
-        elif 1 <= bo <= 9:
-            _add("home", bo, entry)
+    # For each side, delete+rewrite ONLY if we have fresh data for that side.
+    # If a side is empty/incomplete, preserve whatever is already stored there.
+    if away_lineup:
+        away_rows = _build("away", away_lineup)
+        await db.execute(sa_delete(MLBLineup).where(
+            MLBLineup.game_id == game_id, MLBLineup.team_side == "away"))
+        for r in away_rows:
+            db.add(r)
+    if home_lineup:
+        home_rows = _build("home", home_lineup)
+        await db.execute(sa_delete(MLBLineup).where(
+            MLBLineup.game_id == game_id, MLBLineup.team_side == "home"))
+        for r in home_rows:
+            db.add(r)
 
 
 async def update_lineups_for_date(db: AsyncSession, game_date: date) -> dict:

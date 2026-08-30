@@ -8,6 +8,12 @@ as "new", marks the affected team-seasons, and recomputes their FULL season
 history — without touching seasons 1-27 (whose rows remain intact).
 
 This avoids the destructive force_rebuild=True full-table drop.
+
+NOTE (2026-08-30): now covers seasons 26-35 (2016-17 .. 2025-26) and ALSO runs
+the adjusted-ratings step (cum_adj_ortg/cum_adj_drtg/cum_sos via
+adjusted_ratings.py) after the cumulative rebuild. The prior version listed only
+seasons 28-34, skipped season 27, and never ran the adjusted step — which left
+cum_adj_*/cum_sos NaN for whole seasons. Now every derived column is populated.
 """
 import os
 import sys
@@ -19,8 +25,10 @@ from sqlalchemy import create_engine, text
 from app.db_urls import PSYCOPG2_DATABASE_URL
 
 from app.handicapping.nba.cumulative_stats import populate_cumulative_stats
+from app.handicapping.nba.adjusted_ratings import write_adjusted_to_tables
 
-SEASONS = [34, 33, 32, 31, 30, 29, 28]
+# All relevant seasons, newest-to-oldest (Rich scope: 2016-17 .. 2025-26 = 26-35)
+SEASONS = [35, 34, 33, 32, 31, 30, 29, 28, 27, 26]
 
 
 def main():
@@ -36,6 +44,11 @@ def main():
 
     summary = populate_cumulative_stats(url, seasons=SEASONS, force_rebuild=False)
     print("Rebuild SUMMARY:", summary)
+
+    # Also rebuild the adjusted-ratings columns (cum_adj_ortg/cum_adj_drtg/cum_sos
+    # + team_rolling_stats.adj_off_10/adj_def_10) so nothing is left NaN.
+    adj = write_adjusted_to_tables(engine, season_filter=None)
+    print("Adjusted-ratings write:", adj)
 
     # Verify HOU (and a couple teams) across a rebuilt season
     eng2 = create_engine(url)

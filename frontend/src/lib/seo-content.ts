@@ -1,4 +1,5 @@
 import { backendBaseForPath } from "@/lib/backend-url";
+import { gameIdFromSegment } from "@/lib/game-slug";
 
 /**
  * Server-side SEO metadata resolvers.
@@ -59,6 +60,8 @@ interface GameMeta {
   away?: { name: string; abbr: string } | null;
   date?: string | null;
   status?: string | null;
+  slug?: string | null;
+  description?: string | null;
 }
 
 async function fetchSeoJson<T>(path: string): Promise<T | null> {
@@ -97,26 +100,43 @@ const BASE = {
 /**
  * Metadata for a game pick-card / prediction page.
  * Title: "Chicago Bears vs Tennessee Titans Prediction, Odds & Picks"
+ *
+ * The backend /seo/game-meta response carries the canonical slug
+ * ({home}-vs-{away}-{date}-{id}) and a rich description. We canonicalize ON
+ * the slug URL (the whole point is that canonical = the new readable URL).
  */
 export async function gameMetadata(
   sport: string,
-  gameId: string
+  segment: string
 ): Promise<{ title: string; description: string; canonical?: string }> {
   const label = sportLabel(sport);
-  const meta = await fetchSeoJson<GameMeta>(`/seo/game-meta/${sport}/${encodeURIComponent(gameId)}`);
+  // `segment` is the slug (e.g. chicago-cubs-vs-...-49070) or a legacy numeric
+  // id. The backend needs the numeric id, which is always the trailing token.
+  const numericId = gameIdFromSegment(segment) ?? segment;
+  const meta = await fetchSeoJson<GameMeta>(
+    `/seo/game-meta/${sport}/${encodeURIComponent(numericId)}`
+  );
   const home = meta?.home?.name;
   const away = meta?.away?.name;
+  const slug = meta?.slug;
+  // Canonical URL is the slug form (the readable, descriptive URL). Fall back
+  // to the numeric id URL if the backend slug is missing.
+  const canonicalPath = slug
+    ? url(`/${sport}/games/${slug}`)
+    : url(`/${sport}/games/${encodeURIComponent(numericId)}`);
   if (home && away) {
     return buildMeta({
       title: `${home} vs ${away} Prediction, Odds & Picks`,
-      description: BASE.description(`${home} vs ${away} prediction, odds and AI-powered picks`),
-      url: url(`/${sport}/games/${gameId}`),
+      description: meta?.description
+        ? meta.description
+        : BASE.description(`${home} vs ${away} prediction, odds and AI-powered picks`),
+      url: canonicalPath,
     });
   }
   return buildMeta({
-    title: `Game ${gameId} Prediction, Odds & Picks`,
-    description: BASE.description(`Game ${gameId} prediction and odds`),
-    url: url(`/${sport}/games/${gameId}`),
+    title: `Game ${numericId} Prediction, Odds & Picks`,
+    description: BASE.description(`Game ${numericId} prediction and odds`),
+    url: canonicalPath,
   });
 }
 

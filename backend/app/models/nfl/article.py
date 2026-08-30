@@ -13,7 +13,7 @@ class Article(Base):
     body = Column(Text, nullable=False)
     excerpt = Column(String(500), nullable=True)
     category = Column(String(50), nullable=False, index=True)
-    # game_preview, game_recap, fantasy_advice, betting_pick, team_analysis, general, news
+    # game_preview, game_recap, betting_pick, team_analysis, general, news
     tier = Column(String(20), default="free")  # free, premium
     published = Column(Boolean, default=False)
     published_at = Column(DateTime(timezone=True), nullable=True)

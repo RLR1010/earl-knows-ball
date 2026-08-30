@@ -108,7 +108,7 @@ FLOAT_COLS = {
 
 ALT_ABBR = {
     "GS": "GSW", "NY": "NYK", "SA": "SAS", "NO": "NOP", "PHO": "PHX",
-    "BK": "BKN", "UTAH": "UTA", "WSH": "WAS",
+    "BK": "BKN", "UTA": "UTAH", "WSH": "WAS",
     # Charlotte: ESPN core API returns CHO; our DB stores CHA.
     "CHO": "CHA",
 }

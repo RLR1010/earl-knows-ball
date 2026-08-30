@@ -72,7 +72,15 @@ async def run(started_at=None):
         started_at = _dt.now(_tz.utc)
     step_failures: list[str] = []
 
-    season = date.today().year
+    # Resolve the active/upcoming NBA season from the calendar month. nba.seasons.year
+    # stores the season START year (fall). So: Jul-Dec of year Y => the season that starts
+    # this fall = Y (e.g. Aug 2026 => 2026-27 = year 2026); Jan-Jun of year Y => the season
+    # still running = Y-1 (e.g. Feb 2026 => 2025-26 = year 2025). Previously this was simply
+    # date.today().year, which was off-by-one in winter/spring (and, with the old games-walk,
+    # would have re-ingested the ended season instead of the released-but-uningested one).
+    _m = date.today().month
+    season = date.today().year if _m >= 7 else date.today().year - 1
+    logger.info(f"  active NBA season (month={_m}) -> year {season} ({season}-{season+1})")
 
     # Step 1: nba.games — current season schedule (ESPN), idempotent
     logger.info("[Step 1] Syncing current-season nba.games from ESPN...")

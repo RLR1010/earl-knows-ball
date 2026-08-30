@@ -668,30 +668,9 @@ async def load_games_for_season(
             away_record = away.get("leagueRecord", {})
             home_record = home.get("leagueRecord", {})
 
-            # Extract weather data from API response
-            weather_data = game.get("weather", {}) or {}
-            temp_str = weather_data.get("temp", "")
-            wind_str = weather_data.get("wind", "")
-            try:
-                wind_speed_val = int("".join(c for c in wind_str.split(",")[0] if c.isdigit() or c in ".-"))
-            except (ValueError, IndexError):
-                wind_speed_val = None
-
-            # Parse wind direction
-            wind_dir_val = None
-            if wind_str and "," in wind_str:
-                wpart = wind_str.split(",", 1)[1].strip().lower()
-                if "varies" in wpart:
-                    wind_dir_val = "Varies"
-                elif "out" in wpart:
-                    wind_dir_val = "out"
-                elif "in" in wpart:
-                    wind_dir_val = "in"
-                if not wind_dir_val:
-                    if wpart.startswith("l") and "r" in wpart:
-                        wind_dir_val = "l_to_r"
-                    elif wpart.startswith("r") and "l" in wpart:
-                        wind_dir_val = "r_to_l"
+            # NOTE: weather is intentionally NOT parsed here. The dedicated
+            # mlb_weather_forecast task owns all game weather (see the
+            # temperature=None / weather_condition=None fields below).
 
             # Check if already loaded – update scores/status or insert new
             r = await db.execute(
@@ -711,18 +690,12 @@ async def load_games_for_season(
                 existing_game.home_losses = _safe_int(home_record.get("losses"))
                 existing_game.away_wins = _safe_int(away_record.get("wins"))
                 existing_game.away_losses = _safe_int(away_record.get("losses"))
-                # IMPORTANT: For scheduled/upcoming games the MLB API omits the
-                # weather object, so temp_str/wind/condition come back empty.
-                # Only overwrite weather when the API actually returns it;
-                # otherwise we clobber the forecast the weather-update task
-                # (mlb_weather_forecast) wrote to mlb.games.
-                if temp_str is not None and str(temp_str).strip():
-                    existing_game.temperature = _safe_int(temp_str)
-                if wind_str is not None and str(wind_str).strip():
-                    existing_game.wind_speed = wind_speed_val
-                    existing_game.wind_direction = wind_dir_val
-                if weather_data.get("condition") is not None:
-                    existing_game.weather_condition = weather_data.get("condition")
+                # NOTE: weather is intentionally NOT updated here. The dedicated
+                # weather-update task (mlb_weather_forecast) is the single source
+                # of truth for game weather and enforces the pregame freeze.
+                # Writing MLB-API actual conditions here on a stats refresh would
+                # clobber the frozen forecast and make live picks (forecast)
+                # diverge from the backtest (actual).
                 continue
 
             db_game = MLBGames(
@@ -744,10 +717,12 @@ async def load_games_for_season(
                 home_losses=_safe_int(home_record.get("losses")),
                 away_wins=_safe_int(away_record.get("wins")),
                 away_losses=_safe_int(away_record.get("losses")),
-                temperature=_safe_int(temp_str),
-                wind_speed=wind_speed_val,
-                weather_condition=weather_data.get("condition"),
-                wind_direction=wind_dir_val,
+                # weather fields are intentionally left NULL here; the dedicated
+                # mlb_weather_forecast task owns all game weather.
+                temperature=None,
+                wind_speed=None,
+                weather_condition=None,
+                wind_direction=None,
             )
             db.add(db_game)
             count += 1

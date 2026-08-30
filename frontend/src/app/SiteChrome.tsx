@@ -21,6 +21,7 @@ const SUB_NAV_ITEMS = [
   { label: "Analysis", path: "/analysis" },
   { label: "Teams", path: "/teams" },
   { label: "Props", path: "/props" },
+  { label: "Parlay", path: "/parlay" },
   { label: "Articles", path: "/articles" },
   { label: "Standings", path: "/standings" },
   { label: "Results", path: "/results" },
@@ -56,8 +57,12 @@ export default function SiteChrome({ children }: { children: React.ReactNode }) 
     hideSportChrome || pathname.endsWith("/chat");
   // The chat page manages its own width/padding/height (it's an app-style layout),
   // so <main> should not add site padding there even though the header shows.
+  // The admin section (admin/layout.tsx) renders its own full-width <main> + sidebar,
+  // so it also needs the wider width rather than the universal max-w-6xl column.
   // Everything else gets ONE consistent in-between content column (max-w-6xl).
-  const paddedMain = !pathname.endsWith("/chat");
+  const isAdminScope =
+    pathname === "/admin" || pathname.startsWith("/admin/");
+  const paddedMain = !pathname.endsWith("/chat") && !isAdminScope;
 
   return (
     <>

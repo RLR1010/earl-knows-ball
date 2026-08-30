@@ -239,6 +239,7 @@ async def update_game_weather(
                     weather_condition = :wcond
                 WHERE id = :gid
                   AND status = 'SCHEDULED'
+                  AND date > (NOW() AT TIME ZONE 'utc') + make_interval(mins => :freeze_window)
             """),
             {
                 "gid": game_id,
@@ -246,6 +247,7 @@ async def update_game_weather(
                 "ws": wind_speed,
                 "wdir": wind_effect,
                 "wcond": weather_condition,
+                "freeze_window": FREEZE_WINDOW_MINUTES,
             },
         )
         return True
@@ -282,6 +284,10 @@ async def save_forecast_record(db, game_id: int, forecast_data: dict, wind_effec
 
 FORECAST_LOOKAHEAD_DAYS = 2
 
+# How many minutes before game time weather becomes immutable. We never update
+# weather for a game that is within this window of first pitch (or already begun).
+FREEZE_WINDOW_MINUTES = 20
+
 INDOOR_ROOF_TYPES = {"indoor", "dome", "closed"}
 
 
@@ -305,6 +311,11 @@ async def main(force_refresh: bool = False):
         now_utc = start_of_today.astimezone(timezone.utc)
         lookahead_utc = lookahead.astimezone(timezone.utc)
 
+        # FREEZE rule: never update weather for a game within FREEZE_WINDOW before
+        # first pitch or after it has started. Once we're that close to game time,
+        # the weather is final and the prediction should never see it change again.
+        freeze_cutoff_utc = datetime.now(timezone.utc) + timedelta(minutes=FREEZE_WINDOW_MINUTES)
+
         if force_refresh:
             weather_condition = ""
         else:
@@ -324,10 +335,11 @@ async def main(force_refresh: bool = False):
                   AND g.status = 'SCHEDULED'
                   AND v.latitude IS NOT NULL
                   AND v.longitude IS NOT NULL
+                  AND g.date > :freeze_cutoff_utc
                   {weather_condition}
                 ORDER BY g.date
             """),
-            {"now_utc": now_utc, "lookahead_utc": lookahead_utc},
+            {"now_utc": now_utc, "lookahead_utc": lookahead_utc, "freeze_cutoff_utc": freeze_cutoff_utc},
         )
         games = result.fetchall()
 

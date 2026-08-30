@@ -2004,6 +2004,48 @@ async def update_sport_feature(
         conn.close()
 
 
+class FeatureRebuildRequest(BaseModel):
+    sport: str
+
+
+@router.post("/features/{sport}/rebuild-pickcard")
+async def rebuild_sport_pickcard_features(
+    sport: str,
+    body: FeatureRebuildRequest,
+    admin: User = Depends(get_admin_user),
+):
+    """Rebuild stored pick-card feature JSON for all predicted games of a sport.
+
+    Reads the latest feature display_name/description/pick_card flags from the
+    admin edits in `/admin/features` and writes them back into the
+    `features_json` column of every `{sport}.game_predictions` row, so the game
+    details page reflects the changes immediately.
+
+    Heavy + CPU-bound (pandas feature building / psycopg2): the NBA/NFL paths
+    are sync, so they run in a worker thread; MLB is async and is awaited.
+    """
+    sport = sport.lower()
+    if sport not in ("mlb", "nfl", "nba"):
+        raise HTTPException(status_code=404, detail=f"Unknown sport: {sport}")
+
+    async def _run() -> dict:
+        if sport == "mlb":
+            from app.scripts.backfill_mlb_features_json_raw import \
+                backfill_mlb_pick_card_json_async
+            return await backfill_mlb_pick_card_json_async()
+        elif sport == "nfl":
+            from app.scripts.backfill_nfl_features_json_raw import \
+                backfill_nfl_pick_card_json
+            return await asyncio.to_thread(backfill_nfl_pick_card_json)
+        else:  # nba
+            from app.scripts.backfill_nba_features_json_raw import \
+                backfill_nba_pick_card_json
+            return await asyncio.to_thread(backfill_nba_pick_card_json)
+
+    result = await _run()
+    return {"status": "ok", "sport": sport, "result": result}
+
+
 class FeatureReorder(BaseModel):
     sport: str
     a: str
@@ -2063,12 +2105,23 @@ async def reorder_sport_features(
                 cur.execute(f"UPDATE {sport}.features SET sort_order = %s WHERE name = %s", (order_a, body.b))
             # Normalize: reassign sequential 0..N-1 ordered by sort_order so
             # swaps never leave gaps that reorder later rows unintuitively.
+            # PER-SECTION: renumber within each pick_card_section group so
+            # reordering one section never shifts rows in another. NULL/""
+            # sections are their own trailing group (consistent with the admin
+            # UI, which sorts features into their defined sections).
             cur.execute(
-                f"SELECT name FROM {sport}.features ORDER BY sort_order NULLS LAST, name"
+                f"SELECT name, COALESCE(pick_card_section, '') AS section "
+                f"FROM {sport}.features ORDER BY pick_card_section NULLS LAST, sort_order NULLS LAST, name"
             )
-            names = [r["name"] for r in cur.fetchall()]
-            for i, n in enumerate(names):
-                cur.execute(f"UPDATE {sport}.features SET sort_order = %s WHERE name = %s", (i, n))
+            rows_for_num = cur.fetchall()
+            sec_seq = 0
+            cur_section = None
+            for r in rows_for_num:
+                if r["section"] != cur_section:
+                    cur_section = r["section"]
+                    sec_seq = 0
+                cur.execute(f"UPDATE {sport}.features SET sort_order = %s WHERE name = %s", (sec_seq, r["name"]))
+                sec_seq += 1
         conn.commit()
         return {"swapped": [body.a, body.b]}
     finally:

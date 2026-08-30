@@ -197,8 +197,7 @@ async def run(started_at=None):
                 boxscore_result = await refresh_boxscores_for_recent_games(pconn)
                 logger.info(f"  Boxscores: {boxscore_result['games_processed']} games, "
                             f"{boxscore_result['batting_rows']} batting rows, "
-                            f"{boxscore_result['pitching_rows']} pitching rows, "
-                            f"{boxscore_result.get('weather_updated', 0)} weather updates")
+                            f"{boxscore_result['pitching_rows']} pitching rows")
             except Exception as e:
                 logger.error(f"  Boxscore loading failed: {e}")
                 step_failures.append(f"Boxscores: {e}")

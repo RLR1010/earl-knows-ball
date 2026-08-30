@@ -203,6 +203,9 @@ team_games AS (
         hcs.cum_ortg               AS h_cum_ortg,
         hcs.cum_drtg               AS h_cum_drtg,
         hcs.cum_net_ortg           AS h_cum_net_ortg,
+        hcs.cum_adj_ortg           AS h_cum_adj_ortg,
+        hcs.cum_adj_drtg           AS h_cum_adj_drtg,
+        hcs.cum_sos                AS h_sos,
         hcs.cum_pace               AS h_cum_pace,
         hcs.cum_efg_pct            AS h_cum_efg_pct,
         hcs.cum_opp_efg_pct        AS h_cum_opp_efg_pct,
@@ -299,6 +302,9 @@ team_games AS (
         acs.cum_ortg               AS a_cum_ortg,
         acs.cum_drtg               AS a_cum_drtg,
         acs.cum_net_ortg           AS a_cum_net_ortg,
+        acs.cum_adj_ortg           AS a_cum_adj_ortg,
+        acs.cum_adj_drtg           AS a_cum_adj_drtg,
+        acs.cum_sos                AS a_sos,
         acs.cum_pace               AS a_cum_pace,
         acs.cum_efg_pct            AS a_cum_efg_pct,
         acs.cum_opp_efg_pct        AS a_cum_opp_efg_pct,
@@ -404,6 +410,9 @@ team_games AS (
         pts_h.cum_stl_rate         AS h_prior_cum_stl_rate,
         pts_h.cum_blk_rate         AS h_prior_cum_blk_rate,
         pts_h.cum_win_pct          AS h_prior_cum_win_pct,
+        pts_h.cum_adj_ortg         AS h_prior_cum_adj_ortg,
+        pts_h.cum_adj_drtg         AS h_prior_cum_adj_drtg,
+        pts_h.cum_sos              AS h_prior_sos,
         pts_h.rw3_ppg              AS h_prior_rw3_ppg,
         pts_h.rw5_ppg              AS h_prior_rw5_ppg,
         pts_h.rw3_net_rtg          AS h_prior_rw3_net_rtg,
@@ -475,6 +484,9 @@ team_games AS (
         pts_a.cum_stl_rate         AS a_prior_cum_stl_rate,
         pts_a.cum_blk_rate         AS a_prior_cum_blk_rate,
         pts_a.cum_win_pct          AS a_prior_cum_win_pct,
+        pts_a.cum_adj_ortg         AS a_prior_cum_adj_ortg,
+        pts_a.cum_adj_drtg         AS a_prior_cum_adj_drtg,
+        pts_a.cum_sos              AS a_prior_sos,
         pts_a.rw3_ppg              AS a_prior_rw3_ppg,
         pts_a.rw5_ppg              AS a_prior_rw5_ppg,
         pts_a.rw3_net_rtg          AS a_prior_rw3_net_rtg,
@@ -674,6 +686,7 @@ team_games AS (
         ) prs ON true
         WHERE ap.team_id = g.home_team_id
           AND ap.game_id = heff.eff
+          AND ap.status <> 'INACTIVE'   -- injury/health scratches excluded from ACTIVE roster sum
     ) h_actv ON true
     -- Starter-only equivalent of the home active-roster aggregate: identical
     -- player_rolling_stats prior read (leak-safe), but only players flagged
@@ -702,6 +715,7 @@ team_games AS (
         WHERE ap.team_id = g.home_team_id
           AND ap.is_starter
           AND ap.game_id = heff.eff
+          AND ap.status <> 'INACTIVE'
     ) h_actv_st ON true
     LEFT JOIN LATERAL (
         SELECT
@@ -721,6 +735,7 @@ team_games AS (
         ) prs ON true
         WHERE ap.team_id = g.away_team_id
           AND ap.game_id = aeff.eff
+          AND ap.status <> 'INACTIVE'   -- injury/health scratches excluded from ACTIVE roster sum
     ) a_actv ON true
     LEFT JOIN LATERAL (
         SELECT
@@ -745,6 +760,7 @@ team_games AS (
         WHERE ap.team_id = g.away_team_id
           AND ap.is_starter
           AND ap.game_id = aeff.eff
+          AND ap.status <> 'INACTIVE'
     ) a_actv_st ON true
     LEFT JOIN nba.prior_team_stats pts_h
         ON pts_h.team_id = g.home_team_id AND pts_h.season_year = s.year - 1
@@ -1003,6 +1019,11 @@ class NBADataLoader:
         -------
         DataFrame with raw game data.
         """
+        # Track whether this is a sparse single/batch-game inference load (game_ids
+        # given) vs a full-season training load.  Used by _build_features to pad
+        # team_games with each team's prior games so rest/travel/fatigue features
+        # are computed against the true previous game (not NaN/0).
+        self._sparse_inference = game_ids is not None
         query = GAME_QUERY
 
         where_parts: List[str] = []
@@ -1090,6 +1111,9 @@ class NBADataLoader:
         limit: Optional[int] = None,
     ) -> pd.DataFrame:
         """Load data for inference on specific (or recent) games."""
+        self._inference_requested = (
+            list(game_ids) if game_ids is not None else None
+        )
         df = self.load_games(
             seasons=None,
             status=None,
@@ -1160,7 +1184,82 @@ class NBADataLoader:
 
     def _build_features(self, df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
         """Apply module-level feature engineering and order columns."""
+        kwargs.setdefault("sparse_inference", getattr(self, "_sparse_inference", False))
+
+        # ── Sparse-inference context padding ──────────────────────────────────────
+        # When only a handful of games are loaded (admin inspection / batch picks),
+        # every schedule-derived feature (_venue_lookup split-blend, team_games
+        # rest/travel/fatigue) is computed by counting the team's PRIOR games inside
+        # `df`.  With n_prev=0 the venue-blend collapses to last-season anchors, and
+        # rest/travel go missing — producing values that do NOT match training (which
+        # loads the full season).  To make admin == training == live inference, pad
+        # `df` with each team's recent through-date games FIRST, run the whole feature
+        # pipeline over the padded set, then slice the result back to only the
+        # originally-requested game_ids.  Padding is strictly chronological BEFORE the
+        # earliest requested game, so no leakage.  Training (full-season) is untouched.
+        if kwargs.get("sparse_inference", False) and len(df) > 0:
+            requested = list(getattr(self, "_inference_requested", None) or [])
+            if not requested:
+                requested = sorted(int(x) for x in df["game_id"].unique().tolist())
+            try:
+                _min_dt = pd.to_datetime(df["date"]).min().strftime("%Y-%m-%d")
+                # Context must support BOTH engines and match TRAINING's scope exactly:
+                #  - Training loads REG-only games across all seasons
+                #    (load_data(seasons=[...], game_types=['REG'])), so `team_games`
+                #    rest_days/fatigue uses the prior REGULAR-SEASON game (shift(1))
+                #    and _venue_lookup counts REG-only venue splits.
+                #  - To be pixel-identical, pad with the SAME scope: REG games only,
+                #    any season, strictly before the earliest requested date.  This
+                #    correctly captures the season-boundary prior REG game (e.g. season
+                #    34's finale is the prior REG game for a season-35 opener).
+                _teams = sorted({
+                    int(x) for x in
+                    list(df["home_team_id"]) + list(df["away_team_id"])
+                })
+                _tl = ", ".join(str(t) for t in _teams)
+                with create_engine(DEFAULT_DB_URL).connect() as _ctx_conn:
+                    _ctx = pd.read_sql(f"""
+                        SELECT g.id AS game_id, g.season_id, g.date,
+                               g.home_team_id, g.away_team_id,
+                               g.home_score, g.away_score, g.game_type, g.status,
+                               ht.abbreviation AS home_abbr,
+                               at.abbreviation AS away_abbr
+                        FROM nba.games g
+                        JOIN nba.teams ht ON ht.id = g.home_team_id
+                        JOIN nba.teams at ON at.id = g.away_team_id
+                        WHERE (g.home_team_id IN ({_tl}) OR g.away_team_id IN ({_tl}))
+                          AND g.date::date < DATE '{_min_dt}'
+                          AND g.game_type = 'REG'
+                          AND g.status = 'FINAL'
+                        ORDER BY g.date DESC
+                    """, _ctx_conn)
+                if len(_ctx):
+                    # Bound rows: a full REG season is <=82 games/team; keep a little
+                    # margin so both the season-boundary prior REG game and a full
+                    # season of venue history are present.
+                    _keep = set()
+                    for _t in _teams:
+                        _sub = _ctx[(_ctx["home_team_id"] == _t) |
+                                    (_ctx["away_team_id"] == _t)]
+                        _keep |= set(_sub.nlargest(95, "date")["game_id"].tolist())
+                    _ctx = _ctx[_ctx["game_id"].isin(_keep)]
+                    # avoid dup if a prior game is already in df
+                    _have = set(df["game_id"].tolist())
+                    _ctx = _ctx[~_ctx["game_id"].isin(_have)]
+                    if len(_ctx):
+                        df = pd.concat([df, _ctx], ignore_index=True)
+                        self._inference_requested = requested
+            except Exception as _e:
+                print(f"[data_loader] df context padding skipped: {_e}")
+
         df = build_features(df, **kwargs)
+
+        # Slice back to only the originally-requested games (context padding rows
+        # must never leak into the feature matrix / predictions).
+        if kwargs.get("sparse_inference", False) and len(df) > 0:
+            requested = list(getattr(self, "_inference_requested", None) or [])
+            if requested and "game_id" in df.columns:
+                df = df[df["game_id"].isin(requested)].copy()
 
         known = set(self._catalog.keys())
         keep = [c for c in df.columns if c in known]
@@ -1282,6 +1381,9 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
         "h_cum_ast_ratio": "cum_ast_ratio",
         "h_cum_stl_rate": "cum_stl_rate",
         "h_cum_blk_rate": "cum_blk_rate",
+        "h_cum_adj_ortg": "cum_adj_ortg",
+        "h_cum_adj_drtg": "cum_adj_drtg",
+        "h_sos": "cum_sos",
         "h_games_played": "games_played",
 
         # Tier 4: Momentum & recency
@@ -1390,6 +1492,9 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
         "a_cum_ast_ratio": "cum_ast_ratio",
         "a_cum_stl_rate": "cum_stl_rate",
         "a_cum_blk_rate": "cum_blk_rate",
+        "a_cum_adj_ortg": "cum_adj_ortg",
+        "a_cum_adj_drtg": "cum_adj_drtg",
+        "a_sos": "cum_sos",
         "a_games_played": "games_played",
 
         # Tier 4: Momentum & recency
@@ -1458,6 +1563,9 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
 
     # Combine and sort
     team_games = pd.concat([home_half, away_half], ignore_index=True)
+    team_games.sort_values(["team_id", "date", "game_id"], inplace=True)
+    team_games.reset_index(drop=True, inplace=True)
+
     team_games.sort_values(["team_id", "date", "game_id"], inplace=True)
     team_games.reset_index(drop=True, inplace=True)
 

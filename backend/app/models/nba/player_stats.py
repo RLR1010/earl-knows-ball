@@ -57,9 +57,6 @@ class NBAPlayerSeasonStats(Base):
     true_shooting_pct = Column(Float, nullable=True)
     usage_pct = Column(Float, nullable=True)
 
-    # Fantasy
-    fantasy_points = Column(Float, nullable=True)
-    
     player = relationship("NBAPlayer", back_populates="season_stats")
     season = relationship("NBASeason")
     team = relationship("NBATeam")

@@ -40,7 +40,6 @@ class NBAPlayerGameStats(Base):
     fouls_personal = Column(Integer, nullable=True)
     points = Column(Integer, nullable=True)
     plus_minus = Column(Float, nullable=True)
-    fantasy_points = Column(Float, nullable=True)
 
     # NBA API game ID (0022501053 format) for reference
     nba_game_id = Column(String(20), nullable=True, index=True)

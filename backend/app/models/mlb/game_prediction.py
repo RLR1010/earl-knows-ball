@@ -73,6 +73,7 @@ class MLBGamePrediction(Base):
     situational_json = Column(Text, nullable=True, comment="JSON — MLBSituationalAnalyzer.to_dict()")
     splits_json = Column(Text, nullable=True, comment="JSON — MLBSplitAnalyzer.to_dict()")
     features_json = Column(Text, nullable=True, comment="JSON — pick_card feature values at prediction time")
+    features_used_json = Column(Text, nullable=True, comment="JSON — FULL model-input feature vector (name→value) that actually went into inference at prediction time")
     shap_json = Column(Text, nullable=True, comment="JSON — SHAP feature attribution (top contributors) at prediction time")
     created_at = Column(
         DateTime(timezone=True),

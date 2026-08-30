@@ -35,7 +35,7 @@ INSERT_COLS = [
     "rebounds", "offensive_rebounds", "defensive_rebounds", "rebounds_per_game",
     "assists", "assists_per_game", "turnovers", "assists_turnover_ratio",
     "steals", "blocks", "personal_fouls", "plus_minus",
-    "efficiency", "true_shooting_pct", "usage_pct", "fantasy_points",
+    "efficiency", "true_shooting_pct", "usage_pct",
 ]
 
 PARSE_MINUTES = """
@@ -115,11 +115,7 @@ def _compute_result_row(player_id, team_id, season_id, last_team_game,
            - (fga - fgm) - (fta - ftm) - tov)
     tsa = fga + 0.44 * fta
     tsp = round(points / max(2 * tsa, 1), 3)
-    fp = round(points
-               + 0.5 * fgm + 1.5 * tpm + 1.0 * ftm
-               + 1.2 * reb + 1.5 * ast + 2.0 * stl + 2.0 * blk
-               - 1.0 * tov - 0.5 * pf
-               - 0.5 * (fga - fgm) - 0.5 * (fta - ftm), 1)
+
 
     return {
         "player_id": player_id,
@@ -154,7 +150,6 @@ def _compute_result_row(player_id, team_id, season_id, last_team_game,
         "efficiency": eff,
         "true_shooting_pct": tsp,
         "usage_pct": None,
-        "fantasy_points": fp,
     }
 
 

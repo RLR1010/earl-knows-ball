@@ -49,7 +49,7 @@ SORT_COLS = {
     "rebounds", "rebounds_per_game", "steals", "blocks",
     "field_goal_pct", "three_point_pct", "free_throw_pct",
     "games_played", "minutes_played", "turnovers",
-    "fantasy_points", "efficiency",
+    "efficiency",
 }
 
 
@@ -98,7 +98,6 @@ async def nba_player_stats(
         ps.blocks,
         ps.personal_fouls,
         ps.plus_minus,
-        ps.fantasy_points,
         ps.efficiency
     FROM nba.player_season_stats ps
     JOIN nba.players p ON p.id = ps.player_id
@@ -409,11 +408,12 @@ async def nba_game_prop_bets(
 
 @router.get("/nba/seasons")
 async def nba_seasons(db: AsyncSession = Depends(get_db)):
-    """Return years that have NBA games in the database."""
+    """Return years that have NBA games in the database (2022-23 season onward)."""
     result = await db.execute(
         text("""
             SELECT DISTINCT s.year FROM nba.seasons s
             INNER JOIN nba.games g ON g.season_id = s.id
+            WHERE s.year >= 2022
             ORDER BY s.year DESC
         """)
     )
@@ -684,7 +684,6 @@ async def nba_player_profile(player_id: int, db: AsyncSession = Depends(get_db))
             "blocks": ss.blocks,
             "turnovers": ss.turnovers,
             "personal_fouls": ss.personal_fouls,
-            "fantasy_points": ss.fantasy_points,
         })
 
     # Career totals

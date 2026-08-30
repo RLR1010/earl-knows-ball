@@ -47,7 +47,7 @@ def _map_category(title: str, body: str = "") -> str:
     if any(w in t for w in ["draft", "lottery", "pick", "prospect"]):
         return "team_analysis"
     if any(w in t for w in ["fantasy", "roto", "dfs"]):
-        return "fantasy_advice"
+        return "general"
     if any(w in t for w in ["betting", "odds", "over/under", "spread"]):
         return "betting_pick"
     if any(w in t for w in ["injury", "out", "return", "surgery"]):

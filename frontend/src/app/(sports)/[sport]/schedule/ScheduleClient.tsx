@@ -5,6 +5,23 @@ import { useParams, useSearchParams, useRouter } from "next/navigation";
 import { api, Game } from "@/lib/api";
 import GameCalendar from "@/components/GameCalendar";
 import ScheduleGameCard, { type CardSport } from "@/components/ScheduleGameCard";
+import { buildGameSlug } from "@/lib/team-names";
+
+/** Build a readable game-page href, falling back to the numeric id URL. */
+function gameHref(
+  sport: string,
+  g: { id: number; home_team?: string | null; away_team?: string | null; date?: string },
+  query: string
+): string {
+  const slug = buildGameSlug(
+    sport as "mlb" | "nfl" | "nba",
+    g.home_team || "",
+    g.away_team || "",
+    g.date || "",
+    g.id
+  );
+  return `/${sport}/games/${slug ?? g.id}${query}`;
+}
 import { useSeo } from "@/components/Seo";
 
 // Regular season (1-18) + playoffs (19-22). Preseason weeks are stored in a
@@ -398,7 +415,7 @@ function NBASchedule({ sport }: { sport: string }) {
               key={g.id}
               game={g}
               sport={sport as CardSport}
-              href={`/${sport}/games/${g.id}?year=${year}&date=${selectedDate}`}
+              href={gameHref(sport, g, `?year=${year}&date=${selectedDate}`)}
             />
           ))}
         </div>
@@ -626,7 +643,7 @@ function MLBSchedule({ sport }: { sport: string }) {
               key={g.id}
               game={g}
               sport={sport as CardSport}
-              href={`${sport}/games/${g.id}?year=${year}&date=${selectedDate}`}
+              href={gameHref(sport, g, `?year=${year}&date=${selectedDate}`)}
             />
           ))}
         </div>
@@ -652,6 +669,19 @@ function NFLSchedule({ sport }: { sport: string }) {
     return yp ? parseInt(yp) : CURRENT_YEAR;
   });
   const [loading, setLoading] = useState(true);
+  const [availableYears, setAvailableYears] = useState<number[]>([CURRENT_YEAR]);
+
+  // Pull real seasons from the backend (clamped to the 2022 season onward),
+  // so the NFL dropdown only offers years >= 2022.
+  useEffect(() => {
+    api.seasons
+      .list()
+      .then((years: number[]) => {
+        setAvailableYears(years.length ? years : [seasonYear]);
+      })
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     const params = new URLSearchParams(searchParams.toString());
@@ -704,7 +734,7 @@ function NFLSchedule({ sport }: { sport: string }) {
       <div className="flex items-center gap-3">
         <select value={seasonYear} onChange={e => setSeasonYear(Number(e.target.value))}
           className="bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 text-sm text-gray-300">
-          {[CURRENT_YEAR, 2025, 2024, 2023, 2022, 2021, 2020].map(y => (
+          {availableYears.map(y => (
             <option key={y} value={y} className="bg-gray-900">{y}</option>
           ))}
         </select>
@@ -757,7 +787,7 @@ function NFLSchedule({ sport }: { sport: string }) {
               key={g.id}
               game={g}
               sport={sport as CardSport}
-              href={`${sport}/games/${g.id}?year=${seasonYear}&week=${week}`}
+              href={gameHref(sport, g, `?year=${seasonYear}&week=${week}`)}
             />
           ))}
         </div>
