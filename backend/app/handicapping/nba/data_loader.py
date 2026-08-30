@@ -410,6 +410,8 @@ team_games AS (
         pts_h.cum_stl_rate         AS h_prior_cum_stl_rate,
         pts_h.cum_blk_rate         AS h_prior_cum_blk_rate,
         pts_h.cum_win_pct          AS h_prior_cum_win_pct,
+        hrs_hv_prev.venue_win_pct_r10 AS h_prior_home_win_pct_r10,
+        cgs_hv_prev.venue_win_pct_season AS h_prior_home_win_pct_season,
         pts_h.cum_adj_ortg         AS h_prior_cum_adj_ortg,
         pts_h.cum_adj_drtg         AS h_prior_cum_adj_drtg,
         pts_h.cum_sos              AS h_prior_sos,
@@ -484,6 +486,8 @@ team_games AS (
         pts_a.cum_stl_rate         AS a_prior_cum_stl_rate,
         pts_a.cum_blk_rate         AS a_prior_cum_blk_rate,
         pts_a.cum_win_pct          AS a_prior_cum_win_pct,
+        ars_av_prev.venue_win_pct_r10 AS a_prior_away_win_pct_r10,
+        cgs_av_prev.venue_win_pct_season AS a_prior_away_win_pct_season,
         pts_a.cum_adj_ortg         AS a_prior_cum_adj_ortg,
         pts_a.cum_adj_drtg         AS a_prior_cum_adj_drtg,
         pts_a.cum_sos              AS a_prior_sos,
@@ -582,6 +586,23 @@ team_games AS (
               ORDER BY rs2.game_date DESC, rs2.game_id DESC LIMIT 1)
         ) AS prior_game_id
     ) a_prio_side ON true
+    -- Prior-season venue-side pointer: the home team's last HOME game of the PRIOR
+    -- season (and away team's last ROAD game), so venue win-pct features can blend
+    -- in the prior season when this-season venue games are still sparse.
+    LEFT JOIN LATERAL (
+        SELECT cgs3.game_id AS prior_game_id
+        FROM nba.cumulative_game_stats cgs3 JOIN nba.games g3 ON g3.id = cgs3.game_id
+        WHERE cgs3.team_id = g.home_team_id AND cgs3.team_side = 'home'
+          AND g3.season_id = g.season_id - 1 AND g3.game_type = 'REG'
+        ORDER BY g3.date DESC, cgs3.game_id DESC LIMIT 1
+    ) h_prio_side_prev ON true
+    LEFT JOIN LATERAL (
+        SELECT cgs3.game_id AS prior_game_id
+        FROM nba.cumulative_game_stats cgs3 JOIN nba.games g3 ON g3.id = cgs3.game_id
+        WHERE cgs3.team_id = g.away_team_id AND cgs3.team_side = 'away'
+          AND g3.season_id = g.season_id - 1 AND g3.game_type = 'REG'
+        ORDER BY g3.date DESC, cgs3.game_id DESC LIMIT 1
+    ) a_prio_side_prev ON true
     LEFT JOIN LATERAL (
         SELECT cgs.* FROM nba.cumulative_game_stats cgs
         WHERE cgs.team_id = g.home_team_id AND cgs.game_id = h_prio.prior_game_id
@@ -633,6 +654,33 @@ team_games AS (
           AND cgs.team_side = 'away'
           AND cgs.game_id = a_prio_side.prior_game_id
     ) cgs_av ON true
+    -- Prior-season venue win pct for the blend (read the PRIOR season's last
+    -- HOME/ROAD row so h_home_win_pct_*/a_away_win_pct_* pull in last year's
+    -- home/road form instead of sitting at 0.0 for sparse early-season venues).
+    LEFT JOIN LATERAL (
+        SELECT rs.venue_win_pct_r10
+        FROM nba.team_rolling_stats rs
+        WHERE rs.team_id = g.home_team_id AND rs.team_side = 'home'
+          AND rs.game_id = h_prio_side_prev.prior_game_id
+    ) hrs_hv_prev ON true
+    LEFT JOIN LATERAL (
+        SELECT rs.venue_win_pct_r10
+        FROM nba.team_rolling_stats rs
+        WHERE rs.team_id = g.away_team_id AND rs.team_side = 'away'
+          AND rs.game_id = a_prio_side_prev.prior_game_id
+    ) ars_av_prev ON true
+    LEFT JOIN LATERAL (
+        SELECT cgs.venue_win_pct_season
+        FROM nba.cumulative_game_stats cgs
+        WHERE cgs.team_id = g.home_team_id AND cgs.team_side = 'home'
+          AND cgs.game_id = h_prio_side_prev.prior_game_id
+    ) cgs_hv_prev ON true
+    LEFT JOIN LATERAL (
+        SELECT cgs.venue_win_pct_season
+        FROM nba.cumulative_game_stats cgs
+        WHERE cgs.team_id = g.away_team_id AND cgs.team_side = 'away'
+          AND cgs.game_id = a_prio_side_prev.prior_game_id
+    ) cgs_av_prev ON true
     -- ── Active-player aggregates (the core active-roster feature) ──
     -- For each team use the TARGET game's OWN active roster (nba.active_players
     -- rows for game g) when present -- the active roster is knowable before
@@ -1785,9 +1833,17 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
     #  2. Rest days & back-to-back
     # ═══════════════════════════════════════════════════════════════════════════
 
-    team_games["prev_date"] = team_games.groupby("team_abbr")["date"].shift(1)
+    # Rest days must be measured in LOCAL calendar dates, NOT raw UTC datetimes.
+    # NBA evening games are stored as e.g. 22:30 UTC, which can be a day ahead of
+    # the true local game date; subtracting raw UTC timestamps then collapses a
+    # 1-day-22h gap to `.dt.days == 1` (reads as back-to-back) when the team truly
+    # rested 2 calendar days. Convert both sides to America/Chicago dates first.
+    _tz = "America/Chicago"
+    _raw = pd.Series(team_games["date"])
+    _utc = _raw.dt.tz_convert("UTC") if _raw.dt.tz is not None else _raw.dt.tz_localize("UTC")
+    _d = _utc.dt.tz_convert(_tz).dt.normalize()
     team_games["rest_days"] = (
-        team_games["date"] - team_games["prev_date"]
+        _d - _d.groupby(team_games["team_abbr"]).shift(1)
     ).dt.days
     team_games["b2b"] = (team_games["rest_days"] == 1).astype(int)
 
