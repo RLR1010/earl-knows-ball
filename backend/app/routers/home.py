@@ -163,7 +163,7 @@ def _pick_aliases(kind: str):
     shared pick_* / result_* shape."""
     if kind == "mlb":
         return {
-            "pick_spread": "gp.run_line_pick AS pick_spread",
+            "pick_spread": "CASE WHEN gp.run_line_pick IS NOT NULL THEN SPLIT_PART(gp.run_line_pick, ' ', 1) ELSE NULL END AS pick_spread",
             "pick_over_under": "gp.ou_pick AS pick_over_under",
             "pick_moneyline": "gp.ml_pick AS pick_moneyline",
             "pick_ats_ev": "gp.ats_ev AS pick_ats_ev",

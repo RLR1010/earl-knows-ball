@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as React from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import GameCalendar from "@/components/GameCalendar";
@@ -45,6 +45,14 @@ const NFL_TEAMS: Record<string, { name: string; conf: string; div: string }> = {
   ten: { name: "Titans", conf: "AFC", div: "South" },
   was: { name: "Commanders", conf: "NFC", div: "East" },
 };
+
+// In-memory cache for a team's full-season games, keyed by "<sport>:<ABBR>:<year>".
+// Prevents re-fetching (and the games-loading flash / schedule reload) when the
+// schedule's dynamic /{year}/{month} route re-renders or remounts (e.g. base
+// /teams/{abbr} deep-linking to /teams/{abbr}/{year}/{month}, or any re-render
+// during month navigation). Month is only a client-side filter, so a season's games
+// never need to be re-fetched for a month change.
+const gamesCache = new Map<string, any[]>();
 
 // Shared team metadata maps
 const getTeamsForSport = (sport: string): Record<string, { name: string; conf: string; div: string }> => {
@@ -305,12 +313,16 @@ function BoxScoreTable({ teamAbbr, players }: { teamAbbr: string; players: BoxSc
 
 // ── Page Component ───────────────────────────────────────────────────
 export default function TeamDetailPage() {
-  const routeParams = useParams<{ sport: string; abbreviation: string }>();
+  const routeParams = useParams<{ sport: string; abbreviation: string; season?: string; month?: string }>();
   const searchParams = useSearchParams();
   const router = useRouter();
   const sport = routeParams?.sport || "nfl";
   const abbr = routeParams?.abbreviation?.toLowerCase() || "";
   const abbrUpper = abbr.toUpperCase();
+  // Season/month from the dynamic URL path (e.g. /nba/teams/BOS/2026/November).
+  // NFL uses season-only; MLB/NBA use season + month.
+  const urlSeason = routeParams?.season ? Number(routeParams.season) : NaN;
+  const urlMonth = routeParams?.month || null;
   const teams = getTeamsForSport(sport);
   const meta = teams[abbr];
 
@@ -321,6 +333,131 @@ export default function TeamDetailPage() {
   const [games, setGames] = useState<any[]>([]);
   const [gamesLoading, setGamesLoading] = useState(false);
   const isMLB = sport === "mlb";
+  const isNBA = sport === "nba";
+
+  const [seasonYear, setSeasonYear] = useState(() => {
+    // MLB follows calendar year; NBA season is keyed by the backend (`/api/nba/seasons`),
+    // where the year is the season's label in nba.seasons (e.g. 2026 = the 2025-26 season).
+    // Prefer the season from the dynamic URL path; fall back to current calendar year.
+    // The backend seasons fetch below corrects it to the most recent valid season if needed.
+    if (Number.isFinite(urlSeason) && urlSeason > 1946 && urlSeason < 2100) return urlSeason;
+    return new Date().getFullYear();
+  });
+
+  // Month-based schedule navigation (NBA/MLB). MLB runs Mar-Oct; NBA Oct-Jun.
+  // NFL has no months (season-only URL). Months are represented by name in the URL,
+  // e.g. /nba/teams/BOS/2026/November. Memoized so it's a STABLE reference (a fresh
+  // array literal each render would make the URL-follow effect below fire on every
+  // render and clobber activeMonth back to the stale urlMonth, breaking forward nav).
+  const teamMonths: string[] = useMemo(
+    () =>
+      isNBA
+        ? ["October", "November", "December", "January", "February", "March", "April", "May", "June"]
+        : isMLB
+          ? ["March", "April", "May", "June", "July", "August", "September", "October"]
+          : [],
+    [isNBA, isMLB]
+  );
+
+  // Default to the CURRENT calendar month when it's a valid month for this season;
+  // otherwise the first month of the season. The games-loading effect below refines
+  // this to the current month only if that team actually has games in it.
+  const currentMonthName =
+    typeof window !== "undefined"
+      ? new Date().toLocaleString("en-US", { month: "long" })
+      : "";
+  const initialMonth =
+    typeof urlMonth === "string" && teamMonths.includes(urlMonth)
+      ? urlMonth
+      : teamMonths.includes(currentMonthName)
+        ? currentMonthName
+        : teamMonths[0] ?? null;
+  const [activeMonth, setActiveMonth] = useState<string | null>(initialMonth);
+  // True once the user explicitly navigated (month buttons or season select), so the
+  // games-based default below never overrides a deliberate choice.
+  const userPickedMonth = useRef(false);
+
+  // When the URL month changes (e.g. user hits back/forward button), follow it.
+  // Depends ONLY on urlMonth (teamMonths is stable) so it won't run on every render
+  // and undo an in-flight forward/backward month navigation.
+  useEffect(() => {
+    if (userPickedMonth.current) {
+      userPickedMonth.current = false;
+      return;
+    }
+    const m = typeof urlMonth === "string" && teamMonths.includes(urlMonth) ? urlMonth : null;
+    if (m) setActiveMonth(m);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [urlMonth]);
+
+  // Once the season's games load, set the schedule ready + (ONLY when the user
+  // landed on the bare /teams/{abbr} URL with NO month in the path) pick the default
+  // month: the CURRENT calendar month if the team has games that month, else the
+  // first month of the season that has games. If a month IS already in the URL,
+  // never auto-snap — that would yank the user away from the month they navigated
+  // to. NFL (no month grid) is untouched.
+  const [scheduleReady, setScheduleReady] = useState(false);
+  useEffect(() => {
+    if (teamMonths.length === 0) {
+      setScheduleReady(true); // NFL
+      return;
+    }
+    if (urlMonth != null) {
+      // A month is already in the URL (user navigated / deep-linked) — respect it.
+      setScheduleReady(true);
+      return;
+    }
+    if (!Array.isArray(games) || games.length === 0) return; // wait for games
+    const monthOf = (dateStr: string) => new Date(dateStr).toLocaleString("en-US", { month: "long" });
+    const monthsWithGames = new Set(games.map((g: any) => monthOf(g?.game_date ?? g?.date ?? "")));
+    let target = monthsWithGames.has(currentMonthName) ? currentMonthName : null;
+    if (!target) {
+      target = teamMonths.find((m) => monthsWithGames.has(m)) ?? teamMonths[0];
+    }
+    setActiveMonth(target);
+    setScheduleReady(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [games, seasonYear, teamMonths]);
+
+  // Explicit user month selection (used by the month ‹ › buttons). Marks userPicked
+  // so neither the URL-follow nor the games-default effect can override it, then
+  // pushes the new month URL (back button returns to the previous month).
+  const pickMonth = (m: string | null) => {
+    userPickedMonth.current = true;
+    setActiveMonth(m);
+    navigateSchedule(seasonYear, m);
+  };
+
+  // When the URL season changes (back/forward button), follow it.
+  useEffect(() => {
+    if (Number.isFinite(urlSeason) && urlSeason > 1946 && urlSeason < 2100) {
+      setSeasonYear(urlSeason);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [urlSeason]);
+
+  // Canonical schedule URL: NFL = /{sport}/teams/{abbr}/{season}; MLB/NBA add /{month}.
+  const scheduleUrl = useCallback(
+    (sport: string, abbr: string, year: number, monthName: string | null, hasMonth: boolean) => {
+      if (hasMonth) {
+        return `/${sport}/teams/${abbr}/${year}/${monthName ?? teamMonths[0] ?? ""}`;
+      }
+      return `/${sport}/teams/${abbr}/${year}`;
+    },
+    [teamMonths]
+  );
+
+  // Navigate to a season/month schedule URL. Uses router.push so the back button
+  // returns to the previous season/month the user was viewing.
+  const navigateSchedule = useCallback(
+    (year: number, monthName: string | null) => {
+      const hasMonth = isMLB || isNBA;
+      const url = scheduleUrl(sport, abbrUpper, year, monthName, hasMonth);
+      // Always target the schedule tab (session/month nav lives inside it).
+      router.push(url, { scroll: false });
+    },
+    [sport, abbrUpper, isMLB, isNBA, scheduleUrl, router]
+  );
 
   const teamName = team?.name || meta?.name || abbrUpper;
   useSeo({
@@ -336,22 +473,26 @@ export default function TeamDetailPage() {
   const [tab, setTab] = useState<Tab>(VALID_TABS.includes(initTabParam) ? initTabParam : "schedule");
 
   // Keep the active tab in the URL so it's shareable / bookmarkable.
+  // IMPORTANT: this effect reacts ONLY to tab changes (plus the one-time
+  // scheduleReady deep-link). It does NOT depend on activeMonth/schedulePath, so
+  // clicking Prev/Next month (which pushes the URL inside pickMonth) never triggers
+  // a second, redundant navigation here — that's what was causing the double reload.
   useEffect(() => {
     const params = new URLSearchParams(searchParams.toString());
     if (tab === "schedule") {
+      // Wait until games load + the default month is chosen (scheduleReady) so we
+      // deep-link the CORRECT month, not a premature guess. After that, month/season
+      // changes are handled exclusively by pickMonth (router.push).
       params.delete("tab");
+      if (scheduleReady) {
+        const url = scheduleUrl(sport, abbrUpper, seasonYear, activeMonth, isMLB || isNBA);
+        router.replace(url, { scroll: false });
+      }
     } else {
       params.set("tab", tab);
+      router.replace(`/${sport}/teams/${abbrUpper}${params.size > 0 ? `?${params.toString()}` : ""}`, { scroll: false });
     }
-    router.replace(`/${sport}/teams/${abbrUpper}${params.size > 0 ? `?${params.toString()}` : ""}`, { scroll: false });
-  }, [tab, sport, abbrUpper]);
-  const [seasonYear, setSeasonYear] = useState(() => {
-    // MLB follows calendar year; NBA season is keyed by the backend (`/api/nba/seasons`),
-    // where the year is the season's label in nba.seasons (e.g. 2026 = the 2025-26 season).
-    // Start from the current calendar year; it gets corrected to the most recent
-    // backend season once /api/nba/seasons loads (see fetch effect below).
-    return new Date().getFullYear();
-  });
+  }, [tab, sport, abbrUpper, scheduleReady]);
   const [error, setError] = useState("");
   const [availableYears, setAvailableYears] = useState<number[]>([]);
 
@@ -367,7 +508,9 @@ export default function TeamDetailPage() {
         .then((mlbYears: number[]) => {
           setAvailableYears(mlbYears);
           if (mlbYears.length > 0 && !mlbYears.includes(seasonYear)) {
-            setSeasonYear(mlbYears[0]); // most recent season with games
+            const corrected = mlbYears[0]; // most recent season with games
+            setSeasonYear(corrected);
+            if (Number.isFinite(urlSeason) && urlSeason !== corrected) navigateSchedule(corrected, activeMonth);
           }
         })
         .catch(() => {});
@@ -378,14 +521,20 @@ export default function TeamDetailPage() {
         .then((seasons: number[]) => {
           setAvailableYears(seasons);
           if (seasons.length > 0 && !seasons.includes(seasonYear)) {
-            setSeasonYear(seasons[0]); // most recent season with games
+            const corrected = seasons[0]; // most recent season with games
+            setSeasonYear(corrected);
+            if (Number.isFinite(urlSeason) && urlSeason !== corrected) navigateSchedule(corrected, activeMonth);
           }
         })
         .catch(() => {});
     } else {
       api.seasons.list().then((years) => {
         setAvailableYears(years);
-        if (years.length > 0 && !years.includes(seasonYear)) setSeasonYear(years[0]);
+        if (years.length > 0 && !years.includes(seasonYear)) {
+          const corrected = years[0];
+          setSeasonYear(corrected);
+          if (Number.isFinite(urlSeason) && urlSeason !== corrected) navigateSchedule(corrected, activeMonth);
+        }
       }).catch(() => {});
     }
   }, [isMLB, sport]);
@@ -400,12 +549,18 @@ export default function TeamDetailPage() {
 
   // Fetch games on season change
   useEffect(() => {
+    const cacheKey = `${sport}:${abbrUpper}:${seasonYear}`;
+    const cached = gamesCache.get(cacheKey);
+    if (cached) {
+      setGames(cached);
+      return;
+    }
     if (isMLB) {
       // MLB doesn't use the team DB model — it fetches via abbreviation directly
       setGamesLoading(true);
       fetch(`/api/mlb/games?year=${seasonYear}&team_abbr=${abbrUpper}`)
         .then(r => r.json())
-        .then(setGames)
+        .then((g: any[]) => { gamesCache.set(cacheKey, g ?? []); setGames(g ?? []); })
         .catch(() => setGames([]))
         .finally(() => setGamesLoading(false));
     } else if (sport === "nba") {
@@ -413,13 +568,16 @@ export default function TeamDetailPage() {
       setGamesLoading(true);
       fetch(`/api/nba/games?year=${seasonYear}&team_abbr=${abbrUpper}`)
         .then(r => r.json())
-        .then(setGames)
+        .then((g: any[]) => { gamesCache.set(cacheKey, g ?? []); setGames(g ?? []); })
         .catch(() => setGames([]))
         .finally(() => setGamesLoading(false));
     } else {
       if (!team) return;
       setGamesLoading(true);
-      api.games.list({ season_year: seasonYear, team_id: team.id }).then(setGames).catch(() => setGames([])).finally(() => setGamesLoading(false));
+      api.games.list({ season_year: seasonYear, team_id: team.id })
+        .then((g: any[]) => { gamesCache.set(cacheKey, g ?? []); setGames(g ?? []); })
+        .catch(() => setGames([]))
+        .finally(() => setGamesLoading(false));
     }
   }, [team, seasonYear, isMLB, sport, abbrUpper]);
 
@@ -489,7 +647,14 @@ export default function TeamDetailPage() {
         <div className="space-y-4">
           <div className="flex items-center gap-3">
             <label className="text-sm text-gray-400 font-medium">Season:</label>
-            <select value={seasonYear} onChange={e => setSeasonYear(Number(e.target.value))}
+            <select
+              value={seasonYear}
+              onChange={e => {
+                const y = Number(e.target.value);
+                userPickedMonth.current = true; // keep the user's month when switching seasons
+                setSeasonYear(y);
+                navigateSchedule(y, activeMonth);
+              }}
               className="px-3 py-1.5 rounded-lg bg-white/10 border border-white/20 text-sm font-semibold text-white focus:outline-none focus:border-earl-500 cursor-pointer appearance-none"
               style={{
                 backgroundImage: `url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%236b7280' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e")`,
@@ -502,7 +667,28 @@ export default function TeamDetailPage() {
           {gamesLoading ? (
             <div className="text-center py-16 text-gray-500">Loading games...</div>
           ) : (
-            <NFLMLBTeamSchedule games={games} sport={sport} abbrUpper={abbrUpper} seasonYear={seasonYear} formatGameDate={formatGameDate} formatGameTime={formatGameTime} isMLB={isMLB} isNBA={sport === "nba"} />
+            <NFLMLBTeamSchedule
+              games={games}
+              sport={sport}
+              abbrUpper={abbrUpper}
+              seasonYear={seasonYear}
+              formatGameDate={formatGameDate}
+              formatGameTime={formatGameTime}
+              isMLB={isMLB}
+              isNBA={sport === "nba"}
+              months={teamMonths}
+              monthIdx={teamMonths.length > 0 ? Math.max(0, teamMonths.indexOf(activeMonth ?? "")) : -1}
+              onPrevMonth={() => {
+                if (teamMonths.length === 0 || activeMonth == null) return;
+                const i = teamMonths.indexOf(activeMonth);
+                pickMonth(teamMonths[Math.max(0, i - 1)]);
+              }}
+              onNextMonth={() => {
+                if (teamMonths.length === 0 || activeMonth == null) return;
+                const i = teamMonths.indexOf(activeMonth);
+                pickMonth(teamMonths[Math.min(teamMonths.length - 1, i + 1)]);
+              }}
+            />
           )}
         </div>
       )}
@@ -1384,6 +1570,11 @@ interface NFLMLBTeamScheduleProps {
   formatGameTime: (d: string) => string;
   isMLB: boolean;
   isNBA?: boolean;
+  // Controlled month navigation (driven by the URL).
+  months?: string[];
+  monthIdx?: number;
+  onPrevMonth?: () => void;
+  onNextMonth?: () => void;
 }
 
 function MLBMonthsFor(isMLB: boolean, isNBA: boolean): string[] {
@@ -1392,15 +1583,15 @@ function MLBMonthsFor(isMLB: boolean, isNBA: boolean): string[] {
   return [];
 }
 
-function NFLMLBTeamSchedule({ games, sport, abbrUpper, seasonYear, formatGameDate, formatGameTime, isMLB, isNBA }: NFLMLBTeamScheduleProps) {
-  const months = MLBMonthsFor(!!isMLB, !!isNBA);
-  const [monthIdx, setMonthIdx] = useState(() => {
-    const monthList = MLBMonthsFor(!!isMLB, !!isNBA);
-    const now = new Date();
-    const m = now.getMonth() + 1;
-    const idx = monthList.findIndex(name => name.toLowerCase() === now.toLocaleString("en-US", { month: "long" }).toLowerCase());
+function NFLMLBTeamSchedule({ games, sport, abbrUpper, seasonYear, formatGameDate, formatGameTime, isMLB, isNBA, months: monthsProp, monthIdx: monthIdxProp, onPrevMonth, onNextMonth }: NFLMLBTeamScheduleProps) {
+  const months = monthsProp ?? MLBMonthsFor(!!isMLB, !!isNBA);
+  // Controlled month index, driven by the parent (which reads it from the URL).
+  // Fall back to the internal default (current month) only when uncontrolled (legacy callers).
+  const [fallbackIdx, setFallbackIdx] = useState(() => {
+    const idx = months.findIndex(name => name.toLowerCase() === new Date().toLocaleString("en-US", { month: "long" }).toLowerCase());
     return idx >= 0 ? idx : 0;
   });
+  const monthIdx = typeof monthIdxProp === "number" && monthIdxProp >= 0 ? monthIdxProp : fallbackIdx;
 
   if (isMLB || isNBA) {
     // Resolve the calendar month (1-12) from the displayed month name — the months
@@ -1415,11 +1606,11 @@ function NFLMLBTeamSchedule({ games, sport, abbrUpper, seasonYear, formatGameDat
     return (
       <div className="space-y-4">
         <div className="flex items-center gap-2">
-          <button onClick={() => setMonthIdx(i => Math.max(0, i - 1))} disabled={monthIdx === 0}
+          <button onClick={onPrevMonth ? onPrevMonth : () => setFallbackIdx(i => Math.max(0, i - 1))} disabled={monthIdx === 0}
             className="px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-xs text-gray-300 hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed transition"
           >← {months[monthIdx - 1] || ""}</button>
           <span className="text-sm font-semibold text-white px-4">{months[monthIdx]}</span>
-          <button onClick={() => setMonthIdx(i => Math.min(months.length - 1, i + 1))} disabled={monthIdx === months.length - 1}
+          <button onClick={onNextMonth ? onNextMonth : () => setFallbackIdx(i => Math.min(months.length - 1, i + 1))} disabled={monthIdx === months.length - 1}
             className="px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-xs text-gray-300 hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed transition"
           >{months[monthIdx + 1] || ""} →</button>
         </div>

@@ -164,7 +164,7 @@ def _visibility_instructions(visibility: str) -> str:
 
 
 class GenerateRequest(BaseModel):
-    instructions: str = Field(..., min_length=1, max_length=4000)
+    instructions: str = Field(..., min_length=1, max_length=8000)
     model: Optional[str] = Field(None)  # optional override
     author: Optional[str] = Field(None, min_length=1, max_length=100)
     tokens_used: Optional[int] = Field(None, ge=0)
@@ -180,7 +180,7 @@ class PublishRequest(BaseModel):
     title: str = Field(..., min_length=1, max_length=300)
     content: str = Field(..., min_length=1)  # markdown body
     summary: Optional[str] = Field(None, max_length=500)
-    instructions: Optional[str] = Field(None, max_length=4000)
+    instructions: Optional[str] = Field(None, max_length=8000)
     model: Optional[str] = Field(None)
     # The exact prompt (system + user messages) and the research transcript
     # (tool calls + results) that produced the article.
@@ -1513,7 +1513,7 @@ admin_router = APIRouter(prefix="/api/admin", tags=["original-articles-admin"])
 
 
 class ReEditRequest(BaseModel):
-    instructions: str = Field(..., min_length=1, max_length=4000)
+    instructions: str = Field(..., min_length=1, max_length=8000)
     include_research: bool = True
 
 

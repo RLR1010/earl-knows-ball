@@ -57,7 +57,7 @@ VALID_SECTIONS = ("article", "daily_picks")
 # Set EARL_AUTO_GEN_RECENCY=0 to disable.
 RECENCY_LIMIT = int(os.environ.get("EARL_AUTO_GEN_RECENCY", "4"))
 # Max chars of each prior article's content to include in the context digest.
-RECENCY_CONTENT_CHARS = int(os.environ.get("EARL_AUTO_GEN_RECENCY_CHARS", "900"))
+RECENCY_CONTENT_CHARS = int(os.environ.get("EARL_AUTO_GEN_RECENCY_CHARS", "300"))
 
 
 def _is_due(cfg: dict, now: datetime) -> bool:

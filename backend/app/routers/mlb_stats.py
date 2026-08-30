@@ -1021,7 +1021,7 @@ async def mlb_games(
         gp.ml_result AS pred_ml_result,
         gp.run_line_result AS pred_rl_result,
         gp.ou_result AS pred_ou_result,
-        gp.run_line_pick AS pick_spread,
+        CASE WHEN gp.run_line_pick IS NOT NULL THEN SPLIT_PART(gp.run_line_pick, ' ', 1) ELSE NULL END AS pick_spread,
         gp.ou_pick AS pick_over_under,
         gp.ml_pick AS pick_moneyline,
         gp.ats_ev AS pick_ats_ev,

@@ -195,10 +195,32 @@ export default function ParlayBuilder({
   const [correlations, setCorrelations] = useState<Record<string, ParlayCorrelation> | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [selected, setSelected] = useState<ParlayLegInput[]>([]);
+  // Working ticket is persisted to localStorage so picks survive navigation
+  // across sports (/mlb/parlay -> /nfl/parlay -> /nba/parlay) without hitting
+  // Save — the user can mix MLB + NFL + NBA legs on one running ticket.
+  const LS_SELECTED = "parlay.selected.v1";
+  const LS_NAME = "parlay.name.v1";
+  const readLs = (key: string): string | null => {
+    if (typeof window === "undefined") return null;
+    try {
+      return window.localStorage.getItem(key);
+    } catch {
+      return null;
+    }
+  };
+  const [selected, setSelected] = useState<ParlayLegInput[]>(() => {
+    const raw = readLs(LS_SELECTED);
+    if (!raw) return [];
+    try {
+      const arr = JSON.parse(raw);
+      return Array.isArray(arr) ? (arr as ParlayLegInput[]) : [];
+    } catch {
+      return [];
+    }
+  });
   const [filterKind, setFilterKind] = useState<ParlayKind | "all">("all");
   const [savedTickets, setSavedTickets] = useState<SavedParlayTicket[]>([]);
-  const [ticketName, setTicketName] = useState("My Parlay");
+  const [ticketName, setTicketName] = useState(() => readLs(LS_NAME) || "My Parlay");
   const [ticketDirty, setTicketDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [ticketsOpen, setTicketsOpen] = useState(false);
@@ -284,6 +306,19 @@ export default function ParlayBuilder({
   const isSelected = (game: ParlayGame, kind: ParlayKind) =>
     selected.some((p) => p.game_id === game.game_id && p.kind === kind);
 
+  // Persist the running ticket so picks stay (and mix across sports) without
+  // needing to hit Save. Keep the ticket name too.
+  useEffect(() => {
+    try {
+      if (typeof window !== "undefined") {
+        window.localStorage.setItem(LS_SELECTED, JSON.stringify(selected));
+        window.localStorage.setItem(LS_NAME, ticketName);
+      }
+    } catch {
+      /* localStorage unavailable — working ticket just won't persist */
+    }
+  }, [selected, ticketName, LS_SELECTED, LS_NAME]);
+
   // ── Saved ticket persistence (premium, cross-sport) ────────────────────
   const clearTicketMsg = useCallback(() => setTicketMsg(null), []);
 
@@ -357,7 +392,7 @@ export default function ParlayBuilder({
     <div className={containerClassName}>
       <div className="flex flex-col gap-1 mb-6">
         <h1 className="text-2xl font-bold tracking-tight">
-          🧁 Parlay Builder
+          Parlay Builder
         </h1>
         <p className="text-sm text-zinc-400 max-w-2xl">
           Stack Earl&apos;s model picks into a parlay. We show the model&apos;s true
@@ -389,7 +424,7 @@ export default function ParlayBuilder({
 
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_340px] gap-6">
         {/* ── Leg picker ─────────────────────────────── */}
-        <div>
+        <div className="order-last lg:order-first">
           {loading ? (
             <div className="text-zinc-400 text-sm py-10 text-center">Loading legs…</div>
           ) : error ? (
@@ -503,13 +538,26 @@ export default function ParlayBuilder({
         </div>
 
         {/* ── Ticket ────────────────────────────────── */}
-        <div className="lg:sticky lg:top-20 self-start">
+        <div className="lg:sticky lg:top-20 self-start order-first lg:order-last">
           <div className="rounded-xl border border-white/10 bg-white/[0.04] p-4">
             <div className="flex items-center justify-between mb-3">
               <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-300">
                 Parlay Ticket
               </h2>
-              <span className="text-xs text-zinc-500">{ticket.n_legs} legs</span>
+              <div className="flex items-center gap-3">
+                <span className="text-xs text-zinc-500">{ticket.n_legs} legs</span>
+                <button
+                  onClick={() => {
+                    setSelected([]);
+                    setTicketName("My Parlay");
+                  }}
+                  disabled={selected.length === 0}
+                  className="text-xs px-2.5 py-1 rounded-md border border-white/10 text-zinc-300 hover:bg-white/5 hover:text-red-300 disabled:opacity-40 disabled:cursor-not-allowed transition"
+                  title="Clear the ticket and start a new parlay"
+                >
+                  🗑️ Clear
+                </button>
+              </div>
             </div>
 
             {/* Save / Load controls (premium) */}
@@ -688,21 +736,25 @@ export default function ParlayBuilder({
                     </dd>
                   </div>
                   <div className="flex justify-between border-t border-white/10 pt-2">
-                    <dt className="text-zinc-300 font-medium">Parlay EV</dt>
+                    <dt className="text-zinc-300 font-medium">Parlay EV (on $100 stake)</dt>
                     <dd
                       className={`text-lg font-bold ${
-                        ticket.ev_pct >= 0 ? "text-emerald-400" : "text-red-400"
+                        ticket.ev_dollars >= 0 ? "text-emerald-400" : "text-red-400"
                       }`}
                     >
-                      {ticket.ev_pct >= 0 ? "+" : ""}
-                      {ticket.ev_pct.toFixed(1)}%
+                      {ticket.ev_dollars >= 0 ? "+" : ""}
+                      {fmtDollars(ticket.ev_dollars)}
                     </dd>
                   </div>
                 </dl>
 
-                <div className="mt-3 text-[11px] text-zinc-500">
-                  EV is on a $100 stake vs. the compounded odds. A green EV
-                  doesn&apos;t mean the same-game legs are independent — see warnings.
+                <div className="mt-3 text-[11px] text-zinc-500 leading-relaxed">
+                  Expected profit on a single $100 parlay stake.<br />
+                  This is <b>not</b> the sum of the individual leg EV values — each leg EV is a
+                  separate $100 bet on its own. A real parlay risks the whole $100 on all legs
+                  hitting together, and the book&apos;s vig compounds too. A green EV here does
+                  <b> not</b> mean parlays are always the smart play, especially when legs aren&apos;t
+                  truly independent.
                 </div>
               </>
             )}
