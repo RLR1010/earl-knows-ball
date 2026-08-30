@@ -1858,13 +1858,17 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
     df["rest_diff"] = df["rest_diff"].fillna(0)
 
     # ── Enhanced fatigue: 3-in-4, 4-in-5, 5-in-8 ────────────────────
-    # Rolling date windows require DatetimeIndex; build index per team group
+    # Rolling date windows require DatetimeIndex; build index per team group.
+    # Date windows must use the SAME local calendar dates as rest_days (see above),
+    # never raw UTC timestamps, so evening-game bucketing is consistent with rest.
+    team_games["_rest_local_date"] = _d.values
+
     def _schedule_density_values(grp, window_days: int, threshold: int):
         """
         For a team's sorted games, check if current game has >= threshold games
         within the last window_days (counting current). Returns bool array.
         """
-        srt = grp.set_index("date").sort_index()
+        srt = grp.set_index("_rest_local_date").sort_index()
         cnt = srt.index.to_series().rolling(f"{window_days}D", min_periods=1).count()
         return (cnt >= threshold).astype(int).values
 
