@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 
 # ── Paths ───────────────────────────────────────────────────────────────────────
 # PKL directory for NFL models (matches MLB pattern: data/models/<sport>/)
-NFL_PKL_DIR = Path("/home/rich/.openclaw/workspace/earl-knows-football/data/models/nfl")
+NFL_PKL_DIR = Path(os.environ.get("MODEL_CACHE_DIR", "/home/rich/.openclaw/workspace/earl-knows-football/data/models")) / "nfl"
 ATS_MODEL_PATH = NFL_PKL_DIR / "nfl_ats_best.pkl"
 OU_MODEL_PATH = NFL_PKL_DIR / "nfl_ou_best.pkl"
 NFL_PKL_DIR.mkdir(parents=True, exist_ok=True)

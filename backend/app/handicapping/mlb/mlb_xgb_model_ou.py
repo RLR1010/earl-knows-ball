@@ -60,7 +60,7 @@ except ImportError:
 
 
 # ── Model paths ──
-MLB_PKL_DIR = Path("/home/rich/.openclaw/workspace/earl-knows-football/data/models/mlb")
+MLB_PKL_DIR = Path(os.environ.get("MODEL_CACHE_DIR", "/home/rich/.openclaw/workspace/earl-knows-football/data/models")) / "mlb"
 MLB_PKL_DIR.mkdir(parents=True, exist_ok=True)
 
 

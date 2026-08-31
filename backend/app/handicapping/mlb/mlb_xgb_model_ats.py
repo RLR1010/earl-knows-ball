@@ -92,7 +92,7 @@ DSN = os.environ.get(
 ATS_MODEL_PATH = os.path.join(os.path.dirname(__file__), "ats_model.pkl")
 
 # PKL directory for MLB models
-MLB_PKL_DIR = Path("/home/rich/.openclaw/workspace/earl-knows-football/data/models/mlb")
+MLB_PKL_DIR = Path(os.environ.get("MODEL_CACHE_DIR", "/home/rich/.openclaw/workspace/earl-knows-football/data/models")) / "mlb"
 MLB_PKL_DIR.mkdir(parents=True, exist_ok=True)
 
 _ats_model = None
