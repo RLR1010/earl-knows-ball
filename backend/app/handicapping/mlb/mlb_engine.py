@@ -149,7 +149,7 @@ logger = logging.getLogger("earl.mlb_handicapping")
 # model once trained, otherwise the previous year's (2026).
 CURRENT_YEAR = date.today().year
 
-MODELS_DIR = Path.home() / ".openclaw" / "workspace" / "earl-knows-football" / "data" / "models" / "mlb"
+MODELS_DIR = Path(os.environ.get("MODEL_CACHE_DIR", str(Path.home() / ".openclaw" / "workspace" / "earl-knows-football" / "data" / "models"))) / "mlb"
 
 # ═══════════════════════════════════════════════════════════════════
 # Year-specific model loader from training_runs + disk pkl

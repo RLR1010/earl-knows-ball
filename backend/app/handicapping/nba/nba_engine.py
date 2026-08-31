@@ -53,7 +53,7 @@ def _ev(conf_: float, odds_: float) -> float:
 
 
 # ── Paths ───────────────────────────────────────────────────────────────────────
-MODELS_DIR = Path.home() / ".openclaw" / "workspace" / "earl-knows-football" / "data" / "models" / "nba"
+MODELS_DIR = Path(os.environ.get("MODEL_CACHE_DIR", str(Path.home() / ".openclaw" / "workspace" / "earl-knows-football" / "data" / "models"))) / "nba"
 MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
 _now = datetime.now()

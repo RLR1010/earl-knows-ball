@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 
 # ── Paths ───────────────────────────────────────────────────────────────────────
 # Match the same directory nfl_xgb_model_ats.py / nfl_xgb_model_ou.py save to:
-MODELS_DIR = Path.home() / ".openclaw" / "workspace" / "earl-knows-football" / "data" / "models" / "nfl"
+MODELS_DIR = Path(os.environ.get("MODEL_CACHE_DIR", str(Path.home() / ".openclaw" / "workspace" / "earl-knows-football" / "data" / "models"))) / "nfl"
 MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
 _now = datetime.now()
