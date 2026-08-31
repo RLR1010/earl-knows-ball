@@ -1240,20 +1240,16 @@ def get_model_features(model_type: str, live: bool = False) -> list[str]:
         model_type: "ats" or "ou"
         live: If True, queries live_<type> column instead of current_<type>.
     """
-    import subprocess
-    suffix = "live" if live else "current"
-    col = {"ou": f"{suffix}_ou", "ats": f"{suffix}_ats"}.get(model_type.lower())
-    if not col:
-        raise ValueError(f"Unknown model type: {model_type}. Use 'ou' or 'ats'.")
     try:
-        result = subprocess.run(
-            ["docker", "exec", "-i", "earl-knows-football-db-1",
-             "psql", "-U", "earl", "-d", "earl_knows_football",
-             "-t", "-A", "-c",
-             f"SELECT name FROM mlb.features WHERE {col} = true ORDER BY name"],
-            capture_output=True, text=True, timeout=10
-        )
-        features = [n.strip() for n in result.stdout.strip().split("\n") if n.strip()]
+        # Direct DB connection (works on any box) — do NOT shell out to docker.
+        from app.db_urls import PSYCOPG2_DATABASE_URL as _FEAT_URL
+        engine = create_engine(os.getenv("DATABASE_URL", _FEAT_URL))
+        with engine.connect() as conn:
+            rows = conn.execute(text(
+                f"SELECT name FROM mlb.features WHERE {col} = true ORDER BY name"
+            )).fetchall()
+        engine.dispose()
+        features = [r[0] for r in rows]
         if not features:
             raise RuntimeError(f"No features found for {model_type} (column {col})")
         return features
