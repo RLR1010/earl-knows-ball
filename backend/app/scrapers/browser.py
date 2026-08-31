@@ -49,17 +49,19 @@ class BrowserManager:
         self._stealth = Stealth()
 
     async def start(self) -> None:
-        """Launch Firefox (headed on :0) using a persistent profile.
+        """Launch Firefox (headless) using a persistent profile.
 
         Uses launch_persistent_context with a real Firefox profile directory
-        so the browser looks like a normal user's Firefox, not a Playwright-
-        launched temp profile. This avoids DataDome's headless/automation
-        detection.
+        so the browser keeps the same cache/cookies across restarts (needed for
+        Cloudflare/geo cookies that reach BetMGM's CDS API). Runs headless so it
+        needs no display/Xvfb on a bare-metal box. Verified 2026-08-31: headless
+        Firefox + playwright_stealth gets past DataDome and captures the BetMGM
+        accessid (see memory note betmgm-season-props).
         """
         import tempfile
         from pathlib import Path
 
-        logger.info("Starting persistent browser (headed on :0)...")
+        logger.info("Starting persistent browser (headless)...")
 
         # Use a stable profile directory so cache/cookies survive restarts
         profile_dir = Path.home() / ".openclaw" / "fd-profile"
@@ -68,7 +70,7 @@ class BrowserManager:
         self._playwright = await async_playwright().start()
         self._context = await self._playwright.firefox.launch_persistent_context(
             user_data_dir=str(profile_dir),
-            headless=False,
+            headless=True,
             viewport={"width": 1920, "height": 1080},
             locale="en-US",
             timezone_id="America/Chicago",
