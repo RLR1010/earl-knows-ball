@@ -699,7 +699,7 @@ function DetailedStatsTab({ gameId, boxscore }: { gameId: string; boxscore: NFLB
       const raw = val.value;
       const dv = raw !== null && raw !== undefined
         ? (typeof raw === "number"
-            ? (Number.isInteger(raw) ? raw.toLocaleString() : raw.toFixed(3))
+            ? (Number.isInteger(raw) ? raw.toLocaleString() : raw.toFixed(2))
             : String(raw))
         : "—";
       const dn = val.display_name || fallbackKey || "";
@@ -708,7 +708,7 @@ function DetailedStatsTab({ gameId, boxscore }: { gameId: string; boxscore: NFLB
     const raw = val;
     const dv = raw !== null && raw !== undefined
       ? (typeof raw === "number"
-          ? (Number.isInteger(raw) ? raw.toLocaleString() : raw.toFixed(3))
+          ? (Number.isInteger(raw) ? raw.toLocaleString() : raw.toFixed(2))
           : String(raw))
       : "—";
     return { displayValue: dv, displayName: fallbackKey || "", description: undefined };

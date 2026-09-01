@@ -126,7 +126,7 @@ def main():
                 cgs.off_red_zone_trips::numeric / NULLIF(cgs.games_played, 0),
                 cgs.def_red_zone_trips::numeric / NULLIF(cgs.games_played, 0),
                 cgs.off_interceptions::numeric / NULLIF(cgs.games_played, 0),
-                cgs.off_interceptions::numeric / NULLIF(cgs.games_played, 0),  -- def_ints_thrown proxy: own offense's INTs
+                cgs.def_interceptions::numeric / NULLIF(cgs.games_played, 0),
                 cgs.turnover_margin_avg,
                 cgs.off_pts_stddev_5, cgs.off_yds_stddev_5,
                 cgs.def_pts_stddev_5, cgs.def_yds_stddev_5
