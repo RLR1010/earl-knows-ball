@@ -70,7 +70,10 @@ export default function Home() {
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
                 </svg>
               </span>
-              <span className="text-gray-300 font-medium text-xl">AI Powered Handicapping For NFL, MLB, and NBA</span>
+              <div className="flex flex-col">
+                <span className="text-gray-300 font-medium text-xl">AI Powered Handicapping</span>
+                <span className="text-gray-400 text-base mt-1">The best machine learning algorithms give real edge</span>
+              </div>
             </li>
             <li className="flex items-start gap-4">
               <span className="mt-1 shrink-0 w-6 h-6 rounded-full bg-earl-600 flex items-center justify-center">
@@ -78,7 +81,10 @@ export default function Home() {
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
                 </svg>
               </span>
-              <span className="text-gray-300 font-medium text-xl">Chat with Earl About Games, Players, and Picks</span>
+              <div className="flex flex-col">
+                <span className="text-gray-300 font-medium text-xl">Chat with Earl</span>
+                <span className="text-gray-400 text-base mt-1">Earl has every data point and an extensive knowledge base of the NFL, NBA, and MLB</span>
+              </div>
             </li>
             <li className="flex items-start gap-4">
               <span className="mt-1 shrink-0 w-6 h-6 rounded-full bg-earl-600 flex items-center justify-center">
@@ -86,7 +92,10 @@ export default function Home() {
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
                 </svg>
               </span>
-              <span className="text-gray-300 font-medium text-xl">Get Picks, Analysis, and Recommendations</span>
+              <div className="flex flex-col">
+                <span className="text-gray-300 font-medium text-xl">Get Picks and Analysis</span>
+                <span className="text-gray-400 text-base mt-1">See the value Earl assigns to each pick and get a breakdown of each game</span>
+              </div>
             </li>
             <li className="flex items-start gap-4">
               <span className="mt-1 shrink-0 w-6 h-6 rounded-full bg-earl-600 flex items-center justify-center">
@@ -94,7 +103,10 @@ export default function Home() {
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
                 </svg>
               </span>
-              <span className="text-gray-300 font-medium text-xl">All the Statistics You Could Ever Want</span>
+              <div className="flex flex-col">
+                <span className="text-gray-300 font-medium text-xl">Get All of the Statistics</span>
+                <span className="text-gray-400 text-base mt-1">All the stats are computed and available that helps handicappers make informed decisions</span>
+              </div>
             </li>
           </ul>
         </div>
