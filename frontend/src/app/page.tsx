@@ -72,7 +72,7 @@ export default function Home() {
               </span>
               <div className="flex flex-col">
                 <span className="text-gray-300 font-medium text-xl">AI Powered Handicapping</span>
-                <span className="text-gray-400 text-base mt-1">The best machine learning algorithms give real edge</span>
+                <span className="text-gray-400 text-sm mt-1">The best machine learning algorithms give real edge</span>
               </div>
             </li>
             <li className="flex items-start gap-4">
@@ -83,7 +83,7 @@ export default function Home() {
               </span>
               <div className="flex flex-col">
                 <span className="text-gray-300 font-medium text-xl">Chat with Earl</span>
-                <span className="text-gray-400 text-base mt-1">Earl has every data point and an extensive knowledge base of the NFL, NBA, and MLB</span>
+                <span className="text-gray-400 text-sm mt-1">Earl has every data point and an extensive knowledge base of the NFL, NBA, and MLB</span>
               </div>
             </li>
             <li className="flex items-start gap-4">
@@ -94,7 +94,7 @@ export default function Home() {
               </span>
               <div className="flex flex-col">
                 <span className="text-gray-300 font-medium text-xl">Get Picks and Analysis</span>
-                <span className="text-gray-400 text-base mt-1">See the value Earl assigns to each pick and get a breakdown of each game</span>
+                <span className="text-gray-400 text-sm mt-1">See the value Earl assigns to each pick and get a breakdown of each game</span>
               </div>
             </li>
             <li className="flex items-start gap-4">
@@ -105,7 +105,7 @@ export default function Home() {
               </span>
               <div className="flex flex-col">
                 <span className="text-gray-300 font-medium text-xl">Get All of the Statistics</span>
-                <span className="text-gray-400 text-base mt-1">All the stats are computed and available that helps handicappers make informed decisions</span>
+                <span className="text-gray-400 text-sm mt-1">All the stats are computed and available that helps handicappers make informed decisions</span>
               </div>
             </li>
           </ul>
