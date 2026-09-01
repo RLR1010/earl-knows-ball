@@ -695,23 +695,24 @@ function DetailedStatsTab({ gameId, boxscore }: { gameId: string; boxscore: NFLB
   // ── Rich value extractor ─────────────────────────────────────────────────
   interface FeatureInfo { displayValue: string; displayName: string; description?: string; }
   function getInfo(val: any, fallbackKey?: string): FeatureInfo {
+    // Cap displayed stats at 2 decimals max. Handles both number and numeric-string
+    // values (stored features are often decimal strings like "0.736842…").
+    const fmt = (raw: any): string => {
+      if (raw === null || raw === undefined) return "—";
+      if (typeof raw === "number") {
+        return Number.isInteger(raw) ? raw.toLocaleString() : raw.toFixed(2);
+      }
+      const s = String(raw).trim();
+      if (s === "") return "—";
+      const n = Number(s);
+      // Keep non-numeric strings as-is; cap numeric strings at 2 decimals.
+      if (isNaN(n)) return s;
+      return Number.isInteger(n) ? n.toLocaleString() : n.toFixed(2);
+    };
     if (val !== null && typeof val === "object" && "value" in val) {
-      const raw = val.value;
-      const dv = raw !== null && raw !== undefined
-        ? (typeof raw === "number"
-            ? (Number.isInteger(raw) ? raw.toLocaleString() : raw.toFixed(2))
-            : String(raw))
-        : "—";
-      const dn = val.display_name || fallbackKey || "";
-      return { displayValue: dv, displayName: dn, description: val.description };
+      return { displayValue: fmt(val.value), displayName: val.display_name || fallbackKey || "", description: val.description };
     }
-    const raw = val;
-    const dv = raw !== null && raw !== undefined
-      ? (typeof raw === "number"
-          ? (Number.isInteger(raw) ? raw.toLocaleString() : raw.toFixed(2))
-          : String(raw))
-      : "—";
-    return { displayValue: dv, displayName: fallbackKey || "", description: undefined };
+    return { displayValue: fmt(val), displayName: fallbackKey || "", description: undefined };
   }
 
   function keyToLabel(k: string): string {
