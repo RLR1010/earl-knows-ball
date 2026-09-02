@@ -156,7 +156,7 @@ export default function XSocialPage() {
   return (
     <div className="space-y-8">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-white">X — @earlknowsball</h1>
+        <h1 className="text-2xl font-bold text-white">X — @earl_knows_ball</h1>
       </div>
 
       <div className="flex flex-wrap gap-2 border-b border-white/10 pb-3">
@@ -259,7 +259,7 @@ function ConnectTab({ status, loading, refreshing, onRefresh }: {
       </div>
 
       <div className="bg-white/[0.02] border border-white/5 rounded-xl p-6 space-y-4">
-        <h2 className="text-lg font-semibold text-white">Connect @earlknowsball</h2>
+        <h2 className="text-lg font-semibold text-white">Connect @earl_knows_ball</h2>
         <p className="text-sm text-gray-400">
           Best approach: put the four keys in <code className="text-gray-300">compute .env</code> as{" "}
           <code className="text-gray-300">X_CONSUMER_KEY / X_CONSUMER_SECRET / X_ACCESS_TOKEN / X_ACCESS_TOKEN_SECRET</code>.
@@ -355,7 +355,7 @@ function ComposeTab({ onSaved }: { onSaved: (ok: boolean, s: string) => void }) 
         void (async () => {
           try {
             const sent = await authed(() => xFetch<Draft>(`/drafts/${d.id}/send`, { method: "POST", body: JSON.stringify({}) }));
-            onSaved(!!sent.tweet_id, sent.error ? `Failed on X: ${sent.error}` : `Posted to X ✅ tweet ${sent.text ? "— check @earlknowsball" : ""}`);
+            onSaved(!!sent.tweet_id, sent.error ? `Failed on X: ${sent.error}` : `Posted to X ✅ tweet ${sent.text ? "— check @earl_knows_ball" : ""}`);
           } catch (e) { onSaved(false, (e as Error).message); }
         })();
         onSaved(true, "Saved draft; sending…");
