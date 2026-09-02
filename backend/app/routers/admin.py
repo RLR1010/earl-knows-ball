@@ -147,6 +147,7 @@ class PlanCreate(BaseModel):
     sort_order: int = 0
     stripe_price_id: Optional[str] = None
     stripe_product_id: Optional[str] = None
+    trial_fee_price_id: Optional[str] = None  # paid-trial one-time fee price (e.g. $1.95)
     monthly_token_limit: Optional[int] = None
     payment_description: Optional[str] = None
 
@@ -166,6 +167,7 @@ class PlanUpdate(BaseModel):
     sort_order: Optional[int] = None
     stripe_price_id: Optional[str] = None
     stripe_product_id: Optional[str] = None
+    trial_fee_price_id: Optional[str] = None
     monthly_token_limit: Optional[int] = None
     payment_description: Optional[str] = None
 
@@ -186,6 +188,7 @@ class PlanOut(BaseModel):
     sort_order: int
     stripe_price_id: str | None = None
     stripe_product_id: str | None = None
+    trial_fee_price_id: str | None = None
     monthly_token_limit: int | None = None
     payment_description: str | None = None
     created_at: datetime | None = None
@@ -201,6 +204,7 @@ class SubscriptionOut(BaseModel):
     plan_id: str | None = None
     plan_name: str = ""
     status: str
+    cancel_at_period_end: bool = False
     current_period_start: datetime | None = None
     current_period_end: datetime | None = None
     canceled_at: datetime | None = None
@@ -989,6 +993,7 @@ async def list_subscriptions(
             plan_id=sub.plan_id,
             plan_name=plan_name or "",
             status=sub.status,
+            cancel_at_period_end=bool(sub.cancel_at_period_end),
             current_period_start=sub.current_period_start,
             current_period_end=sub.current_period_end,
             canceled_at=sub.canceled_at,
@@ -1030,6 +1035,7 @@ async def get_subscription(
         plan_id=sub.plan_id,
         plan_name=plan_name or "",
         status=sub.status,
+        cancel_at_period_end=bool(sub.cancel_at_period_end),
         current_period_start=sub.current_period_start,
         current_period_end=sub.current_period_end,
         canceled_at=sub.canceled_at,

@@ -11,6 +11,7 @@ interface Subscription {
   plan_id: string | null;
   plan_name: string;
   status: string;
+  cancel_at_period_end: boolean;
   current_period_start: string | null;
   current_period_end: string | null;
   canceled_at: string | null;
@@ -149,6 +150,11 @@ export default function AdminSubscriptions() {
                     <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${STATUS_COLORS[sub.status] || "bg-gray-800 text-gray-400"}`}>
                       {sub.status}
                     </span>
+                    {sub.cancel_at_period_end && (
+                      <span className="ml-1 px-2 py-0.5 rounded-full text-xs font-medium bg-red-900/40 text-red-300 border border-red-500/30">
+                        CANCELLED · ends {formatDate(sub.current_period_end) || "period end"}
+                      </span>
+                    )}
                   </td>
                   <td className="py-3 pr-4 text-xs text-gray-400">{formatDate(sub.current_period_start)}</td>
                   <td className="py-3 pr-4 text-xs text-gray-400">{formatDate(sub.current_period_end)}</td>

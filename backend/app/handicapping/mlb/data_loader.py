@@ -1242,8 +1242,14 @@ def get_model_features(model_type: str, live: bool = False) -> list[str]:
     """
     try:
         # Direct DB connection (works on any box) — do NOT shell out to docker.
+        # NOTE: must be a SYNC URL. DATABASE_URL is the async asyncpg URL, which
+        # makes create_engine() return an AsyncEngine → sync .connect() raises
+        # MissingGreenlet ("greenlet_spawn has not been called"). PSYCOPG2_DATABASE_URL
+        # is the sync (psycopg2) form. Allow an explicit sync-env override.
         from app.db_urls import PSYCOPG2_DATABASE_URL as _FEAT_URL
-        engine = create_engine(os.getenv("DATABASE_URL", _FEAT_URL))
+        engine = create_engine(os.getenv("SYNC_DATABASE_URL", _FEAT_URL))
+        col = {"ou": "live_ou", "ats": "live_ats"}[model_type] if live \
+            else {"ou": "current_ou", "ats": "current_ats"}[model_type]
         with engine.connect() as conn:
             rows = conn.execute(text(
                 f"SELECT name FROM mlb.features WHERE {col} = true ORDER BY name"

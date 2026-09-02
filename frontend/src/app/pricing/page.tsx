@@ -116,12 +116,24 @@ export default function PricingPage() {
                 </div>
 
                 <div className="mb-6">
-                  <span className="text-4xl font-bold text-white">{amount}</span>
-                  <span className="text-gray-400 text-lg ml-1">{period}</span>
-                  {monthlyEquiv && (
-                    <div className="text-earl-400 text-sm mt-1 font-medium">
-                      {monthlyEquiv} — save ~30%
-                    </div>
+                  {plan.slug === "premium-trial" ? (
+                    <>
+                      <span className="text-4xl font-bold text-white">$1.95</span>
+                      <span className="text-gray-400 text-lg ml-1">trial</span>
+                      <div className="text-earl-400 text-sm mt-1 font-medium">
+                        then ${(plan.price_cents / 100).toFixed(2)}{period} after 2 days
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <span className="text-4xl font-bold text-white">{amount}</span>
+                      <span className="text-gray-400 text-lg ml-1">{period}</span>
+                      {monthlyEquiv && (
+                        <div className="text-earl-400 text-sm mt-1 font-medium">
+                          {monthlyEquiv} — save ~30%
+                        </div>
+                      )}
+                    </>
                   )}
                 </div>
 

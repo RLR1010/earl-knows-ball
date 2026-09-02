@@ -18,6 +18,7 @@ interface Plan {
   sort_order: number;
   stripe_price_id: string | null;
   stripe_product_id: string | null;
+  trial_fee_price_id: string | null;
   monthly_token_limit: number | null;
   kind: string | null;
   token_amount: number | null;
@@ -27,7 +28,7 @@ interface Plan {
 const emptyPlan = {
   name: "", slug: "", description: "", payment_description: "", price_cents: 999, currency: "usd",
   interval: "month", trial_days: 0, features: [], is_active: true, sort_order: 0,
-  stripe_price_id: "", stripe_product_id: "", monthly_token_limit: null,
+  stripe_price_id: "", stripe_product_id: "", trial_fee_price_id: "", monthly_token_limit: null,
   kind: "subscription", token_amount: null,
 };
 
@@ -136,6 +137,9 @@ export default function AdminPlans() {
                       ? formatPrice(plan.price_cents, plan.currency, "one-time")
                       : formatPrice(plan.price_cents, plan.currency, plan.interval)}
                     {plan.trial_days > 0 && ` · ${plan.trial_days}-day trial`}
+                    {plan.trial_days > 0 && plan.trial_fee_price_id && (
+                      <span className="ml-1 px-2 py-0.5 bg-emerald-900/30 text-emerald-400 rounded-full text-xs font-medium">PAID TRIAL ($1.95 fee)</span>
+                    )}
                     {plan.kind === "token_topup" && plan.token_amount != null && (
                       <span className="ml-2 text-green-400">· {plan.token_amount.toLocaleString()} tokens</span>
                     )}

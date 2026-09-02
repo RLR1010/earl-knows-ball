@@ -163,10 +163,19 @@ async def create_checkout_session(
         cancel_url = req.cancel_url or f"{settings.base_url}/subscriptions/cancel"
 
         # Build checkout session
+        # line_items: the recurring (conversion) price first, then an optional
+        # one-time trial-fee price (for PAID trials like $1.95 / 2-day). Stripe
+        # Checkout subscription mode accepts one one-time item alongside the
+        # recurring item: the one-time is charged up front, the recurring starts
+        # after trial_period_days elapses (converting to the full premium price).
+        line_items = [{"price": plan.stripe_price_id, "quantity": 1}]
+        if getattr(plan, "trial_fee_price_id", None):
+            line_items.append({"price": plan.trial_fee_price_id, "quantity": 1})
+
         session_kwargs = {
             "customer": customer_id,
             "mode": "subscription",
-            "line_items": [{"price": plan.stripe_price_id, "quantity": 1}],
+            "line_items": line_items,
             "metadata": {
                 "user_id": user.id,
                 "plan_id": plan.id,
@@ -475,6 +484,48 @@ async def _handle_checkout_completed(session: dict, db: AsyncSession):
 
             if plan.monthly_token_limit is not None:
                 user.monthly_token_limit = plan.monthly_token_limit
+
+    # Record the subscription payment (covers paid trials, where Stripe may
+    # deliver invoice.paid BEFORE checkout.session.completed, which would
+    # otherwise drop the payment because the subscription row doesn't exist
+    # yet). Dedup against invoice.paid so we don't double-record.
+    if sub and user:
+        try:
+            amount_total = int(session.get("amount_total") or 0)
+            if amount_total > 0:
+                dup = await db.execute(
+                    select(Payment).where(
+                        Payment.subscription_id == sub.id,
+                        Payment.amount_cents == amount_total,
+                    )
+                )
+                if dup.scalar_one_or_none() is None:
+                    description = "Subscription"
+                    plan_result = await db.execute(
+                        select(SubscriptionPlan).where(
+                            SubscriptionPlan.id == sub.plan_id
+                        )
+                    )
+                    plan2 = plan_result.scalar_one_or_none()
+                    if plan2:
+                        label = (plan2.payment_description or "").strip()
+                        description = (
+                            label
+                            if label
+                            else (plan2.name or "Subscription") + " — Membership"
+                        )
+                    db.add(
+                        Payment(
+                            user_id=user.id,
+                            subscription_id=sub.id,
+                            amount_cents=amount_total,
+                            currency=session.get("currency", "usd"),
+                            status="succeeded",
+                            description=description,
+                        )
+                    )
+        except Exception as e:
+            logger.warning(f"Could not record checkout payment row: {e}")
 
     await db.commit()
 

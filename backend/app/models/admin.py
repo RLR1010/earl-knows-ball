@@ -30,8 +30,11 @@ class SubscriptionPlan(Base):
                         onupdate=lambda: datetime.now(timezone.utc))
 
     # Stripe
-    stripe_price_id = Column(String(100), nullable=True)    # Stripe Price ID for this plan
+    stripe_price_id = Column(String(100), nullable=True)    # Stripe Price ID for this plan (recurring conversion price for trials)
     stripe_product_id = Column(String(100), nullable=True)  # Stripe Product ID
+    trial_fee_price_id = Column(String(100), nullable=True) # For PAID trials: one-time Stripe Price ID charged upfront (e.g. $1.95)
+                                                             # alongside the recurring price. When set, checkout adds it as a
+                                                             # one-time line item so the trial is paid, not free.
 
     # Relationships
     subscriptions = relationship("UserSubscription", back_populates="plan")
