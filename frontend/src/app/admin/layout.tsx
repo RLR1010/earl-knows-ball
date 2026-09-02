@@ -34,6 +34,12 @@ const NAV_GROUPS = [
     ],
   },
   {
+    label: "Marketing & Social",
+    items: [
+      { label: "X (Twitter)", path: "/admin/social/x" },
+    ],
+  },
+  {
     label: "System",
     items: [
       { label: "Tasks", path: "/admin/tasks" },
