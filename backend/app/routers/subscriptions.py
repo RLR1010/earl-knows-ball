@@ -1,7 +1,7 @@
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
-from sqlalchemy import select, func, case
+from sqlalchemy import select, func, case, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel
 from typing import Optional
@@ -489,47 +489,11 @@ async def _handle_checkout_completed(session: dict, db: AsyncSession):
             if plan.monthly_token_limit is not None:
                 user.monthly_token_limit = plan.monthly_token_limit
 
-    # Record the subscription payment (covers paid trials, where Stripe may
-    # deliver invoice.paid BEFORE checkout.session.completed, which would
-    # otherwise drop the payment because the subscription row doesn't exist
-    # yet). Dedup against invoice.paid so we don't double-record.
-    if sub and user:
-        try:
-            amount_total = int(session.get("amount_total") or 0)
-            if amount_total > 0:
-                dup = await db.execute(
-                    select(Payment).where(
-                        Payment.subscription_id == sub.id,
-                        Payment.amount_cents == amount_total,
-                    )
-                )
-                if dup.scalar_one_or_none() is None:
-                    description = "Subscription"
-                    plan_result = await db.execute(
-                        select(SubscriptionPlan).where(
-                            SubscriptionPlan.id == sub.plan_id
-                        )
-                    )
-                    plan2 = plan_result.scalar_one_or_none()
-                    if plan2:
-                        label = (plan2.payment_description or "").strip()
-                        description = (
-                            label
-                            if label
-                            else (plan2.name or "Subscription") + " — Membership"
-                        )
-                    db.add(
-                        Payment(
-                            user_id=user.id,
-                            subscription_id=sub.id,
-                            amount_cents=amount_total,
-                            currency=session.get("currency", "usd"),
-                            status="succeeded",
-                            description=description,
-                        )
-                    )
-        except Exception as e:
-            logger.warning(f"Could not record checkout payment row: {e}")
+    # NOTE: Subscription payments are recorded ONLY in _handle_invoice_paid, which
+    # is the single source of truth and dedups on the unique stripe_invoice_id.
+    # Recording the payment here too caused duplicate payment rows when
+    # checkout.session.completed and invoice.paid arrived concurrently (both
+    # wrote a payment for the same order).
 
     await db.commit()
 
@@ -727,7 +691,9 @@ async def _handle_subscription_deleted(subscription: dict, db: AsyncSession):
 
 
 async def _handle_invoice_paid(invoice: dict, db: AsyncSession):
-    """Record successful payment."""
+    """Record successful payment. This is the SINGLE source of truth for
+    subscription payments. Dedups on the unique stripe_invoice_id so retries,
+    concurrent webhook delivery, or a prior payment row never create duplicates."""
     stripe_sub_id = invoice.get("subscription")
     customer_id = invoice.get("customer")
     stripe_invoice_id = invoice.get("id")
@@ -738,22 +704,80 @@ async def _handle_invoice_paid(invoice: dict, db: AsyncSession):
     if not stripe_sub_id:
         return
 
-    # Find the subscription
+    # Dedup: if we've already recorded this invoice, do nothing (idempotent).
+    if stripe_invoice_id:
+        existing = await db.execute(
+            select(Payment).where(Payment.stripe_invoice_id == stripe_invoice_id)
+        )
+        if existing.scalar_one_or_none() is not None:
+            return
+
+    # Find the subscription. If it doesn't exist yet (Stripe can deliver
+    # invoice.paid BEFORE checkout.session.completed for paid trials / initial
+    # charges), create it from the invoice so we never silently drop a payment.
     sub_result = await db.execute(
         select(UserSubscription).where(UserSubscription.stripe_subscription_id == stripe_sub_id)
     )
     sub = sub_result.scalar_one_or_none()
+    user_id = None
+    plan_id = None
+    if not sub:
+        # Resolve user by Stripe customer id, plan by subscription price.
+        if customer_id:
+            user_res = await db.execute(
+                select(User).where(User.stripe_customer_id == customer_id)
+            )
+            user = user_res.scalar_one_or_none()
+            if user:
+                user_id = user.id
+        # The first line item's price maps to the plan's stripe_price_id.
+        lines = (invoice.get("lines") or {}).get("data") or []
+        for line in lines:
+            price_id = ((line.get("price") or {}).get("id"))
+            if price_id:
+                plan_res = await db.execute(
+                    select(SubscriptionPlan).where(
+                        or_(
+                            SubscriptionPlan.stripe_price_id == price_id,
+                            SubscriptionPlan.trial_fee_price_id == price_id,
+                        )
+                    )
+                )
+                plan_found = plan_res.scalar_one_or_none()
+                if plan_found:
+                    plan_id = plan_found.id
+                    break
+        if user_id and plan_id:
+            sub = UserSubscription(
+                user_id=user_id,
+                plan_id=plan_id,
+                stripe_subscription_id=stripe_sub_id,
+                stripe_customer_id=customer_id,
+                status="active",
+                current_period_end=datetime.now(timezone.utc)
+                + timedelta(days=30),
+            )
+            db.add(sub)
+            await db.flush()
+            sub_result2 = await db.execute(
+                select(UserSubscription).where(
+                    UserSubscription.stripe_subscription_id == stripe_sub_id
+                )
+            )
+            sub = sub_result2.scalar_one_or_none()
+
     if not sub:
         return
+    if user_id is None:
+        user_id = sub.user_id
+    if plan_id is None:
+        plan_id = sub.plan_id
 
     # Record payment
-    # If the subscription's plan has a `payment_description`, use it as the
-    # payment-history label (admin-editable from /admin/plans). Otherwise fall
-    # back to a readable default rather than a bare Stripe invoice number.
     description = f"Invoice {stripe_invoice_id}"
-    if sub.plan_id:
+    if plan_id:
         plan_result = await db.execute(
-            select(SubscriptionPlan).where(SubscriptionPlan.id == sub.plan_id)
+            select(SubscriptionPlan).where(SubscriptionPlan.id == plan_id)
         )
         plan = plan_result.scalar_one_or_none()
         if plan:
@@ -765,7 +789,7 @@ async def _handle_invoice_paid(invoice: dict, db: AsyncSession):
             )
 
     payment = Payment(
-        user_id=sub.user_id,
+        user_id=user_id,
         subscription_id=sub.id,
         amount_cents=amount_paid,
         currency=currency,
