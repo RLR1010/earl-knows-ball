@@ -113,6 +113,7 @@ from app.routers import (
     original_articles,
     auto_generation,
     token_usage,
+    social_x,
     v1,
     parlay,
 )
@@ -167,6 +168,8 @@ if EARL_ROLE in ("all", "compute"):
     # token-usage admin routers live under /api/admin too -> keep all of
     # /api/admin/* on compute (B1 split) so routing is unambiguous.
     _include(token_usage.admin_router)
+    # X (@earlknowsball) social admin (connect + drafts + send) is admin-only -> compute.
+    _include(social_x.admin_router)
 
 
 @app.get("/")

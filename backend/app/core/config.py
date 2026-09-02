@@ -57,6 +57,13 @@ class Settings(BaseSettings):
     base_url: str = "http://localhost:3000"
     admin_email: str = "admin@earlknowsball.com"
 
+    # X (@earlknowsball) social — OAuth1 "acting as ourselves". Optional: if unset,
+    # the X admin pages show a "connect" prompt instead of failing import.
+    x_consumer_key: str = ""        # API Key
+    x_consumer_secret: str = ""     # API Secret
+    x_access_token: str = ""        # Access Token
+    x_access_token_secret: str = "" # Access Token Secret
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     @field_validator("jwt_secret")
