@@ -1,4 +1,4 @@
-"""X (@earlknowsball) admin router — connect/verify account, view source seeds, manage
+"""X (@earl_knows_ball) admin router — connect/verify account, view source seeds, manage
 drafts, and send a post. Admin-only (compute role + get_admin_user).
 
 Phase 0/1 scope (per Rich): manual composer + approve/send. No auto-scheduler yet.

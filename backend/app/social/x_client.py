@@ -1,6 +1,6 @@
-"""X (@earlknowsball) client — thin wrapper over the official `xdk` (X Developer Kit).
+"""X (@earl_knows_ball) client — thin wrapper over the official `xdk` (X Developer Kit).
 
-Auth model: "acting as ourselves" — @earlknowsball owns the app, so we use OAuth 1.0a
+Auth model: "acting as ourselves" — @earl_knows_ball owns the app, so we use OAuth 1.0a
 user-context with the app's own Access Token/Secret. No end-user consent dance needed.
 
 Phase 0/1 scope: connect/verify + create a post (text, optionally with one/more uploadead

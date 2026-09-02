@@ -157,7 +157,7 @@ async def load_record_update(db: AsyncSession, *, season_year: int | None = None
                 "kind": "record_update",
                 "sport": sport,
                 "text": (
-                    f"@earlknowsball {sport.upper()} ATS record ({year}): {w}-{l}"
+                    f"@earl_knows_ball {sport.upper()} ATS record ({year}): {w}-{l}"
                     + (f"-{p}" if p else "")
                     + f" ({pct}). We post the losses too."
                 ).strip(),
