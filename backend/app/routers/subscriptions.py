@@ -415,6 +415,37 @@ def _subscription_period(sub) -> tuple:
     return (start, end)
 
 
+async def _plan_for_stripe_subscription(subscription: dict, db: AsyncSession):
+    """Resolve the recurring plan that OWNS a Stripe subscription.
+
+    Uses the subscription's recurring price (items.data[0].price.id). For a
+    paid trial that converts to the \$29.95/month plan, the Stripe subscription
+    bills the SAME recurring price as premium-monthly (price_1U7k6cF6...), so
+    this maps the user to the real 2M-token plan instead of the trial plan
+    (trial-2d-195 has a 200k token limit). Returns a SubscriptionPlan or None.
+    """
+    try:
+        items = (subscription.get("items") or {}).get("data") or []
+        price_id = None
+        for item in items:
+            price = item.get("price") or {}
+            pid = price.get("id")
+            if pid:
+                # prefer a recurring price (the conversion/ongoing price)
+                if (price.get("type") == "recurring") or (not price_id):
+                    price_id = pid
+                    if price.get("type") == "recurring":
+                        break
+        if not price_id:
+            return None
+        plan_result = await db.execute(
+            select(SubscriptionPlan).where(SubscriptionPlan.stripe_price_id == price_id)
+        )
+        return plan_result.scalar_one_or_none()
+    except Exception:
+        return None
+
+
 async def _handle_checkout_completed(session: dict, db: AsyncSession):
     """When checkout is completed, create/update the subscription record."""
     user_id = session.get("metadata", {}).get("user_id")
@@ -610,14 +641,40 @@ async def _handle_subscription_updated(subscription: dict, db: AsyncSession):
     if user:
         if status == "active":
             user.subscription_tier = "premium"
-            # Sync monthly token limit from the plan
-            if sub.plan_id:
-                plan_result = await db.execute(
-                    select(SubscriptionPlan).where(SubscriptionPlan.id == sub.plan_id)
-                )
-                plan = plan_result.scalar_one_or_none()
-                if plan and plan.monthly_token_limit is not None:
+            # Resolve the plan that OWNS this subscription's Stripe recurring
+            # price, so a converted trial (stripe_price_id == monthly's price)
+            # maps up to the real membership (2M tokens) instead of staying on
+            # the trial plan's 200k limit. Falls back to sub.plan_id below.
+            plan = None
+            try:
+                plan = await _plan_for_stripe_subscription(subscription, db)
+            except Exception as e:
+                logger.warning(f"Could not resolve plan from Stripe price: {e}")
+            if plan is not None:
+                # Point the local subscription at the recurring-plan anyway
+                if plan.id != sub.plan_id:
+                    sub.plan_id = plan.id
+                if plan.monthly_token_limit is not None:
                     user.monthly_token_limit = plan.monthly_token_limit
+                elif sub.plan_id:
+                    # no limit on the resolved plan; fall through to stored plan
+                    plan2_result = await db.execute(
+                        select(SubscriptionPlan).where(
+                            SubscriptionPlan.id == sub.plan_id
+                        )
+                    )
+                    plan2 = plan2_result.scalar_one_or_none()
+                    if plan2 and plan2.monthly_token_limit is not None:
+                        user.monthly_token_limit = plan2.monthly_token_limit
+            else:
+                # Fallback: use the sub's stored plan_id
+                if sub.plan_id:
+                    plan_result = await db.execute(
+                        select(SubscriptionPlan).where(SubscriptionPlan.id == sub.plan_id)
+                    )
+                    plan = plan_result.scalar_one_or_none()
+                    if plan and plan.monthly_token_limit is not None:
+                        user.monthly_token_limit = plan.monthly_token_limit
         elif status in ("canceled", "past_due", "incomplete_expired", "unpaid"):
             # Check if user has any other active subscription before downgrading
             active_count = await db.scalar(
