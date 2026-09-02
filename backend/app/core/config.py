@@ -59,10 +59,15 @@ class Settings(BaseSettings):
 
     # X (@earl_knows_ball) social — OAuth1 "acting as ourselves". Optional: if unset,
     # the X admin pages show a "connect" prompt instead of failing import.
-    x_consumer_key: str = ""        # API Key
-    x_consumer_secret: str = ""     # API Secret
-    x_access_token: str = ""        # Access Token
-    x_access_token_secret: str = "" # Access Token Secret
+    x_consumer_key: str = ""        # API Key (OAuth1 self / acting-as-owner)
+    x_consumer_secret: str = ""     # API Secret (OAuth1)
+    x_access_token: str = ""        # Access Token (OAuth1)
+    x_access_token_secret: str = "" # Access Token Secret (OAuth1)
+    # OAuth 2.0 confidential client (for READING: followed feed, replies, who-we-follow).
+    # Set up in X dev portal as Web App/Automated App/Bot; callback = /api/admin/x/oauth/callback
+    x_client_id: str = ""            # Client ID
+    x_client_secret: str = ""        # Client Secret (chmod-600 .env)
+    x_oauth_redirect_uri: str = "https://earlknowsball.com/api/admin/x/oauth/callback"
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
