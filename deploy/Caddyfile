@@ -27,10 +27,30 @@
 #                     frontend/next.config.js rewrites.
 # ═══════════════════════════════════════════════════════════════════════════
 
+
+# ─────────────────────────────────────────────────────────────
+# Blue/Green frontend upstream — load-balance across two Next.js
+# instances (earlknowsball.com never down during a rebuild):
+#   3000 = GREEN  earl-frontend.service      (frontend dir)
+#   3001 = BLUE   earl-frontend-blue.service (frontend-blue dir)
+# Caddy actively probes /healthz on each; a failed/unhealthy instance
+# is dropped from rotation automatically. Deployment is orchestrated
+# by backend/scripts/deploy-frontend.sh (build one while the other
+# serves, then reload Caddy — zero downtime).
+# ─────────────────────────────────────────────────────────────
+(frontend_lb) {
+	reverse_proxy localhost:3000 localhost:3001 {
+		lb_policy round_robin
+		health_uri /healthz
+		health_interval 5s
+		health_timeout 3s
+	}
+}
+
 earlknowsball.com, www.earlknowsball.com {
 	# Next.js static assets — full path to frontend
 	handle /_next/* {
-		reverse_proxy localhost:3000
+		import frontend_lb
 	}
 
 	# ────────────── API routes ──────────────
@@ -38,45 +58,45 @@ earlknowsball.com, www.earlknowsball.com {
 	# Auth routes — backend has prefix="/auth", strip /api  (API)
 	route /api/auth/* {
 		uri strip_prefix /api
-		reverse_proxy localhost:8001
+		reverse_proxy 192.168.1.146:8001
 	}
 
 	# Admin — backend has prefix="/api/admin", pass full path  (COMPUTE)
 	handle /api/admin/* {
-		reverse_proxy localhost:8002
+		reverse_proxy 192.168.1.140:8002
 	}
 
 	# Articles — backend has prefix="/api/articles", pass full path  (API)
 	handle /api/articles/* {
-		reverse_proxy localhost:8001
+		reverse_proxy 192.168.1.146:8001
 	}
 
 	# Subscriptions — backend has prefix="/api/subscriptions", pass full path  (API)
 	handle /api/subscriptions/* {
-		reverse_proxy localhost:8001
+		reverse_proxy 192.168.1.146:8001
 	}
 
 	# Writeups — backend has prefix="/writeups", strip only /api  (COMPUTE)
 	route /api/writeups/* {
 		uri strip_prefix /api
-		reverse_proxy localhost:8002
+		reverse_proxy 192.168.1.140:8002
 	}
 
 	# MLB — strip /api prefix and proxy  (COMPUTE)
 	handle /api/mlb/* {
 		uri strip_prefix /api
-		reverse_proxy localhost:8002
+		reverse_proxy 192.168.1.146:8001
 	}
 
 	# NBA — backend at root, strip /api  (COMPUTE)
 	handle /api/nba/* {
 		uri strip_prefix /api
-		reverse_proxy localhost:8002
+		reverse_proxy 192.168.1.146:8001
 	}
 
 	# Users (token usage) — backend has prefix="/api/users", pass full path  (API)
 	handle /api/users/* {
-		reverse_proxy localhost:8001
+		reverse_proxy 192.168.1.146:8001
 	}
 
 	# General API — backend has routes at root, strip /api  (API)
@@ -85,40 +105,40 @@ earlknowsball.com, www.earlknowsball.com {
 	# browser instead of being buffered until the whole answer is done.
 	route /api/chat/* {
 		uri strip_prefix /api
-		reverse_proxy localhost:8001 {
+		reverse_proxy 192.168.1.146:8001 {
 			flush_interval -1
 		}
 	}
 	route /api/* {
 		uri strip_prefix /api
-		reverse_proxy localhost:8001
+		reverse_proxy 192.168.1.146:8001
 	}
 
 	# ────────────── Frontend page routes ──────────────
 
 	# Auth pages — Next.js rewrites these to backend
 	handle /auth/* {
-		reverse_proxy localhost:3000
+		import frontend_lb
 	}
 
 	# Admin pages — Frontend
 	handle /admin/* {
-		reverse_proxy localhost:3000
+		import frontend_lb
 	}
 
 	# Chat
 	handle /chat/* {
-		reverse_proxy localhost:3000
+		import frontend_lb
 	}
 
 	# Writeups
 	handle /writeups/* {
-		reverse_proxy localhost:3000
+		import frontend_lb
 	}
 
 	# Everything else → frontend
 	handle {
-		reverse_proxy localhost:3000
+		import frontend_lb
 	}
 
 	# Security headers
@@ -126,17 +146,5 @@ earlknowsball.com, www.earlknowsball.com {
 		X-Content-Type-Options "nosniff"
 		X-Frame-Options "DENY"
 		Referrer-Policy "strict-origin-when-cross-origin"
-	}
-}
-
-# ── comic.com (static site) — unrelated legacy host, do not touch ──
-comic.com, www.comic.com {
-	root * /var/www/comic.com/public_html
-	file_server
-
-	tls internal
-
-	header {
-		X-Content-Type-Options "nosniff"
 	}
 }

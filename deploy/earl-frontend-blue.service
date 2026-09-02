@@ -1,0 +1,18 @@
+[Unit]
+Description=Earl Knows Ball Frontend BLUE (Next.js, blue/green) port 3001
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=rich
+Group=rich
+WorkingDirectory=/home/rich/earl-knows-football/frontend-blue
+ExecStart=/usr/bin/npm run start -- -p 3001
+Restart=on-failure
+RestartSec=5
+Environment=NODE_ENV=production
+Environment=EARL_INSTANCE=blue
+
+[Install]
+WantedBy=multi-user.target
