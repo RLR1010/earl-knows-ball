@@ -134,9 +134,13 @@ async def create_checkout_session(
             detail="You are already a premium member.",
         )
 
-    # Get plan
+    # Get plan — accept either the plan id or its slug (the checkout URL uses the
+    # slug, e.g. ?plan=premium-trial, while the DB id is e.g. trial-2d-195).
     result = await db.execute(
-        select(SubscriptionPlan).where(SubscriptionPlan.id == req.plan_id)
+        select(SubscriptionPlan).where(
+            (SubscriptionPlan.id == req.plan_id)
+            | (SubscriptionPlan.slug == req.plan_id)
+        )
     )
     plan = result.scalar_one_or_none()
     if not plan:
