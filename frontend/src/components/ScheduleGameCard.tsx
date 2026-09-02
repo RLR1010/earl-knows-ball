@@ -77,7 +77,7 @@ function statusBadge(status: string): { label: string; cls: string } {
   }
 }
 
-function resolvePickTeam(
+export function resolvePickTeam(
   pick: string | null | undefined,
   home: string | null | undefined,
   away: string | null | undefined,
@@ -104,7 +104,11 @@ interface EarlsPickItem {
  * e.g. BUF -1.5, positive = away favored). So a pick of the away team flips the
  * sign (PIT +1.5 when BUF is -1.5), while a home pick keeps it (BUF -1.5).
  */
-function spreadPickDisplay(
+/** Render a spread pick from the PICKED team's perspective, e.g. "LAD -1.5".
+ * `spread` is the signed value for the HOME team (negative = home favored).
+ * Pick'em (|spread| < 0.05) renders just the team with no line. Shared by the
+ * schedule card and the Best Bets panel so spread picks stay consistent. */
+export function spreadPickDisplay(
   team: string,
   spread: number | null | undefined,
   home: string | null | undefined,

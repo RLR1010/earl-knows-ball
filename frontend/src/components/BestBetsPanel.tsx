@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api, Game } from "../lib/api";
 import { useAuth } from "@/lib/auth-context";
 import LoginModal from "./LoginModal";
+import { resolvePickTeam, spreadPickDisplay } from "./ScheduleGameCard";
 import type { CardSport } from "./ScheduleGameCard";
 
 type BestBetSport = "all" | "mlb" | "nba" | "nfl";
@@ -282,6 +283,17 @@ export default function BestBetsPanel({
                 const edge = g.best_bet_edge_pct;
                 const pickLabel = g.best_bet_label;
                 const betType = BET_TYPE_LABEL[g.best_bet_type ?? ""] ?? "";
+                // For spread picks, show the line next to the team abbreviation
+                // (e.g. "LAD -1.5") — mirrors the schedule card's buildPickItems so
+                // Best Bets stays consistent with the full game card.
+                const spreadTeam =
+                  betType === "Spread"
+                    ? resolvePickTeam(pickLabel, g.home_team, g.away_team)
+                    : null;
+                const pickToken =
+                  spreadTeam
+                    ? spreadPickDisplay(spreadTeam, g.spread, g.home_team, g.away_team)
+                    : pickLabel;
                 return (
                   <a
                     key={`${g.sport}-${g.id}`}
@@ -315,7 +327,7 @@ export default function BestBetsPanel({
                       {/* MOBILE: two-column stacked (pick | conf, matchup | implied, edge | EV) */}
                       <div className="sm:hidden">
                         <div className="flex items-center gap-2">
-                          <span className="text-sm font-bold text-white">{pickLabel}</span>
+                          <span className="text-sm font-bold text-white">{pickToken}</span>
                           {betType ? (
                             <span className="text-[10px] uppercase tracking-wider text-gray-500">
                               {betType}
@@ -356,7 +368,7 @@ export default function BestBetsPanel({
                       <div className="hidden sm:block">
                         <div className="flex items-center gap-2">
                           <span className="text-sm font-bold text-white group-hover:text-amber-200 transition">
-                            {pickLabel}
+                            {pickToken}
                           </span>
                           {betType ? (
                             <span className="text-[10px] uppercase tracking-wider text-gray-500">
