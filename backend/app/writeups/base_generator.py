@@ -472,6 +472,27 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
             gd = None
         parsed["slug"] = self._derive_slug(game_id, parsed.get("title", ""), gd)
 
+        # ---- Social caption (neutral) ----
+        # Draft after final/corrected content + title are locked so auto-
+        # generated writeups ship a caption alongside the social card, just
+        # like the public-only flow (generate_public). Grounded only in the
+        # writeup's own text so it never invents facts or a lean. Mirrors the
+        # logic in generate_public(): storyline comes from the public content
+        # so the caption is identical whether the writeup was produced through
+        # the full pipeline or the public-only path.
+        social_caption = ""
+        try:
+            _pub = (parsed.get("public_content") or "").strip()
+            _st = _pub[:900] or (seo_desc or "").strip()
+            social_caption = await self._generate_caption(
+                parsed.get("title", "") or "",
+                _st or "",
+                usage_log=usage_log,
+            )
+        except Exception:  # noqa: BLE001
+            social_caption = ""
+        parsed["social_caption"] = (social_caption or "").strip()[:500] or None
+
         # ---- Test instrumentation ----
         # Used for A/B reasoning comparisons.
         if usage_log is not None:
@@ -846,6 +867,78 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
                         except Exception:
                             break
         return {}
+
+    # ── Social Caption Generation ───────────────────────────
+
+    # A neutral, "punchy + story-driven" social caption to pair with a writeup's
+    # share card. NEUTRAL by design: it pairs with the PUBLIC-facing card/post,
+    # so it must never reveal a betting pick or lean. It grounds everything in
+    # the writeup's own text (title + big-picture public angle + reasons-to-watch)
+    # rather than inventing facts.
+    SOCIAL_CAPTION_PROMPT = (
+        "You write crisp social-post captions for Earl Knows Ball, a sports "
+        "handicapping site. Given a game preview's TITLE and key storyline, "
+        "write ONE social caption to run under the preview's branded image."
+        "\nRules:"
+        "\n- Voice: a blend of punchy/editorial and story-driven—an immediate "
+        "  hook, then why this game matters or is worth watching."
+        "\n- NEUTRAL: describe the stakes, matchup, storyline, or reasons to "
+        "  watch. NEVER endorse, pick, or hint at a side (no 'take the Phils', "
+        "  no 'fade', no lean, no betting recommendation), and do not predict "
+        "  an outcome."
+        "\n- Do NOT restate bare box-score stats or the W-L record that already "
+        "  sits on the image (that is redundant). Lean on the angle, context, "
+        "  and drama in the storyline instead."
+        "\n- Ground ONLY in the TITLE + STORYLINE given. Never invent facts, "
+        "  names, numbers, or storylines not present."
+        "\n- Length: one or two sentences, roughly 15-45 words. No hashtags, no "
+        "  emoji unless it fits naturally and sparingly, no quotes, no "
+        "  markdown. No link/URL (a CTA is added at share time)."
+        "\n- Nothing after the caption: return ONLY the caption text on its own."
+    )
+
+    async def _generate_caption(
+        self, title: str, storyline: str, *, usage_log: Optional[list] = None
+    ) -> str:
+        """Return a neutral social caption for the preview/card.
+
+        Mirrors ``_generate_seo``: shared retry/reason-aware DeepSeek call so it
+        is never blank from one flaky call, tokens counted in ``usage_log``.
+        Falls back to a short, neutral title-based line if the model is
+        unreachable so the caption is never empty.
+        """
+        if not settings.deepseek_api_key:
+            return ""
+        user_prompt = f"TITLE:\n{title}\n\nSTORYLINE (key context to weave in):\n{(storyline or '')[:2500]}"
+        raw = await self._call_deepseek(
+            self.SOCIAL_CAPTION_PROMPT,
+            user_prompt,
+            max_tokens=200,
+            reasoning="disabled",
+            max_attempts=1,
+            usage_log=usage_log,
+            call="social_caption",
+        )
+        caption = self._clean_caption(raw or "")
+        if not caption:
+            # Title-derived fallback, always neutral.
+            caption = (title or "").strip()[:140]
+        return caption[:500].strip()
+
+    @staticmethod
+    def _clean_caption(raw: str) -> str:
+        """Strip fences/quotes/whitespace so we keep just the plain caption text."""
+        import re as _re
+
+        if not raw:
+            return ""
+        text = raw.strip()
+        text = _re.sub(r"^```(?:text)?\s*", "", text)
+        text = _re.sub(r"\s*```$", "", text)
+        text = text.strip(' \n\t"\'')
+        # Collapse newlines/extra spaces to single spaces.
+        text = _re.sub(r"\s+", " ", text)
+        return text.strip(". ")[:280]
 
     # ── Accuracy Verification ───────────────────────────────
 
@@ -1635,6 +1728,18 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
         accuracy_check["accuracy_pass"] = not has_findings
         rejection_history = _rej_hist
 
+        # ---- Social caption (neutral) ----
+        # Draft after the final/corrected content + title are locked, grounded
+        # only in the writeup's own text so it never invents facts or a lean.
+        social_caption = ""
+        try:
+            storyline = ((content or "").strip()[:900] or (seo_desc or "").strip())
+            social_caption = await self._generate_caption(
+                title or "", storyline or "", usage_log=usage_log
+            )
+        except Exception:  # noqa: BLE001
+            social_caption = ""
+
         gd = None
         try:
             gd = research.get("game_summary", {}).get("date")
@@ -1648,6 +1753,7 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
             "slug": self._derive_slug(game_id, title, gd),
             "seo_description": (seo.get("seo_description") or "").strip()[:500] or None,
             "seo_keywords": (seo.get("seo_keywords") or "").strip()[:500] or None,
+            "social_caption": (social_caption or "").strip()[:500] or None,
             "accuracy_check": accuracy_check,
             "accuracy_check_tokens": accuracy_check.get("tokens") or 0,
             "rejection_history": rejection_history or [],
@@ -1763,6 +1869,7 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
                         rejection_history = CAST(:rej AS jsonb),
                         seo_description = :seo_desc,
                         seo_keywords = :seo_kw,
+                        social_caption = :soccap,
                         slug = :slug,
                         published_at = NOW(),
                         updated_at = NOW()
@@ -1787,6 +1894,7 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
                     "rej": rejection_json,
                     "seo_desc": writeup.get("seo_description"),
                     "seo_kw": writeup.get("seo_keywords"),
+                    "soccap": writeup.get("social_caption"),
                     "slug": writeup.get("slug"),
                 },
             )
@@ -1801,7 +1909,7 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
                          generated_by, total_tokens,
                          accuracy_check, accuracy_check_tokens,
                          rejection_history,
-                         seo_description, seo_keywords, slug, published_at)
+                         seo_description, seo_keywords, social_caption, slug, published_at)
                     VALUES
                         (:gid, :title, :pub, :prem,
                          CAST(:rb AS jsonb), CAST(:qc AS jsonb), :status, :version,
@@ -1809,7 +1917,7 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
                          :gen_by, :tokens,
                          CAST(:acc AS jsonb), :acc_tokens,
                          CAST(:rej AS jsonb),
-                         :seo_desc, :seo_kw, :slug, NOW())
+                         :seo_desc, :seo_kw, :soccap, :slug, NOW())
                     RETURNING id
                 """),
                 {
@@ -1830,6 +1938,7 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
                     "rej": rejection_json,
                     "seo_desc": writeup.get("seo_description"),
                     "seo_kw": writeup.get("seo_keywords"),
+                    "soccap": writeup.get("social_caption"),
                     "slug": writeup.get("slug"),
                 },
             )
