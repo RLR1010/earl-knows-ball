@@ -156,6 +156,66 @@ Length: 700-900 words. This is a HARD LIMIT — write 700-900 words, target ~800
         """Write-ups go live immediately — no draft/review workflow."""
         return "published"
 
+    async def _post_store(self, db: AsyncSession, game_id: int, research_brief: dict) -> None:
+        """After an NFL writeup is stored, render its social card off the event loop.
+        Mirrors MLB; guard here so we never block the store."""
+        try:
+            await self._render_social_card(int(game_id))
+        except Exception:  # card is cosmetic — never fail the writeup
+            logger.exception("NFL social card render failed for game %s", game_id)
+
+    async def _render_social_card(self, game_id: int) -> None:
+        """Render the NFL social card for *game_id* off the event loop."""
+        import asyncio
+        from sqlalchemy import create_engine
+        from app.core.config import settings
+        from app.social import cards_nfl as _cards
+
+        sync_url = settings.database_url.replace("+asyncpg", "+psycopg2")
+
+        def _work() -> dict | None:
+            engine = create_engine(sync_url)
+            try:
+                with engine.connect() as conn:
+                    row = conn.execute(
+                        text(
+                            "SELECT at.abbreviation AS away, ht.abbreviation AS home "
+                            "FROM nfl.games g "
+                            "JOIN nfl.teams ht ON ht.id = g.home_team_id "
+                            "JOIN nfl.teams at ON at.id = g.away_team_id "
+                            "WHERE g.id = :gid LIMIT 1"
+                        ),
+                        {"gid": int(game_id)},
+                    ).mappings().first()
+                    if not row or not row["away"] or not row["home"]:
+                        logger.info("NFL social card: game %s missing team abbrs — skipping", game_id)
+                        return None
+                    # Require rolling stats for BOTH teams (the row feeding
+                    # INTO this game) before rendering.
+                    for abbr in (row["away"], row["home"]):
+                        has = conn.execute(
+                            text(
+                                "SELECT 1 FROM nfl.team_rolling_stats trs "
+                                "WHERE upper(trs.team_abbr) = :a "
+                                "AND trs.feeds_into_game_id = :gid "
+                                "AND trs.off_pts_r5 IS NOT NULL LIMIT 1"
+                            ),
+                            {"a": (abbr or "").upper(), "gid": int(game_id)},
+                        ).first()
+                        if not has:
+                            logger.info(
+                                "NFL social card: no rolling stats for %s — skipping game %s",
+                                abbr, game_id,
+                            )
+                            return None
+                return _cards.generate_nfl_game_card(int(game_id), engine)
+            finally:
+                engine.dispose()
+
+        rel = await asyncio.to_thread(_work)
+        if rel:
+            logger.info("NFL social card rendered for game %s: %s", game_id, rel.get("preview_image"))
+
     # ── Message Builder Override ─────────────────────────────
 
     def _build_messages(self, research: dict) -> str:

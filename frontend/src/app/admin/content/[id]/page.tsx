@@ -406,6 +406,12 @@ export default function ContentEditor() {
   const [accuracyCheckTokens, setAccuracyCheckTokens] = useState<number | null>(null);
   const [rejectionHistory, setRejectionHistory] = useState<RejectedDraft[]>([]);
   const [usageLog, setUsageLog] = useState<any[]>([]);
+  // Social/og card state (MLB only)
+  const [cardBusy, setCardBusy] = useState(false);
+  const [cardMsg, setCardMsg] = useState<string | null>(null);
+  const [cardImg, setCardImg] = useState<string | null>(null);
+  // Social caption (neutral LLM draft, editable) paired with the card/post.
+  const [socialCaption, setSocialCaption] = useState<string | null>(null);
 
   // ── Fetch write-up ────────────────────────────
 
@@ -442,6 +448,20 @@ export default function ContentEditor() {
       if (data.accuracy_check_tokens != null) setAccuracyCheckTokens(data.accuracy_check_tokens);
       if (Array.isArray(data.rejection_history)) setRejectionHistory(data.rejection_history);
       else setRejectionHistory([]);
+
+      // Social caption from the draft (editable below).
+      if (data.social_caption != null) setSocialCaption(data.social_caption || "");
+
+      // Social/og card — show an already-generated card immediately (no need
+      // to click the button again); data.preview_image is relative, e.g.
+      // /writeups/cards/mlb/gw-<gameId>.png, served via the proxy to compute.
+      if (data.preview_image) {
+        setCardImg(`${data.preview_image}?loaded=${Date.now()}`);
+        setCardMsg("Existing social card. Regenerate to update.");
+      } else {
+        setCardImg(null);
+        setCardMsg(null);
+      }
 
       // We need both versions — fetch with tier=public as well
       const pubRes = await fetch(`/api/writeups/${sport}/${writeupId}?tier=public`, {
@@ -483,6 +503,7 @@ export default function ContentEditor() {
           title,
           public_content: publicContent,
           premium_content: premiumContent,
+          social_caption: socialCaption,
         }),
       });
       if (!res.ok) throw new Error(`Save failed: ${res.status}`);
@@ -546,6 +567,36 @@ export default function ContentEditor() {
       } else {
         alert(`Regeneration failed: ${e.message}`);
       }
+    }
+  };
+
+  // Force (re)render the social/og card for this game (MLB + NFL have card routes).
+  const handleGenerateCard = async () => {
+    if (!writeup) return;
+    setCardBusy(true);
+    setCardMsg(null);
+    try {
+      const res = await fetch(
+        `/api/writeups/${sport}/${writeup.game_id}/card`,
+        {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token()}` },
+        }
+      );
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(errText);
+      }
+      const data = await res.json();
+      // cache-bust so the freshly-rendered PNG shows immediately
+      setCardImg(`${data.preview_image}?t=${Date.now()}`);
+      // caption is drafted alongside the card when it was empty — surface it
+      if (data.social_caption) setSocialCaption(data.social_caption);
+      setCardMsg("Social card generated.");
+    } catch (e: any) {
+      setCardMsg(`Card generation failed: ${e.message}`);
+    } finally {
+      setCardBusy(false);
     }
   };
 
@@ -639,6 +690,15 @@ export default function ContentEditor() {
           >
             Regenerate
           </button>
+          {(sport === "mlb" || sport === "nfl" || sport === "nba") && writeup.game_id != null && (
+            <button
+              onClick={handleGenerateCard}
+              disabled={cardBusy}
+              className="px-4 py-2 text-sm font-medium rounded-lg bg-blue-600/20 text-blue-400 border border-blue-600/30 hover:bg-blue-600/30 transition disabled:opacity-50"
+            >
+              {cardBusy ? "Generating…" : "Generate social card"}
+            </button>
+          )}
           <button
             onClick={handleSave}
             disabled={saving}
@@ -648,6 +708,35 @@ export default function ContentEditor() {
           </button>
         </div>
       </div>
+
+      {/* ── Social card status / preview (MLB / NFL) ──── */}
+      {(sport === "mlb" || sport === "nfl" || sport === "nba") && (cardMsg || cardImg) && (
+        <div className="mb-4">
+          {cardMsg && (
+            <div className="text-xs flex items-center gap-2 text-gray-400 mb-2">
+              <span>{cardMsg}</span>
+              {cardImg && (
+                <a
+                  href={cardImg.split("?")[0]}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-earl-400 underline hover:text-earl-300"
+                >
+                  Open card ↗
+                </a>
+              )}
+            </div>
+          )}
+          {cardImg && (
+            /* eslint-disable-next-line @next/next/no-img-element */
+            <img
+              src={cardImg}
+              alt="Social card preview"
+              className="max-w-md w-full rounded-lg border border-white/10"
+            />
+          )}
+        </div>
+      )}
 
       {/* ── Title editor ────────────────────────── */}
       <div className="mb-4">
@@ -662,6 +751,28 @@ export default function ContentEditor() {
           placeholder="Game title..."
         />
       </div>
+
+      {/* ── Social caption editor (MLB card, LLM-drafted, editable) ─ */}
+      {sport === "mlb" && (
+      <div className="mb-4">
+        <label className="block text-xs text-gray-500 uppercase tracking-wider mb-1">
+          Social caption <span className="normal-case text-gray-600">(shown with the card when shared)</span>
+        </label>
+        <textarea
+          value={socialCaption || ""}
+          onChange={(e) => setSocialCaption(e.target.value)}
+          rows={3}
+          className="w-full px-4 py-2 text-sm bg-white/[0.03] border border-white/10 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-earl-500/50 resize-y"
+          placeholder="Neutral, punchy caption auto-drafted when the writeup generates. Edit as needed."
+        />
+        <p className="mt-1 text-[11px] text-gray-600">
+          <button type="button" onClick={handleSave} className="text-earl-400 hover:text-earl-300 underline">
+            Save
+          </button>{" "}
+to store it.
+        </p>
+      </div>
+      )}
 
       {/* ── Tab switcher ────────────────────────── */}
       <div className="flex items-center gap-2 mb-4">

@@ -1474,7 +1474,8 @@ async def get_original_article(
                 """
                 SELECT id, sport, title, summary, content, status, slug,
                        published_at, created_at, author, tokens_used,
-                       seo_description, seo_keywords, teams, visibility
+                       seo_description, seo_keywords, teams, visibility,
+                       preview_image
                 FROM public.original_articles
                 WHERE id = :aid AND sport = :sport
                 """
@@ -1487,7 +1488,8 @@ async def get_original_article(
                 """
                 SELECT id, sport, title, summary, content, status, slug,
                        published_at, created_at, author, tokens_used,
-                       seo_description, seo_keywords, teams, visibility
+                       seo_description, seo_keywords, teams, visibility,
+                       preview_image
                 FROM public.original_articles
                 WHERE slug = :sl AND sport = :sport
                 """

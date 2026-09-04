@@ -52,7 +52,31 @@ interface HistoryPost {
   error?: string | null;
 }
 
-type Tab = "connect" | "compose" | "drafts" | "history";
+type Tab = "connect" | "compose" | "drafts" | "history" | "triage";
+
+interface TriagePost {
+  id: number;
+  tweet_id: string;
+  author_username?: string | null;
+  text: string;
+  created_at?: string | null;
+  likes?: number | null;
+  retweets?: number | null;
+  replies?: number | null;
+  suggestion_count?: number;
+  responded?: boolean;
+}
+
+interface ReplySuggestion {
+  id: number;
+  post_id?: number | null;
+  tweet_id?: string | null;
+  author_username?: string | null;
+  body: string;
+  rationale?: string | null;
+  status?: string | null;
+  created_at?: string | null;
+}
 
 async function xFetch<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`/api/admin/x${path}`, {
@@ -90,7 +114,23 @@ export default function XSocialPage() {
 
   const [drafts, setDrafts] = useState<Draft[]>([]);
   const [history, setHistory] = useState<HistoryPost[]>([]);
+  const [triagePosts, setTriagePosts] = useState<TriagePost[]>([]);
+  const [pendingSuggestions, setPendingSuggestions] = useState<ReplySuggestion[]>([]);
+  const [triageBusyId, setTriageBusyId] = useState<number | null>(null);
   const [listMsgs, setListMsgs] = useState<{ ok: boolean; text: string } | null>(null);
+
+  const refreshTriage = useCallback(async () => {
+    try {
+      const [p, s] = await Promise.all([
+        authed(() => xFetch<{ posts: TriagePost[] }>("/posts?limit=40")),
+        authed(() => xFetch<{ suggestions: ReplySuggestion[] }>("/reply-suggestions?status=pending&limit=50")),
+      ]);
+      setTriagePosts(p.posts);
+      setPendingSuggestions(s.suggestions);
+    } catch (e) {
+      setListMsgs({ ok: false, text: (e as Error).message });
+    }
+  }, []);
 
   const refreshStatus = useCallback(async () => {
     setStatusLoading(true);
@@ -129,7 +169,8 @@ export default function XSocialPage() {
     refreshStatus();
     if (tab === "drafts") refreshDrafts();
     if (tab === "history") refreshHistory();
-  }, [tab, refreshStatus, refreshDrafts, refreshHistory]);
+    if (tab === "triage") refreshTriage();
+  }, [tab, refreshStatus, refreshDrafts, refreshHistory, refreshTriage]);
 
   const setMsg = (ok: boolean, text: string) => {
     setListMsgs({ ok, text });
@@ -166,6 +207,7 @@ export default function XSocialPage() {
             ["compose", "Compose"],
             ["drafts", "Drafts"],
             ["history", "Published"],
+            ["triage", "Read + Reply"],
           ] as [Tab, string][]
         ).map(([k, label]) => (
           <button
@@ -195,6 +237,16 @@ export default function XSocialPage() {
       {tab === "compose" && <ComposeTab onSaved={setMsg} />}
       {tab === "drafts" && <DraftsTab drafts={drafts} onDelete={onDelete} onStatus={onStatus} />}
       {tab === "history" && <HistoryTab posts={history} />}
+      {tab === "triage" && (
+        <TriageTab
+          posts={triagePosts}
+          suggestions={pendingSuggestions}
+          busyId={triageBusyId}
+          onRefresh={refreshTriage}
+          onBusyChange={setTriageBusyId}
+          onMsg={setMsg}
+        />
+      )}
     </div>
   );
 }
@@ -255,7 +307,38 @@ function ConnectTab({ status, loading, refreshing, onRefresh }: {
           >
             Test API
           </button>
+          {/* OAuth2 authorization: grants full read + write (tweet.read/users.read for ingesting
+              the feed of accounts WE follow + tweet.write/like.write/follows.write so we can post
+              replies & act as @earl_knows_ball). Admin only. Auto-refresh via refresh token. */}
+          <button
+            onClick={async () => {
+              setBusy(true);
+              setResMsg(null);
+              try {
+                const a = await authed(() => xFetch<{ authorize_url: string; state: string; note?: string }>("/oauth/authorize"));
+                if (!navigator.clipboard) {
+                  setResMsg({ ok: true, text: "Open the authorize link to continue (grants read + write for @earl_knows_ball)." });
+                }
+                setResMsg({ ok: true, text: "Opening X authorize… Approve @earl_knows_ball then return here." });
+                window.open(a.authorize_url, "_blank", "noopener,noreferrer");
+              } catch (e) {
+                setResMsg({ ok: false, text: (e as Error).message });
+              } finally {
+                setBusy(false);
+              }
+            }}
+            disabled={busy}
+            className="px-3 py-2 rounded-lg bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/30 text-sm text-emerald-200 disabled:opacity-50"
+            title="Authorize @earl_knows_ball on X (OAuth2, full scope: read feed we follow + post/like/follow). Token refreshes automatically."
+          >
+            Authorize access on X
+          </button>
         </div>
+        <p className="text-2xs text-gray-600 text-xs mt-2">
+          Approving grants Earl full access: read the feed of accounts we follow to find posts worth
+          engaging with, AND post replies (“Approve and send”) / like / follow as @earl_knows_ball.
+          The token refreshes automatically so access stays active.
+        </p>
       </div>
 
       <div className="bg-white/[0.02] border border-white/5 rounded-xl p-6 space-y-4">
@@ -577,3 +660,251 @@ function Row({ label, value }: { label: string; value: string }) {
 }
 
 // Re-augment module-level authed (defined above with import; kept here for tree clarity).
+
+/* ============================== TRIAGE: READ + REPLY ============================== */
+// Uses the 2026-09-02 X pipeline: we ingested recent posts from followed accounts; Earl
+// drafts reply suggestions; Rich reviews + approves/rejects here before anything is posted.
+
+function fmtWhen(iso?: string | null): string {
+  if (!iso) return "—";
+  try {
+    const d = new Date(iso);
+    return d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  } catch {
+    return iso;
+  }
+}
+
+function xLink(tweetId?: string | null, author?: string | null): string | null {
+  return tweetId ? `https://x.com/${author || "earlknowsball"}/status/${tweetId}` : null;
+}
+
+function copyText(text: string): Promise<boolean> {
+  try {
+    if (navigator.clipboard?.writeText) {
+      return navigator.clipboard.writeText(text).then(() => true, () => false);
+    }
+  } catch {
+    /* fall through to legacy */
+  }
+  // Legacy fallback for older browsers / non-secure contexts.
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand("copy");
+    document.body.removeChild(ta);
+    return Promise.resolve(ok);
+  } catch {
+    return Promise.resolve(false);
+  }
+}
+
+function CopyBtn({ text, label = "Copy", okText = "Copied ✓", className = "" }: {
+  text: string;
+  label?: string;
+  okText?: string;
+  className?: string;
+}) {
+  const [done, setDone] = useState(false);
+  return (
+    <button
+      type="button"
+      onClick={async () => {
+        const ok = await copyText(text);
+        if (ok) {
+          setDone(true);
+          window.setTimeout(() => setDone(false), 1600);
+        }
+      }}
+      className={`px-3 py-1 rounded-md text-xs border transition-colors disabled:opacity-50 ${done ? "bg-emerald-700/60 border-emerald-600/50 text-emerald-100" : "bg-transparent border-white/15 text-gray-300 hover:bg-white/5 hover:text-gray-100"} ${className}`}
+      title="Copy this reply text to paste into X"
+    >
+      {done ? okText : label}
+    </button>
+  );
+}
+
+function TriageTab({ posts, suggestions, busyId, onRefresh, onBusyChange, onMsg }: {
+  posts: TriagePost[];
+  suggestions: ReplySuggestion[];
+  busyId: number | null;
+  onRefresh: () => void;
+  onBusyChange: (id: number | null) => void;
+  onMsg: (ok: boolean, text: string) => void;
+}) {
+  const [authorFilter, setAuthorFilter] = useState<string>("");
+
+  const draftReplies = async (post: TriagePost) => {
+    onBusyChange(post.id);
+    try {
+      const res = await authed(() => xFetch<{ count: number }>(`/posts/${post.id}/draft-reply?n_options=3`, { method: "POST" }));
+      onMsg(true, `Earl drafted ${res.count} reply suggestion(s) for @${post.author_username || ""}. Review below →`);
+      onRefresh();
+    } catch (e) {
+      onMsg(false, (e as Error).message);
+    } finally {
+      onBusyChange(null);
+    }
+  };
+
+  const setSuggestionStatus = async (s: ReplySuggestion, status: "approved" | "rejected") => {
+    try {
+      await authed(() => xFetch(`/reply-suggestions/${s.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ status }),
+      }));
+      onMsg(true, status === "approved" ? "Approved (manual) — post it yourself in the X app." : "Rejected.");
+      onRefresh();
+    } catch (e) {
+      onMsg(false, (e as Error).message);
+    }
+  };
+
+  const approveAndSend = async (s: ReplySuggestion) => {
+    onBusyChange(s.id);
+    try {
+      const res = await authed(() => xFetch<{ posted: boolean; posted_tweet_id?: string | null; status: string }>(`/reply-suggestions/${s.id}/send`, { method: "POST" }));
+      onMsg(true, res.posted
+        ? `Posted reply on X${res.posted_tweet_id ? ` — tweet ${res.posted_tweet_id}` : ""}.`
+        : "Marked approved; nothing was sent.");
+      onRefresh();
+    } catch (e) {
+      onMsg(false, (e as Error).message);
+      onRefresh();
+    } finally {
+      onBusyChange(null);
+    }
+  };
+
+  const authors = Array.from(new Set((posts || []).map((p) => p.author_username).filter(Boolean))) as string[];
+  const filtered = authors.length && authorFilter
+    ? (posts || []).filter((p) => p.author_username === authorFilter)
+    : posts || [];
+
+  return (
+    <div className="space-y-8">
+      {/* Pending Earl drafts - the actionable queue */}
+      <section>
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="text-lg font-semibold text-white">Reply drafts to review ({suggestions.length})</h2>
+          <button onClick={onRefresh} className="text-xs text-gray-400 hover:text-white underline">refresh</button>
+        </div>
+        {suggestions.length === 0 ? (
+          <p className="text-sm text-gray-500">No pending reply drafts. Pick a post below and hit “Draft replies”.</p>
+        ) : (
+          <div className="space-y-3">
+            {suggestions.map((s) => {
+              const link = xLink(s.tweet_id, s.author_username);
+              return (
+                <div key={s.id} className="bg-white/[0.02] border border-white/5 rounded-xl p-4 space-y-2">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex items-center gap-2 text-xs text-gray-500">
+                      {s.author_username && <span className="text-sky-400">@{s.author_username}</span>}
+                      {s.created_at && <span>{fmtWhen(s.created_at)}</span>}
+                      {link && (
+                        <a href={link} target="_blank" rel="noreferrer" className="text-gray-500 hover:text-sky-300">
+                          tweet ↗
+                        </a>
+                      )}
+                    </div>
+                    <StatusPill status={s.status || "draft"} />
+                  </div>
+                  <p className="text-sm text-gray-100 whitespace-pre-wrap break-words">{s.body}</p>
+                  {s.rationale && <p className="text-xs text-gray-500 italic">why: {s.rationale}</p>}
+                  <div className="flex gap-2 pt-1 flex-wrap items-center">
+                    <a
+                      href={link || "#"}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="px-3 py-1 rounded-md text-xs font-medium bg-sky-900/50 hover:bg-sky-800/70 text-sky-200 border border-sky-700/40 disabled:opacity-40"
+                      title="Open this tweet on X so you can reply/fire it yourself."
+                    >
+                      Open on X ↗
+                    </a>
+                    <CopyBtn text={s.body || ""} />
+                    <button
+                      onClick={() => approveAndSend(s)}
+                      disabled={busyId === s.id}
+                      className="px-3 py-1 rounded-md text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      {busyId === s.id ? "Posting…" : "Approve and send"}
+                    </button>
+                    <button
+                      onClick={() => setSuggestionStatus(s, "approved")}
+                      disabled={busyId === s.id}
+                      className="px-3 py-1 rounded-md text-xs font-medium bg-emerald-900/40 hover:bg-emerald-800/60 text-emerald-200 border border-emerald-700/30 disabled:opacity-40 disabled:cursor-not-allowed"
+                      title="Mark approved — you publish it yourself through the X app."
+                    >
+                      Approve – manual
+                    </button>
+                    <button
+                      onClick={() => setSuggestionStatus(s, "rejected")}
+                      disabled={busyId === s.id}
+                      className="px-3 py-1 rounded-md text-xs bg-red-900/50 hover:bg-red-800 text-red-200 disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      Reject
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </section>
+
+      {/* Ingested posts to pick from */}
+      <section>
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="text-lg font-semibold text-white">Recent posts from accounts we follow ({filtered.length})</h2>
+          <select
+            value={authorFilter}
+            onChange={(e) => setAuthorFilter(e.target.value)}
+            className="bg-zinc-900 border border-white/10 rounded-md px-2 py-1 text-xs text-gray-300"
+          >
+            <option value="">All accounts</option>
+            {authors.map((a) => <option key={a} value={a}>@{a}</option>)}
+          </select>
+        </div>
+        {filtered.length === 0 ? (
+          <p className="text-sm text-gray-500">No posts ingested yet — run the X reader to pull recent posts.</p>
+        ) : (
+          <div className="space-y-3">
+            {filtered.map((p) => {
+              const link = xLink(p.tweet_id, p.author_username);
+              const busy = busyId === p.id;
+              return (
+                <div key={p.id} className="bg-white/[0.02] border border-white/5 rounded-xl p-4 space-y-2">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-2 text-xs text-gray-500">
+                      {p.author_username && <span className="text-sky-400">@{p.author_username}</span>}
+                      {p.created_at && <span>{fmtWhen(p.created_at)}</span>}
+                      {p.likes != null && <span>♥ {p.likes}</span>}
+                      {link && <a href={link} target="_blank" rel="noreferrer" className="hover:text-sky-300">tweet ↗</a>}
+                    </div>
+                    {p.responded ? (
+                      <span className="text-xs px-2 py-0.5 rounded-full bg-emerald-700/40 text-emerald-300 border border-emerald-700/40">✓ responded</span>
+                    ) : p.suggestion_count ? (
+                      <span className="text-xs text-amber-300">{p.suggestion_count} pending draft(s)</span>
+                    ) : null}
+                  </div>
+                  <p className="text-sm text-gray-200 whitespace-pre-wrap break-words">{p.text}</p>
+                  <button
+                    onClick={() => draftReplies(p)}
+                    disabled={busy}
+                    className="px-3 py-1.5 rounded-lg text-xs font-medium bg-sky-700/60 hover:bg-sky-600 disabled:opacity-50 text-sky-100"
+                  >
+                    {busy ? "Drafting…" : "Draft replies"}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}

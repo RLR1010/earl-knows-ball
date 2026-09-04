@@ -17,6 +17,7 @@ interface PublicArticle {
   slug?: string | null;
   seo_description?: string | null;
   seo_keywords?: string | null;
+  preview_image?: string | null;
   visibility?: string;
 }
 
@@ -61,6 +62,12 @@ export async function generateMetadata({
     `${article.title} analysis and handicapping from Earl Knows Ball.`;
   const keywords = article.seo_keywords || `${sport} original article, ${sport} handicapping, ${sport} picks, betting analysis, Earl Knows Ball`;
   const url = `https://earlknowsball.com/${sport}/articles/${article.slug || slug}`;
+  const SITE_ORIGIN = "https://earlknowsball.com";
+  // preview_image is stored site-relative (e.g. /og/previews/mlb/113.png);
+  // social crawlers require an absolute URL.
+  const ogImage = article.preview_image
+    ? SITE_ORIGIN + (article.preview_image.startsWith("/") ? article.preview_image : "/" + article.preview_image)
+    : undefined;
 
   return {
     // Bare title; root layout template appends "| Earl Knows Ball".
@@ -76,7 +83,12 @@ export async function generateMetadata({
       type: "article",
       publishedTime: article.published_at || undefined,
       authors: article.author ? [article.author] : undefined,
+      images: ogImage ? [{ url: ogImage, width: 1600, height: 900, alt: article.title }] : undefined,
     },
+    // Widen the social preview so X/linkedin show the full-width summary card.
+    twitter: ogImage
+      ? { card: "summary_large_image", title: brandTitle, description, images: [ogImage] }
+      : undefined,
   };
 }
 

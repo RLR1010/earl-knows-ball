@@ -78,6 +78,15 @@ export default function ChatPage() {
     setSidebarOpen(window.innerWidth >= 768);
   }, []);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  // Tracks whether the user is currently reading near the bottom of the thread.
+  // If the user scrolls up (e.g. to read the TOP of a long answer on mobile),
+  // this flips false so we don't keep dragging them (see scroll effect below).
+  const stickToBottom = useRef(true);
+  // Element of the newest assistant message. Used as the scroll anchor so a
+  // long response is revealed from its TOP (in the window) instead of stranding
+  // the reader at the very bottom, which forces a scroll-back-up on mobile.
+  const latestAssistantRef = useRef<HTMLDivElement | null>(null);
   const statusRef = useRef<HTMLSpanElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const [focusPending, setFocusPending] = useState(false);
@@ -91,8 +100,51 @@ export default function ChatPage() {
   }, [focusPending, loading]);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+    /*
+     * Scroll management.
+     * Goal: when a (potentially long) answer arrives, the TOP of the response
+     * should stay visible so you don't have to scroll back up to start reading
+     * on mobile.
+     *
+     * Rules:
+     *  - If the user is NOT near the bottom of the thread (they scrolled up to
+     *    re-read earlier messages), do nothing — never fight their scroll.
+     *  - Otherwise, anchor to the newest assistant message:
+     *      * short message (fits in the viewport)  -> sit at the bottom (snug
+     *        against the input, normal chat look).
+     *      * tall message (longer than the viewport)-> align its TOP into view
+     *        so the reader starts at the response's beginning and reads down.
+     */
+    if (!stickToBottom.current) return;
+
+    const scroller = scrollRef.current;
+    const anchor = latestAssistantRef.current;
+
+    if (anchor && scroller) {
+      const scrollRect = scroller.getBoundingClientRect();
+      const anchorRect = anchor.getBoundingClientRect();
+      const anchorTopInScroller =
+        anchorRect.top - scrollRect.top + scroller.scrollTop;
+      const anchorHeight = anchorRect.height;
+      const viewport = scroller.clientHeight;
+
+      if (anchorHeight > viewport * 0.6) {
+        // Long answer: reveal its top (leave ~12px breathing room) instead of
+        // jumping to the very bottom. Parks the start in view without smooth
+        // so fast streams don't scroll-past.
+        const target = Math.max(0, anchorTopInScroller - 12);
+        if (Math.abs(scroller.scrollTop - target) > 4) {
+          scroller.scrollTo({ top: target, behavior: "auto" });
+        }
+      } else {
+        // Short/conversational answer: normal bottom-aligned placement.
+        bottomRef.current?.scrollIntoView({ behavior: "auto", block: "end" });
+      }
+    } else {
+      // No assistant message yet (initializing / new chat): sit at the bottom.
+      bottomRef.current?.scrollIntoView({ behavior: "auto", block: "end" });
+    }
+  }, [messages, loading]);
 
   useEffect(() => {
     const saved = localStorage.getItem("earl_token");
@@ -183,6 +235,10 @@ export default function ChatPage() {
     const userMsg = input.trim();
 
     setInput("");
+    // Park the user at the bottom for their new turn so the incoming response
+    // starts in view (only relevant for long threads where they may have
+    // scrolled back up to re-read earlier messages).
+    stickToBottom.current = true;
     setMessages((prev) => [...prev, { role: "user", content: userMsg }]);
     setLoading(true);
     setStatusText("Asking Earl...");
@@ -463,6 +519,15 @@ export default function ChatPage() {
   }
 
   // --- Main chat UI ---
+  // Index of the newest assistant message, used as the scroll anchor so a long
+  // answer gets revealed from its TOP (stays in the window on mobile).
+  let lastAssistantIndex = -1;
+  for (let j = messages.length - 1; j >= 0; j--) {
+    if (messages[j].role === "assistant") {
+      lastAssistantIndex = j;
+      break;
+    }
+  }
   return (
     <div className="max-w-[1280px] mx-auto w-full">
       <div className="relative flex h-[calc(100dvh-8rem)] overflow-hidden">
@@ -494,10 +559,28 @@ export default function ChatPage() {
         {/* Chat area */}
         <div className="flex-1 flex flex-col min-w-0">
           {/* Messages */}
-          <div className="flex-1 overflow-y-auto px-4 py-8 space-y-4">
+          <div
+            ref={scrollRef}
+            onScroll={() => {
+              const el = scrollRef.current;
+              if (!el) return;
+              // Roughly "near the bottom": within 120px of the bottom edge.
+              const nearBottom =
+                el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+              stickToBottom.current = nearBottom;
+            }}
+            className="flex-1 overflow-y-auto px-4 py-8 space-y-4"
+          >
             {messages.map((msg, i) => (
               <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
                 <div
+                  ref={
+                    msg.role === "assistant" && i === lastAssistantIndex
+                      ? (el: HTMLDivElement | null) => {
+                          latestAssistantRef.current = el;
+                        }
+                      : undefined
+                  }
                   className={`max-w-[85%] rounded-2xl px-4 py-3 break-words ${
                     msg.role === "user"
                       ? "bg-earl-600/20 border border-earl-600/30 text-gray-200"

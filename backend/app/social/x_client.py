@@ -38,6 +38,34 @@ def _client_for(
     return Client(auth=auth)
 
 
+def _client_for_oauth2(
+    *,
+    client_id: Optional[str],
+    client_secret: Optional[str],
+    access_token: Optional[str],
+):
+    """Build an xdk Client authenticated as @earl_knows_ball via OAuth 2.0 User Context.
+
+    X requires OAuth 2.0 (PKCE) for WRITE scopes (tweet.write) on user-context calls - OAuth
+    1.0a cannot carry tweet.write, which is the root of the 403 we hit on POST /2/tweets.
+    The access token here is the live token minted by (and refreshed from) the "Authorize
+    Access on X" flow; it must include tweet.write to post.
+    """
+    from xdk import Client
+
+    if not (client_id and client_secret and access_token):
+        raise XNotConnectedError("X OAuth2 credentials not configured (client_id/secret/token).")
+    # xdk Client(access_token=...) picks up the OAuth2 user-context bearer automatically.
+    # Providing client_id/client_secret lets it (re)authenticate; the token itself is carried
+    # as the OAuth2 access token.
+    return Client(
+        base_url="https://api.x.com",
+        access_token=access_token,
+        client_id=client_id,
+        client_secret=client_secret,
+    )
+
+
 class XError(Exception):
     """Raised for a non-2xx / structured API error from X."""
 
@@ -146,29 +174,59 @@ def create_post(
     text: str,
     *,
     media_ids: Optional[list[str]] = None,
+    in_reply_to_tweet_id: Optional[str] = None,
     api_key: Optional[str] = None,
     api_secret: Optional[str] = None,
     access_token: Optional[str] = None,
     access_secret: Optional[str] = None,
+    oauth2_client_id: Optional[str] = None,
+    oauth2_client_secret: Optional[str] = None,
+    oauth2_access_token: Optional[str] = None,
 ) -> dict:
     """POST /2/tweets and return {ok, tweet_id, text}.
 
     media_ids come from a prior upload_image() call (store the returned id on the
-    candidate as media_id). Caller is responsible for grounding (traceable source_ref).
+    candidate as media_id). Pass in_reply_to_tweet_id to post this as a REPLY to that
+    tweet (the "reply" block on the create-posts request). Caller is responsible for
+    grounding (traceable source_ref).
+
+    Auth: prefer OAuth 2.0 user-context (oauth2_client_id/secret/access_token) because X
+    only allows WRITE (tweet.write) via OAuth2 - that fixes the 403 POST /2/tweets. Falls
+    back to OAuth 1.0a creds only if no OAuth2 token is supplied.
     """
     try:
-        kwargs = {}
-        if api_key is not None or api_secret is not None or access_token is not None or access_secret is not None:
-            kwargs = {
-                "api_key": api_key, "api_secret": api_secret,
-                "access_token": access_token, "access_secret": access_secret,
-            }
-        client = _client_for(**kwargs) if kwargs else _client_for_from_settings()
+        if oauth2_client_id and oauth2_access_token:
+            client = _client_for_oauth2(
+                client_id=oauth2_client_id,
+                client_secret=oauth2_client_secret,
+                access_token=oauth2_access_token,
+            )
+        else:
+            kwargs = {}
+            if api_key is not None or api_secret is not None or access_token is not None or access_secret is not None:
+                kwargs = {
+                    "api_key": api_key, "api_secret": api_secret,
+                    "access_token": access_token, "access_secret": access_secret,
+                }
+            client = _client_for(**kwargs) if kwargs else _client_for_from_settings()
 
-        from xdk.schemas import CreatePostsRequest, CreatePostsMedia
-        body = {"text": text}
+        # Newer xdk exposes Pydantic reply/media models; older versions accept plain
+        # dicts for the sub-block, so build the payload dict first and only wrap the
+        # nested media/reply in the typed schema when the class is actually available.
+        from xdk.schemas import CreatePostsRequest  # noqa: PLC0415
+        body: dict = {"text": text}
         if media_ids:
-            body["media"] = CreatePostsMedia(media_ids=list(media_ids))
+            try:
+                from xdk.schemas import CreatePostsMedia  # noqa: PLC0415
+                body["media"] = CreatePostsMedia(media_ids=list(media_ids))
+            except ImportError:  # pragma: no cover - xdk version fallback
+                body["media"] = {"media_ids": list(media_ids)}
+        if in_reply_to_tweet_id:
+            try:
+                from xdk.schemas import CreatePostsReply  # noqa: PLC0415
+                body["reply"] = CreatePostsReply(in_reply_to_tweet_id=in_reply_to_tweet_id)
+            except ImportError:  # pragma: no cover - xdk version fallback
+                body["reply"] = {"in_reply_to_tweet_id": in_reply_to_tweet_id}
         resp = client.posts.create(CreatePostsRequest(**body))
         d = resp.data if hasattr(resp, "data") else resp
         if not d:

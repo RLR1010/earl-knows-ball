@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  :root{
+    --ink:#f5f2ff; --accent:#38bdf8;
+    --panel:#12102a;
+  }
+  *{box-sizing:border-box;margin:0;padding:0;}
+  html,body{width:1600px;height:900px;overflow:hidden;
+    font-family:'Segoe UI',Roboto,Helvetica,Arial,sans-serif;background:#0a0818;}
+  .card{position:relative;width:1600px;height:900px;background:#0a0818;color:var(--ink);overflow:hidden;
+    background-image:
+      radial-gradient(980px 620px at 62% -10%, rgba(109,40,217,.5), transparent 62%),
+      radial-gradient(520px 380px at 0% 108%, rgba(56,189,248,.13), transparent 55%);
+    display:flex;justify-content:flex-start;}
+  .diamond{position:absolute;right:-170px;top:-170px;width:540px;height:540px;
+    background-image:
+      linear-gradient(rgba(139,92,246,.1) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(139,92,246,.1) 1px, transparent 1px);
+    background-size:40px 40px;transform:rotate(45deg);border-radius:28px;}
+  .earl{position:absolute;right:-60px;bottom:-24px;height:830px;z-index:0;
+    -webkit-mask-image:linear-gradient(0deg,transparent 0%,#000 16%);
+    mask-image:linear-gradient(0deg,transparent 0%,#000 16%);
+    filter:drop-shadow(-36px 0 58px rgba(0,0,0,.42));}
+
+  .cardinner{position:relative;z-index:3;height:100%;flex:0 0 auto;width:1200px;padding:26px 0 26px 46px;}
+  .in{width:100%;height:100%;display:flex;flex-direction:column;
+    justify-content:space-between;}
+
+  /* top */
+  .toprow{display:flex;align-items:center;gap:16px;margin-top:6px;}
+  .lockup{height:72px;width:auto;margin-top:6px;filter:drop-shadow(0 4px 12px rgba(0,0,0,.5));}
+  .spacer{flex:1;}
+  .eyebrow{display:flex;align-items:center;gap:9px;font-size:13px;letter-spacing:.26em;
+    text-transform:uppercase;color:#7cc8ee;font-weight:700;}
+
+  /* headline */
+  .headbox{margin-top:30px;}
+  h1.head{font-size:58px;line-height:1.1;font-weight:800;letter-spacing:-.02em;color:#fff;
+    text-wrap:balance;max-width:1180px;}
+  p.dek{margin-top:13px;font-size:21px;line-height:1.45;color:#dfd8f4;max-width:1140px;text-wrap:balance;}
+
+  /* bottom block — lifted off the bottom edge so the two team cards sit higher */
+  .datazone{display:flex;flex-direction:column;gap:16px;margin-bottom:32px;}
+
+  /* team cards row */
+  .matchrow{display:flex;align-items:stretch;gap:0;}
+  .cell{width:520px;background:linear-gradient(180deg,#181337 0%,#130e2b 100%);
+    border:1px solid rgba(214,206,255,.26);box-shadow:0 12px 32px rgba(0,0,0,.4);
+    padding:20px 24px 18px;}
+  .cell.left{border-radius:22px 6px 6px 22px;}
+  .cell.right{border-radius:6px 22px 22px 6px;}
+
+  /* header: logo + name/record (SAME orientation both sides) */
+  .hdr{display:flex;align-items:center;gap:16px;padding-bottom:14px;
+    border-bottom:1px solid rgba(180,168,235,.16);}
+  .logo-backer{flex:0 0 auto;width:64px;height:64px;border-radius:50%;display:flex;
+    align-items:center;justify-content:center;
+    background:radial-gradient(circle at 50% 42%, rgba(255,255,255,.95), rgba(255,255,255,.55));
+    box-shadow:0 0 0 1px rgba(255,255,255,.2), 0 6px 14px rgba(0,0,0,.4);}
+  .team-logo{height:46px;width:auto;object-fit:contain;filter:drop-shadow(0 2px 3px rgba(0,0,0,.3));}
+  .team-line{display:flex;flex-direction:column;justify-content:center;min-width:0;}
+  .team-name{font-size:30px;font-weight:800;letter-spacing:-.015em;color:#fff;white-space:nowrap;
+    overflow:hidden;text-overflow:ellipsis;line-height:1;}
+  .team-meta{font-size:14.5px;color:#cfc7ed;margin-top:6px;}
+
+  /* stacked stat rows: label left, value right */
+  .stats{margin-top:12px;display:flex;flex-direction:column;gap:8px;}
+  .srow{display:flex;align-items:baseline;justify-content:space-between;gap:14px;
+    background:rgba(10,8,22,.45);border:1px solid rgba(200,190,250,.14);border-radius:10px;
+    padding:9px 14px;}
+  .srow .lbl{font-size:15px;letter-spacing:.02em;color:#cfc7ed;line-height:1.15;}
+  .srow .val{font-size:26px;font-weight:800;color:#fff;white-space:nowrap;
+    font-variant-numeric:tabular-nums;line-height:1;}
+
+  /* center divider */
+  .vs{flex:0 0 auto;width:96px;display:flex;align-items:center;justify-content:center;}
+  .vs .ring{width:58px;height:58px;border-radius:50%;border:2px solid rgba(225,216,255,.5);
+    display:flex;align-items:center;justify-content:center;font-weight:800;font-size:19px;color:#fff;
+    background:linear-gradient(135deg,rgba(109,40,217,.85),rgba(56,189,248,.4));
+    box-shadow:0 0 22px rgba(56,189,248,.32);}
+
+  .foot{display:flex;align-items:center;gap:12px;font-size:14px;
+    letter-spacing:.1em;text-transform:uppercase;color:#c2b9e6;}
+  .foot .handle{font-weight:800;color:#fff;}
+  .foot .dot{color:#5a547d;}
+  .foot .cta{color:#7cc8ee;font-weight:800;}
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="diamond"></div>
+    <img class="earl" src="{EARL_SRC}" alt="">
+    <div class="cardinner">
+      <div class="in">
+
+        <div class="toprow">
+          <img class="lockup" src="{LOGO_SRC}" alt="Earl Knows Ball">
+          <div class="spacer"></div>
+          <div class="eyebrow">GAME WRITEUP · MLB · {DATE}</div>
+        </div>
+
+        <div class="headbox">
+          <h1 class="head">{HEADLINE}</h1>
+          <p class="dek">{DEK}</p>
+        </div>
+
+        <div class="datazone">
+          <div class="matchrow">
+
+            <div class="cell left">
+              <div class="hdr">
+                <div class="logo-backer"><img class="team-logo" src="{AWAY_LOGO}" alt=""></div>
+                <div class="team-line">
+                  <div class="team-name">{AWAY_NAME}</div>
+                  <div class="team-meta">{AWAY_META}</div>
+                </div>
+              </div>
+              <div class="stats">
+                <div class="srow"><span class="lbl">Runs Allowed/G Last 5</span><span class="val">{AWAY_RA5}</span></div>
+                <div class="srow"><span class="lbl">Runs Scored/G Last 5</span><span class="val">{AWAY_RS5}</span></div>
+                <div class="srow"><span class="lbl">AVG Last 10</span><span class="val">{AWAY_AVG10}</span></div>
+              </div>
+            </div>
+
+            <div class="vs"><div class="ring">@</div></div>
+
+            <div class="cell right">
+              <div class="hdr">
+                <div class="logo-backer"><img class="team-logo" src="{HOME_LOGO}" alt=""></div>
+                <div class="team-line">
+                  <div class="team-name">{HOME_NAME}</div>
+                  <div class="team-meta">{HOME_META}</div>
+                </div>
+              </div>
+              <div class="stats">
+                <div class="srow"><span class="lbl">Runs Allowed/G Last 5</span><span class="val">{HOME_RA5}</span></div>
+                <div class="srow"><span class="lbl">Runs Scored/G Last 5</span><span class="val">{HOME_RS5}</span></div>
+                <div class="srow"><span class="lbl">AVG Last 10</span><span class="val">{HOME_AVG10}</span></div>
+              </div>
+            </div>
+
+          </div>
+
+          <div class="foot">
+            <span class="handle">EARLKNOWSBALL.COM</span><span class="dot">·</span>
+            <span class="cta">READ THE WRITEUP</span><span aria-hidden="true">→</span>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+</body>
+</html>

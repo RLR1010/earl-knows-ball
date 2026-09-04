@@ -9,8 +9,10 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import FileResponse
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
+import pathlib
 
 from app.database import get_db
 from app.core.security import get_optional_current_user, require_admin, user_is_premium
@@ -21,6 +23,26 @@ from app.writeups.nba.generator import NBAGameWriteupGenerator
 
 logger = logging.getLogger("writeups")
 router = APIRouter(prefix="/writeups", tags=["writeups"])
+
+_CARDS_DIR = pathlib.Path(__file__).resolve().parents[2] / "var" / "cards"
+
+
+@router.get("/cards/{sport}/{filename}")
+async def serve_writeup_card(sport: str, filename: str):
+    """Stream a generated social/og card PNG from disk (never cached at serverstart).
+
+    Defined BEFORE the {sport}/{identifier} catch-alls so it is never shadowed.
+    Returns 404 when the card has not been generated yet.
+    Safe: only serves a plain filename inside the per-sport cards dir.
+    """
+    if sport not in {"mlb", "nfl", "nba"}:
+        raise HTTPException(status_code=404, detail="unknown sport")
+    if "/" in filename or "\\" in filename or not filename.endswith(".png"):
+        raise HTTPException(status_code=404, detail="bad filename")
+    p = (_CARDS_DIR / sport / filename)
+    if not p.is_file():
+        raise HTTPException(status_code=404, detail="card not generated")
+    return FileResponse(p, media_type="image/png")
 
 
 def _make_excerpt(content: Any, length: int = 240) -> str:
@@ -299,6 +321,175 @@ async def generate_mlb_writeup(
 
 
 # ──────────────────────────────────────────────
+#  Social/og card (manual re-render)
+# ──────────────────────────────────────────────
+
+@router.post("/mlb/{game_id}/card")
+async def generate_mlb_card(
+    game_id: int,
+    db: AsyncSession = Depends(get_db),
+    _admin: User = Depends(require_admin),
+):
+    """Force (re)render the social/og card for an MLB game and set
+    mlb.game_writeups.preview_image. Returns {game_id, preview_image}.
+
+    Uses the same Playwright/template machinery as the auto-hook
+    (app.social.cards.generate_game_card). Runs the sync render off the
+    event loop."""
+    import asyncio
+    from sqlalchemy import create_engine
+    from app.core.config import settings
+    from app.social import cards as _cards
+
+    game = await db.execute(
+        text("SELECT id FROM mlb.games WHERE id = :gid"),
+        {"gid": game_id},
+    )
+    if not game.scalar():
+        raise HTTPException(status_code=404, detail=f"Game {game_id} not found")
+
+    # If the writeup has no social caption yet, draft one (neutral) from its own
+    # content so a caption is always available once a card is generated.
+    w = (
+        await db.execute(
+            text(
+                "SELECT title, public_content, seo_description, social_caption "
+                "FROM mlb.game_writeups WHERE game_id = :gid"
+            ),
+            {"gid": game_id},
+        )
+    ).mappings().first()
+    caption = (w.social_caption or "").strip() if w else ""
+    if not caption and w and (w.public_content or w.seo_description):
+        try:
+            from app.writeups.mlb.generator import MLBWriteupGenerator
+
+            gen = MLBWriteupGenerator()
+            storyline = ((w.public_content or "").strip()[:900] or (w.seo_description or "").strip())
+            caption = await gen._generate_caption(
+                (w.title or "").strip(), storyline or "", usage_log=[]
+            )
+            if caption:
+                await db.execute(
+                    text(
+                        "UPDATE mlb.game_writeups SET social_caption = :sc, updated_at = NOW() "
+                        "WHERE game_id = :gid"
+                    ),
+                    {"sc": caption[:500], "gid": game_id},
+                )
+                await db.commit()
+        except Exception:  # noqa: BLE001
+            caption = caption or ""
+
+    sync_url = settings.database_url.replace("+asyncpg", "+psycopg2")
+
+    def _work() -> str:
+        engine = create_engine(sync_url)
+        try:
+            return _cards.generate_game_card("mlb", int(game_id), engine)
+        finally:
+            engine.dispose()
+
+    try:
+        rel = await asyncio.to_thread(_work)
+    except SystemExit as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"card render failed: {e}")
+
+    return {"game_id": game_id, "preview_image": rel, "social_caption": caption or None}
+
+
+@router.post("/nfl/{game_id}/card")
+async def generate_nfl_card(
+    game_id: int,
+    db: AsyncSession = Depends(get_db),
+    _admin: User = Depends(require_admin),
+):
+    """Force (re)render the NFL social/og card for a game and set
+    nfl.game_writeups.preview_image. Returns {game_id, preview_image}.
+
+    Uses the same Playwright/template machinery as the auto-hook
+    (app.social.cards_nfl.generate_nfl_game_card). Runs the sync render off
+    the event loop. NFL cards use the ORANGE Earl portrait + NFL team logos."""
+    import asyncio
+    from sqlalchemy import create_engine
+    from app.core.config import settings
+    from app.social import cards_nfl as _cards
+
+    game = await db.execute(
+        text("SELECT id FROM nfl.games WHERE id = :gid"),
+        {"gid": game_id},
+    )
+    if not game.scalar():
+        raise HTTPException(status_code=404, detail=f"Game {game_id} not found")
+
+    sync_url = settings.database_url.replace("+asyncpg", "+psycopg2")
+
+    def _work() -> str | None:
+        engine = create_engine(sync_url)
+        try:
+            out = _cards.generate_nfl_game_card(int(game_id), engine)
+            return (out or {}).get("preview_image")
+        finally:
+            engine.dispose()
+
+    try:
+        rel = await asyncio.to_thread(_work)
+    except SystemExit as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"card render failed: {e}")
+
+    return {"game_id": game_id, "preview_image": rel or None}
+
+
+@router.post("/nba/{game_id}/card")
+async def generate_nba_card(
+    game_id: int,
+    db: AsyncSession = Depends(get_db),
+    _admin: User = Depends(require_admin),
+):
+    """Force (re)render the NBA social/og card for a game and set
+    nba.game_writeups.preview_image. Returns {game_id, preview_image}.
+
+    Same Playwright/template machinery as the auto-hook
+    (app.social.cards_nba.generate_nba_game_card). Runs the sync render off
+    the event loop. NBA cards use the dark-ORANGE Earl portrait (shared with
+    NFL) + NBA team logos; stat rows show Off/Def/Net RTG last 5."""
+    import asyncio
+    from sqlalchemy import create_engine
+    from app.core.config import settings
+    from app.social import cards_nba as _cards
+
+    game = await db.execute(
+        text("SELECT id FROM nba.games WHERE id = :gid"),
+        {"gid": game_id},
+    )
+    if not game.scalar():
+        raise HTTPException(status_code=404, detail=f"Game {game_id} not found")
+
+    sync_url = settings.database_url.replace("+asyncpg", "+psycopg2")
+
+    def _work() -> str | None:
+        engine = create_engine(sync_url)
+        try:
+            out = _cards.generate_nba_game_card(int(game_id), engine)
+            return (out or {}).get("preview_image")
+        finally:
+            engine.dispose()
+
+    try:
+        rel = await asyncio.to_thread(_work)
+    except SystemExit as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"card render failed: {e}")
+
+    return {"game_id": game_id, "preview_image": rel or None}
+
+
+# ──────────────────────────────────────────────
 #  List write-ups
 # ──────────────────────────────────────────────
 
@@ -394,6 +585,7 @@ async def get_mlb_writeup(
                 w.total_tokens, w.accuracy_check, w.accuracy_check_tokens,
                 w.rejection_history,
                 w.research_brief,
+                w.preview_image, w.seo_description, w.social_caption,
                 g.date AS game_date,
                 ht.abbreviation AS home_team,
                 at.abbreviation AS away_team
@@ -414,6 +606,7 @@ async def get_mlb_writeup(
                 w.total_tokens, w.accuracy_check, w.accuracy_check_tokens,
                 w.rejection_history,
                 w.research_brief,
+                w.preview_image, w.seo_description, w.social_caption,
                 g.date AS game_date,
                 ht.abbreviation AS home_team,
                 at.abbreviation AS away_team
@@ -430,6 +623,20 @@ async def get_mlb_writeup(
         raise HTTPException(status_code=404, detail=f"Write-up {identifier} not found")
 
     content = r["premium_content"] if tier == "premium" else r["public_content"]
+
+    # Team-card payload (the two team stat cards that appear on the social-card
+    # image) for the PUBLIC article — so readers arriving from X see the same
+    # graphics under the title. Computed identically to the card PNG; harmless
+    # no-op/safe-fallback if unavailable (additive to the article page).
+    team_cards = None
+    if tier == "public" and r.get("game_id"):
+        # mlb is the only sport with a team-card payload for now. Optional/additive.
+        try:
+            from app.social.cards import game_team_cards
+
+            team_cards = game_team_cards(r["game_id"])
+        except Exception:  # noqa: BLE001 — never break article load for cards
+            team_cards = None
 
     return {
         "id": r["id"],
@@ -454,6 +661,10 @@ async def get_mlb_writeup(
         "accuracy_check_tokens": r["accuracy_check_tokens"],
         "rejection_history": r["rejection_history"] or [],
         "research_brief": r["research_brief"],
+        "preview_image": r.get("preview_image"),
+        "seo_description": r.get("seo_description"),
+        "social_caption": r.get("social_caption"),
+        "team_cards": team_cards,
     }
 
 
@@ -528,6 +739,9 @@ async def update_mlb_writeup(
     if "premium_content" in body:
         updates.append("premium_content = :premium_content")
         params["premium_content"] = body["premium_content"]
+    if "social_caption" in body:
+        updates.append("social_caption = :social_caption")
+        params["social_caption"] = (body["social_caption"] or "").strip()[:500] or None
 
     if not updates:
         return {"error": "No fields to update"}
@@ -803,7 +1017,7 @@ async def get_nfl_writeup(
     is_id = identifier.isdigit()
     row = await db.execute(
         text("""SELECT w.id, w.game_id, w.title, w.slug, w.public_content, w.premium_content,
-                 w.status, w.version, w.is_historical,
+                 w.status, w.version, w.is_historical, w.preview_image,
                  w.research_brief, w.quality_checks,
                  w.total_tokens, w.accuracy_check, w.accuracy_check_tokens,
                  w.rejection_history,
@@ -815,7 +1029,7 @@ async def get_nfl_writeup(
           JOIN nfl.teams ht ON g.home_team_id = ht.id
           JOIN nfl.teams at ON g.away_team_id = at.id
           WHERE w.id = :key""" if is_id else """SELECT w.id, w.game_id, w.title, w.slug, w.public_content, w.premium_content,
-                 w.status, w.version, w.is_historical,
+                 w.status, w.version, w.is_historical, w.preview_image,
                  w.research_brief, w.quality_checks,
                  w.total_tokens, w.accuracy_check, w.accuracy_check_tokens,
                  w.rejection_history,
@@ -835,6 +1049,15 @@ async def get_nfl_writeup(
     rb = r.get("research_brief")
     qc = r.get("quality_checks")
     content = r["premium_content"] if tier == "premium" else r["public_content"]
+    # Team stat cards (same as the card PNG) under the title. Additive/safe-fallback.
+    team_cards = None
+    if tier == "public" and r.get("game_id"):
+        try:
+            from app.social.cards_nfl import nfl_team_cards
+
+            team_cards = nfl_team_cards(r["game_id"])
+        except Exception:  # noqa: BLE001 — never break article load for cards
+            team_cards = None
     return {
         "id": r["id"], "slug": r["slug"], "game_id": r["game_id"],
         "title": r["title"],
@@ -850,6 +1073,8 @@ async def get_nfl_writeup(
         "accuracy_check_tokens": r["accuracy_check_tokens"],
         "rejection_history": json.loads(r.get("rejection_history")) if isinstance(r.get("rejection_history"), str) else (r.get("rejection_history") or []),
         "week": r["week"], "matchup": f"{r['away']} @ {r['home']}",
+        "preview_image": r.get("preview_image"),
+        "team_cards": team_cards,
         "game_date": r["date"].isoformat() if r["date"] else None,
         "published_at": r["published_at"].isoformat() if r["published_at"] else None,
         "created_at": r["created_at"].isoformat() if r["created_at"] else None,
@@ -1332,4 +1557,3 @@ async def update_nba_writeup(
     await db.execute(text(f"UPDATE nba.game_writeups SET {set_clause} WHERE id = :wid"), params)
     await db.commit()
     return {"id": writeup_id, "updated": True}
-

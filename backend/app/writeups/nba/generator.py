@@ -329,14 +329,76 @@ Bullet lists work for key points. Keep it article-like — no blockquotes, no em
     # ── Premium: Prop Bets article (mirrors MLB flow) ──────────
 
     async def _post_store(self, db, game_id, research_brief) -> None:
-        """After the main writeup is committed, generate+store the premium
-        "Prop Bets" article if the game has DraftKings player props.
-        Wrapped so a props failure never fails the main writeup.
+        """After the main writeup is committed: (1) store the premium
+        "Prop Bets" article if the game has DraftKings player props, and
+        (2) render the NBA social card. Both are wrapped so a failure never
+        fails the main writeup (store() calls this hook fire-and-forget).
         """
         try:
             await self._generate_props_article(db, game_id, research_brief)
         except Exception as e:  # noqa: BLE001
             logger.exception("NBA props article failed for game %s: %s", game_id, e)
+        try:
+            await self._render_social_card(int(game_id))
+        except Exception as e:  # noqa: BLE001
+            logger.exception("NBA social card failed for game %s: %s", game_id, e)
+
+    async def _render_social_card(self, game_id: int) -> None:
+        """Render the NBA social card for *game_id* off the event loop."""
+        import asyncio
+        from sqlalchemy import create_engine
+        from app.core.config import settings
+        from app.social import cards_nba as _cards
+
+        sync_url = settings.database_url.replace("+asyncpg", "+psycopg2")
+
+        def _work() -> dict | None:
+            engine = create_engine(sync_url)
+            try:
+                with engine.connect() as conn:
+                    row = conn.execute(
+                        text(
+                            "SELECT at.abbreviation AS away, ht.abbreviation AS home "
+                            "FROM nba.games g "
+                            "JOIN nba.teams at ON at.id = g.away_team_id "
+                            "JOIN nba.teams ht ON ht.id = g.home_team_id "
+                            "WHERE g.id = :gid LIMIT 1"
+                        ),
+                        {"gid": int(game_id)},
+                    ).mappings().first()
+                    if not row or not row["away"] or not row["home"]:
+                        logger.info("NBA social card: game %s missing teams — skipping", game_id)
+                        return None
+                    # Require rolling stats for BOTH teams (the row feeding the
+                    # game) before rendering — skip pre-season/no-data cleanly.
+                    for abbr in (row["away"], row["home"]):
+                        tid = conn.execute(
+                            text("SELECT id FROM nba.teams WHERE abbreviation = :a"),
+                            {"a": (abbr or "").upper()},
+                        ).scalar()
+                        if not tid:
+                            return None
+                        has = conn.execute(
+                            text(
+                                "SELECT 1 FROM nba.team_rolling_stats "
+                                "WHERE team_id = :t AND ortg_r5 IS NOT NULL LIMIT 1"
+                            ),
+                            {"t": int(tid)},
+                        ).first()
+                        if not has:
+                            logger.info(
+                                "NBA social card: no rolling stats for %s — skipping game %s",
+                                abbr, game_id,
+                            )
+                            return None
+                return _cards.generate_nba_game_card(int(game_id), engine)
+            finally:
+                engine.dispose()
+
+        out = await asyncio.to_thread(_work)
+        if out:
+            logger.info("NBA social card rendered for game %s: %s",
+                        game_id, out.get("preview_image"))
 
     async def _generate_props_article(self, db, game_id, research_brief) -> None:
         """Generate + store the premium Prop Bets article on game %s.

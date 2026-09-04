@@ -232,6 +232,7 @@ async def chat_mlb(
                             messages=[
                                 {"role": "system", "content": mlb_chat_engine.system_prompt},
                                 {"role": "user", "content": (
+                                    f"[Central US time: {time_context}]\n\n"
                                     f"Original question: {request.message}\n\n"
                                     f"--- KEY DATA FROM TOOL RESEARCH ---\n"
                                     f"{answer}\n\n"
