@@ -35,7 +35,7 @@ async def serve_writeup_card(sport: str, filename: str):
     Returns 404 when the card has not been generated yet.
     Safe: only serves a plain filename inside the per-sport cards dir.
     """
-    if sport not in {"mlb", "nfl", "nba"}:
+    if sport not in {"mlb", "nfl", "nba", "all"}:
         raise HTTPException(status_code=404, detail="unknown sport")
     if "/" in filename or "\\" in filename or not filename.endswith(".png"):
         raise HTTPException(status_code=404, detail="bad filename")

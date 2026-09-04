@@ -21,6 +21,7 @@ on the router; consistent with the writeups router).
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -35,7 +36,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.database import get_db
-from app.core.security import get_optional_current_user, user_is_premium
+from app.core.security import get_optional_current_user, require_admin, user_is_premium
 from app.models import User
 from app.services.team_extractor import extract_teams
 
@@ -206,6 +207,8 @@ class UpdateRequest(BaseModel):
     seo_description: Optional[str] = Field(None, max_length=500)
     seo_keywords: Optional[str] = Field(None, max_length=500)
     visibility: Optional[str] = Field(None, pattern="^(public|premium)$")
+    card_accent: Optional[str] = Field(None, max_length=220)
+    social_caption: Optional[str] = Field(None, max_length=480)
 
 
 def _validate_sport(sport: str) -> str:
@@ -1511,7 +1514,15 @@ async def get_original_article(
 # maps to them correctly. Public + generate/publish routes stay on the main
 # router (no prefix), served via the catch-all /api/:path* -> /:path* rewrite.
 
-admin_router = APIRouter(prefix="/api/admin", tags=["original-articles-admin"])
+admin_router = APIRouter(
+    prefix="/api/admin",
+    tags=["original-articles-admin"],
+    # Every /api/admin/original-articles/* route is admin-only. Enforce at the
+    # router level so a route added later can't silently drop auth (writeup
+    # generation routes were previously left unauthenticated). The public
+    # ``router`` (no prefix) above is unaffected.
+    dependencies=[Depends(require_admin)],
+)
 
 
 class ReEditRequest(BaseModel):
@@ -1999,6 +2010,7 @@ async def admin_get_original_article(
                    published_at, created_at, updated_at, prompt_json, research_json,
                    author, tokens_used, reasoning, word_min, word_max, word_count,
                    seo_description, seo_keywords, visibility,
+                   teams, preview_image, card_accent, social_caption,
                    accuracy_check, accuracy_check_tokens, rejection_history, usage_json
             FROM public.original_articles
             WHERE id = :aid AND sport = :sport
@@ -2013,6 +2025,15 @@ async def admin_get_original_article(
     data["accuracy_check"] = _original_normalize_json(data.get("accuracy_check"))
     data["rejection_history"] = _original_normalize_json(data.get("rejection_history")) or []
     data["usage_log"] = _original_normalize_json(data.get("usage_json")) or []
+    # teams/pg cols exposed to the admin editor for the social-card flow.
+    _t = data.get("teams")
+    try:
+        data["teams"] = sorted(json.loads(_t)) if isinstance(_t, str) else list(_t or [])
+    except (TypeError, ValueError):
+        data["teams"] = []
+    data["preview_image"] = data.get("preview_image") or None
+    data["card_accent"] = data.get("card_accent") or ""
+    data["social_caption"] = data.get("social_caption") or ""
     return {"article": data}
 
 
@@ -2029,7 +2050,8 @@ async def update_original_article(
     # should be managed on status transitions.
     current = await db.execute(
         text(
-            "SELECT id, status, title, summary, content, published_at, author "
+            "SELECT id, status, title, summary, content, published_at, author, "
+            "card_accent, social_caption "
             "FROM public.original_articles WHERE id = :aid AND sport = :sport"
         ),
         {"sport": sport, "aid": article_id},
@@ -2101,11 +2123,14 @@ async def update_original_article(
                 seo_description = COALESCE(:seo_desc, seo_description),
                 seo_keywords = COALESCE(:seo_kw, seo_keywords),
                 visibility = COALESCE(:visibility, visibility),
-                teams = COALESCE(CAST(:teams AS jsonb), teams)
+                teams = COALESCE(CAST(:teams AS jsonb), teams),
+                card_accent = :card_accent,
+                social_caption = :social_caption
             WHERE id = :aid AND sport = :sport
             RETURNING id, sport, title, summary, content, status, published_at,
                       updated_at, author, tokens_used,
-                      seo_description, seo_keywords, visibility
+                      seo_description, seo_keywords, visibility,
+                      teams, preview_image, card_accent, social_caption
             """
         ),
         {
@@ -2124,6 +2149,9 @@ async def update_original_article(
             "seo_kw": (seo_kw or "").strip()[:500] or None,
             "visibility": (req.visibility or None),
             "teams": json.dumps(new_teams) if new_teams is not None else None,
+            # social-card fields: explicit value clears (''), else keep the stored one.
+            "card_accent": (req.card_accent if req.card_accent is not None else row.get("card_accent")),
+            "social_caption": (req.social_caption if req.social_caption is not None else row.get("social_caption")),
             "aid": article_id,
             "sport": sport,
         },
@@ -2131,3 +2159,259 @@ async def update_original_article(
     updated = result.mappings().first()
     await db.commit()
     return {"article": dict(updated)}
+
+
+# ---------------------------------------------------------------------------
+# Social card generation (editorial portrait card) — used by the admin UI.
+# ---------------------------------------------------------------------------
+class GenerateSocialCardRequest(BaseModel):
+    """Optional body for generate-social-card.
+
+    card_accent: phrase from the article title to tint as the card accent. When
+        omitted the stored original_articles.card_accent is used; an empty string
+        clears the accent. Validated as a substring of the title (else no accent).
+    draft_caption: when True (default) and no caption stored yet, a share hook is
+        drafted via the app LLM (DeepSeek) and persisted; if the model call fails it
+        falls back to the deterministic one-sentence teaser.
+    """
+
+    card_accent: Optional[str] = Field(None, max_length=220)
+    draft_caption: bool = True
+
+
+# Column that carries the tidy card "meta" label under the team name, per sport.
+_TEAM_META_COL = {"mlb": "division", "nba": "conference", "nfl": "conference"}
+
+
+def _draft_social_caption(title: str, summary: str, sport: str, team: str) -> str:
+    """Deterministic short share hook (no LLM), readable as a social post.
+
+    Composes one to two sentences from the article summary (falling back to the
+    title when there is no dek yet). No predictive/wrongful claims — just a
+    teaser the editor can freely rewrite afterwards.
+    """
+    t = (title or "").strip()
+    s = re.sub(r"\s+", " ", (summary or "").strip()).strip()
+    if not s or len(s) < 25:
+        return t[:460].rstrip()
+
+    chunks = [c.strip() for c in re.split(r"(?<=[.!?])\s+", s[:560]) if c.strip()]
+    body = (" ".join(chunks[:2])).strip()
+    if not body.endswith((".", "!", "?")):
+        body += "."
+    body = re.sub(r"\s{2,}", " ", body)
+    return body[:460].rstrip()
+
+
+def _strip_repeat_of_title(title: str, text: str) -> str:
+    """Return ``text`` with any leading repetition of ``title`` removed.
+
+    Editorial summaries are frequently stored with the headline embedded in front
+    (e.g. "Titan 2026 Offseason Review ... Shape Two consecutive 3-14 ..."), so a
+    card dek or caption fed raw text starts by restating a headline that is already
+    shown above it. Trim a leading token-prefix that matches the title so clean text
+    (starting at the real lede) is left over.
+    """
+    text = re.sub(r"\s+", " ", (text or "").strip())
+    t = re.sub(r"\s+", " ", (title or "").strip()).rstrip(".!? ,;")
+    if not t:
+        return text
+    head = text[: len(t) + 4]
+    # compare on a word-prefix basis so punctuation at the seam isn't required
+    tw = [w.lower().strip(".!?,;:—\"'") for w in t.split() if w]
+    if not tw:
+        return text
+    text_words = head.split()
+    keep = len(tw)
+    if len(text_words) >= keep and [
+        w.lower().strip(".!?,;:—\"'") for w in text_words[:keep]
+    ] == tw:
+        return text[len(" ".join(text_words[:keep])):].strip().lstrip(".!?,;:— ")
+    return text
+
+
+async def _llm_social_caption(title: str, summary: str, sport: str, team: str = "") -> str:
+    """Best-effort LLM-written share line, reused across the app (DeepSeek, same
+    client + env as the headline/regeneration tools). Returns "" only when the
+    model call itself could not produce text."""
+    sport_label = {"mlb": "MLB", "nba": "NBA", "nfl": "NFL"}.get(
+        sport, "sports")
+    subject = f" About the {team}." if team else ""
+    # Stored summaries often redundantly begin by repeating the title; strip that
+    # so the model isn't handed the headline twice (which makes it echo the title).
+    brief = _strip_repeat_of_title(title, summary) or title
+    system_block = (
+        "You are Earl — a sharp, confident, original-analysis sports writer."
+        " Write ONE tweet-ready social caption for this editorial. Up to ~280"
+        " characters, 1-2 punchy sentences. The headline is shown only for"
+        " context — do NOT repeat or paraphrase the headline, and do not repeat"
+        " its words verbatim. Make the caption a fresh, distinct hook that adds"
+        " something the headline alone does not say. No hashtags, no emojis, no"
+        " links, no markdown. Just the post text."
+    )
+    user_content = (
+        f"Sport: {sport_label}\nArticle headline: {title}\nArticle body/lede:"
+        f" {brief}{subject}\n\nWrite the caption now."
+    )
+    messages: list[dict[str, Any]] = [
+        {"role": "system", "content": system_block},
+        {"role": "user", "content": user_content},
+    ]
+    from openai import AsyncOpenAI
+
+    client = AsyncOpenAI(
+        api_key=settings.deepseek_api_key,
+        base_url=f"{settings.deepseek_base_url.rstrip('/')}/v1",
+        timeout=30.0,
+    )
+    for attempt in range(1, 5):
+        try:
+            resp = await client.chat.completions.create(
+                model=settings.deepseek_model,
+                messages=messages,
+                temperature=0.7,
+                max_tokens=2000,
+            )
+            raw = resp.choices[0].message.content or ""
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Social caption LLM failed (attempt %d/2): %s", attempt, e)
+            continue
+        cap = re.sub(r"\s+", " ", raw.strip().strip('"\'')).strip()
+        if cap:
+            return cap[:280]
+    return ""
+
+
+@admin_router.post("/original-articles/{sport}/{article_id}/generate-social-card")
+async def admin_generate_social_card(
+    sport: str,
+    article_id: int,
+    body: Optional[GenerateSocialCardRequest] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """Generate (or regenerate) the portrait editorial social card + draft a caption.
+
+    Renders the card to ``frontend/public/og/<sport>/original-social-<id>.png`` and
+    persists:
+      * original_articles.preview_image = that /og path
+      * original_articles.card_accent    = validated accent substring ("" clears)
+      * original_articles.social_caption = auto-drafted only when currently empty
+
+    Card team = teams[0] (logo + display name + league meta) when teams exist;
+    zero teams renders the no-team variant. Returns
+    {article_id, sport, preview_image, social_caption, card_accent}.
+    """
+    from app.social import original_social as social_card  # Playwright deps kept on-demand
+
+    sport = _validate_sport(sport)
+    req_body = body or GenerateSocialCardRequest()
+
+    res = await db.execute(
+        text(
+            "SELECT id, sport, title, summary, teams, card_accent, social_caption "
+            "FROM public.original_articles WHERE id = :id AND sport = :sport"
+        ),
+        {"id": article_id, "sport": sport},
+    )
+    row = res.mappings().first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Article not found.")
+    title = (row["title"] or "").strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="Article has no title yet — draft it first.")
+
+    # ---- teams ------------------------------------------
+    raw = row["teams"]
+    if isinstance(raw, list):
+        teams = [str(x) for x in raw if x]
+    else:
+        try:
+            teams = [str(x) for x in json.loads(raw or "[]") if x]
+        except (json.JSONDecodeError, TypeError):
+            teams = []
+    # sport "all" is cross-sport editorial: never assert a single team on the card.
+    team = teams[0] if (teams and sport != "all") else None
+
+    # ---- accent (validated substring of title) ----------
+    requested = req_body.card_accent
+    if requested is not None:
+        accent = (requested or "").strip()
+    else:
+        accent = (row["card_accent"] or "").strip()
+    if accent and not re.search(re.escape(accent), title, re.IGNORECASE):
+        accent = ""  # graceful fallback to plain title
+    accent_store = ""
+    if requested is not None:
+        accent_store = accent  # honour an explicit clear
+    elif accent:
+        accent_store = accent
+    elif row["card_accent"]:
+        accent_store = row["card_accent"]
+
+    # ---- card team display (display name + league meta) --
+    team_display = team or ""
+    team_meta = ""
+    if team and sport in _TEAM_META_COL:
+        tr = (
+            await db.execute(
+                text(
+                    'SELECT "name" AS nm, "division" AS dm '
+                    "FROM %s.teams WHERE abbreviation = :a LIMIT 1" % sport
+                ),
+                {"a": team},
+            )
+        ).mappings().first()
+        if tr:
+            team_display = tr["nm"] or team
+            team_meta = (tr["dm"] or "").upper()
+
+    # ---- caption -----------------------------------------
+    cap = (row["social_caption"] or "").strip()
+    if not cap and req_body.draft_caption:
+        cap = await _llm_social_caption(
+            title,
+            row["summary"] or "",
+            sport,
+            team_display or team or "",
+        )
+        if not cap:  # best-effort: fall back to the deterministic teaser
+            cap = _draft_social_caption(title, row["summary"] or "", sport,
+                                        team_display or team or "")
+
+    # ---- render to PNG -----------------------------------
+    out_png = social_card.compute_out_path(article_id=article_id, sport=sport)
+    try:
+        rel = await asyncio.to_thread(
+            social_card.generate_social_card,
+            sport=sport,
+            title=title,
+            dek=_strip_repeat_of_title(title, (row["summary"] or "").strip()),
+            accent=accent,
+            team=team,
+            team_name=team_display or team or "",
+            team_meta=team_meta,
+            article_id=article_id,
+            out_png=out_png,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.exception("Social card render failed for %s/%s", sport, article_id)
+        raise HTTPException(status_code=502, detail="Social card generation failed: %s" % e)
+
+    # ---- persist -----------------------------------------
+    await db.execute(
+        text(
+            "UPDATE public.original_articles "
+            "SET preview_image = :preview, card_accent = :accent, social_caption = :cap, updated_at = NOW() "
+            "WHERE id = :id AND sport = :sport"
+        ),
+        {"preview": rel, "accent": accent_store or None, "cap": cap or None,
+         "id": article_id, "sport": sport},
+    )
+    await db.commit()
+    return {
+        "article_id": article_id,
+        "sport": sport,
+        "preview_image": rel,
+        "social_caption": cap,
+        "card_accent": accent or "",
+    }

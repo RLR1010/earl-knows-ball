@@ -36,6 +36,10 @@ interface Article {
   accuracy_check_tokens?: number | null;
   rejection_history?: any[];
   visibility?: string;
+  teams?: string[];
+  preview_image?: string | null;
+  card_accent?: string | null;
+  social_caption?: string | null;
 }
 
 interface ArticleDetail extends Article {
@@ -102,6 +106,10 @@ export default function AdminOriginalArticles() {
   const [editSeoDesc, setEditSeoDesc] = useState("");
   const [editSeoKeywords, setEditSeoKeywords] = useState("");
   const [editVisibility, setEditVisibility] = useState("public");
+  const [editSocialCaption, setEditSocialCaption] = useState("");
+  const [editCardAccent, setEditCardAccent] = useState("");
+  const [editSocialPreview, setEditSocialPreview] = useState<string | null>(null);
+  const [socialBusy, setSocialBusy] = useState(false);
   const [includeResearch, setIncludeResearch] = useState(true);
   const [reediting, setReediting] = useState(false);
   const [regenerating, setRegenerating] = useState(false);
@@ -259,6 +267,9 @@ export default function AdminOriginalArticles() {
     setEditSeoDesc(a.seo_description || "");
     setEditSeoKeywords(a.seo_keywords || "");
     setEditVisibility(a.visibility || "public");
+    setEditSocialCaption(a.social_caption || "");
+    setEditCardAccent(a.card_accent || "");
+    setEditSocialPreview(a.preview_image || null);
     setEditMarkdown(false);
     setEditInstructions("");
     // Fetch full detail (incl. accuracy_check + rejection_history) for audit view.
@@ -276,6 +287,9 @@ export default function AdminOriginalArticles() {
         setEditAccuracyCheck(art.accuracy_check ?? null);
         setEditUsageLog(Array.isArray(art.usage_log) ? art.usage_log : []);
         if (art.visibility) setEditVisibility(art.visibility);
+        if (typeof art.preview_image === "string") setEditSocialPreview(art.preview_image);
+        if (typeof art.social_caption === "string") setEditSocialCaption(art.social_caption);
+        if (typeof art.card_accent === "string") setEditCardAccent(art.card_accent);
       }
     } catch {}
   };
@@ -460,6 +474,8 @@ export default function AdminOriginalArticles() {
           seo_description: editSeoDesc.trim() || null,
           seo_keywords: editSeoKeywords.trim() || null,
           visibility: editVisibility,
+          social_caption: editSocialCaption || null,
+          card_accent: editCardAccent && editTitle.includes(editCardAccent) ? editCardAccent : (editCardAccent ? editCardAccent : null),
         }),
       });
       if (!res.ok) {
@@ -477,6 +493,35 @@ export default function AdminOriginalArticles() {
       alert(`Save failed: ${e.message}`);
     } finally {
       setSaving(false);
+    }
+  };
+
+  /** Generate (or regenerate) the portrait social card + draft a caption. */
+  const handleGenerateSocialCard = async () => {
+    if (!editing) return;
+    setSocialBusy(true);
+    try {
+      const res = await fetch(
+        `/api/admin/original-articles/${editing.sport}/${editing.id}/generate-social-card`,
+        {
+          method: "POST",
+          headers: authHeaders(),
+          body: JSON.stringify({
+            card_accent: editCardAccent?.trim() ? editCardAccent.trim() : null,
+            draft_caption: true,
+          }),
+        }
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.detail || `HTTP ${res.status}`);
+      if (data?.preview_image) setEditSocialPreview(data.preview_image);
+      if (typeof data?.social_caption === "string") setEditSocialCaption(data.social_caption);
+      if (typeof data?.card_accent === "string") setEditCardAccent(data.card_accent);
+      alert("✅ Social card generated.");
+    } catch (e: any) {
+      alert(`Social card failed: ${e.message}`);
+    } finally {
+      setSocialBusy(false);
     }
   };
 
@@ -976,6 +1021,47 @@ Manage it under Admin → Auto Generation.`);
                           <option value="public">Public (FREE — no betting advice)</option>
                           <option value="premium">Premium (members — betting advice OK)</option>
                         </select>
+                      </div>
+                      <div className="mb-2 p-3 rounded-md border border-white/10 bg-black/25">
+                        <div className="flex items-center justify-between mb-2">
+                          <label className="text-xs font-medium text-gray-200">Social card &amp; caption</label>
+                          <button
+                            onClick={handleGenerateSocialCard}
+                            disabled={socialBusy}
+                            className="text-xs px-2.5 py-1 rounded bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white"
+                          >
+                            {socialBusy ? "Generating…" : "🖼 Generate social card"}
+                          </button>
+                        </div>
+                        {editSocialPreview ? (
+                          <div className="mb-2">
+                            {/* 16:9 preview board */}
+                            {/* eslint-disable-next-line @next/next/no-img-element */}
+                            <img
+                              key={editSocialPreview}
+                              src={editSocialPreview}
+                              alt="social card"
+                              className="w-full aspect-[16/9] object-cover rounded border border-white/10"
+                            />
+                          </div>
+                        ) : (
+                          <div className="mb-2 rounded border border-dashed border-white/15 p-3 text-center text-xs text-gray-400">
+                            No social card yet — hit “Generate social card” after the title &amp; summary look right.
+                          </div>
+                        )}
+                        <input
+                          className="w-full bg-black/40 border border-white/10 rounded-md p-2 text-sm mb-2 focus:outline-none focus:border-blue-500"
+                          value={editCardAccent}
+                          onChange={(e) => setEditCardAccent(e.target.value)}
+                          placeholder="Accent word (must appear in title, e.g. All-In)"
+                        />
+                        <textarea
+                          rows={2}
+                          className="w-full bg-black/40 border border-white/10 rounded-md p-2 text-sm focus:outline-none focus:border-blue-500"
+                          value={editSocialCaption}
+                          onChange={(e) => setEditSocialCaption(e.target.value)}
+                          placeholder="Social caption (shareable hook, editable)"
+                        />
                       </div>
                       <div className="mb-2 p-3 rounded-md border border-white/10 bg-black/25">
                         <div className="flex items-center justify-between mb-1.5">
