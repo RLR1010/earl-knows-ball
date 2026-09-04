@@ -504,9 +504,19 @@ export default function AdminModels() {
       }
       const d = await res.json();
       setData(d);
-      // Default to first variant for any sport
+      // Preserve the user's currently selected variant across refreshes.
+      // Only fall back to the first variant if the current one no longer
+      // exists in the fresh data. Forcing model_variants[0] here on every
+      // refresh flipped the active variant -> changed activeVariant.name ->
+      // remounted ModelVariantSection (keyed by name), which tore down the
+      // DOM while a native <select> dropdown was open, making it "not stay
+      // open" on /admin/models.
       if (d.model_variants?.length > 0) {
-        setVariant(d.model_variants[0].name);
+        setVariant((prev) =>
+          d.model_variants.some((v: any) => v.name === prev)
+            ? prev
+            : d.model_variants[0].name
+        );
       }
     } catch (e: any) {
       setError(e.message);

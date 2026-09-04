@@ -25,15 +25,16 @@ import psycopg2
 import psycopg2.extras
 from app.db_urls import PSYCOPG2_DATABASE_URL
 
-logger = logging.getLogger(__name__)
+# NOTE: connect via the FULL configured DSN (PSYCOPG2_DATABASE_URL), never a
+# hardcoded host. On production the Postgres box is a SEPARATE host from the
+# compute box (DB runs on 192.168.1.145, not localhost), so hardcoding
+# host="localhost" here caused consolidation to fail with "connection refused"
+# and silently skip every NFL pick on prod. dev Postgres happens to be on
+# localhost, which is why this only bit production. Mirror the mlb
+# consolidate pattern: psycopg2.connect(PSYCOPG2_DATABASE_URL).
+DB_URL = PSYCOPG2_DATABASE_URL
 
-DB_CONFIG = {
-    "host": "localhost",
-    "port": 5432,
-    "dbname": "earl_knows_football",
-    "user": "earl",
-    "password": PSYCOPG2_DATABASE_URL.split("@")[0].split(":")[-1],  # from app.db_urls
-}
+logger = logging.getLogger(__name__)
 
 TIER_1 = ["fanduel", "draftkings", "betrivers", "williamhill_us"]
 TIER_2 = ["betmgm", "bovada", "betonlineag", "mybookieag"]
@@ -44,7 +45,7 @@ PRIORITY = TIER_1 + TIER_2 + TIER_3
 
 
 def get_conn():
-    return psycopg2.connect(**DB_CONFIG)
+    return psycopg2.connect(DB_URL)
 
 
 def create_table_if_missing(conn):

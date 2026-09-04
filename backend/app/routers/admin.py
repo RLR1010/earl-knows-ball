@@ -1,5 +1,7 @@
 import asyncio
 import logging
+import sys
+from pathlib import Path
 from datetime import datetime, timedelta, timezone
 import zoneinfo
 from fastapi import APIRouter, Depends, HTTPException, Header, Query, Request, status
@@ -2134,6 +2136,14 @@ async def reorder_sport_features(
         conn.close()
 
 
+def _backend_root():
+    """Resolve the codebase root from this file's own location so the same
+    source runs on any box (dev /home/rich/.openclaw/workspace/..., prod
+    /home/rich/earl-knows-football/...). admin.py lives at {root}/app/routers/
+    admin.py, so root is 2 dirs above the routers dir."""
+    return str(Path(__file__).resolve().parents[2])
+
+
 @router.post("/train-new/{sport}/{model_type}")
 async def trigger_training(
     sport: str,
@@ -2171,19 +2181,24 @@ async def trigger_training(
     finally:
         conn.close()
 
-    # Launch the training script in the background
+    # Launch the training script in the background. Use sys.executable (the
+    # python already running this service = the venv python for the role) so
+    # the subprocess never depends on inherited PATH resolving bare `python3`
+    # to the system interpreter (which lacks xgboost). Each script is a
+    # `python -m <module>` invocation.
+    _py = sys.executable
     _scripts = {
         "nfl": {
-            "ou": "python3 -m app.handicapping.nfl.nfl_xgb_model_ou train",
-            "ats": "python3 -m app.handicapping.nfl.nfl_xgb_model_ats train",
+            "ou": f"{_py} -m app.handicapping.nfl.nfl_xgb_model_ou train",
+            "ats": f"{_py} -m app.handicapping.nfl.nfl_xgb_model_ats train",
         },
         "mlb": {
-            "ou": "python3 -m app.handicapping.mlb.mlb_xgb_model_ou --mode all",
-            "ats": "python3 -m app.handicapping.mlb.mlb_xgb_model_ats --mode all",
+            "ou": f"{_py} -m app.handicapping.mlb.mlb_xgb_model_ou --mode all",
+            "ats": f"{_py} -m app.handicapping.mlb.mlb_xgb_model_ats --mode all",
         },
         "nba": {
-            "ou": "python3 -m app.handicapping.nba.nba_xgb_model_ou train",
-            "ats": "python3 -m app.handicapping.nba.nba_xgb_model_ats train",
+            "ou": f"{_py} -m app.handicapping.nba.nba_xgb_model_ou train",
+            "ats": f"{_py} -m app.handicapping.nba.nba_xgb_model_ats train",
         },
     }
     script = _scripts[sport][model_type]
@@ -2191,13 +2206,14 @@ async def trigger_training(
     # Run as a subprocess — fire and forget
     stderr_log = f"/tmp/train_{sport}_{model_type}.log"
     stderr_fh = open(stderr_log, "w")
+    _root = _backend_root()
     proc = await asyncio.create_subprocess_shell(
         script,
         stdout=subprocess.DEVNULL,
         stderr=stderr_fh,
-        cwd="/home/rich/.openclaw/workspace/earl-knows-football/backend",
+        cwd=_root,
         env={
-            "PYTHONPATH": "/home/rich/.openclaw/workspace/earl-knows-football/backend",
+            "PYTHONPATH": _root,
             "PATH": os.environ.get("PATH", ""),
             "DATABASE_URL": os.environ.get("DATABASE_URL", ASYNC_DATABASE_URL),
         },

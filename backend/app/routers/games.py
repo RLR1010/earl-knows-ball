@@ -180,7 +180,9 @@ class BoxScoreOut(BaseModel):
 
 async def _nfl_team_record_as_of(db, team_id, game_date, season_id):
     """NFL wins-losses for a team in games BEFORE game_date (same season).
-    NFL game ids are uniformly 9-digit ESPN ids, so no id-bound dedup needed."""
+    NFL game ids are uniformly 9-digit ESPN ids, so no id-bound dedup needed.
+    Counts REGULAR-SEASON games only (preseason excluded) so a team's record
+    going into week 1 is 0-0 and reflects the regular season going forward."""
     if not team_id or not game_date:
         return {"wins": 0, "losses": 0}
     try:
@@ -198,6 +200,7 @@ async def _nfl_team_record_as_of(db, team_id, game_date, season_id):
                     FROM nfl.games
                     WHERE season_id = :sid
                       AND (home_team_id=:tid OR away_team_id=:tid)
+                      AND game_type = 'REG'
                       AND date < :gdate
                       AND home_score IS NOT NULL AND away_score IS NOT NULL
                     """
@@ -211,11 +214,11 @@ async def _nfl_team_record_as_of(db, team_id, game_date, season_id):
 
 
 
-async def _records_as_of_batch(db, schema: str, pairs):
+async def _records_as_of_batch(db, schema: str, pairs, game_types=None):
     """Batched record-as-of-date for many (team_id, game_date, season_id) tuples.
     Returns dict keyed by (team_id, str(date), season_id) -> "W-L" (or None if no games).
     Works for mlb / nba / nfl games tables (all share home/away_team_id, scores, season_id, date).
-    """
+    Pass game_types (e.g. ["REG"]) to count only those game types (NFL record = regular season)."""
     table = f"{schema}.games"
     # dedupe
     seen = set()
@@ -245,6 +248,16 @@ async def _records_as_of_batch(db, schema: str, pairs):
             for i, (team_id, gdate, sid) in enumerate(unique)
         )
         params = {f"d{i}": gdate for i, (_, gdate, _) in enumerate(unique)}
+        gt_filter = ""
+        if game_types:
+            gt_filter = (
+                " AND g.game_type IN ("
+                + ",".join(f":gt{i}" for i in range(len(game_types)))
+                + ")"
+            )
+            for i, gt in enumerate(game_types):
+                params[f"gt{i}"] = gt
+        gt_filter = ("\n" + gt_filter) if gt_filter else ""
         sql = f"""
         WITH pairs AS ({from_sql})
         SELECT p.tid, p.sid, p.g_date,
@@ -260,7 +273,7 @@ async def _records_as_of_batch(db, schema: str, pairs):
          AND g.season_id = p.sid
          AND g.date < (p.g_date + INTERVAL '1 day')
          AND ((g.home_team_id=p.tid AND g.home_score IS NOT NULL)
-              OR (g.away_team_id=p.tid AND g.away_score IS NOT NULL))
+              OR (g.away_team_id=p.tid AND g.away_score IS NOT NULL)){gt_filter}
         GROUP BY p.tid, p.sid, p.g_date
         """
         rows = (await db.execute(_text(sql), params)).mappings().all()
@@ -426,7 +439,8 @@ async def list_games(
         for g in games
     ])
 
-    # Team records at the time of each game (batched, matches game-detail behavior)
+    # Team records at the time of each game (batched, matches game-detail behavior).
+    # NFL records count REGULAR-SEASON games only, so teams show 0-0 going into week 1.
     if games:
         _pairs = []
         for _g in games:
@@ -434,7 +448,7 @@ async def list_games(
                 _pairs.append((_g.home_team_id, _g.date, _g.season_id))
             if _g.away_team_id:
                 _pairs.append((_g.away_team_id, _g.date, _g.season_id))
-        _records = await _records_as_of_batch(db, "nfl", _pairs)
+        _records = await _records_as_of_batch(db, "nfl", _pairs, game_types=["REG"])
         for _o in out:
             _g = next((x for x in games if x.id == _o.get("id")), None)
             _o["home_record"] = _records.get((_g.home_team_id, str(_g.date.date()), _g.season_id)) if _g and _g.home_team_id else None

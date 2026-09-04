@@ -114,6 +114,15 @@ CREATE TABLE IF NOT EXISTS {CUM_TABLE} (
     cum_stl_rate           DOUBLE PRECISION,
     cum_blk_rate           DOUBLE PRECISION,
 
+    -- Tier-3-adjacent strength-adjusted ratings + SRS strength-of-schedule.
+    -- Populated post-build by adjusted_ratings.py (SRS solver); read by the
+    -- NBA training loader (data_loader.py) as h/a_cum_adj_ortg/_drtg/_sos.
+    -- Keep these here: the CREATE TABLE drops+recreates this table, and these
+    -- columns must survive every rebuild or NBA training feed/DATA fails.
+    cum_adj_ortg           DOUBLE PRECISION,
+    cum_adj_drtg           DOUBLE PRECISION,
+    cum_sos                DOUBLE PRECISION,
+
     -- ── Tier 5: Team quality ───────────────────────────────────────
     cum_win_pct            DOUBLE PRECISION,
     -- Venue-scoped season win pct: this team's win pct playing AT this row's

@@ -662,7 +662,16 @@ function NFLSchedule({ sport }: { sport: string }) {
   const [games, setGames] = useState<Game[]>([]);
   const [week, setWeek] = useState(() => {
     const wp = searchParams.get('week');
-    return wp ? parseInt(wp) : 1;
+    if (wp) {
+      const parsed = parseInt(wp);
+      // Preseason weeks (30-33) are no longer shown on the schedule page now
+      // that we're in the regular season. Coerce any such deep link to week 1.
+      if (PRESEASON_WEEKS.includes(parsed)) {
+        return 1;
+      }
+      return parsed;
+    }
+    return 1;
   });
   const [seasonYear, setSeasonYear] = useState(() => {
     const yp = searchParams.get('year');
@@ -753,7 +762,7 @@ function NFLSchedule({ sport }: { sport: string }) {
           ref={weekCarouselRef}
           className="flex gap-1 overflow-x-auto pb-1 snap-x snap-mandatory [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
         >
-          {ALL_WEEKS.map((w) => (
+          {REGULAR_WEEKS.map((w) => (
             <button
               key={w}
               onClick={() => setWeek(w)}
