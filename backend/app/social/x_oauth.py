@@ -33,7 +33,7 @@ except Exception:  # pragma: no cover - only fails if xdk missing at cold import
 
 # Refresh when the access token is inside this window of expiring, so a call in flight
 # never hands out a token that dies mid-request.
-EXPIRY_SLACK = 60
+EXPIRY_SLACK = 300
 
 # X REQUIRES each requested scope to be grantable by the App's permission level / type, or it
 # refuses the ENTIRE consent with a generic "Something went wrong". So we request ONLY what the
@@ -163,7 +163,14 @@ async def clear_attempt(db, state: str) -> None:
 async def save_tokens(db, tok: dict) -> None:
     """Write a fresh OAuth2 token set into public.x_account (single canonical row, platform='x')."""
     exp = _tok_expiry(tok.get("expires_in"))
-    scope = tok.get("scope") or SCOPE_STR
+    raw_scope = tok.get("scope") or SCOPE_STR
+    # oauthlib may hand scope back as a list (refresh) or string (authorize). The
+    # x_account.oauth2_scope column is text; always store a space-joined string so
+    # persisting a freshly-refreshed token never dies on a list-vs-str type error.
+    if isinstance(raw_scope, (list, tuple, set)):
+        scope = " ".join(str(s) for s in raw_scope)
+    else:
+        scope = str(raw_scope)
     access = tok.get("access_token")
     refresh = tok.get("refresh_token")
 
