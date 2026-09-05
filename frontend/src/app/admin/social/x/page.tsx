@@ -52,7 +52,18 @@ interface HistoryPost {
   error?: string | null;
 }
 
-type Tab = "connect" | "compose" | "drafts" | "history" | "triage";
+type Tab = "connect" | "compose" | "drafts" | "history" | "triage" | "following";
+
+interface FollowingUser {
+  id: number;
+  x_user_id: string;
+  username: string;
+  name?: string | null;
+  description?: string | null;
+  snapshot_at?: string | null;
+  read_posts: boolean;
+  profile_url: string;
+}
 
 interface TriagePost {
   id: number;
@@ -118,6 +129,7 @@ export default function XSocialPage() {
   const [pendingSuggestions, setPendingSuggestions] = useState<ReplySuggestion[]>([]);
   const [triageBusyId, setTriageBusyId] = useState<number | null>(null);
   const [listMsgs, setListMsgs] = useState<{ ok: boolean; text: string } | null>(null);
+  const [following, setFollowing] = useState<FollowingUser[]>([]);
 
   const refreshTriage = useCallback(async () => {
     try {
@@ -165,12 +177,23 @@ export default function XSocialPage() {
     }
   }, []);
 
+  const refreshFollowing = useCallback(async () => {
+    try {
+      const f = await authed(() => xFetch<{ following: FollowingUser[] }>("/following"));
+      setFollowing(f.following);
+    } catch (e) {
+      setListMsgs({ ok: false, text: (e as Error).message });
+      setFollowing([]);
+    }
+  }, []);
+
   useEffect(() => {
     refreshStatus();
     if (tab === "drafts") refreshDrafts();
     if (tab === "history") refreshHistory();
     if (tab === "triage") refreshTriage();
-  }, [tab, refreshStatus, refreshDrafts, refreshHistory, refreshTriage]);
+    if (tab === "following") refreshFollowing();
+  }, [tab, refreshStatus, refreshDrafts, refreshHistory, refreshTriage, refreshFollowing]);
 
   const setMsg = (ok: boolean, text: string) => {
     setListMsgs({ ok, text });
@@ -194,6 +217,16 @@ export default function XSocialPage() {
     } catch (e) { setMsg(false, (e as Error).message); }
   };
 
+  const toggleFollowRead = async (id: number, readPosts: boolean) => {
+    try {
+      await authed(() => xFetch<FollowingUser>(`/following/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ read_posts: readPosts }),
+      }));
+      await refreshFollowing();
+    } catch (e) { setMsg(false, (e as Error).message); }
+  };
+
   return (
     <div className="space-y-8">
       <div className="flex items-center justify-between">
@@ -208,6 +241,7 @@ export default function XSocialPage() {
             ["drafts", "Drafts"],
             ["history", "Published"],
             ["triage", "Read + Reply"],
+            ["following", "Following"],
           ] as [Tab, string][]
         ).map(([k, label]) => (
           <button
@@ -246,6 +280,9 @@ export default function XSocialPage() {
           onBusyChange={setTriageBusyId}
           onMsg={setMsg}
         />
+      )}
+      {tab === "following" && (
+        <FollowingTab users={following} onRefresh={refreshFollowing} onToggle={toggleFollowRead} />
       )}
     </div>
   );
@@ -899,6 +936,135 @@ function TriageTab({ posts, suggestions, busyId, onRefresh, onBusyChange, onMsg 
                   >
                     {busy ? "Drafting…" : "Draft replies"}
                   </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
+/* ============================== FOLLOWING ============================== */
+function FollowingTab({ users, onRefresh, onToggle }: {
+  users: FollowingUser[];
+  onRefresh: () => void;
+  onToggle: (id: number, readPosts: boolean) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [busyKey, setBusyKey] = useState<string | null>(null);
+
+  const q = query.trim().toLowerCase();
+  const filtered = q
+    ? users.filter(
+        (u) =>
+          u.username.toLowerCase().includes(q) ||
+          u.name?.toLowerCase().includes(q) ||
+          u.description?.toLowerCase().includes(q),
+      )
+    : users;
+
+  const collected = users.filter((u) => u.read_posts).length;
+
+  const toggle = async (u: FollowingUser) => {
+    setBusyKey(String(u.id));
+    try {
+      await onToggle(u.id, !u.read_posts);
+    } finally {
+      setBusyKey(null);
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <section>
+        <div className="flex items-center justify-between mb-3 gap-3 flex-wrap">
+          <div>
+            <h2 className="text-lg font-semibold text-white">Accounts we follow ({users.length})</h2>
+            <p className="text-xs text-gray-500">
+              {collected} of {users.length} have tweet collection ON. Toggle a row to choose
+              whose tweets Earl reads into the feed.
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search username or name…"
+              className="bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 text-sm text-white placeholder:text-gray-500 focus:outline-none focus:border-white/30"
+            />
+            <button onClick={onRefresh} className="text-xs text-gray-400 hover:text-white underline whitespace-nowrap">
+              refresh
+            </button>
+          </div>
+        </div>
+
+        {filtered.length === 0 ? (
+          <p className="text-sm text-gray-500">
+            {q ? "No accounts match your search." : "No followed accounts yet — run the X following sync."}
+          </p>
+        ) : (
+          <div className="space-y-2">
+            {filtered.map((u) => {
+              const busy = busyKey === String(u.id);
+              return (
+                <div
+                  key={u.id}
+                  className="bg-white/[0.02] border border-white/5 rounded-xl px-4 py-3 flex items-center gap-4"
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <a
+                        href={u.profile_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-sm font-semibold text-emerald-300 hover:text-emerald-200 hover:underline"
+                      >
+                        @{u.username}
+                      </a>
+                      {u.name ? (
+                        <span className="text-sm text-gray-400 truncate">{u.name}</span>
+                      ) : null}
+                    </div>
+                    {u.description ? (
+                      <p className="text-xs text-gray-500 mt-0.5 line-clamp-2">{u.description}</p>
+                    ) : null}
+                    {u.snapshot_at ? (
+                      <p className="text-xs text-gray-600 mt-0.5">Snapshot {fmtWhen(u.snapshot_at)}</p>
+                    ) : null}
+                  </div>
+
+                  {/* link out to profile */}
+                  <a
+                    href={u.profile_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-xs text-gray-400 hover:text-white bg-white/5 hover:bg-white/10 rounded-lg px-3 py-1.5 whitespace-nowrap"
+                  >
+                    Profile ↗
+                  </a>
+
+                  {/* collect toggle */}
+                  <button
+                    onClick={() => toggle(u)}
+                    disabled={busy}
+                    className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus:outline-none ${
+                      u.read_posts ? "bg-emerald-600" : "bg-gray-600"
+                    } ${busy ? "opacity-50" : ""}`}
+                    role="switch"
+                    aria-checked={u.read_posts}
+                    title={u.read_posts ? "Collecting tweets — click to stop" : "Not collecting — click to start"}
+                  >
+                    <span
+                      className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                        u.read_posts ? "translate-x-6" : "translate-x-1"
+                      }`}
+                    />
+                  </button>
+                  <span className={`text-xs w-16 whitespace-nowrap ${u.read_posts ? "text-emerald-300" : "text-gray-500"}`}>
+                    {u.read_posts ? "Collect" : "Paused"}
+                  </span>
                 </div>
               );
             })}

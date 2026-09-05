@@ -760,3 +760,86 @@ async def send_reply_suggestion(
         posted_tweet_id=posted_tweet_id,
     )
 
+
+# --------------------------------------------------------------------------- following
+# "Users we follow" = the snapshot table public.x_following (what @earl_knows_ball
+# follows on X). read_posts is the toggle that says whether the reader pipeline
+# (app/social/x_read_posts.py) collects this account's tweets into public.x_posts.
+
+class FollowingOut(BaseModel):
+    id: int
+    x_user_id: str
+    username: str
+    name: Optional[str] = None
+    description: Optional[str] = None
+    snapshot_at: Optional[datetime] = None
+    read_posts: bool
+    profile_url: str
+
+
+class FollowingToggleIn(BaseModel):
+    read_posts: bool
+
+
+class FollowingListOut(BaseModel):
+    following: list[FollowingOut]
+
+
+_FOLLOWING_SELECT = (
+    "id, x_user_id, username, name, description, snapshot_at, read_posts"
+)
+
+
+@admin_router.get("/following", response_model=FollowingListOut)
+async def list_following(
+    db: AsyncSession = Depends(get_db),
+    _admin=Depends(get_admin_user),
+):
+    """All X accounts we currently follow, newest snapshot first. Each row carries
+    read_posts (do we collect this user's tweets) so the front-end can render the
+    list + per-row collect toggle + profile link."""
+    rows = (
+        await db.execute(
+            text(
+                f"SELECT {_FOLLOWING_SELECT} "
+                "FROM public.x_following "
+                "ORDER BY lower(username) ASC"
+            )
+        )
+    ).mappings().all()
+    return {
+        "following": [
+            FollowingOut(
+                **dict(r),
+                profile_url=f"https://x.com/{r['username']}",
+            )
+            for r in rows
+        ]
+    }
+
+
+@admin_router.patch("/following/{following_id}", response_model=FollowingOut)
+async def toggle_following_read(
+    following_id: int,
+    body: FollowingToggleIn,
+    db: AsyncSession = Depends(get_db),
+    admin=Depends(get_admin_user),
+):
+    """Toggle whether we collect this followed account's tweets.
+    read_posts=true -> the reader pipeline pulls their tweets into x_posts."""
+    row = (
+        await db.execute(
+            text(
+                f"UPDATE public.x_following SET read_posts = :rp "
+                f"WHERE id = :id RETURNING {_FOLLOWING_SELECT}"
+            ),
+            {"rp": body.read_posts, "id": following_id},
+        )
+    ).mappings().first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Following entry not found")
+    await db.commit()
+    return FollowingOut(
+        **dict(row), profile_url=f"https://x.com/{row['username']}"
+    )
+
