@@ -35,8 +35,8 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.database import get_db
 from app.core.security import get_optional_current_user, require_admin, user_is_premium
+from app.database import async_session, get_db
 from app.models import User
 from app.services.team_extractor import extract_teams
 
@@ -746,15 +746,28 @@ async def _write_original_article(
         "reasoning_effort": reasoning or "low",
     }
 
-    resp = await client.chat.completions.create(
-        model=settings.deepseek_model,
-        messages=messages,
-        temperature=0.3,
-        max_tokens=16000,
-        extra_body=extra_body,
-    )
-    raw = resp.choices[0].message.content or ""
-    tokens = resp.usage.total_tokens if resp.usage else 0
+    # DeepSeek reasoning models intermittently return EMPTY content when the
+    # reasoning pass burns the completion budget before any visible body is
+    # emitted (documented flake; same reason the social-caption call uses a
+    # retry + generous max_tokens). An empty article would 502 /generate and
+    # fail auto-sections refresh, so retry a few times on a blank body.
+    raw = ""
+    tokens = 0
+    resp = None
+    for attempt in range(1, 5):
+        resp = await client.chat.completions.create(
+            model=settings.deepseek_model,
+            messages=messages,
+            temperature=0.3,
+            max_tokens=16000,
+            extra_body=extra_body,
+        )
+        tokens = resp.usage.total_tokens if resp.usage else 0
+        raw = resp.choices[0].message.content or ""
+        if raw.strip():
+            break
+        if attempt < 4:
+            await asyncio.sleep(1.5 * attempt)
 
     if usage_log is not None and resp.usage is not None:
         usage = resp.usage
@@ -1411,6 +1424,14 @@ async def publish_original_article(
     row = result.mappings().first()
     await db.commit()
     # content_html left NULL for now; frontend renders markdown directly.
+    # Kick off auto social-caption + card generation in the background so every
+    # newly-published original article is born tweet-ready (mirrors the game
+    # writeup `_post_store` hook). Never blocks/breaks the publish response: a
+    # caption/card failure is logged and leaves the article published normally.
+    try:
+        asyncio.create_task(_auto_original_social_card(int(row["id"]), sport))
+    except RuntimeError:
+        pass
     return {"article": dict(row)}
 
 
@@ -2193,14 +2214,14 @@ def _draft_social_caption(title: str, summary: str, sport: str, team: str) -> st
     t = (title or "").strip()
     s = re.sub(r"\s+", " ", (summary or "").strip()).strip()
     if not s or len(s) < 25:
-        return t[:460].rstrip()
+        return t[:245].rstrip()
 
     chunks = [c.strip() for c in re.split(r"(?<=[.!?])\s+", s[:560]) if c.strip()]
     body = (" ".join(chunks[:2])).strip()
     if not body.endswith((".", "!", "?")):
         body += "."
     body = re.sub(r"\s{2,}", " ", body)
-    return body[:460].rstrip()
+    return body[:245].rstrip()
 
 
 def _strip_repeat_of_title(title: str, text: str) -> str:
@@ -2242,12 +2263,16 @@ async def _llm_social_caption(title: str, summary: str, sport: str, team: str = 
     brief = _strip_repeat_of_title(title, summary) or title
     system_block = (
         "You are Earl — a sharp, confident, original-analysis sports writer."
-        " Write ONE tweet-ready social caption for this editorial. Up to ~280"
-        " characters, 1-2 punchy sentences. The headline is shown only for"
-        " context — do NOT repeat or paraphrase the headline, and do not repeat"
-        " its words verbatim. Make the caption a fresh, distinct hook that adds"
-        " something the headline alone does not say. No hashtags, no emojis, no"
-        " links, no markdown. Just the post text."
+        " Write ONE tweet-ready social caption for this editorial. Length is"
+        " critical: aim for roughly 200-230 characters (typical captions land"
+        " ~110-160). The caption will have a share link appended in the SAME"
+        " tweet, so it MUST stay under ~245 characters total or the tweet gets"
+        " truncated — never write more than we can tweet. Write only as much as"
+        " fits that cap. The headline is shown only for context — do NOT repeat"
+        " or paraphrase the headline, and do not repeat its words verbatim. Make"
+        " the caption a fresh, distinct hook that adds something the headline"
+        " alone does not say. No hashtags, no emojis, no links, no markdown."
+        " Just the post text."
     )
     user_content = (
         f"Sport: {sport_label}\nArticle headline: {title}\nArticle body/lede:"
@@ -2278,7 +2303,7 @@ async def _llm_social_caption(title: str, summary: str, sport: str, team: str = 
             continue
         cap = re.sub(r"\s+", " ", raw.strip().strip('"\'')).strip()
         if cap:
-            return cap[:280]
+            return cap[:245]  # tweet-sized: stored caption must fit w/ an appended link
     return ""
 
 
@@ -2415,3 +2440,104 @@ async def admin_generate_social_card(
         "social_caption": cap,
         "card_accent": accent or "",
     }
+
+
+async def _auto_original_social_card(sport: str, article_id: int) -> None:
+    """Background auto-hook: make a freshly-published original article tweet-ready.
+
+    Mirrors ``admin_generate_social_card`` (same caption + render + persist
+    pipeline) but is intended to run in the background after an article is
+    published so it does NOT block the publish response. Only fills a social
+    caption when one is missing (never overwrites an editor's caption) and never
+    raises — failures are logged and the article simply stays published without
+    a card yet (it can be generated later via the admin "Generate social card"
+    button, which this duplicates).
+    """
+    sport = _validate_sport(sport)
+    try:
+        from app.social import original_social as social_card  # Playwright deps on-demand
+        async with async_session() as db:
+            res = await db.execute(
+                text(
+                    "SELECT id, sport, title, summary, teams, card_accent, social_caption "
+                    "FROM public.original_articles WHERE id = :id AND sport = :sport"
+                ),
+                {"id": article_id, "sport": sport},
+            )
+            row = res.mappings().first()
+            if not row:
+                logger.info("Auto social card: article %s/%s vanished", sport, article_id)
+                return
+            title = (row["title"] or "").strip()
+            if not title:
+                logger.info("Auto social card: no title yet for %s/%s", sport, article_id)
+                return
+
+            raw = row["teams"]
+            if isinstance(raw, list):
+                teams = [str(x) for x in raw if x]
+            else:
+                try:
+                    teams = [str(x) for x in json.loads(raw or "[]") if x]
+                except (json.JSONDecodeError, TypeError):
+                    teams = []
+            team = teams[0] if (teams and sport != "all") else None
+
+            accent = (row["card_accent"] or "").strip()
+            if accent and not re.search(re.escape(accent), title, re.IGNORECASE):
+                accent = ""
+            accent_store = accent or (row["card_accent"] or "")
+
+            team_display = team or ""
+            team_meta = ""
+            if team and sport in _TEAM_META_COL:
+                tr = (
+                    await db.execute(
+                        text('SELECT "name" AS nm, "division" AS dm FROM %s.teams '
+                             "WHERE abbreviation = :a LIMIT 1" % sport),
+                        {"a": team},
+                    )
+                ).mappings().first()
+                if tr:
+                    team_display = tr["nm"] or team
+                    team_meta = (tr["dm"] or "").upper()
+
+            cap = (row["social_caption"] or "").strip()
+            if not cap:
+                cap = await _llm_social_caption(
+                    title, row["summary"] or "", sport, team_display or team or ""
+                )
+                if not cap:
+                    cap = _draft_social_caption(
+                        title, row["summary"] or "", sport, team_display or team or ""
+                    )
+
+            out_png = social_card.compute_out_path(article_id=article_id, sport=sport)
+            rel = await asyncio.to_thread(
+                social_card.generate_social_card,
+                sport=sport,
+                title=title,
+                dek=_strip_repeat_of_title(title, (row["summary"] or "").strip()),
+                accent=accent,
+                team=team,
+                team_name=team_display or team or "",
+                team_meta=team_meta,
+                article_id=article_id,
+                out_png=out_png,
+            )
+            already = (row["social_caption"] or "").strip()
+            new_cap = cap if not already else already
+            await db.execute(
+                text(
+                    "UPDATE public.original_articles "
+                    "SET preview_image = :preview, card_accent = :accent, "
+                    "social_caption = :cap, updated_at = NOW() "
+                    "WHERE id = :id AND sport = :sport"
+                ),
+                {"preview": rel, "accent": accent_store or None,
+                 "cap": new_cap or None, "id": article_id, "sport": sport},
+            )
+            await db.commit()
+            logger.info("Auto social card done for original %s/%s -> %s", sport, article_id, rel)
+    except Exception as e:  # noqa: BLE001
+        logger.exception("Auto social card failed for original %s/%s: %s", sport, article_id, e)

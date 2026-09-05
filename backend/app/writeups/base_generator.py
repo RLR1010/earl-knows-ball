@@ -891,9 +891,11 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
         "  and drama in the storyline instead."
         "\n- Ground ONLY in the TITLE + STORYLINE given. Never invent facts, "
         "  names, numbers, or storylines not present."
-        "\n- Length: one or two sentences, roughly 15-45 words. No hashtags, no "
-        "  emoji unless it fits naturally and sparingly, no quotes, no "
-        "  markdown. No link/URL (a CTA is added at share time)."
+        "\n- Length: one or two sentences, roughly 200-230 characters (aim for"
+        "  ~110-160; stay under ~245). A share link is appended to the SAME post, so"
+        "  a caption longer than ~245 characters would be truncated — never write"
+        "  more than fits. No hashtags, no emoji unless it fits naturally and"
+        "  sparingly, no quotes, no markdown. No link/URL."
         "\n- Nothing after the caption: return ONLY the caption text on its own."
     )
 
@@ -938,7 +940,7 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
         text = text.strip(' \n\t"\'')
         # Collapse newlines/extra spaces to single spaces.
         text = _re.sub(r"\s+", " ", text)
-        return text.strip(". ")[:280]
+        return text.strip(". ")[:245]  # tweet-safe ceiling (fits appended link)
 
     # ── Accuracy Verification ───────────────────────────────
 
