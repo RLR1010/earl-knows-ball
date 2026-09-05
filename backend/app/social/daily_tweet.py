@@ -168,7 +168,7 @@ def _original_candidates() -> list[dict]:
 
 def _public_url(item: dict) -> str:
     if item["kind"] == "original":
-        sport = "" if item["sport"] == "all" else f"{item['sport']}/"
+        sport = f"{item['sport']}/"
         return f"{PUBLIC_BASE}/{sport}articles/{item['slug']}"
     return f"{PUBLIC_BASE}/{item['sport']}/articles/previews/{item['slug']}"
 
