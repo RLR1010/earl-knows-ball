@@ -40,7 +40,7 @@ def _parse_ts(v):
 
 async def get_token():
     async with Session() as db:
-        from app.config import settings
+        from app.core.config import settings
         from app.social.x_oauth import get_live_token
         tok = await get_live_token(
             db, (settings.x_client_id or "").strip(), (settings.x_client_secret or "").strip()

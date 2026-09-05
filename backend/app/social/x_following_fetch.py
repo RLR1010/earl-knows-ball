@@ -18,7 +18,7 @@ Session = async_sessionmaker(ENG)
 
 async def get_token():
     async with Session() as db:
-        from app.config import settings
+        from app.core.config import settings
         from app.social.x_oauth import get_live_token
         tok = await get_live_token(
             db, (settings.x_client_id or "").strip(), (settings.x_client_secret or "").strip()
@@ -53,9 +53,13 @@ async def fetch_following(at: str) -> list[dict]:
 async def upsert(rows: list[dict]) -> None:
     async with Session.begin() as db:
         for u in rows:
+            # New accounts that we newly follow are added with read_posts = false
+            # (tweet collection opt-in). Existing rows keep their read_posts value
+            # (we only refresh username/name/description/snapshot on conflict).
             await db.execute(text(
-                "INSERT INTO public.x_following (x_user_id, username, name, description, snapshot_at)"
-                " VALUES (:id, :un, :nm, :dc, now())"
+                "INSERT INTO public.x_following"
+                " (x_user_id, username, name, description, snapshot_at, read_posts)"
+                " VALUES (:id, :un, :nm, :dc, now(), false)"
                 " ON CONFLICT (x_user_id) DO UPDATE SET"
                 "   username=EXCLUDED.username, name=EXCLUDED.name,"
                 "   description=EXCLUDED.description, snapshot_at=now()"),

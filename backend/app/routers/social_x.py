@@ -7,7 +7,12 @@ All routes that touch credentials or POST externally are locked behind get_admin
 from __future__ import annotations
 
 import logging
+import os
+import asyncio
+import subprocess
+import sys
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -842,4 +847,86 @@ async def toggle_following_read(
     return FollowingOut(
         **dict(row), profile_url=f"https://x.com/{row['username']}"
     )
+
+
+# --------------------------------------------------------------------------- actions
+# "Refresh following" hits the X API for who @earl_knows_ball currently follows and
+# upserts into public.x_following (new accounts come in read_posts = false).
+# "Fetch tweets" reads the newest posts (after our last-saved per author, up to 5)
+# for every account marked read_posts = true and stores them into public.x_posts.
+# Both run the existing compute CLI modules in a subprocess so their independent
+# OAuth/DB engine lifecycle stays fully isolated from this request's async session.
+
+class XActionOut(BaseModel):
+    ok: bool = Field(..., description="true if the run finished without a hard failure")
+    action: str
+    detail: str = ""
+
+
+def _backend_dir() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def _run_cli(module: str, extra_args: list[str]) -> str:
+    """Run a compute CLI module in a subprocess of this venv, cwd=backend."""
+    cmd = [sys.executable, "-m", module] + extra_args
+    env = dict(os.environ)
+    env.setdefault("PYTHONPATH", "")
+    env["PYTHONPATH"] = str(_backend_dir()) + (os.pathsep + env["PYTHONPATH"] if env["PYTHONPATH"] else "")
+    proc = subprocess.run(
+        cmd,
+        cwd=str(_backend_dir()),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=240,
+    )
+    merged = (proc.stdout or "").strip()
+    if proc.stderr and proc.stderr.strip():
+        merged = (merged + "\n" + proc.stderr.strip()) if merged else proc.stderr.strip()
+    if proc.returncode != 0:
+        raise HTTPException(
+            status_code=502,
+            detail=f"{module} failed (rc={proc.returncode}): {merged[-1500:]} ",
+        )
+    return merged[-2000:]
+
+
+@admin_router.post("/following/refresh", response_model=XActionOut)
+async def refresh_following(
+    _admin=Depends(get_admin_user),
+):
+    """Hit X and re-sync who we follow into x_following. Newly-followed accounts are
+    added with collection OFF; any you'd like to collect, toggle ON in the list."""
+    try:
+        output = await asyncio.to_thread(_run_cli, "app.social.x_following_fetch", [])
+    except HTTPException as e:
+        raise e
+    return XActionOut(ok=True, action="refresh_following", detail=output)
+
+
+@admin_router.post("/posts/fetch", response_model=XActionOut)
+async def fetch_recent_tweets(
+    db: AsyncSession = Depends(get_db),
+    admin=Depends(get_admin_user),
+):
+    """For every account marked to collect (read_posts = true), grab the last up-to-5
+    newest original tweets that are newer than the newest we already hold for them,
+    and store them into x_posts.
+
+    NOTE: this makes live X API calls and can take a while (one call per account) and
+    is subject to X rate limits. Run it from the collect tab."""
+    n = (
+        await db.execute(text(
+            "SELECT count(*) FROM public.x_following WHERE read_posts = TRUE"
+        ))
+    ).scalar() or 0
+    if n <= 0:
+        return XActionOut(ok=True, action="fetch_tweets",
+                         detail="No accounts are marked to collect (read_posts). Mark some ON in the Following list first.")
+    try:
+        output = await asyncio.to_thread(_run_cli, "app.social.x_read_posts", ["--accounts", str(n)])
+    except HTTPException as e:
+        raise e
+    return XActionOut(ok=True, action="fetch_tweets", detail=output)
 

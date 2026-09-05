@@ -954,6 +954,8 @@ function FollowingTab({ users, onRefresh, onToggle }: {
 }) {
   const [query, setQuery] = useState("");
   const [busyKey, setBusyKey] = useState<string | null>(null);
+  const [runAction, setRunAction] = useState<"refresh" | "fetch" | null>(null);
+  const [actionMsg, setActionMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
   const q = query.trim().toLowerCase();
   const filtered = q
@@ -966,6 +968,31 @@ function FollowingTab({ users, onRefresh, onToggle }: {
     : users;
 
   const collected = users.filter((u) => u.read_posts).length;
+
+  const run = async (kind: "refresh" | "fetch") => {
+    setRunAction(kind);
+    setActionMsg(null);
+    try {
+      const path =
+        kind === "refresh" ? "/following/refresh" : "/posts/fetch";
+      const res = await authed(() =>
+        xFetch<{ ok: boolean; action: string; detail?: string }>(path, {
+          method: "POST",
+        }),
+      );
+      const detail = (res.detail ?? "").trim();
+      // surface the last informative line(s) of the run log
+      const lines = detail ? detail.split("\n").filter(Boolean) : [];
+      const snippet =
+        lines.length > 0 ? lines.slice(-4).join("\n") : "Done.";
+      setActionMsg({ ok: true, text: snippet });
+      if (kind === "refresh") await onRefresh();
+    } catch (e) {
+      setActionMsg({ ok: false, text: (e as Error).message });
+    } finally {
+      setRunAction(null);
+    }
+  };
 
   const toggle = async (u: FollowingUser) => {
     setBusyKey(String(u.id));
@@ -987,18 +1014,55 @@ function FollowingTab({ users, onRefresh, onToggle }: {
               whose tweets Earl reads into the feed.
             </p>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => run("refresh")}
+                disabled={runAction !== null}
+                className="text-xs bg-white/10 hover:bg-white/20 border border-white/10 rounded-lg px-3 py-1.5 text-white whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {runAction === "refresh" ? "Syncing…" : "↻ Refresh following"}
+              </button>
+              <button
+                onClick={() => run("fetch")}
+                disabled={runAction !== null || collected === 0}
+                title={collected === 0 ? "No accounts marked to collect" : "Grab newest tweets for accounts marked Collect"}
+                className="text-xs bg-emerald-600/80 hover:bg-emerald-500 border border-emerald-400/30 rounded-lg px-3 py-1.5 text-white whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {runAction === "fetch"
+                  ? "Fetching tweets…"
+                  : `Fetch new tweets (${collected} ON)`}
+              </button>
+            </div>
             <input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="Search username or name…"
               className="bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 text-sm text-white placeholder:text-gray-500 focus:outline-none focus:border-white/30"
             />
-            <button onClick={onRefresh} className="text-xs text-gray-400 hover:text-white underline whitespace-nowrap">
-              refresh
-            </button>
           </div>
         </div>
+
+        {runAction ? (
+          <p className="text-xs text-gray-400 mb-3 flex items-center gap-2">
+            <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-gray-500 border-t-white" />
+            {runAction === "refresh"
+              ? "Contacting X to re-sync who we follow… this can take up to a minute."
+              : `Reading the newest tweets for ${collected} account${
+                  collected === 1 ? "" : "s"
+                } across live X API calls… may take a few minutes.`}
+          </p>
+        ) : null}
+
+        {actionMsg ? (
+          <pre className={`text-xs whitespace-pre-wrap mb-3 rounded-lg px-3 py-2 border ${
+            actionMsg.ok
+              ? "border-emerald-400/30 text-emerald-200 bg-emerald-500/5"
+              : "border-red-400/40 text-red-300 bg-red-500/5"
+          }`}>
+            {actionMsg.text}
+          </pre>
+        ) : null}
 
         {filtered.length === 0 ? (
           <p className="text-sm text-gray-500">
