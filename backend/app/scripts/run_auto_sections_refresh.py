@@ -26,10 +26,11 @@ import json
 import logging
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import httpx
+import jwt  # type: ignore
 from sqlalchemy import text
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
@@ -304,10 +305,73 @@ async def generate_config(cfg: dict) -> dict:
     return data
 
 
+async def _admin_bearer_header() -> dict:
+    """Return an ``Authorization: Bearer <admin-jwt>`` header dict.
+
+    The admin endpoints this task publishes to are protected by
+    ``Depends(require_admin)`` (an HTTPBearer JWT with ``sub`` == an active
+    admin user's id). The scheduler has no browser/login session, so mint a
+    short-lived token exactly like the login flow (same secret/algorithm/claims)
+    against a real, active admin user from the local DB, and send it as a
+    Bearer header.
+    """
+    from backend.app.core.config import settings  # noqa: E402,F811
+
+    now = datetime.now(timezone.utc)
+    # The login flow uses a short expiry; 5 minutes is plenty for a single
+    # publish round-trip and keeps the blast radius tiny.
+    expires = now + timedelta(minutes=5)
+
+    # Query the admin user id with raw SQL (no ORM model import) so this helper
+    # never drags in the full model graph, which can collide under dual-root
+    # (backend.app.* + app.*) import styles. The users table is shared.
+    async with async_session() as session:
+        result = await session.execute(
+            text(
+                "SELECT id FROM users "
+                "WHERE is_admin = TRUE AND is_active = TRUE "
+                "ORDER BY created_at ASC LIMIT 1"
+            )
+        )
+        row = result.mappings().first()
+
+    if not row:
+        raise RuntimeError(
+            "Cannot mint admin token: no active admin user found in users table"
+        )
+    admin_id = row["id"]
+
+    token = jwt.encode(
+        {
+            "sub": str(admin_id),
+            "iat": int(now.timestamp()),
+            "exp": int(expires.timestamp()),
+        },
+        settings.jwt_secret,
+        algorithm=settings.jwt_algorithm,
+    )
+    return {"Authorization": f"Bearer {token}"}
+
+
 async def _publish_article(sport: str, article_id: int):
+    """Publish a draft via the admin HTTP endpoint.
+
+    The /generate endpoint stores auto-generated articles as drafts. To go live
+    immediately (matching the no-draft writeup convention) we PATCH
+    /api/admin/original-articles/<sport>/<id> with ``status: published``.
+
+    That endpoint sits behind the `admin_router`, which is protected by
+    ``Depends(require_admin)`` (added when the original-articles social-card +
+    admin-auth work landed). Internal scheduler scripts have no browser/login
+    session, so we mint a short-lived admin JWT the same way the login flow
+    does and send it as a Bearer token. Runs on the trusted compute box against
+    localhost:8002, so holding the JWT secret is not an additional disclosure:
+    this task has always performed the publish; it just now must authenticate.
+    """
+    bearer = await _admin_bearer_header()
     url = f"{API_BASE}/api/admin/original-articles/{sport}/{article_id}"
     async with httpx.AsyncClient(timeout=120) as client:
-        resp = await client.patch(url, json={"status": "published"})
+        resp = await client.patch(url, json={"status": "published"}, headers=bearer)
         resp.raise_for_status()
         logger.info("Published article %s (%s, section via generate)", article_id, sport)
 
