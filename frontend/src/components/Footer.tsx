@@ -22,6 +22,13 @@ export default function Footer() {
           </Link>
         </div>
 
+        {/* Age / Legal Gambling Age Warning */}
+        <p className="text-xs leading-relaxed text-gray-400 max-w-3xl mx-auto text-center mb-4 font-medium">
+          You must be <span className="text-gray-200 font-semibold">21 years or older</span> (or the
+          legal gambling age in your state or jurisdiction) to use this site. Earl Knows Ball does not
+          accept or process wagers.
+        </p>
+
         {/* Disclaimer */}
         <p className="text-xs leading-relaxed text-gray-500 max-w-3xl mx-auto text-center mb-6">
           Earl Knows Ball is for <span className="text-gray-400">entertainment purposes only</span>. All

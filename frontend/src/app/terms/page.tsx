@@ -11,7 +11,7 @@ export default function TermsPage() {
   return (
     <div className="max-w-3xl mx-auto px-4 py-12">
       <h1 className="text-3xl font-bold mb-2">Terms &amp; Conditions</h1>
-      <p className="text-sm text-gray-500 mb-8">Last updated: July 31, 2026</p>
+      <p className="text-sm text-gray-500 mb-8">Last updated: September 7, 2026</p>
 
       <p className="text-gray-400 mb-8">
         These Terms &amp; Conditions (the &ldquo;Terms&rdquo;) govern your use of the website
@@ -175,6 +175,32 @@ export default function TermsPage() {
           results. You must be of legal age to gamble in your jurisdiction. If you or someone you
           know has a gambling problem, please call 1-800-GAMBLER or visit your local responsible
           gambling resource for help.
+        </p>
+      </section>
+
+      <section className="mb-8">
+        <h2 className="text-xl font-semibold mb-3 text-white">13. Legal Age and Gambling Eligibility</h2>
+        <p className="text-gray-400">
+          The Service is intended for adults only. By accessing or using the Service, you represent
+          and warrant that you are at least <strong className="text-gray-200">21 years of age</strong>,
+          or the legal age of majority and legal gambling age in the state, province, or jurisdiction
+          in which you reside, whichever is higher. If you are not 21 or older and of legal age to
+          gamble in your jurisdiction, you must not use the Service.
+        </p>
+        <p className="text-gray-400 mt-3">
+          Because gambling eligibility and age requirements vary by state and jurisdiction, it is your
+          sole responsibility to ensure that you are legally permitted to gamble where you are located
+          and that your use of the Service complies with all applicable laws. Earl Knows Ball does not
+          accept or process wagers in any form; you are responsible for any decisions you make
+          regarding wagering with third parties, including your age eligibility under the laws of
+          your jurisdiction.
+        </p>
+        <p className="text-gray-400 mt-3">
+          If you are under 21 (or the applicable legal gambling age in your jurisdiction), you are not
+          authorized to create an account or access the Service. Earl Knows Ball reserves the right to
+          verify your eligibility and to suspend or terminate access, accounts, or subscriptions for
+          any user who does not meet, or misrepresents their compliance with, these age and
+          eligibility requirements.
         </p>
       </section>
     </div>
