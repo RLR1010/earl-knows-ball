@@ -51,7 +51,7 @@ API_BASE = os.environ.get("EARL_AUTO_GEN_API", "http://localhost:8002")
 MAX_GENERATIONS = int(os.environ.get("EARL_AUTO_GEN_MAX_PER_PASS", "3"))
 # Brief sleep between individual generations to keep load gentle.
 SLEEP_BETWEEN = float(os.environ.get("EARL_AUTO_GEN_SLEEP", "5.0"))
-VALID_SECTIONS = ("article", "daily_picks")
+VALID_SECTIONS = ("article", "daily_picks", "earls_winners")
 
 # How many previously-published articles to feed back to the LLM as
 # "previous coverage" context so each generation is fresh and non-repetitive.
@@ -65,13 +65,20 @@ def _is_due(cfg: dict, now: datetime) -> bool:
     """Decide whether a config is due for generation.
 
     A config is due when it has never run, OR when its last generation is
-    older than its cadence period (24h daily / 7d weekly). Each config last
-    runs at its own distinct time, so cohorts naturally spread instead of all
-    firing at a shared boundary; the MAX_GENERATIONS per-pass cap handles
-    first-time bootstrapping/backfill without a thundering herd.
+    older than its cadence period. Cadence maps to a day interval:
+    - daily  = every 1 day
+    - weekly = every 7 days
+    - 2day   = every 2 days (e.g. the Earl's Winners recap article)
+    A per-config generate_time gives calendar-day semantics: the config is due
+    once per cadence window at/after that clock time, anchored to a clean local
+    boundary instead of a rolling 24h-from-last-run. Each config last runs at
+    its own distinct generate_time, so cohorts spread; MAX_GENERATIONS handles
+    first-time backfill.
     """
     cadence = cfg.get("cadence") or "daily"
-    period_seconds = (7 * 24 * 60 * 60) if cadence == "weekly" else (24 * 60 * 60)
+    _INTERVAL_DAYS = {"daily": 1, "weekly": 7, "2day": 2}
+    interval_days = _INTERVAL_DAYS.get(cadence, 1)
+    period_seconds = interval_days * 24 * 60 * 60
 
     last_gen = cfg.get("last_generated_at")
     if last_gen is None:
@@ -79,24 +86,26 @@ def _is_due(cfg: dict, now: datetime) -> bool:
     if last_gen.tzinfo is None:
         last_gen = last_gen.replace(tzinfo=timezone.utc)
 
-    # A per-config generate_time (HH:MM) gives calendar-day semantics: the
-    # config is due once per local day, at/after that clock time, regardless
-    # of exactly when it last fired (so a "daily 08:00" article lands each
-    # morning, not a rolling 24h after yesterday's run).
+    # A per-config generate_time (HH:MM) gives calendar-day semantics.
     generate_time = (cfg.get("generate_time") or "").strip()
-    if cadence in ("daily", "weekly") and generate_time:
-        return _is_due_time_of_day(cfg, now, generate_time, weekly=(cadence == "weekly"))
+    if cadence in ("daily", "weekly", "2day") and generate_time:
+        return _is_due_time_of_day(cfg, now, generate_time,
+                                   weekly=(cadence == "weekly"),
+                                   interval_days=interval_days)
 
     return (now - last_gen).total_seconds() >= period_seconds
 
 
-def _is_due_time_of_day(cfg: dict, now: datetime, generate_time: str, weekly: bool) -> bool:
+def _is_due_time_of_day(cfg: dict, now: datetime, generate_time: str, weekly: bool,
+                        interval_days: int = 1) -> bool:
     """Calendar-ish due check for a config with a preferred generate_time.
 
-    The cadence window (24h daily / 7d weekly) still applies as a lower bound, but the
+    The cadence window (interval_days * 24h) still applies as a lower bound, but the
     due boundary snaps to the generate_time on the target local day instead of the
     exact instant of the previous run. This keeps cohorts anchored to a clean
     clock time rather than drifting to the time of the prior generation.
+    weekly cadences additionally require matching weekday-of-last-run;
+    every-N-day cadences (e.g. '2day') require N local dates to have elapsed.
     """
     try:
         local = ZoneInfo("America/Chicago")
@@ -104,13 +113,13 @@ def _is_due_time_of_day(cfg: dict, now: datetime, generate_time: str, weekly: bo
         hh, mm = (int(x) for x in generate_time.split(":"))
         target_time = local_now.replace(hour=hh, minute=mm, second=0, microsecond=0)
     except Exception:
-        # Malformed generate_time — fall back to rolling window.
-        cadence = cfg.get("cadence") or "daily"
-        period_seconds = (7 * 24 * 60 * 60) if cadence == "weekly" else (24 * 60 * 60)
+        # Malformed generate_time — fall back to rolling window (interval_days).
         last_gen = cfg.get("last_generated_at")
+        if last_gen is None:
+            return True
         if last_gen.tzinfo is None:
             last_gen = last_gen.replace(tzinfo=timezone.utc)
-        return (now - last_gen).total_seconds() >= period_seconds
+        return (now - last_gen).total_seconds() >= interval_days * 24 * 60 * 60
 
     # A weekly config is due only on its target weekday (the weekday it last ran).
     if weekly:
@@ -120,17 +129,26 @@ def _is_due_time_of_day(cfg: dict, now: datetime, generate_time: str, weekly: bo
         if last_gen.astimezone(local).weekday() != local_now.weekday():
             return False
 
-    # Only after the target clock time has been reached on the Windows day.
+    # Only after the target clock time has been reached on the target day.
     if local_now < target_time:
         return False
 
-    # Due if the last run was before this day's target boundary (or how never ran).
+    # Due if the last run was before this day's target boundary (or if never ran).
     last_gen = cfg.get("last_generated_at")
     if last_gen is None:
         return True
     if last_gen.tzinfo is None:
         last_gen = last_gen.replace(tzinfo=timezone.utc)
-    return last_gen.astimezone(local) < target_time
+    last_local = last_gen.astimezone(local)
+
+    # Every-N-day cadence (e.g. '2day'): due when at least interval_days local
+    # calendar dates have fully elapsed since the last run's date (combined with
+    # the generate_time check above, this anchors to clean alternating days).
+    if interval_days > 1 and not weekly:
+        return (local_now.date() - last_local.date()).days >= interval_days
+
+    # daily / weekly: due once we've crossed today's target boundary since last run.
+    return last_local < target_time
 
 
 async def _load_active_configs() -> list[dict]:
@@ -225,6 +243,55 @@ def _strip_markdown(text_in: str) -> str:
     return t.strip()
 
 
+async def _winners_recap_context(cfg: dict) -> str:
+    """Build a factual "Earl's recent winners" block for a Winners-Recap config.
+
+    A config is treated as a Winners-Recap editorial iff sport='all' AND
+    cadence='2day' AND section IN ('article','earls_winners') (the profile for "an
+    article every two days discussing Earl's winning picks"). Earl's-Winners recaps
+    now live under section 'earls_winners' (legacy rows predate that section and are
+    'article', so both are accepted). For those, we pull the current top winners from
+    the public.earl_winners snapshot (already curated to the most recent cashing
+    picks, non-preseason, look-back window) and hand the
+    real picks to the LLM so it writes a recap grounded in facts (never
+    hallucinating pick names/odds). Returns an empty string for non-recap
+    configs. Uses a fresh connection so it never participates in the caller's
+    transaction.
+    """
+    if (cfg.get("sport") != "all" or (cfg.get("cadence") or "daily") != "2day"
+            or (cfg.get("section") or "article") not in ("article", "earls_winners")):
+        return ""
+
+    try:
+        async with async_session() as db:
+            rows = (await db.execute(
+                text("""SELECT sport, market, pick_text, odds_at_tip, ev,
+                                home_team, away_team, home_score, away_score,
+                                game_date, winning_side
+                         FROM public.earl_winners ORDER BY sort_key LIMIT 8""")
+            )).mappings().all()
+    except Exception:
+        return ""
+
+    if not rows:
+        return ("\n\nCURRENT WINNERS: no settled Earl's winners are in the snapshot right now — "
+                "if true, do not fabricate any; pivot to a general note on the picks engine instead.")
+    lines, medals = [], ["1", "2", "3", "4", "5", "6", "7", "8"]
+    for i, w in enumerate(rows):
+        pick = (w["pick_text"] or "").strip().upper()
+        mark = (w["market"] or "").lower()
+        odds = w["odds_at_tip"] or "-"
+        ev = f"+{w['ev']:.2f}" if (w["ev"] or 0) > 0 else str(w["ev"] or 0)
+        ln = f"{w['home_team']} {w['home_score']} - {w['away_score']} {w['away_team']}" if (w.get('home_score') is not None and w.get('away_score') is not None) else f"{w['home_team']} vs {w['away_team']}"
+        lines.append(
+            f"{medals[i]}. [{w['sport'].upper()}] {pick} ({mark}) @ {odds} — EV {ev}. Final: {ln} "
+            f"({w['game_date']})."
+        )
+    return "\n\nEARL'S CURRENT WINNERS — these are REAL, verified cashed picks from the last week. "\
+        "Write this recap ABOUT THESE EXACT picks (reference teams/scores/odds accurately, do not invent "\
+        "any pick or game not listed). Lead with the freshest wins." + "\n" + "\n".join(lines)
+
+
 async def _build_recency_context(cfg: dict) -> str:
     """Build a previous-coverage context block from the last N published articles.
 
@@ -262,6 +329,13 @@ async def generate_config(cfg: dict) -> dict:
         section = "article"
 
     instructions = await _resolve_instructions(cfg)
+
+    # Winners-Recap editorials (sport='all' + cadence='2day' + section='article')
+    # get the real current winning picks injected so the LLM recaps verified
+    # results rather than inventing picks.
+    winners_ctx = await _winners_recap_context(cfg)
+    if winners_ctx:
+        instructions = f"{instructions}\n\n{winners_ctx}"
 
     # Append previous-coverage context ONLY when this config has opted in
     # (recency_context = TRUE in the admin auto-generation page), so the LLM

@@ -24,6 +24,8 @@ class SubscriptionPlan(Base):
     features = Column(JSON, default=list)                    # ["AI Chat", "Advanced Stats", ...]
     monthly_token_limit = Column(BigInteger, nullable=True)
     is_active = Column(Boolean, default=True)
+    pricing_visible = Column(Boolean, default=True, server_default="true", nullable=False)  # show in public plan offers (/pricing + gating); hides ONLY the offer, not active subscriptions/checkout links
+    compare_against_monthly_cents = Column(Integer, nullable=True)  # optional: the per-month price to compare this plan against when showing "save X%" (e.g. annual vs the $29.95 monthly rate = 2995)
     sort_order = Column(Integer, default=0)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc),

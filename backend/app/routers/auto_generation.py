@@ -36,9 +36,9 @@ from app.database import get_db
 logger = logging.getLogger("auto_generation")
 
 SPORTS = ("all", "mlb", "nfl", "nba")
-CADENCES = ("daily", "weekly")
+CADENCES = ("daily", "2day", "weekly")
 SCOPES = ("team", "sport")
-SECTIONS = ("article", "daily_picks")
+SECTIONS = ("article", "daily_picks", "earls_winners")
 REASONINGS = ("minimal", "low", "medium", "high", "xhigh")
 VISIBILITIES = ("public", "premium")
 TITLE_MODES = ("fixed", "llm")

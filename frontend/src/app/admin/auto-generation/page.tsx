@@ -12,13 +12,22 @@ const SPORT_LABEL: Record<Sport, string> = {
   nba: "NBA",
 };
 
-const CADENCES = ["daily", "weekly"] as const;
+const CADENCES = ["daily", "2day", "weekly"] as const;
 const SCOPES = ["sport", "team"] as const;
-const SECTIONS = ["article", "daily_picks"] as const;
+const SECTIONS = ["article", "daily_picks", "earls_winners"] as const;
 const SECTION_LABEL: Record<string, string> = {
   article: "Articles",
   daily_picks: "Daily Picks",
+  earls_winners: "Earl's Winners",
 };
+
+/** Human label + due-window helper text for each cadence. */
+const CADENCE_LABEL: Record<(typeof CADENCES)[number], { label: string; window: string }> = {
+  daily: { label: "Daily", window: "24h" },
+  "2day": { label: "Every 2 days", window: "48h" },
+  weekly: { label: "Weekly", window: "7d" },
+};
+type Cadence = (typeof CADENCES)[number];
 
 interface Team {
   id: number;
@@ -32,13 +41,13 @@ interface Config {
   title: string;
   description: string | null;
   instructions: string | null;
-  cadence: "daily" | "weekly";
+  cadence: Cadence;
   scope_type: "sport" | "team";
   team_id: number | null;
   team_abbr: string | null;
   team_name: string | null;
   template_article_id: number | null;
-  section: "article" | "daily_picks";
+  section: "article" | "daily_picks" | "earls_winners";
   status: "active" | "inactive" | "paused";
   reasoning: "minimal" | "low" | "medium" | "high" | "xhigh";
   visibility: "public" | "premium";
@@ -64,11 +73,11 @@ interface ConfigFormState {
   title: string;
   description: string;
   instructions: string;
-  cadence: "daily" | "weekly";
+  cadence: Cadence;
   generate_time: string;
   scope_type: "sport" | "team";
   team_id: number | null;
-  section: "article" | "daily_picks";
+  section: "article" | "daily_picks" | "earls_winners";
   status: "active" | "inactive" | "paused";
   reasoning: "minimal" | "low" | "medium" | "high" | "xhigh";
   visibility: "public" | "premium";
@@ -133,14 +142,17 @@ function fmtDate(iso: string | null): string {
   });
 }
 
-function CadenceBadge({ cadence }: { cadence: "daily" | "weekly" }) {
-  return cadence === "daily" ? (
-    <span className="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded-full bg-sky-500/15 text-sky-400 border border-sky-500/20">
-      Daily
-    </span>
-  ) : (
-    <span className="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded-full bg-violet-500/15 text-violet-400 border border-violet-500/20">
-      Weekly
+function CadenceBadge({ cadence }: { cadence: Cadence }) {
+  const styles: Record<Cadence, string> = {
+    daily: "bg-sky-500/15 text-sky-400 border-sky-500/20",
+    "2day": "bg-emerald-500/15 text-emerald-400 border-emerald-500/20",
+    weekly: "bg-violet-500/15 text-violet-400 border-violet-500/20",
+  };
+  return (
+    <span
+      className={`inline-flex items-center px-2 py-0.5 text-xs font-medium rounded-full border ${styles[cadence]}`}
+    >
+      {CADENCE_LABEL[cadence].label}
     </span>
   );
 }
@@ -169,7 +181,7 @@ export default function AutoGenerationPage() {
 
   // Filters
   const [sportFilter, setSportFilter] = useState<"*" | Sport>("*");
-  const [cadenceFilter, setCadenceFilter] = useState<"all" | "daily" | "weekly">("all");
+  const [cadenceFilter, setCadenceFilter] = useState<"all" | Cadence>("all");
   const [scopeFilter, setScopeFilter] = useState<"all" | "sport" | "team">("all");
 
   // Create / edit modal
@@ -343,8 +355,9 @@ export default function AutoGenerationPage() {
         {[
           { label: "Total Configs", value: configs.length },
           { label: "Active", value: activeCount },
-          { label: "Daily", value: configs.filter((c) => c.cadence === "daily").length },
-          { label: "Weekly", value: configs.filter((c) => c.cadence === "weekly").length },
+          { label: CADENCE_LABEL.daily.label, value: configs.filter((c) => c.cadence === "daily").length },
+          { label: CADENCE_LABEL["2day"].label, value: configs.filter((c) => c.cadence === "2day").length },
+          { label: CADENCE_LABEL.weekly.label, value: configs.filter((c) => c.cadence === "weekly").length },
         ].map((s) => (
           <div key={s.label} className="rounded-xl bg-black/30 border border-white/10 p-4">
             <div className="text-xs uppercase tracking-wider text-gray-500">{s.label}</div>
@@ -364,6 +377,7 @@ export default function AutoGenerationPage() {
         <div className="w-px h-5 bg-white/10 mx-1" />
         <FilterChip active={cadenceFilter === "all"} onClick={() => setCadenceFilter("all")}>All Cadence</FilterChip>
         <FilterChip active={cadenceFilter === "daily"} onClick={() => setCadenceFilter("daily")}>Daily</FilterChip>
+        <FilterChip active={cadenceFilter === "2day"} onClick={() => setCadenceFilter("2day")}>Every 2 days</FilterChip>
         <FilterChip active={cadenceFilter === "weekly"} onClick={() => setCadenceFilter("weekly")}>Weekly</FilterChip>
         <div className="w-px h-5 bg-white/10 mx-1" />
         <FilterChip active={scopeFilter === "all"} onClick={() => setScopeFilter("all")}>All Scopes</FilterChip>
@@ -577,17 +591,17 @@ export default function AutoGenerationPage() {
               <ContentField label="Cadence">
                 <select
                   value={form.cadence}
-                  onChange={(e) => setForm({ ...form, cadence: e.target.value as "daily" | "weekly" })}
+                  onChange={(e) => setForm({ ...form, cadence: e.target.value as Cadence })}
                   className="w-full px-3 py-2 rounded-lg bg-black/40 border border-white/10 text-white text-sm focus:outline-none focus:border-earl-500"
                 >
                   {CADENCES.map((c) => (
-                    <option key={c} value={c}>{c.charAt(0).toUpperCase() + c.slice(1)}</option>
+                    <option key={c} value={c}>{CADENCE_LABEL[c].label}</option>
                   ))}
                 </select>
               </ContentField>
               <ContentField
                 label="Generate Time"
-                hint={"Optional. When set, the article is due once per " + form.cadence + " cycle at this clock time (America/Chicago). Leave blank for a rolling " + (form.cadence === "daily" ? "24h" : "7d") + " window."}
+                hint={"Optional. When set, the article is due once per " + CADENCE_LABEL[form.cadence as Cadence]?.label.toLowerCase() + " cycle at this clock time (America/Chicago). Leave blank for a rolling " + CADENCE_LABEL[form.cadence as Cadence]?.window + " window."}
               >
                 <input
                   type="time"
@@ -618,7 +632,7 @@ export default function AutoGenerationPage() {
             <ContentField label="Section" required>
               <select
                 value={form.section}
-                onChange={(e) => setForm({ ...form, section: e.target.value as "article" | "daily_picks" })}
+                onChange={(e) => setForm({ ...form, section: e.target.value as "article" | "daily_picks" | "earls_winners" })}
                 className="w-full px-3 py-2 rounded-lg bg-black/40 border border-white/10 text-white text-sm focus:outline-none focus:border-earl-500"
               >
                 {SECTIONS.map((s) => (

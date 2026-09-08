@@ -152,6 +152,8 @@ class PlanCreate(BaseModel):
     trial_fee_price_id: Optional[str] = None  # paid-trial one-time fee price (e.g. $1.95)
     monthly_token_limit: Optional[int] = None
     payment_description: Optional[str] = None
+    pricing_visible: bool = True  # show this plan in public plan offers (/pricing, gating modals)
+    compare_against_monthly_cents: Optional[int] = None  # monthly-rate anchor for "save X%" on longer-term plans
 
 
 class PlanUpdate(BaseModel):
@@ -172,6 +174,8 @@ class PlanUpdate(BaseModel):
     trial_fee_price_id: Optional[str] = None
     monthly_token_limit: Optional[int] = None
     payment_description: Optional[str] = None
+    pricing_visible: Optional[bool] = None
+    compare_against_monthly_cents: Optional[int] = None
 
 
 class PlanOut(BaseModel):
@@ -193,6 +197,8 @@ class PlanOut(BaseModel):
     trial_fee_price_id: str | None = None
     monthly_token_limit: int | None = None
     payment_description: str | None = None
+    pricing_visible: bool = True
+    compare_against_monthly_cents: int | None = None
     created_at: datetime | None = None
 
     model_config = {"from_attributes": True}
