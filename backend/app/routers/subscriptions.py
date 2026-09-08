@@ -33,6 +33,8 @@ class PlanPublic(BaseModel):
     features: list
     is_active: bool
     sort_order: int
+    pricing_visible: bool = True
+    compare_against_monthly_cents: int | None = None
 
     model_config = {"from_attributes": True}
 
@@ -70,7 +72,11 @@ async def list_plans(db: AsyncSession = Depends(get_db)):
     """Public endpoint — list all active subscription plans."""
     result = await db.execute(
         select(SubscriptionPlan)
-        .where(SubscriptionPlan.is_active == True, SubscriptionPlan.kind != "token_topup")
+        .where(
+            SubscriptionPlan.is_active == True,
+            SubscriptionPlan.pricing_visible == True,
+            SubscriptionPlan.kind != "token_topup",
+        )
         .order_by(SubscriptionPlan.sort_order)
     )
     return result.scalars().all()

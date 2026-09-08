@@ -9,6 +9,8 @@ from __future__ import annotations
 import logging
 import os
 import asyncio
+import json
+import re
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -929,4 +931,374 @@ async def fetch_recent_tweets(
     except HTTPException as e:
         raise e
     return XActionOut(ok=True, action="fetch_tweets", detail=output)
+
+
+# ------------------------------------------------------------------------- manual-post plan
+class ManualMarkIn(BaseModel):
+    """A planned tweet the user just posted by hand on X (via the app): {kind, sport, id}.
+    kind is "writeup" (game preview) or "original" (original article)."""
+    kind: str
+    sport: Optional[str] = None
+    id: int
+
+
+@admin_router.get("/plan/today")
+async def plan_today(
+    db: AsyncSession = Depends(get_db),
+    admin=Depends(get_admin_user),
+):
+    """Return today's persisted lineup (the set the 09:20 daily generator created) for the
+    "Post Today" admin tab. NOTHING is posted and no source is stamped here — it only reads
+    the snapshot the x_daily_plan task persisted this morning.
+
+    If no lineup exists for today yet (e.g. the 09:20 task hasn't run, or it's before 09:20),
+    it generates + persists today's lineup on demand so the tab is never empty.
+
+    Returns:
+      { plan_date, plan: [ {kind, sport, id, title, url, text, posted}, ... ],
+        generated_at, source }
+    """
+    plan_date = _today_central()
+    # 1) read persisted lineup for today (only still-unposted rows)
+    rows = (await db.execute(text(
+        "SELECT slot, kind, sport, item_id, title, url, text, posted_at"
+        " FROM public.x_daily_plan WHERE plan_date = :d AND posted_at IS NULL ORDER BY slot"
+    ), {"d": plan_date})).all()
+    if not rows:
+        # Nothing persisted yet -> generate today's snapshot on demand (no X call, no stamp).
+        await asyncio.to_thread(_generate_plan)
+        rows = (await db.execute(text(
+            "SELECT slot, kind, sport, item_id, title, url, text, posted_at"
+            " FROM public.x_daily_plan WHERE plan_date = :d AND posted_at IS NULL ORDER BY slot"
+        ), {"d": plan_date})).all()
+        source = "generated-on-demand"
+    else:
+        source = "daily-0920"
+    items = []
+    for r in rows:
+        m = r._mapping
+        items.append({
+            "slot": m["slot"],
+            "kind": m["kind"],
+            "sport": m["sport"] or None,
+            "id": m["item_id"],
+            "title": m["title"],
+            "url": m["url"] or "",
+            "text": m["text"] or "",
+            "posted": m["posted_at"] is not None,
+        })
+    return {"plan_date": plan_date.isoformat(), "source": source, "plan": items}
+
+
+def _today_central():
+    from zoneinfo import ZoneInfo
+    from datetime import datetime
+    try:
+        return datetime.now(ZoneInfo("America/Chicago")).date()
+    except Exception:
+        return datetime.now().date()
+
+
+def _generate_plan():
+    from app.social import x_daily_plan as xdp
+    xdp.generate(commit=True)
+
+
+@admin_router.post("/plan/today/regenerate")
+async def regen_plan_today(
+    db: AsyncSession = Depends(get_db),
+    admin=Depends(get_admin_user),
+):
+    """Manually (re)generate today's “Post Today” lineup for the admin X tab.
+
+    Re-runs the same picker the 09:20 x-daily-plan task uses (which now excludes any
+    still-settling writeup and never picks the single most-recent row in the DB), then
+    replaces today's persisted rows in public.x_daily_plan. Use this to rebuild a stale
+    or orphaned lineup before manually posting to X.
+
+    NOTE: this replaces the full day's today-plan snapshot. Nothing is posted/un-posted
+    to X here — actual posting still happens only via each item's “Post to X” action.
+    """
+    # Force a fresh generate+persist of today's plan (idempotent; replaces today's rows).
+    await asyncio.to_thread(_generate_plan)
+    rows = (await db.execute(text(
+        "SELECT slot, kind, sport, item_id, title, url, text, posted_at"
+        " FROM public.x_daily_plan WHERE plan_date = :d AND posted_at IS NULL ORDER BY slot"
+    ), {"d": _today_central()})).all()
+    items = []
+    for r in rows:
+        m = r._mapping
+        items.append({"slot": m["slot"], "kind": m["kind"], "sport": m["sport"] or None,
+                      "id": m["item_id"], "title": m["title"], "url": m["url"] or "",
+                      "text": m["text"] or "", "posted": m["posted_at"] is not None})
+    return {"plan_date": _today_central().isoformat(), "source": "daily-0920", "plan": items}
+
+
+@admin_router.post("/plan/today/mark-posted", response_model=XActionOut)
+async def manual_mark_posted(
+    payload: ManualMarkIn,
+    db: AsyncSession = Depends(get_db),
+    admin=Depends(get_admin_user),
+):
+    """Record that the user manually posted this planned tweet on X. Stamps (a) the source row's
+    x_posted_at=NOW() so the daily picker won't re-offer the SAME writeup/original tomorrow, and
+    (b) today's x_daily_plan row's posted_at so it drops off the Post Today tab. It does NOT call
+    the X API (no auto-post, no cost)."""
+    kind = payload.kind.strip().lower()
+    if kind == "original":
+        if not payload.sport:
+            raise HTTPException(status_code=400, detail="mark-posted original requires sport")
+        table = "public.original_articles"
+    elif kind == "writeup":
+        sport = (payload.sport or "").strip().lower()
+        if sport not in ("mlb", "nfl", "nba"):
+            raise HTTPException(status_code=400, detail="writeup sport must be mlb|nfl|nba")
+        table = f'{sport}.game_writeups'
+    else:
+        raise HTTPException(status_code=400, detail="kind must be 'writeup' or 'original'")
+
+    # (a) stamp source (dedup so it won't be re-generated/auto-offered)
+    sql = text(f"UPDATE {table} SET x_posted_at = now() WHERE id = :id AND x_posted_at IS NULL")
+    res = await db.execute(sql, {"id": payload.id})
+    # (b) set posted_at on today's persisted plan row (drops it from Post Today tab)
+    plan_date = _today_central()
+    upd = text("UPDATE public.x_daily_plan SET posted_at = now()"
+               " WHERE plan_date = :d AND kind = :k AND item_id = :id AND posted_at IS NULL")
+    await db.execute(upd, {"d": plan_date, "k": kind, "id": payload.id})
+    await db.commit()
+
+    if res.rowcount == 0:
+        return XActionOut(ok=True, action="manual_mark_posted",
+                         detail=f"Marked {kind} id={payload.id} on today's list (source already had x_posted_at set).")
+    return XActionOut(ok=True, action="manual_mark_posted",
+                     detail=f"Marked {kind} id={payload.id} ({payload.sport or ''}) as manually posted.")
+
+
+# ---------------------------------------------------------------------------- AI composer — 3 tweet options
+class ComposeOption(BaseModel):
+    text: str = ""
+    note: str = ""
+
+
+class ComposeOptionsIn(BaseModel):
+    instruction: str = ""
+    style: Optional[str] = "casual"        # casual | short-punchy | hype-hashtags | factual
+    research: Optional[str] = "live"        # none | articles | live | deep
+    sport: Optional[str] = None             # mlb | nfl | nba (research/voice)
+    seed_text: str = ""                    # grounding context if a Compose seed is active (#2)
+
+
+class ComposeOptionsOut(BaseModel):
+    options: list[ComposeOption] = []
+    model: Optional[str] = None
+    note: Optional[str] = None
+
+
+# sport -> (engine constructor args) so the composer can run REAL chat research tools
+_SPORT_ENGINES: dict = {}
+
+
+def _get_chat_engine(sport: str | None):
+    """Return the app's already-built per-sport ToolChatEngine, or None for freestyle."""
+    if not sport:
+        return None
+    sp = sport.strip().lower()
+    if sp in _SPORT_ENGINES:
+        return _SPORT_ENGINES[sp]
+    if sp == "mlb":
+        from app.chat_tools.mlb import TOOL_DEFINITIONS as TOOLS
+        from app.chat_tools.mlb import execute_mlb_tool as exec_
+    elif sp == "nfl":
+        from app.chat_tools.nfl import TOOL_DEFINITIONS as TOOLS, execute_nfl_tool as exec_
+    elif sp == "nba":
+        from app.chat_tools.nba import TOOL_DEFINITIONS as TOOLS, execute_nba_tool as exec_
+    else:
+        return None
+    from app.chat_tools import ToolChatEngine
+    eng = ToolChatEngine(
+        sport=sp,
+        sport_display=sp.upper(),
+        data_description="live schedule lines standings injuries stats predictions and articles",
+        tools=TOOLS,
+        executor=exec_,
+        system_prompt_extra="",
+    )
+    _SPORT_ENGINES[sp] = eng
+    return eng
+
+
+async def _compose_research(brief: str, sport: str | None, db, level: str = "live") -> tuple[str, str | None]:
+    """Research the topic for tweet grounding. level: none|articles|live|deep.
+    Returns (grounding_block_or_'', engine_model).
+      none    -> no research (freestyle, fastest)
+      articles-> RAG over recent Earl articles on the topic (no live tools)
+      live    -> live sport tools digest + RAG articles (with optional seed facts)
+      deep    -> like live, but lets the engine run extra research rounds first
+    Never raises — degrades gracefully to whatever research level succeeds (or freestyle)."""
+    if level == "none":
+        return "", None
+    model = getattr(settings, "deepseek_model", "deepseek-v4-flash") or "deepseek-v4-flash"
+    parts: list[str] = []
+
+    # Articles-only always available (RAG needs no sport engine)
+    if level in ("articles", "live", "deep"):
+        try:
+            from app.chat_tools.base import ToolChatEngine
+            enrichment_text, _tok = await ToolChatEngine.run_enrichment(db, brief, sport=sport or "all", top_k=6)
+            if enrichment_text and enrichment_text.strip():
+                parts.append("Recent-article research (what Earl has written about this):\n"
+                             + str(enrichment_text).strip())
+        except Exception:
+            logger.exception("compose research: enrichment failed")
+
+    # Live sport engine for live|deep (only if a sport is known)
+    if level in ("live", "deep") and sport:
+        engine = _get_chat_engine(sport)
+        if engine is not None:
+            try:
+                # deep => give the engine more rounds + time to research
+                answer, _tokens, _full = await engine.research_and_answer(
+                    db, [{"role": "user", "content": brief}],
+                    research_only=True, return_full_messages=True,
+                    max_turns=(26 if level == "deep" else 15),
+                    timeout=(150.0 if level == "deep" else 45.0),
+                )
+                if answer and str(answer).strip():
+                    parts.append("Live schedule/lines/stats research:\n" + str(answer).strip())
+            except Exception:
+                logger.exception("compose research: live pass failed")
+
+    joined = "\n\n".join(parts)
+    return joined[:3200], (model if (joined or level != "none") else None)
+
+
+async def _llm_three_tweet_options(instruction: str, style: str, sport: Optional[str],
+                                   grounding: str = "", seed_text: str = "") -> list[dict]:
+    from openai import AsyncOpenAI  # lazy on-demand
+    client = AsyncOpenAI(api_key=settings.deepseek_api_key, base_url=settings.deepseek_base_url)
+    style_guide = {
+        "casual": "natural, friendly sports-fan voice; light hook; reads well on a phone",
+        "short-punchy": "short + punchy (aim under ~160 chars); a crisp verdict, minimal fluff",
+        "hype-hashtags": "energetic hype with 1-3 relevant hashtags and a call-to-action",
+        "factual": "numbers-first and analytical; cite the stat/edge without spin",
+    }.get(style or "casual", "natural sports-fan voice")
+    fact_in_scope = " (grounded in the research facts below)" if grounding else ""
+    sys_prompt = (
+        "You are @earl_knows_ball, the social voice for Earl Knows Ball, a data-driven sports "
+        "handicapping/picks brand. Write X (Twitter) posts about bets, edge, EV, confidence and game calls.\n\n"
+        f"Voice/style: {style_guide}.\n"
+        f"Audience sport: {sport or 'mixed / platform-generic'}.\n"
+        "HARD RULES:\n"
+        "1. Output EXACTLY three (3) distinct options — meaningfully different angle/wording, not tweaks.\n"
+        "2. Each option under 280 characters total.\n"
+        f"3. Write ONLY from these facts{fact_in_scope}. NEVER fabricate any team, score, odds, record, player, "
+        "date, edge or EV figure that is not in the supplied research/seed context. If granular proof is missing, "
+        "keep the post general and true — do not invent specifics.\n"
+        "4. Do not mention tools, research, AI, or databases. No markdown, links, or emoji-heavy spam.\n"
+    )
+    user_parts = [f"<my instruction>\n{instruction}\n</my instruction>"]
+    if grounding:
+        user_parts.insert(0, f"<researched facts — AUTHORITATIVE, use only these>\n{grounding}\n</researched facts>")
+    if seed_text:
+        user_parts.insert(0, f"<seed/pick context (a real Earl pick to build from)>\n{seed_text}\n</seed/pick context>")
+    user_parts.append(
+        "\nReturn ONLY a single JSON object (no prose, no markdown fence, nothing before/after), shaped exactly:\n"
+        '{"options":[{"text":"...","note":"one-line reason for this angle"}]}'
+    )
+    resp = await client.chat.completions.create(
+        model=settings.deepseek_model or "deepseek-v4-flash",
+        temperature=0.9,
+        max_tokens=1800,
+        response_format={"type": "json_object"},
+        messages=[
+            {"role": "system", "content": sys_prompt},
+            {"role": "user", "content": "\n\n".join(user_parts)},
+        ],
+    )
+    content = (resp.choices[0].message.content or "").strip()
+    if content.startswith("```"):
+        parts = content.split("```")
+        content = parts[1] if len(parts) >= 2 else content.replace("```", "")
+        content = content.strip()
+    out: list[dict] = []
+    try:
+        data = json.loads(content)
+    except Exception:
+        s, e = content.find("{"), content.rfind("}")
+        try:
+            data = json.loads(content[s : e + 1]) if s != -1 and e > s else {}
+        except Exception:
+            data = {}
+    for o in (data.get("options") if isinstance(data, dict) else []) or []:
+        if isinstance(o, dict) and (o.get("text") or "").strip():
+            out.append({"text": str(o["text"]).strip(), "note": str(o.get("note") or "").strip()})
+    # fallback: if json extraction gave nothing, try numbered / bulleted list lines
+    if not out:
+        for ln in content.splitlines():
+            t = re.sub(r"^\s*(Option\s*\d+|[1-3][.)-]|[-*•])\s*", "", ln.strip())
+            t = t.strip()
+            if len(t) >= 12 and len(t) <= 400:
+                out.append({"text": t[:280].rstrip(), "note": ""})
+        out = out[:3]
+    return out[:3]
+
+
+@admin_router.post("/compose/options", response_model=ComposeOptionsOut)
+async def compose_options(
+    body: ComposeOptionsIn,
+    db: AsyncSession = Depends(get_db),
+    admin=Depends(get_admin_user),
+):
+    """AI drafts 3 grounded tweet options from Rich's instruction.
+    Uses the SAME chat research tools (RAG enrichment + live sport tools) when a sport is given,
+    plus optional seed/pick grounding. Never posts. Copy one and paste into X."""
+    if not (body.instruction or "").strip():
+        raise HTTPException(status_code=400, detail="Type an instruction for the AI first.")
+    model = (settings.deepseek_model or "deepseek-v4-flash")
+    level = (body.research or "live").strip().lower()
+    if level not in ("none", "articles", "live", "deep"):
+        level = "live"
+    grounding = ""
+    if level != "none":
+        sport_for_research = (body.sport or "").strip().lower() or None
+        if level in ("live", "deep") and not sport_for_research:
+            level = "articles"  # live tools need a sport; fall back to article grounding
+        try:
+            grounding, model = await _compose_research(
+                body.instruction, sport_for_research, db, level=level)
+        except Exception:
+            logger.exception("compose/options research failed")
+            grounding = ""
+    try:
+        raw = await _llm_three_tweet_options(
+            body.instruction, body.style or "casual", body.sport,
+            grounding=grounding, seed_text=(body.seed_text or "").strip(),
+        )
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("compose/options LLM failed")
+        raise HTTPException(status_code=502, detail="AI generation failed — try again in a moment.")
+    if not raw:
+        raise HTTPException(status_code=502, detail="AI returned no usable options — try a clearer instruction.")
+    if grounding:
+        if level == "live":
+            note = ("Grounded in live research + your pick context. " if body.seed_text
+                    else "Grounded in live research. ")
+        elif level == "deep":
+            note = ("Deep research (live tools + articles) + your pick context. " if body.seed_text
+                    else "Deep research (live tools + articles). ")
+        elif level == "articles":
+            note = "Grounded in recent-article research. "
+        elif level == "none":
+            note = "No research (freestyle). "
+        else:
+            note = ""
+    else:
+        note = "No research grounding available — based on your instruction/tone alone. " if level != "none" else "No research (freestyle). "
+    return ComposeOptionsOut(
+        options=[ComposeOption(text=o["text"], note=o["note"]) for o in raw],
+        model=model,
+        note=note + "3 AI options → copy one and paste it into X.",
+    )
 

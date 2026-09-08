@@ -31,6 +31,11 @@ interface ContentTypeMeta {
   loader: string;
 }
 
+interface AiOption {
+  text: string;
+  note?: string;
+}
+
 interface Draft {
   id: number;
   text: string;
@@ -52,7 +57,7 @@ interface HistoryPost {
   error?: string | null;
 }
 
-type Tab = "connect" | "compose" | "drafts" | "history" | "triage" | "following";
+type Tab = "connect" | "post" | "compose" | "drafts" | "history" | "triage" | "following";
 
 interface FollowingUser {
   id: number;
@@ -237,6 +242,7 @@ export default function XSocialPage() {
         {(
           [
             ["connect", "Connect / Status"],
+            ["post", "Post Today"],
             ["compose", "Compose"],
             ["drafts", "Drafts"],
             ["history", "Published"],
@@ -268,6 +274,7 @@ export default function XSocialPage() {
       )}
 
       {tab === "connect" && <ConnectTab status={status} loading={statusLoading} refreshing={statusLoading} onRefresh={refreshStatus} />}
+      {tab === "post" && <PostTodayTab onMsg={setMsg} />}
       {tab === "compose" && <ComposeTab onSaved={setMsg} />}
       {tab === "drafts" && <DraftsTab drafts={drafts} onDelete={onDelete} onStatus={onStatus} />}
       {tab === "history" && <HistoryTab posts={history} />}
@@ -427,6 +434,239 @@ function ConnectTab({ status, loading, refreshing, onRefresh }: {
   );
 }
 
+/* ============================== POST TODAY (manual) ============================== */
+interface PlanItem {
+  kind: string; // "writeup" | "original"
+  sport?: string | null;
+  id: number;
+  title: string;
+  url: string;
+  caption?: string;
+  text?: string;
+}
+interface DayPlan {
+  plan_date?: string;
+  source?: string; // "daily-0920" | "generated-on-demand"
+  plan: PlanItem[];
+}
+function PostTodayTab({ onMsg }: { onMsg: (ok: boolean, s: string) => void }) {
+  const [plan, setPlan] = useState<DayPlan | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [planError, setPlanError] = useState<string | null>(null);
+  const [markBusyId, setMarkBusyId] = useState<string | null>(null);
+  const [regenBusy, setRegenBusy] = useState(false);
+  const [hoverLabel, setHoverLabel] = useState<string | null>(null);
+
+  const refresh = useCallback(async () => {
+    setLoading(true);
+    setPlanError(null);
+    try {
+      const p = await authed(() => xFetch<DayPlan>("/plan/today"));
+      setPlan(p);
+    } catch (e) {
+      setPlanError((e as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { refresh(); }, [refresh]);
+
+  const copy = async (text: string, label: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      onMsg(true, `${label} copied`);
+    } catch (e) {
+      onMsg(false, `Copy failed: ${(e as Error).message}`);
+    }
+  };
+
+  const generatePlan = async () => {
+    setRegenBusy(true);
+    try {
+      const r = await authed(() => xFetch<DayPlan>("/plan/today/regenerate", {
+        method: "POST",
+        body: JSON.stringify({}),
+      }));
+      setPlan(r);
+      onMsg(true, "Generated a fresh lineup. It picks from finalized previews/articles only.");
+    } catch (e) {
+      onMsg(false, (e as Error).message);
+    } finally {
+      setRegenBusy(false);
+    }
+  };
+
+  const markPosted = async (item: PlanItem) => {
+    setMarkBusyId(`${item.kind}:${item.id}`);
+    try {
+      const r = await authed(() => xFetch<{ ok: boolean; detail?: string }>("/plan/today/mark-posted", {
+        method: "POST",
+        body: JSON.stringify({ kind: item.kind, sport: item.sport || null, id: item.id }),
+      }));
+      onMsg(!!r.ok, r.detail || "Marked posted.");
+      await refresh();
+    } catch (e) {
+      onMsg(false, (e as Error).message);
+    } finally {
+      setMarkBusyId(null);
+    }
+  };
+
+  const items = plan?.plan || [];
+
+  const kindBadge = (item: PlanItem) =>
+    item.kind === "original"
+      ? <span className="px-2 py-0.5 rounded-md text-[10px] font-bold uppercase bg-fuchsia-900/40 text-fuchsia-300">Original</span>
+      : <span className="px-2 py-0.5 rounded-md text-[10px] font-bold uppercase bg-cyan-900/40 text-cyan-300">Game Preview</span>;
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center gap-3">
+        <h2 className="text-lg font-semibold text-white">Today&apos;s tweets (manual post)</h2>
+        <button
+          onClick={generatePlan}
+          disabled={regenBusy || loading}
+          className="px-4 py-2 rounded-lg bg-emerald-700/70 hover:bg-emerald-600/70 disabled:opacity-50 text-sm text-white font-medium"
+          title="Re-pick today's posts from finalized, settled previews/articles and replace the list"
+        >
+          {regenBusy ? "Generating…" : "✦ Generate tweets now"}
+        </button>
+        <button
+          onClick={refresh}
+          disabled={loading}
+          className="px-4 py-2 rounded-lg bg-white/10 hover:bg-white/15 disabled:opacity-50 text-sm text-white"
+        >
+          {loading ? "Loading…" : "↻ Refresh plan"}
+        </button>
+        <p className="text-xs text-gray-500">
+          Auto-posting is off. Copy each caption + link below, post it on X yourself, then hit
+          <span className="text-gray-300"> Mark posted </span> so it won&apos;t be planned again.
+          Nothing here calls the X API, so it costs nothing.
+        </p>
+      </div>
+
+      {planError && (
+        <div className="rounded-xl border border-red-800/30 bg-red-900/20 px-4 py-3 text-sm text-red-300">
+          Couldn&apos;t load today&apos;s plan: {planError}
+        </div>
+      )}
+
+      {plan && items.length === 0 && (
+        <div className="rounded-xl border border-yellow-800/30 bg-yellow-900/10 px-4 py-3 text-sm text-yellow-200">
+          No tweets are queued for {plan.plan_date || "today"}. The 09:20 morning task creates the
+          day&apos;s posts from fresh game previews / originals — if none are ready (or they&apos;ve all
+          already been posted), the list stays empty. Hit <span className="text-emerald-300">✦ Generate
+          tweets now</span> to pull a fresh lineup from finalized previews/articles on demand.
+        </div>
+      )}
+
+      {plan && items.length > 0 && (
+        <div className="flex flex-wrap items-center gap-3 text-xs text-gray-500">
+          <span>
+            {items.length} tweet{items.length === 1 ? "" : "s"} in today&apos;s lineup
+            {plan.source === "daily-0920" ? " (created by the 09:20 task)" : " (generated on demand)"}.
+          </span>
+          <button
+            onClick={generatePlan}
+            disabled={regenBusy}
+            className="px-3 py-1.5 rounded-lg bg-emerald-700/50 hover:bg-emerald-600/60 disabled:opacity-50 text-xs text-white font-medium"
+            title="Replace today's list with a freshly picked one (only finalized, settled previews/articles)"
+          >
+            {regenBusy ? "Generating…" : "✦ Regenerate now"}
+          </button>
+        </div>
+      )}
+
+      {!plan && !planError && (
+        <div className="text-sm text-gray-500">Loading today&apos;s plan…</div>
+      )}
+
+      <div className="space-y-4">
+        {items.map((item) => {
+          const copyKey = `${item.kind}:${item.id}`;
+          const key = copyKey + (item.sport || "");
+          const text = (item.text || item.caption || "").trim();
+          const url = (item.url || "").trim();
+          const hk = hoverLabel;
+          return (
+            <div key={key} className="rounded-xl border border-white/10 bg-white/5 p-4 space-y-3">
+              <div className="flex flex-wrap items-center gap-2">
+                {kindBadge(item)}
+                {item.sport && (
+                  <span className="px-2 py-0.5 rounded-md text-[10px] font-bold uppercase bg-indigo-900/40 text-indigo-300">{item.sport}</span>
+                )}
+                <span className="text-xs text-gray-500">#{item.id}</span>
+                <span className="ml-auto flex items-center gap-1">
+                  <button
+                    onClick={() => copy(text, "Caption + link")}
+                    disabled={!text}
+                    className="px-3 py-1 rounded-lg bg-white/10 hover:bg-white/15 disabled:opacity-40 text-xs text-white"
+                  >
+                    Copy tweet text
+                  </button>
+                  <button
+                    onClick={() => copy(url, "Link")}
+                    disabled={!url}
+                    className="px-3 py-1 rounded-lg bg-white/10 hover:bg-white/15 disabled:opacity-40 text-xs text-white"
+                  >
+                    Copy link
+                  </button>
+                  <button
+                    onClick={() => markPosted(item)}
+                    disabled={markBusyId === copyKey}
+                    className="px-3 py-1 rounded-lg bg-emerald-700/40 hover:bg-emerald-600/50 disabled:opacity-50 text-xs text-emerald-200"
+                  >
+                    {markBusyId === copyKey ? "Marking…" : "✓ Mark posted"}
+                  </button>
+                </span>
+              </div>
+
+              <div className="text-sm font-semibold text-white">{item.title}</div>
+
+              {url && (
+                <div className="relative rounded-lg border border-white/10 bg-black/20 px-3 py-2 font-mono text-xs break-all text-blue-300">
+                  <span className="inline-block">{url}</span>
+                  <button
+                    onMouseEnter={() => setHoverLabel("link")}
+                    onMouseLeave={() => setHoverLabel(null)}
+                    onClick={() => copy(url, "Link")}
+                    className="absolute top-1.5 right-1.5 px-2 py-1 rounded-md bg-white/10 hover:bg-white/15 text-[10px] text-white"
+                    title="Copy link"
+                  >
+                    {hk === "link" ? "copied ✓" : "Copy"}
+                  </button>
+                </div>
+              )}
+
+              {text && (
+                <div className="relative rounded-lg border border-white/10 bg-black/20 px-3 py-2 whitespace-pre-wrap text-sm text-gray-200">
+                  {text}
+                  <button
+                    onMouseEnter={() => setHoverLabel("text")}
+                    onMouseLeave={() => setHoverLabel(null)}
+                    onClick={() => copy(text, "Tweet text")}
+                    className="absolute top-1.5 right-1.5 px-2 py-1 rounded-md bg-white/10 hover:bg-white/15 text-[10px] text-white"
+                    title="Copy tweet text"
+                  >
+                    {hk === "text" ? "copied ✓" : "Copy"}
+                  </button>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {plan && !planError && items.length === 0 && (
+        <div className="rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-gray-500">
+          No tweets are queued for today. New content (a game preview or original with a caption + card) has to exist first — check the sports/admin content screens, or wait for today&apos;s writes.
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ============================== COMPOSE ============================== */
 function ComposeTab({ onSaved }: { onSaved: (ok: boolean, s: string) => void }) {
   const [contentType, setContentType] = useState<"best_pick" | "record_update">("best_pick");
@@ -436,6 +676,12 @@ function ComposeTab({ onSaved }: { onSaved: (ok: boolean, s: string) => void }) 
   const [text, setText] = useState("");
   const [sport, setSport] = useState("");
   const [busy, setBusy] = useState(false);
+  const [instruction, setInstruction] = useState("");
+  const [aiStyle, setAiStyle] = useState("casual");
+  const [aiResearch, setAiResearch] = useState("live");
+  const [aiBusy, setAiBusy] = useState(false);
+  const [aiOptions, setAiOptions] = useState<AiOption[]>([]);
+  const [aiError, setAiError] = useState("");
 
   useEffect(() => {
     authed(() => xFetch<{ content_types: Record<string, ContentTypeMeta> }>("/content-types"))
@@ -459,6 +705,31 @@ function ComposeTab({ onSaved }: { onSaved: (ok: boolean, s: string) => void }) 
   }, [contentType, sport, onSaved]);
 
   const activeType = types[contentType] || { label: contentType, desc: "" };
+
+  const genOptions = async () => {
+    if (!instruction.trim()) { onSaved(false, "Type an instruction for the AI first."); return; }
+    setAiBusy(true);
+    setAiError("");
+    setAiOptions([]);
+    try {
+      const active = seeds[seedIdx];
+      const res = await authed(() => xFetch<{ options: AiOption[]; model?: string }>(
+        "/compose/options",
+        { method: "POST", body: JSON.stringify({
+          instruction: instruction.trim(),
+          style: aiStyle,
+          research: aiResearch,
+          sport: sport || null,
+          seed_text: active?.text ? String(active.text).trim() : "",
+        }) },
+      ));
+      setAiOptions(res.options || []);
+    } catch (e) {
+      setAiError((e as Error).message);
+    } finally {
+      setAiBusy(false);
+    }
+  };
 
   const saveDraft = async (sendNow: boolean) => {
     if (!text.trim()) { onSaved(false, "Text is empty."); return; }
@@ -547,6 +818,78 @@ function ComposeTab({ onSaved }: { onSaved: (ok: boolean, s: string) => void }) 
       </div>
 
       <div className="bg-white/[0.02] border border-white/5 rounded-xl p-6 space-y-4">
+        <div className="border-b border-white/10 pb-4 space-y-3">
+          <div className="flex items-center justify-between gap-2">
+            <h2 className="text-lg font-semibold text-white">✨ Ask AI for 3 options</h2>
+            <div className="text-xs text-gray-500">Type an instruction → it drafts 3 copy-ready X posts (Read\u2008+\u2008Reply style).</div>
+          </div>
+          <textarea
+            value={instruction}
+            onChange={(e) => setInstruction(e.target.value)}
+            rows={3}
+            className="w-full rounded-xl bg-black/40 border border-white/10 px-4 py-3 text-white text-sm leading-relaxed focus:outline-none focus:border-sky-500"
+            placeholder={"e.g.  Hot hand angle on the Astros today — punchy with a hook.  Or: hype up our best-EV pick without inventing numbers."}
+          />
+          <div className="flex flex-wrap items-center gap-2">
+            <select
+              value={aiStyle}
+              onChange={(e) => setAiStyle(e.target.value)}
+              title="Voice/tone"
+              className="rounded-lg bg-black/40 border border-white/10 px-3 py-2 text-xs text-white focus:outline-none"
+            >
+              <option value="casual">Casual fan voice</option>
+              <option value="short-punchy">Short & punchy</option>
+              <option value="hype-hashtags">Hype + hashtags</option>
+              <option value="factual">Numbers-first</option>
+            </select>
+            <select
+              value={aiResearch}
+              onChange={(e) => setAiResearch(e.target.value)}
+              title="Research depth"
+              className="rounded-lg bg-black/40 border border-white/10 px-3 py-2 text-xs text-white focus:outline-none"
+            >
+              <option value="none">No research (freestyle)</option>
+              <option value="articles">Articles only (Earl's blog)</option>
+              <option value="live">Live + articles (recommended)</option>
+              <option value="deep">Deep research (slowest)</option>
+            </select>
+            <button
+              onClick={genOptions}
+              disabled={aiBusy}
+              className="px-4 py-2 rounded-lg bg-violet-600 hover:bg-violet-500 text-sm font-semibold text-white disabled:opacity-50"
+            >
+              {aiBusy ? "Generating…" : "Generate 3 options"}
+            </button>
+            {aiError && <span className="text-xs text-red-300">{aiError}</span>}
+          </div>
+        </div>
+
+        {aiOptions.length > 0 && (
+          <div className="space-y-2">
+            <div className="text-xs text-gray-400 uppercase tracking-wide">Three options — copy one, paste into X</div>
+            {aiOptions.map((o, i) => (
+              <div key={i} className="rounded-xl border border-white/10 bg-white/[0.02] p-3 space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-medium text-violet-300">Option {i + 1}</span>
+                  <span className="flex gap-1.5">
+                    <button
+                      onClick={() => setText(o.text)}
+                      className="px-2.5 py-1.5 rounded-md bg-white/10 hover:bg-white/15 text-xs text-gray-200"
+                      title="Load this into the Composer box below to edit before saving"
+                    >
+                      Use in composer
+                    </button>
+                    <CopyBtn text={o.text} label="Copy" okText="Copied ✓" />
+                  </span>
+                </div>
+                <p className="text-sm text-gray-100 whitespace-pre-wrap break-words">{o.text}</p>
+                {o.note && <p className="text-xs text-gray-500">{o.note}</p>}
+                <p className="text-right text-[10px] text-gray-600">{o.text.length}/280</p>
+              </div>
+            ))}
+          </div>
+        )}
+
         <h2 className="text-lg font-semibold text-white">Composer</h2>
         <textarea
           value={text}

@@ -12,6 +12,14 @@ Rules honored here:
     tweet a preview after the game has been played / is in progress).
   - Only game previews WRITTEN that same day (Central) are eligible — each day's
     3 writeups come from that morning's fresh previews, not backlog.
+  - Original articles are FRESHNESS-CAPPED (ORIGINAL_MAX_AGE_HOURS): once an article
+    is older than the cap it leaves the auto-tweet pool, so we never auto-post a
+    stale (e.g. 3-day-old) piece. If nothing is fresh enough the slot is SKIPPED.
+  - Cross-day variety: sports and teams posted within the last ROTATION_DAYS are
+    rotated away from, so we don't hammer the same sport (NBA) or same teams day
+    after day just because they were written most recently.
+  - Random selection among the freshest interchangeable candidates (RANDOM_TOP_K)
+    so we don't always tweet the same game/team/article/team.
   - Every source is stamped `x_posted_at` so nothing is ever tweeted twice.
   - Variety: avoid repeating the same sport repeatedly within a day, and appear
     once per unique team/market in a day when alternatives exist.
@@ -31,6 +39,7 @@ import argparse
 import json
 import logging
 import os
+import random
 import re
 import sys
 from datetime import date, datetime, time, timedelta, timezone
@@ -50,6 +59,33 @@ ORIGINAL_TARGET = 3
 MAX_DAY = WRITEUP_TARGET + ORIGINAL_TARGET
 MAX_TWEET_LEN = 280
 CENTRAL = timezone(timedelta(hours=-5))  # CDT (America/Chicago, no DST change in our window)
+
+# Writeup settle guard: a preview created OR updated within the last WRITEUP_SETTLE_MIN
+# minutes is still being generated/regenerated (the pipeline writes previews in several
+# passes and can rewrite a row IN PLACE — landing a final v3 with a different title/slug
+# well after the first pass, so {sport}/articles/previews/<old-slug> 404s). We hold such
+# rows back until they have been stable for the settle window so we never capture a row
+# that is about to be superseded.
+WRITEUP_SETTLE_MIN = 45
+# Hard rule: never pick the single MOST RECENT article / game-preview row in the DB.
+# Even once a row has settled, the plan drops the one freshest (newest created/updated)
+# eligible candidate out of each pool so the freshest writeup/article of the day can
+# never be the lead of the plan; it rolls to the next day once it is no longer newest.
+SKIP_MOST_RECENT = True
+
+
+# Original-article freshness: never auto-tweet an original article older than this.
+# Articles age out of the pool once they're stale so the feed stays current. If
+# nothing is fresh enough the slot is SKIPPED (never reach into the old backlog.
+ORIGINAL_MAX_AGE_HOURS = 48
+# Cross-day rotation: a sport / team counts as "recently used" if posted within
+# this many days, so the picker rotates sports AND avoids the same teams over the
+# week (not just within today).
+ROTATION_DAYS = 7
+# Randomness: when several candidates are basically tied on freshness + rotation,
+# pick randomly among the top band (not always the same first) so we don't always
+# tweet the same game previews / articles / teams.
+RANDOM_TOP_K = 3
 
 
 def _eng():
@@ -105,12 +141,14 @@ def _fresh_writeup_candidates() -> list[dict]:
     that have a caption + card and have NOT yet been tweeted."""
     eng = _eng()
     day_start = _start_of_today_central()
+    settle_cut = _now_central() - timedelta(minutes=WRITEUP_SETTLE_MIN)
     out: list[dict] = []
     with eng.connect() as c:
         for sch in SPORTS:
             q = text(
                 f"SELECT gw.id, gw.game_id, gw.title, gw.slug, gw.social_caption, "
                 f"gw.preview_image, th.abbreviation AS home_abbr, ta.abbreviation AS away_abbr, "
+                f"coalesce(gw.updated_at, gw.created_at) AS row_ts, "
                 f"g.date AS game_date "
                 f"FROM {sch}.game_writeups gw "
                 f"JOIN {sch}.games g ON g.id = gw.game_id "
@@ -120,49 +158,71 @@ def _fresh_writeup_candidates() -> list[dict]:
                 f"AND gw.x_posted_at IS NULL "
                 f"AND g.status = 'SCHEDULED' "
                 f"AND gw.created_at >= :d "
+                f"AND coalesce(gw.updated_at, gw.created_at) <= :settle "
                 f"AND gw.social_caption IS NOT NULL AND length(trim(gw.social_caption)) > 0 "
                 f"AND gw.preview_image IS NOT NULL AND length(trim(gw.preview_image)) > 0 "
                 f"ORDER BY g.date")
-            for r in c.execute(q, {"d": day_start}):
+            for r in c.execute(q, {"d": day_start, "settle": settle_cut}):
                 out.append({
                     "kind": "writeup", "sport": sch,
                     "id": r.id, "game_id": r.game_id, "source_title": r.title,
                     "slug": r.slug, "caption": r.social_caption,
                     "card_image_ref": r.preview_image,
+                    "row_ts": r.row_ts,
                     "teams": [x for x in (r.home_abbr, r.away_abbr) if x],
                 })
+    if SKIP_MOST_RECENT and len(out) > 1:
+        newest = max(out, key=lambda x: x.get("row_ts") or _now_central())
+        # never let the single most-recent writeup in the DB be eligible to post
+        out = [x for x in out if x is not newest]
     return out
 
 
 def _original_candidates() -> list[dict]:
-    """Published, PUBLIC original articles that have caption + card and are not yet
-    tweeted, newest first. RULE: only public content may be tweeted — premium-gated
-    articles (visibility='premium', e.g. the paid daily-picks) are NEVER eligible.
-    Excludes the 'all'/'general' sport if a sported article is available (variety);
-    we'll handle ordering at pick time."""
+    """Published, PUBLIC original articles that have caption + card, are not yet
+    tweeted, AND are still fresh (within ORIGINAL_MAX_AGE_HOURS), newest first.
+
+    RULE: only public content may be tweeted — premium-gated articles
+    (visibility='premium', e.g. the paid daily-picks) are NEVER eligible.
+
+    FRESHNESS: an original article ages out of the auto-tweet pool once it's older
+    than ORIGINAL_MAX_AGE_HOURS. We never reach into a stale backlog — the slot is
+    simply skipped until the writer produces something new. "Freshness" uses
+    coalesce(published_at, updated_at, created_at) so an article that was touched
+    recently (updated/card regenerated) counts as fresh."""
     eng = _eng()
+    cutoff = _now_central() - timedelta(hours=ORIGINAL_MAX_AGE_HOURS)
     with eng.connect() as c:
         q = text(
-            "SELECT id, sport, title, slug, social_caption, preview_image, teams "
+            "SELECT id, sport, title, slug, social_caption, preview_image, teams, "
+            "coalesce(published_at, updated_at, created_at) AS fresh_ts "
             "FROM public.original_articles "
             "WHERE status='published' AND visibility='public' AND x_posted_at IS NULL "
             "AND social_caption IS NOT NULL AND length(trim(social_caption)) > 0 "
             "AND preview_image IS NOT NULL AND length(trim(preview_image)) > 0 "
+            "AND coalesce(published_at, updated_at, created_at) >= :cutoff "
             "ORDER BY coalesce(published_at, updated_at, created_at) DESC")
         out = []
-        for r in c.execute(q):
+        for r in c.execute(q, {"cutoff": cutoff}):
             try:
                 teams = json.loads(r.teams) if r.teams else []
             except (TypeError, json.JSONDecodeError):
                 teams = []
             if isinstance(teams, list):
                 teams = [str(t) for t in teams]
+            ts = r.fresh_ts
             out.append({
                 "kind": "original", "sport": (r.sport if r.sport != "all" else "all"),
                 "id": r.id, "source_title": r.title, "slug": r.slug,
                 "caption": r.social_caption, "card_image_ref": r.preview_image,
                 "teams": teams,
+                "row_ts": ts,
+                "age_seconds": (_now_central() - ts).total_seconds() if ts else 0.0,
             })
+    if SKIP_MOST_RECENT and len(out) > 1:
+        newest = max(out, key=lambda x: x.get("row_ts") or _now_central())
+        # never let the single most-recent original article in the DB be eligible
+        out = [x for x in out if x is not newest]
     return out
 
 
@@ -205,25 +265,119 @@ def _tweet_text(item: dict) -> str:
 # --------------------------------------------------------------------------
 
 
+def _rot_recent(eng) -> tuple[dict[str, float], dict[str, float]]:
+    """Return ({sport: days_since_that_sport_last_posted}, {team: days_since} )
+    computed over ROTATION_DAYS of X-post history (writeups + originals).
+    Only keys seen within the window are present; callers treat a missing sport/
+    team as 'not recently used' (longest-ago / neutral). Used for cross-day rotation
+    so we don't keep hammering the same sport or the same teams across the week."""
+    start = _now_central() - timedelta(days=ROTATION_DAYS)
+    now = _now_central()
+    sport_days: dict[str, float] = {}
+    team_days: dict[str, float] = {}
+    with eng.connect() as c:
+        # per-sport last post time over the window, both classes
+        rows = c.execute(text(
+            "SELECT sport, max(x_posted_at) AS mx FROM public.original_articles "
+            "WHERE x_posted_at IS NOT NULL AND x_posted_at >= :s GROUP BY sport"),
+            {"s": start}).fetchall()
+        for r in rows:
+            sport_days[str(r.sport)] = (now - r.mx).total_seconds() / 86400.0
+        # teams from original articles
+        for r in c.execute(text(
+            "SELECT sport, teams, x_posted_at AS mx FROM public.original_articles "
+            "WHERE x_posted_at IS NOT NULL AND x_posted_at >= :s"), {"s": start}).fetchall():
+            if r.teams:
+                try:
+                    for t in json.loads(r.teams):
+                        d = (now - r.mx).total_seconds() / 86400.0
+                        team_days[str(t)] = min(team_days.get(str(t), d), d)
+                except Exception:
+                    pass
+        # teams + sport recency from writeups via joins
+        for sch in SPORTS:
+            rows = c.execute(text(
+                f"SELECT gw.x_posted_at AS mx, th.abbreviation h, ta.abbreviation a "
+                f"FROM {sch}.game_writeups gw "
+                f"JOIN {sch}.games g ON g.id=gw.game_id "
+                f"LEFT JOIN {sch}.teams th ON th.id=g.home_team_id "
+                f"LEFT JOIN {sch}.teams ta ON ta.id=g.away_team_id "
+                f"WHERE gw.x_posted_at IS NOT NULL AND gw.x_posted_at >= :s"),
+                {"s": start}).fetchall()
+            for r in rows:
+                d = (now - r.mx).total_seconds() / 86400.0
+                if r.h:
+                    team_days[str(r.h)] = min(team_days.get(str(r.h), d), d)
+                if r.a:
+                    team_days[str(r.a)] = min(team_days.get(str(r.a), d), d)
+                sd = sport_days.get(sch)
+                if sd is None or d < sd:
+                    sport_days[sch] = d
+    return sport_days, team_days
+
+
 def _pick(w_sent: int, o_sent: int, writeups: list[dict], originals: list[dict],
           used_teams: set[str], used_sports_today: set[str]) -> dict | None:
-    """Choose the single next item to send now toward the 3+3 target with variety."""
+    """Choose the single next item to send now toward the 3+3 target.
+
+    Selection honors (in priority order):
+      1. fresh-only pools (originals already capped by ORIGINAL_MAX_AGE_HOURS;
+         writeups are same-day only) — see the candidate builders,
+      2. cross-day sport rotation and team variety via _rot_recent (ROTATION_DAYS),
+      3. "not used today" (used_sports_today / used_teams),
+      4. recency/freshness bonus within the chosen class,
+      and then picks RANDOMLY among the top few near-equal candidates so the same
+      game preview / article / team doesn't always win.
+    """
     # No more room today
     if w_sent >= WRITEUP_TARGET and o_sent >= ORIGINAL_TARGET:
         return None
     if w_sent + o_sent >= MAX_DAY:
         return None
 
-    def first_avail(pool: list[dict], pref_sport: str | None) -> dict | None:
-        # order pool to avoid a sport already used today and teams already used
-        def rank(it):
+    eng = _eng()
+    rot_sport_days, rot_team_days = _rot_recent(eng)
+
+    def pick_rand(pool: list[dict], pref_sport: str | None) -> dict | None:
+        if not pool:
+            return None
+        def score(it: dict) -> tuple:
+            """Ascending score; LOWER = better. drifts toward sports/teams NOT
+            used recently (cross-day rotation) and not used today, then randomizes
+            within the top tied band for variety."""
             sp = it["sport"]
-            sport_penalty = 1 if sp in used_sports_today else 0
-            team_penalty = sum(1 for t in it["teams"] if t in used_teams)
             same_pref = 0 if (pref_sport and sp == pref_sport) else (1 if pref_sport else 0)
-            return (same_pref, team_penalty, sport_penalty)
-        ordered = sorted(pool, key=rank)
-        return ordered[0] if ordered else None
+            sport_today = 1 if sp in used_sports_today else 0
+            # penalty proportional to recency of this sport's last post: a sport
+            # posted today scores highest(=worst), one not seen in the window -> 0.
+            sd = rot_sport_days.get(sp)
+            days = ROTATION_DAYS if sd is None else max(0.0, min(float(sd), float(ROTATION_DAYS)))
+            sport_recent = ROTATION_DAYS - days
+            # team variety: few recent/today teams < many. (bigger penalty = worse)
+            team_rot = 0.0
+            team_today = 0
+            for t in it["teams"]:
+                td = rot_team_days.get(t)
+                if td is not None and td <= ROTATION_DAYS:
+                    team_rot += (1.0 - td / float(ROTATION_DAYS))
+                if t in used_teams:
+                    team_today += 1
+            # recency within class: prefer the fresher usable item (seconds since it
+            # became eligible); writeups are all same-day so this mainly orders originals.
+            age = float(it.get("age_seconds", 0.0) or 0.0)
+            return (same_pref, sport_today, sport_recent, team_today, team_rot, age)
+        scored = sorted(pool, key=score)
+        s0, s1, s2 = (score(scored[0])[0], score(scored[0])[1], score(scored[0])[2])
+        # All candidates tied on the dominant rotation keys (same-preference,
+        # used-today, sport-recent) are interchangeable for rotation purposes; from
+        # that tied class prefer the freshest few (RANDOM_TOP_K) and pick randomly
+        # among them. This preserves the "prefer fresh article" rule while varying
+        # WHICH game/team/article we tweet (so we don't always pick the same one).
+        tied = [it for it in pool
+                if (scr := score(it))[0] == s0 and scr[1] == s1 and scr[2] == s2]
+        if not tied:
+            tied = scored[:max(1, RANDOM_TOP_K)]
+        return random.choice(tied[:RANDOM_TOP_K])
 
     # Prefer a class that still has room and has a candidate.
     w_ok = w_sent < WRITEUP_TARGET and bool(writeups)
@@ -232,14 +386,14 @@ def _pick(w_sent: int, o_sent: int, writeups: list[dict], originals: list[dict],
     # if one class is out of target room but the other still has room, use the other
     if w_ok and o_ok:
         # even out toward target: send the less-filled class first (ties -> writeup)
-        return first_avail(writeups, None) if w_sent <= o_sent else first_avail(originals, None)
+        return pick_rand(writeups, None) if w_sent <= o_sent else pick_rand(originals, None)
     if w_ok:
-        return first_avail(writeups, None)
+        return pick_rand(writeups, None)
     if o_ok:
-        return first_avail(originals, None)
+        return pick_rand(originals, None)
     # both target classes are done; fall back to any remaining (rare) up to MAX_DAY
     if writeups or originals:
-        return first_avail(writeups + originals, None)
+        return pick_rand(writeups + originals, None)
     return None
 
 
