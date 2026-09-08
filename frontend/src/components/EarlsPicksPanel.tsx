@@ -166,6 +166,10 @@ export default function EarlsPicksPanel({
         </div>
       )}
 
+      {!compact && (
+        <p className="text-[11px] leading-snug text-gray-500 -mt-2">Pick accuracy improves closer to game time.</p>
+      )}
+
       {compact ? (
         <CompactGate>
           {predicted && <ScoreLine heading="Predicted" score={predicted} />}

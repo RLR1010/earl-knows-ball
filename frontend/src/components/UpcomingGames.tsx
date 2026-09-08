@@ -37,7 +37,8 @@ export default function UpcomingGames() {
   if (loading) {
     return (
       <section className="max-w-6xl mx-auto px-4 mb-12">
-        <h2 className="text-3xl font-bold mb-6 text-center">Upcoming Games</h2>
+        <h2 className="text-3xl font-bold text-center">Upcoming Games</h2>
+        <p className="text-sm text-gray-400 text-center mt-1 mb-6">Pick accuracy improves closer to game time.</p>
         <div className="text-center py-12 text-gray-500">Loading upcoming games...</div>
       </section>
     );
@@ -46,7 +47,8 @@ export default function UpcomingGames() {
   if (games.length === 0) {
     return (
       <section className="max-w-6xl mx-auto px-4 mb-12">
-        <h2 className="text-3xl font-bold mb-6 text-center">Upcoming Games</h2>
+        <h2 className="text-3xl font-bold text-center">Upcoming Games</h2>
+        <p className="text-sm text-gray-400 text-center mt-1 mb-6">Pick accuracy improves closer to game time.</p>
         <div className="text-center py-12 text-gray-500">
           No upcoming games scheduled across MLB, NBA, and NFL.
         </div>
@@ -68,7 +70,8 @@ export default function UpcomingGames() {
 
   return (
     <section className="max-w-6xl mx-auto px-4 mb-12">
-      <h2 className="text-3xl font-bold mb-6 text-center">Upcoming Games</h2>
+      <h2 className="text-3xl font-bold text-center">Upcoming Games</h2>
+      <p className="text-sm text-gray-400 text-center mt-1 mb-6">Pick accuracy improves closer to game time.</p>
 
       {orderedGroups.map(([sport, list]) => (
         <div key={sport} className="mb-8 last:mb-0">

@@ -3,6 +3,7 @@ import SportUpcomingGames from "@/components/SportUpcomingGames";
 import RecentContent from "@/components/RecentContent";
 import DailyPicksSection from "@/components/DailyPicksSection";
 import BestBetsPanel from "@/components/BestBetsPanel";
+import WinnersPanel from "@/components/WinnersPanel";
 import StandingsWidget from "@/components/StandingsWidget";
 import type { CardSport } from "@/components/ScheduleGameCard";
 
@@ -59,13 +60,23 @@ export default async function SportHomePage({ params }: { params: Promise<{ spor
 
   return (
     <div className="space-y-16">
-      {/* Earl's Best Picks — sport-filtered single value pick per game */}
+      {/* Earl's Top Picks — sport-filtered single value pick per game */}
       <BestBetsPanel
         sport={sport as "mlb" | "nba" | "nfl"}
         showSport={false}
         limit={4}
         containerClassName=""
-        title="Earl's Best Picks"
+        title="Earl's Top Picks"
+        hideIfEmpty
+      />
+
+      {/* Earl's Winners — this sport's recently-cashed picks */}
+      <WinnersPanel
+        sport={sport as "mlb" | "nba" | "nfl"}
+        showSport={false}
+        limit={4}
+        containerClassName=""
+        title="Earl's Winners"
         hideIfEmpty
       />
 

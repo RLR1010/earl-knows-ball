@@ -50,7 +50,7 @@ export default function BestBetsPanel({
   sport = "all",
   showSport = true,
   limit = 5,
-  title = "Earl's Best Bets",
+  title = "Earl's Top Picks",
   subtitle,
   containerClassName = "max-w-6xl mx-auto px-4",
   hideIfEmpty = false,
@@ -75,7 +75,7 @@ export default function BestBetsPanel({
       const data = await api.bestBets.list({ sport, limit });
       setGames(data ?? []);
     } catch (e: any) {
-      setError(e?.message ?? "Failed to load best bets");
+      setError(e?.message ?? "Failed to load top picks");
     }
   }, [sport, limit]);
 
@@ -90,7 +90,7 @@ export default function BestBetsPanel({
     return (
       <section className={`${containerClassName} py-6`}>
         <div className="text-sm text-red-400">
-          Couldn't load best bets: {error}
+          Couldn't load top picks: {error}
         </div>
       </section>
     );
@@ -101,7 +101,7 @@ export default function BestBetsPanel({
       <section className={`${containerClassName} py-6`}>
         <div className="flex items-center gap-2 text-gray-400 text-sm">
           <span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-gray-500 border-t-transparent" />
-          Loading Earl's best bets…
+          Loading Earl's Top Picks…
         </div>
       </section>
     );
@@ -188,7 +188,7 @@ export default function BestBetsPanel({
                   <span className="font-bold text-amber-300">
                     {games.length} high-value
                   </span>{" "}
-                  best bets right now
+                  top picks right now
                   {sportsPresent.length === 1
                     ? ` in ${SPORT_META[sportsPresent[0]]?.label ?? sportsPresent[0]?.toUpperCase()}`
                     : sportsPresent.length > 1
@@ -254,7 +254,7 @@ export default function BestBetsPanel({
                     ★ Earl's Picks
                   </span>
                 </div>
-                <h2 className="mt-2 text-2xl font-bold text-white">Earl's Best Picks</h2>
+                <h2 className="mt-2 text-2xl font-bold text-white">Earl's Top Picks</h2>
                 {subtitle ? (
                   <p className="hidden sm:block text-sm text-gray-400 mt-0.5">{subtitle}</p>
                 ) : null}

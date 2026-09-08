@@ -16,7 +16,7 @@ const FAQS: { q: string; a: string | ReactNode }[] = [
   },
   {
     q: "How does Earl's AI handicapper work?",
-    a: "Earl combines historical stats, current betting lines, injuries, splits, situational data, and matchup analysis to produce predictions for moneyline, against-the-spread (ATS), and over/under (total) markets. You can ask Earl questions directly in the chat to get explanations behind any pick. All predictions are statistical estimates and are never guaranteed to win.",
+    a: "Earl combines historical stats, current betting lines, injuries, splits, situational data, and matchup analysis to produce predictions for moneyline, against-the-spread (ATS), and over/under (total) markets. You can ask Earl questions directly in the chat to get explanations behind any pick. Pick accuracy improves closer to game time, so check back as a game approaches for Earl's most up-to-date read. All predictions are statistical estimates and are never guaranteed to win.",
   },
   {
     q: "What is the difference between the Free and Premium plans?",

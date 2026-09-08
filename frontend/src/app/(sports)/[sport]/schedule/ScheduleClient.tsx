@@ -340,6 +340,7 @@ function NBASchedule({ sport }: { sport: string }) {
   return (
     <>
       <h1 className="font-display text-4xl font-bold">NBA Schedule</h1>
+      <p className="text-sm text-gray-400 mt-1">Pick accuracy improves closer to game time.</p>
 
       <div className="flex items-center gap-3">
         <select
@@ -572,6 +573,7 @@ function MLBSchedule({ sport }: { sport: string }) {
   return (
     <>
       <h1 className="font-display text-4xl font-bold">MLB Schedule</h1>
+      <p className="text-sm text-gray-400 mt-1">Pick accuracy improves closer to game time.</p>
 
       <div className="flex items-center gap-3">
         <select
@@ -739,6 +741,7 @@ function NFLSchedule({ sport }: { sport: string }) {
   return (
     <>
       <h1 className="font-display text-4xl font-bold">NFL Schedule</h1>
+      <p className="text-sm text-gray-400 mt-1">Pick accuracy improves closer to game time.</p>
 
       <div className="flex items-center gap-3">
         <select value={seasonYear} onChange={e => setSeasonYear(Number(e.target.value))}
