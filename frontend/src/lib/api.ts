@@ -98,6 +98,32 @@ export interface Game {
   best_bet_ev?: number | null;
 }
 
+/**
+ * Earl's Winners — one line in the public.earl_winners snapshot (a cashed pick).
+ */
+export interface Winner {
+  sport: "mlb" | "nba" | "nfl";
+  game_id: number;
+  market: "spread" | "total" | "ml";
+  pick_text: string; // e.g. "OAK +1.5", "Over 7.5", "LAD ML"
+  odds_at_tip?: string | null; // american odds display "-110" / "+150"
+  profit?: number | null; // units on a $100 stake if stored
+  ev?: number | null; // model EV of the pick at tip ($ per $100 stake)
+  home_team?: string | null;
+  away_team?: string | null;
+  home_score?: number | null;
+  away_score?: number | null;
+  game_date?: string | null;
+  winning_side?: string | null;
+}
+
+export interface WinnersResponse {
+  sport: string;
+  last_updated: string | null;
+  count: number;
+  winners: Winner[];
+}
+
 export interface DepthChartEntry {
   id: number;
   team_id: number;
@@ -477,6 +503,12 @@ export const api = {
   bestBets: {
     list: (params?: { sport?: "all" | "mlb" | "nba" | "nfl"; limit?: number }) =>
       fetchAPI<Game[]>(`/api/home/best-bets?sport=${params?.sport ?? "all"}&limit=${params?.limit ?? 6}`),
+  },
+
+  // Earl's Winners — recently-cashed picks (from the public.earl_winners snapshot)
+  winners: {
+    list: (params?: { sport?: "all" | "mlb" | "nba" | "nfl"; limit?: number }) =>
+      fetchAPI<WinnersResponse>(`/api/home/winners?sport=${params?.sport ?? "all"}&limit=${params?.limit ?? 8}`),
   },
 
   // Parlay builder — upcoming games as selectable legs (ML / spread / total)

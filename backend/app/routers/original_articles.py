@@ -172,7 +172,7 @@ class GenerateRequest(BaseModel):
     reasoning: Optional[str] = Field(None)  # minimal | low | medium | high | xhigh
     word_count: Optional[tuple[int, int]] = Field(None)  # (min_words, max_words)
     visibility: str = Field("public", pattern="^(public|premium)$")
-    section: str = Field("article", pattern="^(article|daily_picks)$")
+    section: str = Field("article", pattern="^(article|daily_picks|earls_winners)$")
     title_mode: Optional[str] = Field(None, pattern="^(fixed|llm)?$")  # 'fixed' => use req.title verbatim
     title: Optional[str] = Field(None, min_length=1, max_length=200)  # fixed title when title_mode='fixed'
 
@@ -1444,7 +1444,7 @@ async def publish_original_article(
 async def list_original_articles(
     sport: str,
     limit: int = Query(50, ge=1, le=100),
-    section: Optional[str] = Query(None, description="Filter to a specific destination section, e.g. 'article' or 'daily_picks'"),
+    section: Optional[str] = Query(None, description="Filter to a specific destination section, e.g. 'article', 'daily_picks' or 'earls_winners'"),
     tier: str = Query("public", description="'public' (default) or 'premium'. Premium article bodies are redacted unless tier=premium."),
     current_user: "User | None" = Depends(get_optional_current_user),
     db: AsyncSession = Depends(get_db),
@@ -2307,6 +2307,49 @@ async def _llm_social_caption(title: str, summary: str, sport: str, team: str = 
     return ""
 
 
+async def _load_winners_for_card(db):
+    """Top Earl's Winners snapshot rows mapped to the TEMPLATE C winner-dict
+    contract (both teams shown + real EV, no currency glyphs). Same query the
+    recap lens uses so the article narrative and its card always agree."""
+    res = await db.execute(
+        text(
+            "SELECT sport, market, pick_text, ev, home_team, away_team, "
+            "home_score, away_score, game_date "
+            "FROM public.earl_winners ORDER BY sort_key LIMIT 4"
+        )
+    )
+    rows = res.mappings().all()
+    out = []
+    for r in rows:
+        sport = (r["sport"] or "").lower()
+        home = (r["home_team"] or "").strip()
+        away = (r["away_team"] or "").strip()
+        hs, as_ = r["home_score"], r["away_score"]
+        score = ""
+        if hs is not None and as_ is not None:
+            try:
+                score = "%g-%g" % (float(hs), float(as_))
+            except (TypeError, ValueError):
+                score = "%s-%s" % (hs, as_)
+        ev = r["ev"]
+        try:
+            f = float(ev)
+            ev_txt = ("+%.2f" % f) if f >= 0 else ("%.2f" % f)
+        except (TypeError, ValueError):
+            ev_txt = str(ev or "")
+        date = str(r["game_date"])[:10] if r["game_date"] else ""
+        out.append(dict(
+            sport=sport if sport in ("mlb", "nfl", "nba") else "all",
+            abbr_a=away, abbr_b=home,
+            name_a=away, name_b=home,
+            market=(r["market"] or "").upper(),
+            pick=(r["pick_text"] or "").strip(),
+            score=score,
+            ev=ev_txt or None,
+            date=date,
+        ))
+    return out
+
 @admin_router.post("/original-articles/{sport}/{article_id}/generate-social-card")
 async def admin_generate_social_card(
     sport: str,
@@ -2333,7 +2376,7 @@ async def admin_generate_social_card(
 
     res = await db.execute(
         text(
-            "SELECT id, sport, title, summary, teams, card_accent, social_caption "
+            "SELECT id, sport, title, summary, teams, card_accent, social_caption, section "
             "FROM public.original_articles WHERE id = :id AND sport = :sport"
         ),
         {"id": article_id, "sport": sport},
@@ -2405,19 +2448,38 @@ async def admin_generate_social_card(
 
     # ---- render to PNG -----------------------------------
     out_png = social_card.compute_out_path(article_id=article_id, sport=sport)
+    is_ew = (row.get("section") or "") == "earls_winners"
     try:
-        rel = await asyncio.to_thread(
-            social_card.generate_social_card,
-            sport=sport,
-            title=title,
-            dek=_strip_repeat_of_title(title, (row["summary"] or "").strip()),
-            accent=accent,
-            team=team,
-            team_name=team_display or team or "",
-            team_meta=team_meta,
-            article_id=article_id,
-            out_png=out_png,
-        )
+        if is_ew:
+            # Earl's Winners card: white-paper lineup from the live snapshot.
+            winners = await _load_winners_for_card(db)
+            rel = await asyncio.to_thread(
+                social_card.generate_winners_paper_card,
+                sport=sport,
+                title=title,
+                dek=_strip_repeat_of_title(title, (row["summary"] or "").strip()),
+                accent=accent,
+                kicker="EARL'S WINNERS",
+                league_chip="EARL KNOWS BALL · SCORECARD",
+                badge_count=len(winners) or 0,
+                badge_label="Top Winners",
+                winners=winners,
+                article_id=article_id,
+                out_png=out_png,
+            )
+        else:
+            rel = await asyncio.to_thread(
+                social_card.generate_social_card,
+                sport=sport,
+                title=title,
+                dek=_strip_repeat_of_title(title, (row["summary"] or "").strip()),
+                accent=accent,
+                team=team,
+                team_name=team_display or team or "",
+                team_meta=team_meta,
+                article_id=article_id,
+                out_png=out_png,
+            )
     except Exception as e:  # noqa: BLE001
         logger.exception("Social card render failed for %s/%s", sport, article_id)
         raise HTTPException(status_code=502, detail="Social card generation failed: %s" % e)
@@ -2459,7 +2521,7 @@ async def _auto_original_social_card(sport: str, article_id: int) -> None:
         async with async_session() as db:
             res = await db.execute(
                 text(
-                    "SELECT id, sport, title, summary, teams, card_accent, social_caption "
+                    "SELECT id, sport, title, summary, teams, card_accent, social_caption, section "
                     "FROM public.original_articles WHERE id = :id AND sport = :sport"
                 ),
                 {"id": article_id, "sport": sport},
@@ -2513,18 +2575,36 @@ async def _auto_original_social_card(sport: str, article_id: int) -> None:
                     )
 
             out_png = social_card.compute_out_path(article_id=article_id, sport=sport)
-            rel = await asyncio.to_thread(
-                social_card.generate_social_card,
-                sport=sport,
-                title=title,
-                dek=_strip_repeat_of_title(title, (row["summary"] or "").strip()),
-                accent=accent,
-                team=team,
-                team_name=team_display or team or "",
-                team_meta=team_meta,
-                article_id=article_id,
-                out_png=out_png,
-            )
+            is_ew = (row.get("section") or "") == "earls_winners"
+            if is_ew:
+                winners = await _load_winners_for_card(db)
+                rel = await asyncio.to_thread(
+                    social_card.generate_winners_paper_card,
+                    sport=sport,
+                    title=title,
+                    dek=_strip_repeat_of_title(title, (row["summary"] or "").strip()),
+                    accent=accent,
+                    kicker="EARL'S WINNERS",
+                    league_chip="EARL KNOWS BALL · SCORECARD",
+                    badge_count=len(winners) or 0,
+                    badge_label="Top Winners",
+                    winners=winners,
+                    article_id=article_id,
+                    out_png=out_png,
+                )
+            else:
+                rel = await asyncio.to_thread(
+                    social_card.generate_social_card,
+                    sport=sport,
+                    title=title,
+                    dek=_strip_repeat_of_title(title, (row["summary"] or "").strip()),
+                    accent=accent,
+                    team=team,
+                    team_name=team_display or team or "",
+                    team_meta=team_meta,
+                    article_id=article_id,
+                    out_png=out_png,
+                )
             already = (row["social_caption"] or "").strip()
             new_cap = cap if not already else already
             await db.execute(

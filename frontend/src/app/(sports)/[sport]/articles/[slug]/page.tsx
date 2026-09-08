@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import ArticleContent from "@/components/ArticleContent";
 import JsonLd from "@/components/JsonLd";
+import WinnersPanel from "@/components/WinnersPanel";
 import { articleStructuredData } from "@/lib/structured-data";
 import { COMPUTE_URL } from "@/lib/backend-url";
 
@@ -167,6 +168,9 @@ export default async function SportArticleDetailPage({
           </div>
         </div>
       </article>
+
+      {/* Winners-recap ('all' sport) articles list all 8 winning picks below the story */}
+      {normalizedSport === "all" ? <WinnersPanel sport="all" showSport={false} limit={8} /> : null}
 
       <div className="mt-12 pt-6 border-t border-white/10 text-center">
         <Link

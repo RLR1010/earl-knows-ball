@@ -36,6 +36,7 @@ interface Article {
   accuracy_check_tokens?: number | null;
   rejection_history?: any[];
   visibility?: string;
+  section?: string;
   teams?: string[];
   preview_image?: string | null;
   card_accent?: string | null;
@@ -656,6 +657,27 @@ Manage it under Admin → Auto Generation.`);
       </span>
     );
 
+  const sectionBadge = (section?: string | null) => {
+    const s = (section || "article").toLowerCase();
+    if (s === "earls_winners")
+      return (
+        <span title="Earl's Winners recap" className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-amber-500/20 text-amber-300 border border-amber-500/30">
+          🏆 Earl's Winners
+        </span>
+      );
+    if (s === "daily_picks")
+      return (
+        <span title="Daily Picks" className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-sky-500/20 text-sky-300 border border-sky-500/30">
+          ☀️ Daily Picks
+        </span>
+      );
+    return (
+      <span title="Article" className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-gray-600/30 text-gray-300 border border-gray-600/40">
+        Article
+      </span>
+    );
+  };
+
   return (
     <div className="max-w-5xl mx-auto p-6">
       <div className="mb-6">
@@ -833,6 +855,7 @@ Manage it under Admin → Auto Generation.`);
                       <div className="flex items-center gap-2">
                         <span className="text-sm font-medium text-white truncate">{a.title}</span>
                         {statusBadge(a.status)}
+                        {sectionBadge(a.section)}
                         {(a.visibility === "premium" ? (
                           <span
                             title="Premium article (members only) — may include Earl's picks and betting advice."
