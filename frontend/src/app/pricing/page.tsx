@@ -18,6 +18,7 @@ interface Plan {
   features: string[];
   is_active: boolean;
   sort_order: number;
+  compare_against_monthly_cents: number | null;
 }
 
 const formatPrice = (cents: number, currency: string, interval: string) => {
@@ -92,6 +93,15 @@ export default function PricingPage() {
             const { amount, period } = formatPrice(plan.price_cents, plan.currency, plan.interval);
             const isAnnual = plan.interval === "year";
             const monthlyEquiv = isAnnual ? `$${(plan.price_cents / 100 / 12).toFixed(2)}/mo` : null;
+            // Dynamic savings vs the plan's monthly-rate anchor (whole-number %); computed,
+            // never hardcoded, so it stays correct if a price changes.
+            const anchorMonthly = plan.compare_against_monthly_cents ?? null;
+            const savePct =
+              isAnnual && anchorMonthly
+                ? Math.round(
+                    (1 - plan.price_cents / (anchorMonthly * 12)) * 100
+                  )
+                : null;
 
             return (
               <div
@@ -128,9 +138,9 @@ export default function PricingPage() {
                     <>
                       <span className="text-4xl font-bold text-white">{amount}</span>
                       <span className="text-gray-400 text-lg ml-1">{period}</span>
-                      {monthlyEquiv && (
+                      {monthlyEquiv && savePct !== null && savePct > 0 && (
                         <div className="text-earl-400 text-sm mt-1 font-medium">
-                          {monthlyEquiv} — save ~30%
+                          {monthlyEquiv} — save ~{savePct}%
                         </div>
                       )}
                     </>

@@ -15,6 +15,7 @@ interface Plan {
   trial_days: number;
   features: string[];
   is_active: boolean;
+  pricing_visible: boolean;
   sort_order: number;
   stripe_price_id: string | null;
   stripe_product_id: string | null;
@@ -27,7 +28,7 @@ interface Plan {
 
 const emptyPlan = {
   name: "", slug: "", description: "", payment_description: "", price_cents: 999, currency: "usd",
-  interval: "month", trial_days: 0, features: [], is_active: true, sort_order: 0,
+  interval: "month", trial_days: 0, features: [], is_active: true, pricing_visible: true, sort_order: 0,
   stripe_price_id: "", stripe_product_id: "", trial_fee_price_id: "", monthly_token_limit: null,
   kind: "subscription", token_amount: null,
 };
@@ -124,6 +125,9 @@ export default function AdminPlans() {
                     <h3 className="text-lg font-semibold text-white">{plan.name}</h3>
                     {!plan.is_active && (
                       <span className="px-2 py-0.5 bg-yellow-900/30 text-yellow-400 rounded-full text-xs font-medium">Inactive</span>
+                    )}
+                    {plan.pricing_visible === false && (
+                      <span className="px-2 py-0.5 bg-rose-900/30 text-rose-400 rounded-full text-xs font-medium" title="Hidden from the public pricing page / subscribe modals">Hidden on site</span>
                     )}
                     {plan.stripe_price_id && (
                       <span className="px-2 py-0.5 bg-blue-900/30 text-blue-400 rounded-full text-xs font-medium">Stripe</span>
@@ -269,10 +273,14 @@ function PlanFormModal({ plan, onSave, onClose }: { plan: Plan | null; onSave: (
           <input id="f-tokens" type="number" min="0" defaultValue={plan?.monthly_token_limit ?? ""} placeholder="Unlimited" className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white mb-3 focus:outline-none focus:border-earl-600" />
         </div>
 
-        <div className="flex items-center gap-4 mb-4">
+        <div className="flex items-center gap-6 mb-4">
           <label className="flex items-center gap-2 text-sm text-gray-300">
             <input type="checkbox" defaultChecked={plan?.is_active ?? true} id="f-active" className="rounded" />
             Active
+          </label>
+          <label className="flex items-center gap-2 text-sm text-gray-300">
+            <input type="checkbox" defaultChecked={plan?.pricing_visible ?? true} id="f-visible" className="rounded" />
+            Show on site (pricing / subscribe)
           </label>
         </div>
 
@@ -297,6 +305,7 @@ function PlanFormModal({ plan, onSave, onClose }: { plan: Plan | null; onSave: (
                 trial_days: parseInt(get("f-trial")) || 0,
                 features,
                 is_active: getCheck("f-active"),
+                pricing_visible: getCheck("f-visible"),
                 sort_order: parseInt(get("f-order")) || 0,
                 monthly_token_limit: get("f-tokens") ? parseInt(get("f-tokens")) : null,
                 stripe_price_id: get("f-spid") || null,
