@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import UpcomingGames from "@/components/UpcomingGames";
 import BestBetsPanel from "@/components/BestBetsPanel";
+import WinnersShowcase from "@/components/WinnersShowcase";
 import SiteEditorialSection from "@/components/SiteEditorialSection";
 import JsonLd from "@/components/JsonLd";
 import { websiteStructuredData } from "@/lib/structured-data";
@@ -71,7 +72,7 @@ export default function Home() {
                 </svg>
               </span>
               <div className="flex flex-col">
-                <span className="text-gray-300 font-medium text-xl">AI Powered Handicapping</span>
+                <span className="text-gray-300 font-medium text-xl">AI-Powered Sports Analysis</span>
                 <span className="text-gray-400 text-sm mt-1">The best machine learning algorithms give real edge</span>
               </div>
             </li>
@@ -115,15 +116,19 @@ export default function Home() {
       {/* Site-wide "All" editorial articles */}
       <SiteEditorialSection />
 
-      {/* Earl's Best Bets across all sports (single highest-value pick per game) */}
+      {/* Earl's Top Picks across all sports (single highest-value pick per game) */}
       <BestBetsPanel
         sport="all"
         showSport
         limit={6}
         containerClassName="max-w-6xl mx-auto px-4"
-        title="Earl's Best Bets"
+        title="Earl's Top Picks"
         subtitle="One value pick per upcoming game, ranked by edge (model confidence vs. implied odds)."
       />
+
+      {/* Earl's Winners — home shows 4 winner cards beside the recap article's
+          headline + snippet (all 8 live on the winners-recap article page). */}
+      <WinnersShowcase />
 
       {/* Upcoming games across all sports */}
       <UpcomingGames />
