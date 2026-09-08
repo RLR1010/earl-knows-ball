@@ -155,6 +155,16 @@ def _fix_decimals(row: dict) -> dict:
     return row
 
 
+# The game_type value that counts as REGULAR SEASON per sport, used to exclude
+# preseason (exhibition) games from a team's record on upcoming/schedule cards.
+# MLB stores regular season as 'R'; NFL and NBA store it as 'REG'.
+_REGULAR_GAME_TYPE = {
+    "mlb": ["R"],
+    "nba": ["REG"],
+    "nfl": ["REG"],
+}
+
+
 # Shared SELECT column names so all three sports return the SAME shape the
 # schedule-page shared card (ScheduleGameCard) expects: home_team/away_team are
 # abbreviations, and the rich pick_* / result_* fields drive the picks panel.
@@ -208,7 +218,7 @@ def _pick_aliases(kind: str):
     }
 
 
-def _build_sql(schema: str, kind: str):
+def _build_sql(schema: str, kind: str, *, only_predicted: bool = False):
     """Build the per-sport SELECT. Shared columns are identical so downstream
     consumers (site home + sport home pages) get one uniform shape."""
     p = _pick_aliases(kind)
@@ -230,6 +240,12 @@ def _build_sql(schema: str, kind: str):
         f"    LEFT JOIN {schema}.teams pml ON pml.id = CASE WHEN gp.ml_pick ~ '^[0-9]+$' "
         f"THEN gp.ml_pick::bigint END"
         if kind == "nba"
+        else ""
+    )
+    predicted_pred = (
+        "      AND EXISTS (SELECT 1 FROM {schema}.game_predictions gp2 "
+        "WHERE gp2.game_id = g.id AND gp2.source = 'api')".format(schema=schema)
+        if only_predicted
         else ""
     )
     return f"""
@@ -276,6 +292,7 @@ def _build_sql(schema: str, kind: str):
     WHERE g.status::text = 'SCHEDULED'
       AND g.date > :now
       AND g.date <= :horizon
+{predicted_pred}
     ORDER BY g.date ASC
     LIMIT :limit
     """
@@ -285,6 +302,9 @@ def _build_sql(schema: str, kind: str):
 async def upcoming_games(
     sport: str = Query("all", description="Filter by sport: all, mlb, nba, nfl"),
     days: int = Query(5, description="Only show games within this many days from now"),
+    with_predictions: bool = Query(
+        False, description="Only include games that have an Earl api prediction"
+    ),
     db: AsyncSession = Depends(get_db),
 ):
     """Return upcoming scheduled games, sorted by date ascending.
@@ -312,7 +332,7 @@ async def upcoming_games(
         specs.append(("nfl", "nfl"))
 
     for schema, kind in specs:
-        sql = _build_sql(schema, kind)
+        sql = _build_sql(schema, kind, only_predicted=with_predictions)
         rows = (
             await db.execute(
                 text(sql), {"now": now, "horizon": horizon, "limit": 6}
@@ -326,7 +346,10 @@ async def upcoming_games(
                 pairs.append((g["home_team_id"], g["game_date"], g["season_id"]))
             if g.get("away_team_id") and g.get("season_id"):
                 pairs.append((g["away_team_id"], g["game_date"], g["season_id"]))
-        records = await _records_as_of_batch(db, schema, pairs)
+        # Count REGULAR-SEASON games only (preseason excluded) so an upcoming
+        # game's record reflects the real season, matching the schedule pages.
+        game_types = _REGULAR_GAME_TYPE.get(schema)
+        records = await _records_as_of_batch(db, schema, pairs, game_types=game_types)
         for g in out:
             g["home_record"] = records.get(
                 (g.get("home_team_id"), str(g.get("game_date")), g.get("season_id"))
@@ -437,7 +460,11 @@ async def best_bets(
                 spairs.append((gg["home_team_id"], gg["game_date"], gg["season_id"]))
             if gg.get("away_team_id") and gg.get("season_id"):
                 spairs.append((gg["away_team_id"], gg["game_date"], gg["season_id"]))
-        records = await _records_as_of_batch(db, schema, spairs)
+        # REG-only so preseason games never pollute the W-L shown on upcoming
+        # game cards (same rule the schedule pages use).
+        records = await _records_as_of_batch(
+            db, schema, spairs, game_types=_REGULAR_GAME_TYPE.get(schema)
+        )
         for gg in gs:
             gg["home_record"] = records.get(
                 (gg.get("home_team_id"), str(gg.get("game_date")), gg.get("season_id"))
@@ -447,6 +474,71 @@ async def best_bets(
             )
 
     return results
+
+
+@router.get("/home/winners")
+async def earl_winners(
+    sport: str = Query("all", description="Filter by sport: all, mlb, nba, nfl"),
+    limit: int = Query(24, description="Max winners to return"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return Earl's most recent cashed picks ("Earl's Winners" block).
+
+    Reads the denormalized `public.earl_winners` snapshot, which the
+    `earl-winners-refresh` subprocess job rematerializes whenever >= 10 NEW
+    settled wins have occurred AND it is a new Chicago calendar day (so the
+    block is pin-stable within a day). We never recompute win/loss math here —
+    the snapshot only holds rows whose per-market result was already 'Win'
+    (written by the settle passes), so this can never disagree with the cards.
+
+    Rows are curated by the snapshot job to the MOST RECENT cashing picks
+    (newest game first; a pick's EV is stored/shown but recency leads the order),
+    and only NON-preseason wins within the last 7 days qualify. sort_key = hit order. `last_updated` is the Chicago date the snapshot
+    was last rotated (MAX refreshed_at).
+    """
+    sport = (sport or "all").lower()
+    if sport not in ("all", "mlb", "nba", "nfl"):
+        sport = "all"
+    limit = max(1, min(limit, 50))
+
+    where = ""
+    params: dict = {}
+    if sport != "all":
+        where = "WHERE sport = :sport"
+        params["sport"] = sport
+
+    rows = (
+        await db.execute(
+            text(
+                f"""SELECT sport, game_id, market, pick_text, odds_at_tip, profit,
+                           ev, home_team, away_team, home_score, away_score,
+                           game_date, winning_side
+                    FROM public.earl_winners
+                    {where}
+                    ORDER BY sort_key
+                    LIMIT :limit"""
+            ),
+            {**params, "limit": limit},
+        )
+    ).mappings().all()
+
+    last_upd = (
+        await db.execute(text("SELECT COALESCE(MAX(refreshed_at), NULL) AS d FROM public.earl_winners"))
+    ).scalar()
+
+    results = [dict(r) for r in rows]
+
+    # Team records (W-L as-of game) aren't attached here: the snapshot stores team
+    # abbrevs (not team_id/season_id) needed by _records_as_of_batch, and this block
+    # is about the winning PICK — scorelines already come from the snapshot. Keeping
+    # this read lean (single table, ordered) keeps it cheap for the home page.
+
+    return {
+        "sport": sport,
+        "last_updated": str(last_upd) if last_upd else None,
+        "count": len(results),
+        "winners": results,
+    }
 
 
 def _best_leg(g: dict):
