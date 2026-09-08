@@ -72,12 +72,23 @@ async def matchup(
     if game_date is not None:
         if sport == "nfl":
             # NFL season spans Aug-Feb; Jan/Feb playoff games belong to the prior year's season.
-            season_year = game_date.year - 1 if game_date.month <= 1 else game_date.year
+            season_year = game_date.year - 1 if game_date.month <= 2 else game_date.year
         elif sport == "nba":
             # NBA "YYYY-YY" season starts in year YYYY, ends up to June of the next year.
             season_year = game_date.year - 1 if game_date.month <= 6 else game_date.year
         else:  # mlb: single calendar year; comparison/trends ignore season, harmless.
             season_year = game_date.year
+
+    # If the viewed game belongs to a season that has no rolling data yet (e.g. the
+    # current NFL season is in progress and nfl.team_rolling_stats only goes through
+    # the prior completed season), requesting that season_year returns an empty
+    # result -> the matchup shows "Trend data isn't available". Fall back to letting
+    # each sport tool resolve the latest season that actually has data.
+    if season_year is not None and sport == "nfl":
+        _mx = await db.execute(text("SELECT MAX(season) FROM nfl.team_rolling_stats"))
+        _max_data = _mx.scalar()
+        if _max_data is not None and season_year > int(_max_data):
+            season_year = None
 
     # 1) trends - reuse the same logic Earl's chat uses.
     trends_home = await mod._get_team_trends(
