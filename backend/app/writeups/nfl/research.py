@@ -189,6 +189,7 @@ async def get_team_records(db: AsyncSession, team_id: int, season_id: int,
             JOIN nfl.teams at ON g.away_team_id = at.id
             WHERE g.season_id = :season_id
               AND g.status = 'FINAL'
+              AND g.game_type = 'REG'
               {date_filter}
         )
         SELECT
@@ -279,6 +280,7 @@ async def get_team_season_stats(db: AsyncSession, team_abbr: str, season_id: int
                 AND t.abbreviation = gs.team_abbr
             WHERE gs.team_abbr = :team_abbr
               AND g.season_id = :season_id
+              AND gs.season_type = 'REG'
               {date_filter}
         )
         SELECT
@@ -320,6 +322,7 @@ async def get_team_season_stats(db: AsyncSession, team_abbr: str, season_id: int
             AND t.abbreviation = gs.team_abbr
         WHERE gs.team_abbr = :team_abbr
           AND g.season_id = :season_id
+          AND gs.season_type = 'REG'
           {date_filter}
     """), params)
     d = def_row.mappings().one()
@@ -678,6 +681,7 @@ async def get_recent_form(db: AsyncSession, team_id: int, team_abbr: str,
         WHERE (g.home_team_id = :team_id OR g.away_team_id = :team_id)
           AND g.season_id = :season_id
           AND g.status = 'FINAL'
+          AND g.game_type = 'REG'
           {date_filter}
         ORDER BY g.date DESC
         LIMIT :limit
@@ -723,6 +727,7 @@ async def get_head_to_head(db: AsyncSession, team1_abbr: str, team2_abbr: str,
         WHERE ((ht.abbreviation = :t1 AND at.abbreviation = :t2)
                OR (ht.abbreviation = :t2 AND at.abbreviation = :t1))
           AND g.status = 'FINAL'
+          AND g.game_type = 'REG'
         ORDER BY g.date DESC
         LIMIT :limit
     """), {"t1": team1_abbr, "t2": team2_abbr, "limit": limit})
@@ -1035,6 +1040,47 @@ async def get_defensive_matchup(db: AsyncSession, offense_abbr: str, defense_abb
 # ──────────────────────────────────────────────
 
 
+async def _resolve_context_season(
+    db: AsyncSession, season_id: int, team_id: int, team_abbr: str,
+    as_of_date: Optional[date] = None,
+) -> int:
+    """Pick the season used for a team's season-to-date context (record/form/stats).
+
+    If the team has no FINAL REG games in `season_id` by `as_of_date` (an
+    opening-week / haven't-started scenario), step back to the most recent PRIOR
+    season that does have FINAL REG games for the team, so a Week-1 preview cites
+    the team's real last regular season instead of "no games yet" (or, pre-fix,
+    preseason). Falls back to `season_id` when no prior REG season is available
+    either. Always REG-only regardless of the season resolved.
+    """
+    _ = team_abbr  # reserved for future logging/labels
+    gdate = as_of_date if as_of_date is not None else datetime.utcnow().date()
+    # 1) current season has FINAL REG games for this team by game date -> use it
+    has = await db.execute(
+        text(
+            "SELECT 1 FROM nfl.games g "
+            "WHERE g.season_id = :sid AND (g.home_team_id = :t OR g.away_team_id = :t) "
+            "AND g.status = 'FINAL' AND g.game_type = 'REG' AND g.date <= :gd LIMIT 1"
+        ),
+        {"sid": season_id, "t": team_id, "gd": gdate},
+    )
+    if has.scalar():
+        return season_id
+    # 2) most recent prior season with FINAL REG games for this team before gd
+    prior = await db.execute(
+        text(
+            "SELECT s.id FROM nfl.seasons s "
+            "JOIN nfl.games g ON g.season_id = s.id "
+            "  AND (g.home_team_id = :t OR g.away_team_id = :t) "
+            "  AND g.status = 'FINAL' AND g.game_type = 'REG' AND g.date <= :gd "
+            "WHERE s.id < :sid GROUP BY s.id, s.year ORDER BY s.year DESC LIMIT 1"
+        ),
+        {"sid": season_id, "t": team_id, "gd": gdate},
+    )
+    r = prior.scalar_one_or_none()
+    return r if r is not None else season_id
+
+
 async def get_research_brief(db: AsyncSession, game_id: int,
                              as_of_date: Optional[date] = None) -> dict:
     """Compile the full NFL research brief for DeepSeek premium writeups."""
@@ -1060,31 +1106,56 @@ async def get_research_brief(db: AsyncSession, game_id: int,
     away_id = game["away_team"]["id"]
     game_date = game["date"]
 
+    # ── Opening-Week context season fallback ──
+    # For a REG game whose season has not started yet for a team (Week 1: no
+    # FINAL REG games for them in this season by the game date), the season-to-
+    # date context pulls (record, form, stats, etc.) would come back EMPTY —
+    # and prior to the REG fix, they pulled preseason. Real previews for an
+    # opener should cite the team's LAST regular season instead. Resolve the
+    # effective context season per team; falls back to the prior season that
+    # actually has FINAL REG games. Functionally REG-only either way.
+    home_context_season = await _resolve_context_season(
+        db, season_id, home_id, home_abbr, as_of_date
+    )
+    away_context_season = await _resolve_context_season(
+        db, season_id, away_id, away_abbr, as_of_date
+    )
+
+    # Resolve the display year for the (possibly prior) context season so the
+    # prompt can label season-to-date numbers honestly (e.g. "2025 season").
+    ctx_years = await db.execute(
+        text("SELECT id, year FROM nfl.seasons WHERE id IN (:hs, :as)"),
+        {"hs": home_context_season, "as": away_context_season},
+    )
+    _yy = {int(r["id"]): r["year"] for r in ctx_years.mappings()}
+    home_context_season_year = _yy.get(home_context_season, home_context_season)
+    away_context_season_year = _yy.get(away_context_season, away_context_season)
+
     import asyncio
 
     tasks = {
         "betting": get_betting_lines(db, game_id),
-        "home_rec": get_team_records(db, home_id, season_id, as_of_date),
-        "away_rec": get_team_records(db, away_id, season_id, as_of_date),
-        "home_stats": get_team_season_stats(db, home_abbr, season_id, as_of_date),
-        "away_stats": get_team_season_stats(db, away_abbr, season_id, as_of_date),
-        "home_rank": get_team_rankings(db, home_abbr, season_id, as_of_date),
-        "away_rank": get_team_rankings(db, away_abbr, season_id, as_of_date),
-        "home_qb": get_qb_profile(db, home_abbr, home_id, season_id, as_of_date),
-        "away_qb": get_qb_profile(db, away_abbr, away_id, season_id, as_of_date),
-        "home_players": get_key_skill_players(db, home_id, home_abbr, season_id, as_of_date),
-        "away_players": get_key_skill_players(db, away_id, away_abbr, season_id, as_of_date),
-        "home_form": get_recent_form(db, home_id, home_abbr, season_id, 5, as_of_date),
-        "away_form": get_recent_form(db, away_id, away_abbr, season_id, 5, as_of_date),
+        "home_rec": get_team_records(db, home_id, home_context_season, as_of_date),
+        "away_rec": get_team_records(db, away_id, away_context_season, as_of_date),
+        "home_stats": get_team_season_stats(db, home_abbr, home_context_season, as_of_date),
+        "away_stats": get_team_season_stats(db, away_abbr, away_context_season, as_of_date),
+        "home_rank": get_team_rankings(db, home_abbr, home_context_season, as_of_date),
+        "away_rank": get_team_rankings(db, away_abbr, away_context_season, as_of_date),
+        "home_qb": get_qb_profile(db, home_abbr, home_id, home_context_season, as_of_date),
+        "away_qb": get_qb_profile(db, away_abbr, away_id, away_context_season, as_of_date),
+        "home_players": get_key_skill_players(db, home_id, home_abbr, home_context_season, as_of_date),
+        "away_players": get_key_skill_players(db, away_id, away_abbr, away_context_season, as_of_date),
+        "home_form": get_recent_form(db, home_id, home_abbr, home_context_season, 5, as_of_date),
+        "away_form": get_recent_form(db, away_id, away_abbr, away_context_season, 5, as_of_date),
         "h2h": get_head_to_head(db, home_abbr, away_abbr, 10),
         "injuries": get_injury_report(db, game_id, home_id, away_id, as_of_date),
         "situ": get_situational_context(db, home_id, away_id,
                                          datetime.fromisoformat(game_date) if game_date else datetime.now(timezone.utc),
                                          home_abbr, away_abbr, season_id),
-        "home_pace": get_team_pace(db, home_id, home_abbr, season_id, as_of_date),
-        "away_pace": get_team_pace(db, away_id, away_abbr, season_id, as_of_date),
-        "home_def_matchup": get_defensive_matchup(db, away_abbr, home_abbr, season_id, as_of_date),
-        "away_def_matchup": get_defensive_matchup(db, home_abbr, away_abbr, season_id, as_of_date),
+        "home_pace": get_team_pace(db, home_id, home_abbr, home_context_season, as_of_date),
+        "away_pace": get_team_pace(db, away_id, away_abbr, away_context_season, as_of_date),
+        "home_def_matchup": get_defensive_matchup(db, away_abbr, home_abbr, away_context_season, as_of_date),
+        "away_def_matchup": get_defensive_matchup(db, home_abbr, away_abbr, home_context_season, as_of_date),
     }
 
     results = {}
@@ -1152,6 +1223,9 @@ async def get_research_brief(db: AsyncSession, game_id: int,
                 "key_players": results.get("home_players"),
                 "recent_form": results.get("home_form"),
                 "pace": results.get("home_pace"),
+                "context_season_id": home_context_season,
+                "context_season_year": home_context_season_year,
+                "context_is_prior": home_context_season != season_id,
             },
             "away": {
                 "record": results.get("away_rec"),
@@ -1161,6 +1235,9 @@ async def get_research_brief(db: AsyncSession, game_id: int,
                 "key_players": results.get("away_players"),
                 "recent_form": results.get("away_form"),
                 "pace": results.get("away_pace"),
+                "context_season_id": away_context_season,
+                "context_season_year": away_context_season_year,
+                "context_is_prior": away_context_season != season_id,
             },
         },
         "head_to_head": results.get("h2h"),

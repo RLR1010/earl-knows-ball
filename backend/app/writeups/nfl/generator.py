@@ -289,6 +289,18 @@ Length: 700-900 words. This is a HARD LIMIT — write 700-900 words, target ~800
             lines.append(f"  {label}")
             lines.append(f"{'='*60}")
 
+            # If context fell back to a PRIOR season (e.g. Week-1 opener before
+            # this team has played a REG game in the current season), label the
+            # season-to-date numbers below so the model doesn't state them as
+            # this season's facts.
+            if team_data.get("context_is_prior"):
+                csy = team_data.get("context_season_year")
+                lines.append(
+                    f"  [NOTE: season-to-date stats below are from the {csy} REGULAR SEASON "
+                    f"(last completed season); the current season has not started for "
+                    f"this team yet — do NOT present them as this season. Roster/venue/"
+                    f"same-year notes still apply.]"
+                )
             # Record
             record = team_data.get("record", {})
             if record:
