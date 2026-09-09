@@ -44,6 +44,19 @@ STATS_TEAM_URL = "https://github.com/nflverse/nflverse-data/releases/download/st
 # Years available (stats_team started in 2016)
 AVAILABLE_YEARS = list(range(2016, 2026))
 
+# Canonicalize historical/legacy nflverse team codes to Earl's canonical abbreviations.
+# Must match TEAM_ABBR_MAP used by the sibling loaders (nflverse.py, pbp_game_stats.py,
+# nfl_player_game_stats.py, backfill_lines_old.py). CRITICAL: without this the same real
+# game can be written twice to nfl.game_stats under both a legacy code ("LA") and the
+# canonical code ("LAR") because the upsert key (season, week, season_type, team_abbr,
+# opponent_abbr) treats them as distinct rows. See 2026-09-08 cleanup of 362 dup rows.
+TEAM_ABBR_MAP = {
+    "LA": "LAR", "SL": "LAR", "STL": "LAR",
+    "SD": "LAC",
+    "OAK": "LV",
+    "WSH": "WAS",
+}
+
 # SQL to create the game_stats table
 CREATE_GAME_STATS_TABLE = """
 CREATE TABLE IF NOT EXISTS nfl.game_stats (
@@ -300,8 +313,8 @@ def process_stats_team(df: pd.DataFrame) -> pd.DataFrame:
     records = []
 
     for _, row in df.iterrows():
-        team = str(row.get("team", "")).strip()
-        opp = str(row.get("opponent_team", "")).strip()
+        team = TEAM_ABBR_MAP.get(str(row.get("team", "")).strip(), str(row.get("team", "")).strip())
+        opp = TEAM_ABBR_MAP.get(str(row.get("opponent_team", "")).strip(), str(row.get("opponent_team", "")).strip())
         week = int(row.get("week", 0))
         season = int(row.get("season", 0))
         if not season:
