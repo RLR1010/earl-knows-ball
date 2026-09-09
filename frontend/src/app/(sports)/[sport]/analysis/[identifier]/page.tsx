@@ -9,6 +9,10 @@ import JsonLd from "@/components/JsonLd";
 // headline) in raw HTML instead of a generic app title. UI lives in
 // ./AnalysisClient.tsx. Takes params (Promise) and forwards them down;
 // the client resolves them in useEffect as before.
+//
+// If the requested identifier is an OLD published slug that maps to a writeup
+// whose canonical slug changed (manual regen with a new title), middleware.ts
+// 301s to the live canonical URL so browser links + crawlers converge.
 
 type Props = {
   params: Promise<{ sport: string; identifier: string }>;
@@ -21,6 +25,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
 
 export default async function AnalysisPage({ params }: Props) {
   const { sport, identifier } = await params;
+
   const jsonLd = await writeupStructuredData(sport, identifier);
   return (
     <>

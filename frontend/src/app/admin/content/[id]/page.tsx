@@ -392,6 +392,11 @@ export default function ContentEditor() {
   const [title, setTitle] = useState("");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  // Regenerate identity control. UNCHECKED (default) preserves the existing
+  // title/slug/published_at — the writeup keeps its public URL and publish date.
+  // CHECKED allows a fresh title/slug on this manual regen; the old published
+  // slug is kept as a 301 redirect alias automatically.
+  const [forceNewTitle, setForceNewTitle] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [qcResults, setQcResults] = useState<QCResult[]>([]);
   const [activeTab, setActiveTab] = useState<"public" | "premium">("public");
@@ -547,7 +552,7 @@ export default function ContentEditor() {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 420_000);
       const res = await fetch(
-        `/writeups/${sport}/generate/${writeup.game_id}`,
+        `/writeups/${sport}/generate/${writeup.game_id}${forceNewTitle ? "?force_new_title=true" : ""}`,
         {
           method: "POST",
           headers: { Authorization: `Bearer ${token()}`, "Content-Type": "application/json" },
@@ -684,6 +689,15 @@ export default function ContentEditor() {
               Archive
             </button>
           )}
+          <label className="flex items-center gap-2 text-xs text-gray-400 select-none cursor-pointer mr-1">
+            <input
+              type="checkbox"
+              checked={forceNewTitle}
+              onChange={(e) => setForceNewTitle(e.target.checked)}
+              className="accent-orange-500 h-3.5 w-3.5"
+            />
+            Allow new title/slug (replaces URL)
+          </label>
           <button
             onClick={handleRegenerate}
             className="px-4 py-2 text-sm font-medium rounded-lg bg-orange-600/20 text-orange-400 border border-orange-600/30 hover:bg-orange-600/30 transition"

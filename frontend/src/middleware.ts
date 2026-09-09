@@ -62,9 +62,40 @@ export async function middleware(req: NextRequest) {
     return NextResponse.next();
   }
 
+  // Analysis page: a GAME writeup's old published slug may alias to a canonical
+  // slug (manual regen with "allow new title" creates a new slug + an alias row).
+  // 301 to the live canonical URL so browser links + crawlers converge and stop
+  // serving the article at its stale URL. (Seo meta returns canonical_slug ONLY
+  // when the requested identifier is an alias -> permanent redirect.)
+  m = pathname.match(/^\/(mlb|nfl|nba)\/analysis\/(.+)$/);
+  if (m) {
+    const [, sport, identifier] = m;
+    try {
+      const res = await fetch(backendUrl(`/seo/writeup-meta/${sport}/${encodeURIComponent(identifier)}`), {
+        headers: { authorization: req.headers.get("authorization") || "" },
+        next: { revalidate: 0 },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const canonical = data?.canonical_slug?.trim();
+        if (canonical && canonical !== identifier) {
+          const url = new URL(pathname, req.url);
+          url.pathname = `/${sport}/analysis/${encodeURIComponent(canonical)}`;
+          return NextResponse.redirect(url, 301);
+        }
+      }
+    } catch {
+      /* fall through to the page on lookup errors */
+    }
+    return NextResponse.next();
+  }
+
   return NextResponse.next();
 }
 
 export const config = {
-  matcher: ["/mlb/articles/:path*", "/nfl/articles/:path*", "/nba/articles/:path*"],
+  matcher: [
+    "/mlb/articles/:path*", "/nfl/articles/:path*", "/nba/articles/:path*",
+    "/mlb/analysis/:path*", "/nfl/analysis/:path*", "/nba/analysis/:path*",
+  ],
 };

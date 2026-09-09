@@ -217,6 +217,7 @@ async def run(api_key: str, db: AsyncSession):
                             writeup, _qc = await gen.generate(
                                 db, gid, is_historical=False,
                                 as_of_date=None, reasoning="minimal",
+                                preserve_identity=True,
                             )
                             if "error" in writeup:
                                 raise RuntimeError(writeup["error"])

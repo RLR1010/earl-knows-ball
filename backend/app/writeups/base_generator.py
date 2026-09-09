@@ -289,6 +289,7 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
         as_of_date: datetime | None = None,
         reasoning: str = "minimal",  # thinking enabled + minimal reasoning (works; ~1k reas tokens)
         usage_log: list[dict[str, Any]] | None = None,
+        preserve_identity: bool = False,
     ) -> dict[str, Any]:
         """Generate a write-up for the given *game_id*.
 
@@ -298,6 +299,11 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
 
         is_historical is now determined from the game's status in the
         research brief. The parameter is kept for backward compat.
+
+        preserve_identity=True: when an existing writeup already exists for this
+        game (pick-flip auto-regen), keep its stored title / slug / published_at
+        unchanged — only content/research/QC/version get refreshed. Forwarded to
+        store(). Default False preserves current behavior (fresh identity).
 
         Returns the dict with keys: *title*, *public_content*, *premium_content*,
         *title_brief*, *research_brief*, *is_historical*, *qc_results*.
@@ -538,7 +544,7 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
         parsed["premium_content"] = _coerce_article(parsed.get("premium_content"))
 
         # ---- 5. Store ----
-        await self.store(game_id, parsed, [])
+        await self.store(game_id, parsed, [], preserve_identity=preserve_identity)
 
         logger.info(
             "write-up %s for game %s — accuracy: %d finding(s)",
@@ -1768,12 +1774,23 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
         game_id: int,
         writeup: dict[str, Any],
         qc_results: QCResults,
+        preserve_identity: bool = False,
     ) -> int:
         """Insert or update the write-up in the DB. Returns the row id.
 
         Shared across mlb/nfl/nba — the ONLY per-sport differences are the DB
         `schema` and an optional `_post_store` hook. Same code runs for all
         three sports, so a fix here fixes every sport.
+
+        preserve_identity=True (used by auto pick-flip regeneration): when an
+        existing row is present, the DB title / slug / published_at are KEPT
+        (the freshly-generated title/slug are discarded) so the article's public
+        identity and URL do not churn on a flip regen. Undefined when there is
+        no existing row (INSERT behaves as today with fresh title/slug/NOW).
+
+        Whenever an existing row's canonical slug is about to CHANGE to a new
+        value and the writeup has been/has a published state, the old canonical
+        slug is recorded as a redirect alias so old links keep resolving.
         """
         db = self._db
         schema = self.schema  # e.g. 'mlb', 'nfl', 'nba'
@@ -1845,13 +1862,29 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
 
         # Check existing
         existing = await db.execute(
-            text(f"SELECT id, version FROM {schema}.game_writeups WHERE game_id = :gid"),
+            text(f"SELECT id, version, slug, published_at, title FROM {schema}.game_writeups WHERE game_id = :gid"),
             {"gid": game_id},
         )
         ex = existing.mappings().one_or_none()
 
         if ex:
             version = ex["version"] + 1
+            # Canonical slug PRE change (used for alias recording below).
+            prev_slug = (ex["slug"] or "").strip()
+            new_slug = (writeup.get("slug") or "").strip()
+
+            if preserve_identity:
+                # Pick-flip regen: keep the DB identity. Override whatever the new
+                # LLM produced for title/slug, and don't bump published_at. Only
+                # adopt the stored title if non-empty (defensive against NULLs).
+                stored_title = (ex["title"] or "").strip()
+                if stored_title:
+                    title = stored_title
+
+            # Slug we will actually store (so alias recording compares the true
+            # old vs true new canonical slug). preserve_identity keeps prev_slug.
+            effective_slug = prev_slug if preserve_identity else new_slug
+
             result = await db.execute(
                 text(f"""
                     UPDATE {schema}.game_writeups SET
@@ -1873,7 +1906,7 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
                         seo_keywords = :seo_kw,
                         social_caption = :soccap,
                         slug = :slug,
-                        published_at = NOW(),
+                        published_at = COALESCE(:published_at, NOW()),
                         updated_at = NOW()
                     WHERE game_id = :gid
                     RETURNING id
@@ -1897,10 +1930,43 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
                     "seo_desc": writeup.get("seo_description"),
                     "seo_kw": writeup.get("seo_keywords"),
                     "soccap": writeup.get("social_caption"),
-                    "slug": writeup.get("slug"),
+                    "slug": effective_slug,
+                    # preserve_identity keeps the original publish time; otherwise
+                    # COALESCE falls back to NOW() (fresh republish) to match prior
+                    # non-preserve behavior exactly.
+                    "published_at": (ex["published_at"] if preserve_identity else None),
                 },
             )
             row_id = result.scalar()
+
+            # ── Alias recording (slug actually changed on this write) ──
+            # Whenever the canonical slug we are storing (effective_slug) differs
+            # from the previously-stored canonical slug (prev_slug), preserve the
+            # old one as a redirect alias so existing public links keep resolving
+            # and the frontend can 301 to the new canonical slug. Idempotent.
+            # In preserve_identity mode effective_slug == prev_slug, so nothing is
+            # recorded (identity was retained by design).
+            if prev_slug and effective_slug and prev_slug != effective_slug:
+                try:
+                    await db.execute(
+                        text(f"""
+                            INSERT INTO {schema}.game_writeup_slug_aliases
+                                (game_writeup_id, old_slug, created_at)
+                            VALUES (:wid, :old_slug, NOW())
+                            ON CONFLICT (game_writeup_id, old_slug) DO NOTHING
+                        """),
+                        {"wid": ex["id"], "old_slug": prev_slug},
+                    )
+                except Exception as e:  # noqa: BLE001
+                    # Alias is best-effort; never fail the write on an alias hiccup
+                    # (most likely: the alias migration hasn't been applied yet).
+                    logger.warning(
+                        "%s could not record slug alias '%s' for writeup %s: %s",
+                        type(self).__name__,
+                        prev_slug,
+                        ex["id"],
+                        e,
+                    )
         else:
             result = await db.execute(
                 text(f"""

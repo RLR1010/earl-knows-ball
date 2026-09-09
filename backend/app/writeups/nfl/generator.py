@@ -105,11 +105,13 @@ Length: 700-900 words. This is a HARD LIMIT — write 700-900 words, target ~800
         as_of_date: Optional[date] = None,
         reasoning: Optional[str] = None,
         usage_log: Optional[list[dict]] = None,
+        preserve_identity: bool = False,
     ) -> Any:
         """Full pipeline with DB session."""
         self._db = db
         result = await super().generate(
-            game_id, is_historical, as_of_date, reasoning=reasoning, usage_log=usage_log
+            game_id, is_historical, as_of_date,
+            reasoning=reasoning, usage_log=usage_log, preserve_identity=preserve_identity,
         )
         self._db = None
         return result

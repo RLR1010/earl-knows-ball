@@ -68,11 +68,13 @@ class MLBWriteupGenerator(BaseWriteupGenerator):
         as_of_date: Optional[datetime] = None,
         reasoning: str = "minimal",  # thinking enabled + minimal reasoning (works)
         usage_log: Optional[list[dict[str, Any]]] = None,
+        preserve_identity: bool = False,
     ) -> tuple[dict[str, Any], QCResults]:
         """Full pipeline with DB session."""
         self._db = db
         result = await super().generate(
-            game_id, is_historical, as_of_date, reasoning=reasoning, usage_log=usage_log
+            game_id, is_historical, as_of_date,
+            reasoning=reasoning, usage_log=usage_log, preserve_identity=preserve_identity,
         )
         self._db = None
         if "error" in result:

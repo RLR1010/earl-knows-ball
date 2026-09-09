@@ -162,6 +162,39 @@ export async function teamMetadata(
   });
 }
 
+interface WriteupMeta {
+  sport?: string | null;
+  identifier?: string | null;
+  title?: string | null;
+  // Present when `identifier` is an OLD published slug that now maps (via the
+  // backend slug_alias table) to a writeup whose canonical slug is canonical_slug.
+  canonical_slug?: string | null;
+}
+
+/**
+ * Resolve whether a writeup identifier is an aliased (old) slug that should be
+ * 301 → the live canonical slug. Returns null when no redirect is warranted.
+ * Used by the server analysis page so browser links + crawlers converge on the
+ * canonical URL instead of endlessly serving the old one.
+ */
+export async function resolveWriteupRedirect(
+  sport: string,
+  identifier: string
+): Promise<{ canonicalSlug: string } | null> {
+  try {
+    const meta = await fetchSeoJson<WriteupMeta>(
+      `/seo/writeup-meta/${sport}/${encodeURIComponent(identifier)}`
+    );
+    const canonical = meta?.canonical_slug?.trim();
+    if (canonical && canonical !== identifier) {
+      return { canonicalSlug: canonical };
+    }
+  } catch {
+    // resolution is best-effort — never break the page
+  }
+  return null;
+}
+
 /**
  * Metadata for a writeup / analysis page.
  * Title: the writeup's own title (e.g. "Seahawks at Titans: Preseason Week 2 Preview").

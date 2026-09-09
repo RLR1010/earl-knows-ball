@@ -81,11 +81,13 @@ class NBAGameWriteupGenerator(BaseWriteupGenerator):
         as_of_date: datetime | None = None,
         reasoning: str = "minimal",
         usage_log: Optional[list[dict]] = None,
+        preserve_identity: bool = False,
     ):
         """Full pipeline with DB session. Follows NFL pattern."""
         self._db = db
         result = await super().generate(
-            game_id, is_historical, as_of_date, reasoning=reasoning, usage_log=usage_log
+            game_id, is_historical, as_of_date,
+            reasoning=reasoning, usage_log=usage_log, preserve_identity=preserve_identity,
         )
         self._db = None
         if "error" in result:

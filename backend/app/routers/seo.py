@@ -160,11 +160,16 @@ async def writeup_meta(sport: str, identifier: str, db: AsyncSession = Depends(g
     \"<title>\" in raw HTML. Returns null title on miss (caller falls back).
     """
     if sport not in VALID_SPORTS:
-        return {"sport": sport, "identifier": identifier, "title": None}
+        return {"sport": sport, "identifier": identifier, "title": None, "canonical_slug": None}
     ident = identifier.strip()
     is_digit = ident.isdigit()
-    # Try slug first (stable SEO URL), then numeric id, then game_id.
+    # Try slug first (stable SEO URL), then numeric id, then game_id. When a
+    # non-digit (SEO slug) misses as a canonical slug, check for an old published
+    # slug alias pointing at a canonical row so the caller can 301 to the live URL.
     cols = ("slug", "id", "game_id") if is_digit else ("slug",)
+    # Redirects (canonical_slug) are ONLY reported when the requested identifier is
+    # an OLD alias slug. Canonical slugs and numeric id/game_id lookups return
+    # canonical_slug: null so existing deep links behave exactly as before.
     for col in cols:
         key: object = int(ident) if col != "slug" else ident
         row = await db.execute(text(f"""
@@ -174,8 +179,21 @@ async def writeup_meta(sport: str, identifier: str, db: AsyncSession = Depends(g
         """), {"ident": key})
         r = row.mappings().first()
         if r and r["title"]:
-            return {"sport": sport, "identifier": identifier, "title": r["title"]}
-    return {"sport": sport, "identifier": identifier, "title": None}
+            return {"sport": sport, "identifier": identifier, "title": r["title"], "canonical_slug": None}
+    # Alias fallback: the requested slug is an OLD published slug.
+    if not is_digit:
+        row = await db.execute(text(f"""
+            SELECT gw.id, gw.title, gw.slug AS canonical_slug
+            FROM {sport}.game_writeup_slug_aliases a
+            JOIN {sport}.game_writeups gw ON gw.id = a.game_writeup_id
+            WHERE a.old_slug = :ident
+            ORDER BY a.created_at DESC, gw.id DESC LIMIT 1
+        """), {"ident": ident})
+        r = row.mappings().first()
+        if r and r["title"]:
+            canonical_slug = r["canonical_slug"] or None
+            return {"sport": sport, "identifier": identifier, "title": r["title"], "canonical_slug": canonical_slug}
+    return {"sport": sport, "identifier": identifier, "title": None, "canonical_slug": None}
 
 
 @router.get("/sitemap-data")

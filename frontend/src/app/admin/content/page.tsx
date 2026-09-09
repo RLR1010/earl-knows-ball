@@ -275,6 +275,10 @@ export default function AdminContent() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [generating, setGenerating] = useState<number | null>(null);
+  // Regenerate control: UNCHECKED (default) preserves the existing title/slug/URL
+  // (identity is locked across auto pick-flip regenerations). Check to allow a
+  // fresh title/slug on manual regen — the old slug is kept as a 301 alias.
+  const [forceNewTitle, setForceNewTitle] = useState(false);
   const [generatingDay, setGeneratingDay] = useState<string | null>(null);
   const [stats, setStats] = useState({
     total: 0,
@@ -429,7 +433,8 @@ export default function AdminContent() {
       // timeout and can abort long generations ~3-5min, killing the fetch while
       // the backend keeps running and still saves the write-up -> false
       // "Generation failed: Failed to fetch" alert).
-      const res = await fetch(`/api/writeups/${sport}/generate/${gameId}`, {
+      const url = `/api/writeups/${sport}/generate/${gameId}${forceNewTitle ? "?force_new_title=true" : ""}`;
+      const res = await fetch(url, {
         method: "POST",
         headers: { Authorization: `Bearer ${token()}`, "Content-Type": "application/json" },
       });
@@ -564,6 +569,15 @@ export default function AdminContent() {
           </p>
         </div>
         <div className="flex items-center gap-3">
+          <label className="flex items-center gap-2 text-xs text-gray-400 select-none cursor-pointer">
+            <input
+              type="checkbox"
+              checked={forceNewTitle}
+              onChange={(e) => setForceNewTitle(e.target.checked)}
+              className="accent-blue-500 h-3.5 w-3.5"
+            />
+            Allow new title/slug (replaces URL)
+          </label>
           <button
             onClick={handleGenerateAll}
             className="px-4 py-2 text-sm font-medium rounded-lg bg-blue-600/20 text-blue-400 border border-blue-600/30 hover:bg-blue-600/30 transition"

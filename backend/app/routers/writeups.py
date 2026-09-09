@@ -27,6 +27,39 @@ router = APIRouter(prefix="/writeups", tags=["writeups"])
 _CARDS_DIR = pathlib.Path(__file__).resolve().parents[2] / "var" / "cards"
 
 
+async def _resolve_slug_or_alias_id(db: AsyncSession, schema: str, identifier: str):
+    """Resolve a non-numeric writeup identifier (canonical slug or old alias slug)
+    to the canonical writeup row *id*.
+
+    Returns:
+      - the canonical row id (int) when `identifier` matches either the current
+        canonical `slug` in <schema>.game_writeups OR an old slug recorded in
+        <schema>.game_writeup_slug_aliases;
+      - the unchanged `identifier` string when nothing resolves (so the caller's
+        normal slug lookup runs and 404s naturally).
+    """
+    # 1) current canonical slug
+    row = await db.execute(
+        text(f"SELECT id FROM {schema}.game_writeups WHERE slug = :k ORDER BY updated_at DESC, id DESC LIMIT 1"),
+        {"k": identifier},
+    )
+    wid = row.scalar_one_or_none()
+    if wid is not None:
+        return int(wid)
+    # 2) old published slug stored as an alias to a canonical row
+    alias = await db.execute(
+        text(
+            f"SELECT game_writeup_id FROM {schema}.game_writeup_slug_aliases "
+            f"WHERE old_slug = :k ORDER BY created_at DESC, game_writeup_id DESC LIMIT 1"
+        ),
+        {"k": identifier},
+    )
+    aid = alias.scalar_one_or_none()
+    if aid is not None:
+        return int(aid)
+    return identifier
+
+
 @router.get("/cards/{sport}/{filename}")
 async def serve_writeup_card(sport: str, filename: str):
     """Stream a generated social/og card PNG from disk (never cached at serverstart).
@@ -258,6 +291,7 @@ async def generate_mlb_writeup(
     is_historical: Optional[bool] = Query(None),  # deprecated — auto-detected from game status
     as_of_date: Optional[str] = Query(None),
     reasoning: str = Query("minimal", pattern="^(minimal|low|medium|high|xhigh|max|none|off|disabled)$"),  # thinking enabled + reasoning effort (default: minimal)
+    force_new_title: bool = Query(False),  # True → allow a fresh title/slug; False → preserve existing writeup identity
     db: AsyncSession = Depends(get_db),
     _admin: User = Depends(require_admin),
 ):
@@ -302,6 +336,7 @@ async def generate_mlb_writeup(
     writeup, qc_results = await gen.generate(
         db, game_id, is_historical=is_historical, as_of_date=as_of_date_parsed,
         reasoning=reasoning, usage_log=usage_log,
+        preserve_identity=not force_new_title,
     )
 
     if "error" in writeup:
@@ -575,6 +610,12 @@ async def get_mlb_writeup(
     is loaded so we can honor the flag.
     """
     is_id = identifier.isdigit()
+    if not is_id:
+        # Slug-alias resolution: an old published slug redirects to a canonical row.
+        resolved = await _resolve_slug_or_alias_id(db, "mlb", identifier)
+        if isinstance(resolved, int):
+            identifier = resolved
+            is_id = True
     row = await db.execute(
         text("""
             SELECT
@@ -904,6 +945,7 @@ async def preview_public_nfl_writeup(
 @router.post("/nfl/generate/{game_id}")
 async def generate_nfl_writeup(
     game_id: int,
+    force_new_title: bool = Query(False),  # True → allow a fresh title/slug; False → preserve existing writeup identity
     db: AsyncSession = Depends(get_db),
     _admin: User = Depends(require_admin),
 ):
@@ -911,7 +953,8 @@ async def generate_nfl_writeup(
     from app.writeups.nfl.generator import NFLWriteupGenerator
     gen = NFLWriteupGenerator()
     usage_log: list[dict] = []
-    result = await gen.generate(db, game_id, reasoning="minimal", usage_log=usage_log)
+    result = await gen.generate(db, game_id, reasoning="minimal", usage_log=usage_log,
+                                preserve_identity=not force_new_title)
     row = await db.execute(
         text("""SELECT id, game_id, title, public_content, premium_content,
                  status, version, is_historical,
@@ -1034,6 +1077,12 @@ async def get_nfl_writeup(
     tier=premium — the gate is waived for exactly that writeup. 403 is deferred to after load.
     """
     is_id = identifier.isdigit()
+    if not is_id:
+        # Slug-alias resolution: an old published slug redirects to a canonical row.
+        resolved = await _resolve_slug_or_alias_id(db, "nfl", identifier)
+        if isinstance(resolved, int):
+            identifier = resolved
+            is_id = True
     row = await db.execute(
         text("""SELECT w.id, w.game_id, w.title, w.slug, w.public_content, w.premium_content,
                  w.status, w.version, w.is_historical, w.preview_image,
@@ -1346,6 +1395,7 @@ async def preview_nba_public_writeup(
 async def generate_nba_writeup(
     game_id: int,
     historical: bool = Query(False),
+    force_new_title: bool = Query(False),  # True → allow a fresh title/slug; False → preserve existing writeup identity
     db: AsyncSession = Depends(get_db),
     _admin: User = Depends(require_admin),
 ):
@@ -1353,7 +1403,8 @@ async def generate_nba_writeup(
     gen = NBAGameWriteupGenerator()
     usage_log: list[dict] = []
     writeup, qc_results = await gen.generate(
-        db, game_id, is_historical=historical, reasoning="minimal", usage_log=usage_log
+        db, game_id, is_historical=historical, reasoning="minimal", usage_log=usage_log,
+        preserve_identity=not force_new_title,
     )
     if "error" in writeup:
         raise HTTPException(status_code=502, detail=writeup["error"])
@@ -1380,8 +1431,26 @@ async def generate_nba_public_writeup(
     writeup, qc_results = await gen.generate_public(game_id, research, is_historical=historical)
     if "error" in writeup:
         raise HTTPException(status_code=502, detail=writeup["error"])
-    writeup_id = await gen.store(game_id, writeup, qc_results, db=db)
-    return {"id": writeup_id, "status": "created"}
+
+    # Persist ONLY the freshly-generated PUBLIC content into the existing row's
+    # public_content column. We do NOT touch premium content, title, slug, or
+    # published_at (identity preserved). base store() writes a FULL premium dict
+    # and takes no `db` param — calling `gen.store(game_id, writeup, qc, db=db)`
+    # here was a bug (TypeError -> 500) and would have clobbered premium columns.
+    content = writeup.get("public_content") or writeup.get("content") or ""
+    if content:
+        await db.execute(
+            text("""
+                UPDATE nba.game_writeups
+                   SET public_content = :content,
+                       updated_at = NOW()
+                 WHERE game_id = :gid
+            """),
+            {"content": content, "gid": game_id},
+        )
+        await db.commit()
+        return {"ok": True, "game_id": game_id, "status": "public_content_updated"}
+    return {"ok": True, "game_id": game_id, "status": "no_public_content_generated"}
 
 
 # ── List / Get ─────────────────────────────────────────────────
@@ -1453,6 +1522,12 @@ async def get_nba_writeup(
     tier=premium — the gate is waived for exactly that writeup. 403 is deferred to after load.
     """
     is_id = identifier.isdigit()
+    if not is_id:
+        # Slug-alias resolution: an old published slug redirects to a canonical row.
+        resolved = await _resolve_slug_or_alias_id(db, "nba", identifier)
+        if isinstance(resolved, int):
+            identifier = resolved
+            is_id = True
     result = await db.execute(
         text("""
             SELECT w.id, w.game_id, w.title, w.slug, w.public_content, w.premium_content,
