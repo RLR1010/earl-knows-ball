@@ -173,17 +173,26 @@ async def writeup_meta(sport: str, identifier: str, db: AsyncSession = Depends(g
     for col in cols:
         key: object = int(ident) if col != "slug" else ident
         row = await db.execute(text(f"""
-            SELECT title FROM {sport}.game_writeups
+            SELECT title, preview_image, premium_social_card
+            FROM {sport}.game_writeups
             WHERE {col} = :ident
             ORDER BY id DESC LIMIT 1
         """), {"ident": key})
         r = row.mappings().first()
         if r and r["title"]:
-            return {"sport": sport, "identifier": identifier, "title": r["title"], "canonical_slug": None}
+            return {
+                "sport": sport,
+                "identifier": identifier,
+                "title": r["title"],
+                "canonical_slug": None,
+                "preview_image": r["preview_image"],
+                "premium_social_card": r["premium_social_card"],
+            }
     # Alias fallback: the requested slug is an OLD published slug.
     if not is_digit:
         row = await db.execute(text(f"""
-            SELECT gw.id, gw.title, gw.slug AS canonical_slug
+            SELECT gw.id, gw.title, gw.slug AS canonical_slug,
+                   gw.preview_image, gw.premium_social_card
             FROM {sport}.game_writeup_slug_aliases a
             JOIN {sport}.game_writeups gw ON gw.id = a.game_writeup_id
             WHERE a.old_slug = :ident
@@ -192,8 +201,22 @@ async def writeup_meta(sport: str, identifier: str, db: AsyncSession = Depends(g
         r = row.mappings().first()
         if r and r["title"]:
             canonical_slug = r["canonical_slug"] or None
-            return {"sport": sport, "identifier": identifier, "title": r["title"], "canonical_slug": canonical_slug}
-    return {"sport": sport, "identifier": identifier, "title": None, "canonical_slug": None}
+            return {
+                "sport": sport,
+                "identifier": identifier,
+                "title": r["title"],
+                "canonical_slug": canonical_slug,
+                "preview_image": r["preview_image"],
+                "premium_social_card": r["premium_social_card"],
+            }
+    return {
+        "sport": sport,
+        "identifier": identifier,
+        "title": None,
+        "canonical_slug": None,
+        "preview_image": None,
+        "premium_social_card": None,
+    }
 
 
 @router.get("/sitemap-data")

@@ -19,18 +19,27 @@ const SITE_URL = "https://earlknowsball.com";
 /** Full Metadata-building helper: title/desc + canonical + OG + twitter. */
 const OG_IMAGE = `${SITE_URL}/og-image.png`;
 
+/**
+ * Full Metadata-building helper: title/desc + canonical + OG + twitter.
+ * When `image` is omitted this falls back to the site-wide generic OG image
+ * (og-image.png). Callers that have a real per-page image (e.g. a writeup's
+ * social card) should pass it so X/Facebook render the actual card.
+ */
 function buildMeta(opts: {
   title: string;
   description: string;
   url: string;
+  /** Absolute URL of the social card image. Falls back to the site-wide OG image. */
+  image?: string;
 }): {
   title: string;
   description: string;
   alternates: { canonical: string };
   openGraph: { title: string; description: string; url: string; images?: string[]; siteName?: string; type?: string };
-  twitter: { title: string; description: string; card?: string };
+  twitter: { title: string; description: string; card?: string; image?: string };
 } {
   const esctitle = (t: string) => t;
+  const image = opts.image?.trim() || OG_IMAGE;
   return {
     title: opts.title,
     description: opts.description,
@@ -39,7 +48,7 @@ function buildMeta(opts: {
       title: esctitle(opts.title),
       description: opts.description,
       url: opts.url,
-      images: [OG_IMAGE],
+      images: [image],
       siteName: "Earl Knows Ball",
       type: "website",
     },
@@ -47,6 +56,7 @@ function buildMeta(opts: {
       title: esctitle(opts.title),
       description: opts.description,
       card: "summary_large_image",
+      image,
     },
   };
 }
@@ -196,29 +206,52 @@ export async function resolveWriteupRedirect(
 }
 
 /**
+ * Normalize a card image path from the DB into an absolute crawler-safe URL.
+ * The DB stores site-absolute paths like "/writeups/cards/mlb/free-49268.png";
+ * X/Facebook/Google need a fully-qualified https URL to render the image.
+ */
+function absolutizeImage(raw?: string | null): string | undefined {
+  const v = raw?.trim();
+  if (!v) return undefined;
+  if (/^https?:\/\//i.test(v)) return v;
+  return `${SITE_URL}${v.startsWith("/") ? v : `/${v}`}`;
+}
+
+/**
  * Metadata for a writeup / analysis page.
  * Title: the writeup's own title (e.g. "Seahawks at Titans: Preseason Week 2 Preview").
+ * Image: the writeup's social card. When the writeup is the active Free Pick it
+ * carries a bespoke `premium_social_card` (promo card meant to be shared);
+ * otherwise fall back to its standard `preview_image`. Falls back to the generic
+ * OG image only when neither exists.
  */
 export async function writeupMetadata(
   sport: string,
   identifier: string
-): Promise<{ title: string; description: string; canonical?: string }> {
+): Promise<{ title: string; description: string; canonical?: string; image?: string }> {
   const label = sportLabel(sport);
-  const meta = await fetchSeoJson<{ title?: string | null }>(
-    `/seo/writeup-meta/${sport}/${encodeURIComponent(identifier)}`
-  );
+  const meta = await fetchSeoJson<{
+    title?: string | null;
+    preview_image?: string | null;
+    premium_social_card?: string | null;
+  }>(`/seo/writeup-meta/${sport}/${encodeURIComponent(identifier)}`);
   const writeupTitle = meta?.title?.trim();
+  // Premium social card (free-pick promo) wins when present; else the standard
+  // per-game card; else undefined so buildMeta falls back to the site OG image.
+  const image = absolutizeImage(meta?.premium_social_card) ?? absolutizeImage(meta?.preview_image);
   if (writeupTitle) {
     return buildMeta({
       title: writeupTitle,
       description: BASE.description(writeupTitle),
       url: url(`/${sport}/analysis/${identifier}`),
+      image,
     });
   }
   return buildMeta({
     title: `${label} Analysis`,
     description: BASE.description(`${label} game analysis and writeups`),
     url: url(`/${sport}/analysis/${identifier}`),
+    image,
   });
 }
 
