@@ -545,34 +545,80 @@ export default function ContentEditor() {
     if (!confirm("Regenerate this write-up? Current content will be versioned."))
       return;
 
+    // Snapshot the current version BEFORE starting so we can tell afterwards
+    // whether the regenerate actually landed (it can commit server-side even
+    // when the browser request later errors out / is aborted).
+    const startVersion = writeup.version ?? -1;
+
     try {
       // Call backend directly to avoid proxy timeout
       // Full write-up regeneration runs a research loop + enrichment and can take
       // ~4-5 min. Give it generous headroom (420s) past the ~4.5 min typical run.
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 420_000);
-      const res = await fetch(
-        `/writeups/${sport}/generate/${writeup.game_id}${forceNewTitle ? "?force_new_title=true" : ""}`,
-        {
-          method: "POST",
-          headers: { Authorization: `Bearer ${token()}`, "Content-Type": "application/json" },
-          signal: controller.signal,
+      try {
+        const res = await fetch(
+          `/writeups/${sport}/generate/${writeup.game_id}${forceNewTitle ? "?force_new_title=true" : ""}`,
+          {
+            method: "POST",
+            headers: { Authorization: `Bearer ${token()}`, "Content-Type": "application/json" },
+            signal: controller.signal,
+          }
+        );
+        clearTimeout(timeout);
+        if (!res.ok) {
+          const errText = await res.text();
+          throw new Error(
+            errText && /<\s*(html|!doctype)/i.test(errText)
+              ? "The server returned an error page (it may have been mid-generation)."
+              : errText
+          );
         }
-      );
-      clearTimeout(timeout);
-
-      if (!res.ok) {
-        const errText = await res.text();
-        throw new Error(errText);
+      } finally {
+        clearTimeout(timeout);
       }
+
+      // Request returned OK — refresh to show the new version.
       await fetchWriteup();
+      alert("Regeneration complete.");
     } catch (e: any) {
+      // A timeout / dropped connection does NOT mean it failed: the browser may
+      // have been killed while the backend job kept running to completion.
+      // Reconcile with the server before declaring failure.
+      const landed = await pollForUpdatedVersion(startVersion);
+      if (landed) {
+        await fetchWriteup();
+        alert("Regeneration actually went through — the new version was saved (the request had reported an error).");
+        return;
+      }
       if (e.name === "AbortError") {
-        alert("Regeneration timed out after 7 minutes. It may still be running in the background — refresh in a bit.");
+        alert("Regeneration timed out after 7 minutes. It may still be running — the page was refreshed to reflect whatever saved.");
       } else {
         alert(`Regeneration failed: ${e.message}`);
       }
     }
+  };
+
+  // Regeneration can land server-side even when the browser request errors out
+  // (client abort / gateway drop / error mid-run). Poll the stored record and
+  // confirm whether the version advanced before we show "failed".
+  const pollForUpdatedVersion = async (startVersion: number): Promise<boolean> => {
+    for (let attempt = 0; attempt < 12; attempt++) {
+      try {
+        const res = await fetch(`/api/writeups/${sport}/${writeupId}?tier=premium`, {
+          headers: { Authorization: `Bearer ${token()}` },
+        });
+        if (res.ok) {
+          const data = await res.json();
+          // A successful regenerate bumps `version`; any bump means it landed.
+          if ((data?.version ?? -1) > startVersion) return true;
+        }
+      } catch {
+        /* best-effort; keep polling */
+      }
+      await new Promise((r) => setTimeout(r, 5000));
+    }
+    return false;
   };
 
   // Force (re)render the social/og card for this game (MLB + NFL have card routes).

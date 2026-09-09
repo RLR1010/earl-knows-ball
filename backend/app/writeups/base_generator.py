@@ -20,6 +20,24 @@ from app.core.config import settings
 
 logger = logging.getLogger("writeups")
 
+# Shared directive for a compelling, non-template headline with both team names.
+# Used by every writeup lane (public + premium, all sports) so the title on line 1
+# is a real hook rather than a lazy "Home Team vs Away Team Preview" boilerplate.
+TITLE_HOOK_RULE = (
+    "TITLE (first thing you write, before anything else):\n"
+    "- Line 1 IS the headline. Put nothing before it - no blank line, no preamble.\n"
+    "- Write a COMPELLING, newsworthy headline that makes someone want to click - "
+    "a hook about the stakes, the matchup, or a key storyline (a division/wild-card "
+    "or playoff race, two hot teams, a marquee individual duel, a streak or return).\n"
+    "- MUST name BOTH teams with their full city/team names from the research "
+    "(e.g. 'Atlanta Braves' and 'Tampa Bay Rays', not just 'Braves'/'Rays').\n"
+    "- Never use a bare template like 'Home Team vs. Away Team' or "
+    "'[Team] at [Team] Preview'. If your only instinct is to write it that plainly, "
+    "find the real angle and headline that instead.\n"
+    "- Target 50-75 characters; max ~80.\n"
+    "After the title line, put ONE blank line, then the article body.\n"
+)
+
 # ── Quality check result types ─────────────────────────────────────
 
 QCResult = dict[str, Any]  # {check_name: str, passed: bool, detail: str}
@@ -205,7 +223,13 @@ This is a game preview — not a betting analysis. Write in the style of a well-
 
 {tense_note}
 
-FORMATTING: This renders as a web article via markdown. Use `##` for the title on line 1. Use `##` section headers to organize the body. Use `**` for emphasis sparingly. For tables, use proper pipe-and-dash markdown syntax with a separator row:
+FORMATTING: This renders as a web article via markdown.
+
+{TITLE_HOOK_RULE}
+BODY:
+- Use `##` for section headers to organize the body (never for the title - the title is line 1 only).
+- Use `**` for emphasis sparingly.
+- For tables, use proper pipe-and-dash markdown syntax with a separator row:
 
 | Pitcher | Record | ERA | WHIP |
 |---------|--------|-----|------|
@@ -256,6 +280,7 @@ What to include:
 
 OUTPUT FORMAT: Start with the article TITLE on its own line (use `##` as a heading).
 Then a blank line. Then the full article formatted in markdown.
+{TITLE_HOOK_RULE}
 This renders as a web article, so use markdown appropriate for publishing:
 - `##` section headers to organize the analysis
 - `**` for emphasis on key numbers/angles
