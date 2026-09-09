@@ -111,6 +111,7 @@ from app.routers import (
     admin,
     writeups,
     original_articles,
+    free_pick,
     auto_generation,
     token_usage,
     social_x,
@@ -148,6 +149,7 @@ _COMPUTE_FACING = [
     admin,
     writeups,
     original_articles,
+    free_pick,
 ]
 
 if EARL_ROLE in ("all", "api"):

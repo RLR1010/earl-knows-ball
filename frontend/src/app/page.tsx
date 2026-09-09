@@ -3,6 +3,7 @@ import UpcomingGames from "@/components/UpcomingGames";
 import BestBetsPanel from "@/components/BestBetsPanel";
 import WinnersShowcase from "@/components/WinnersShowcase";
 import SiteEditorialSection from "@/components/SiteEditorialSection";
+import HomeFreePickSection from "@/components/HomeFreePickSection";
 import JsonLd from "@/components/JsonLd";
 import { websiteStructuredData } from "@/lib/structured-data";
 
@@ -112,6 +113,9 @@ export default function Home() {
           </ul>
         </div>
       </section>
+
+      {/* Free Pick giveaway — featured premium write-up unlocked for everyone, placed above editorials */}
+      <HomeFreePickSection />
 
       {/* Site-wide "All" editorial articles */}
       <SiteEditorialSection />

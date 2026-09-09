@@ -39,6 +39,9 @@ type EarlsPicksPanelProps = {
   title?: string; // default "Earl's Picks"
   /** Compact schedule-card variant: no header icon, no Premium badge, text-only gate. */
   compact?: boolean;
+  /** Fully ungated (for content already inside a premium-gated area): shows picks with no
+   *  Premium badge and no gate at all. Ignores `compact`. */
+  ungated?: boolean;
 };
 
 function ScoreLine({
@@ -149,10 +152,11 @@ export default function EarlsPicksPanel({
   predicted,
   title = "Earl's Picks",
   compact = false,
+  ungated = false,
 }: EarlsPicksPanelProps) {
   return (
-    <div className={`${compact ? "mt-2" : "mt-4 pt-4 border-t border-white/10 space-y-4"} ${compact ? "space-y-2" : ""}`}>
-      {compact ? (
+    <div className={ungated ? "space-y-4" : `${compact ? "mt-2" : "mt-4 pt-4 border-t border-white/10 space-y-4"} ${compact ? "space-y-2" : ""}`}>
+      {compact && !ungated ? (
         <h3 className="text-sm font-semibold tracking-tight text-gray-100">{title}</h3>
       ) : (
         <div className="flex items-center gap-2">
@@ -160,17 +164,28 @@ export default function EarlsPicksPanel({
           <h3 className="text-sm font-semibold tracking-tight text-gray-100 uppercase inline-flex items-center gap-1.5">
             {title}
           </h3>
-          <span className="text-[10px] font-medium text-amber-400/90 bg-amber-500/10 border border-amber-500/30 rounded-full px-2 py-0.5">
-            Premium
-          </span>
+          {!ungated && (
+            <span className="text-[10px] font-medium text-amber-400/90 bg-amber-500/10 border border-amber-500/30 rounded-full px-2 py-0.5">
+              Premium
+            </span>
+          )}
         </div>
       )}
 
-      {!compact && (
+      {!compact && !ungated && (
         <p className="text-[11px] leading-snug text-gray-500 -mt-2">Pick accuracy improves closer to game time.</p>
       )}
 
-      {compact ? (
+      {ungated ? (
+        <>
+          {predicted && <ScoreLine heading="Predicted" score={predicted} />}
+          <div className="grid grid-cols-3 divide-x divide-white/10">
+            {items.map((item) => (
+              <PickItemCard key={item.label} item={item} compact={false} />
+            ))}
+          </div>
+        </>
+      ) : compact ? (
         <CompactGate>
           {predicted && <ScoreLine heading="Predicted" score={predicted} />}
           <div className="grid grid-cols-3 divide-x divide-white/10">

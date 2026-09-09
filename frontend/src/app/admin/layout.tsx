@@ -20,6 +20,7 @@ const NAV_GROUPS = [
     items: [
       { label: "Game Previews", path: "/admin/content" },
       { label: "Original Articles", path: "/admin/original-articles" },
+      { label: "Free Pick", path: "/admin/free-pick" },
       { label: "Auto Generation", path: "/admin/auto-generation" },
       { label: "Articles", path: "/admin/articles" },
       { label: "RSS Feeds", path: "/admin/articles/rss" },

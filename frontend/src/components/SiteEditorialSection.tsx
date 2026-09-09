@@ -45,7 +45,7 @@ export default function SiteEditorialSection() {
 
   useEffect(() => {
     let active = true;
-    fetch(`/api/original-articles/all?limit=6`)
+    fetch(`/api/original-articles/all?limit=4`)
       .then((r) => (r.ok ? r.json() : { articles: [] }))
       .then((d) => {
         const list = Array.isArray(d.articles) ? d.articles : Array.isArray(d) ? d : [];

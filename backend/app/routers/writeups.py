@@ -568,9 +568,12 @@ async def get_mlb_writeup(
     """Get a single write-up by numeric ID or SEO slug.
 
     *tier* controls which content version is returned.
+
+    A row flagged `is_free_feature` (the "Free Pick" giveaway) is served to ANYONE on
+    tier=premium — the premium gate is waived for exactly that one writeup so it can be
+    shared openly via the homepage + social card. The 403 is deferred until after the row
+    is loaded so we can honor the flag.
     """
-    if tier == "premium" and not user_is_premium(current_user):
-        raise HTTPException(status_code=403, detail="Premium subscription required")
     is_id = identifier.isdigit()
     row = await db.execute(
         text("""
@@ -586,6 +589,7 @@ async def get_mlb_writeup(
                 w.rejection_history,
                 w.research_brief,
                 w.preview_image, w.seo_description, w.social_caption,
+                w.is_free_feature, w.free_featured_at,
                 g.date AS game_date,
                 ht.abbreviation AS home_team,
                 at.abbreviation AS away_team
@@ -607,6 +611,7 @@ async def get_mlb_writeup(
                 w.rejection_history,
                 w.research_brief,
                 w.preview_image, w.seo_description, w.social_caption,
+                w.is_free_feature, w.free_featured_at,
                 g.date AS game_date,
                 ht.abbreviation AS home_team,
                 at.abbreviation AS away_team
@@ -622,7 +627,18 @@ async def get_mlb_writeup(
     if r is None:
         raise HTTPException(status_code=404, detail=f"Write-up {identifier} not found")
 
-    content = r["premium_content"] if tier == "premium" else r["public_content"]
+    # Free-Pick gates: a writeup flagged as the free feature unlocks its premium content
+    # to everyone (homepage + shared social card); everything else stays premium-only.
+    is_free_feature = bool(r.get("is_free_feature"))
+    premium_allowed = user_is_premium(current_user) or is_free_feature
+    if tier == "premium" and not premium_allowed:
+        raise HTTPException(status_code=403, detail="Premium subscription required")
+
+    content = (
+        r["premium_content"]
+        if tier == "premium" and premium_allowed
+        else r["public_content"]
+    )
 
     # Team-card payload (the two team stat cards that appear on the social-card
     # image) for the PUBLIC article — so readers arriving from X see the same
@@ -645,7 +661,7 @@ async def get_mlb_writeup(
         "title": r["title"],
         "content": content,
         "prop_title": r["prop_title"],
-        "prop_content": r["prop_content"] if tier == "premium" else None,
+        "prop_content": r["prop_content"] if tier == "premium" and premium_allowed else None,
         "prop_published_at": r["prop_published_at"].isoformat() if r.get("prop_published_at") else None,
         "matchup": f"{r['away_team']} @ {r['home_team']}",
         "status": r["status"],
@@ -664,6 +680,8 @@ async def get_mlb_writeup(
         "preview_image": r.get("preview_image"),
         "seo_description": r.get("seo_description"),
         "social_caption": r.get("social_caption"),
+        "is_free_feature": bool(r.get("is_free_feature")),
+        "free_featured_at": r.get("free_featured_at").isoformat() if r.get("free_featured_at") else None,
         "team_cards": team_cards,
     }
 
@@ -1011,13 +1029,15 @@ async def get_nfl_writeup(
     """Get a specific NFL writeup by numeric ID or SEO slug.
 
     *tier* controls which content version is returned in the ``content`` field.
+
+    A row flagged `is_free_feature` (the "Free Pick" giveaway) is served to ANYONE on
+    tier=premium — the gate is waived for exactly that writeup. 403 is deferred to after load.
     """
-    if tier == "premium" and not user_is_premium(current_user):
-        raise HTTPException(status_code=403, detail="Premium subscription required")
     is_id = identifier.isdigit()
     row = await db.execute(
         text("""SELECT w.id, w.game_id, w.title, w.slug, w.public_content, w.premium_content,
                  w.status, w.version, w.is_historical, w.preview_image,
+                 w.is_free_feature, w.free_featured_at,
                  w.research_brief, w.quality_checks,
                  w.total_tokens, w.accuracy_check, w.accuracy_check_tokens,
                  w.rejection_history,
@@ -1030,6 +1050,7 @@ async def get_nfl_writeup(
           JOIN nfl.teams at ON g.away_team_id = at.id
           WHERE w.id = :key""" if is_id else """SELECT w.id, w.game_id, w.title, w.slug, w.public_content, w.premium_content,
                  w.status, w.version, w.is_historical, w.preview_image,
+                 w.is_free_feature, w.free_featured_at,
                  w.research_brief, w.quality_checks,
                  w.total_tokens, w.accuracy_check, w.accuracy_check_tokens,
                  w.rejection_history,
@@ -1048,7 +1069,16 @@ async def get_nfl_writeup(
         raise HTTPException(status_code=404, detail=f"Write-up {identifier} not found")
     rb = r.get("research_brief")
     qc = r.get("quality_checks")
-    content = r["premium_content"] if tier == "premium" else r["public_content"]
+    # Free-Pick gates: featured writeup unlocks premium to everyone; others stay premium-only.
+    is_free_feature = bool(r.get("is_free_feature"))
+    premium_allowed = user_is_premium(current_user) or is_free_feature
+    if tier == "premium" and not premium_allowed:
+        raise HTTPException(status_code=403, detail="Premium subscription required")
+    content = (
+        r["premium_content"]
+        if tier == "premium" and premium_allowed
+        else r["public_content"]
+    )
     # Team stat cards (same as the card PNG) under the title. Additive/safe-fallback.
     team_cards = None
     if tier == "public" and r.get("game_id"):
@@ -1074,6 +1104,8 @@ async def get_nfl_writeup(
         "rejection_history": json.loads(r.get("rejection_history")) if isinstance(r.get("rejection_history"), str) else (r.get("rejection_history") or []),
         "week": r["week"], "matchup": f"{r['away']} @ {r['home']}",
         "preview_image": r.get("preview_image"),
+        "is_free_feature": bool(r.get("is_free_feature")),
+        "free_featured_at": r.get("free_featured_at").isoformat() if r.get("free_featured_at") else None,
         "team_cards": team_cards,
         "game_date": r["date"].isoformat() if r["date"] else None,
         "published_at": r["published_at"].isoformat() if r["published_at"] else None,
@@ -1415,9 +1447,11 @@ async def get_nba_writeup(
     current_user: "User | None" = Depends(get_optional_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Get a specific NBA write-up by numeric ID or SEO slug. Matches MLB pattern for frontend compatibility."""
-    if tier == "premium" and not user_is_premium(current_user):
-        raise HTTPException(status_code=403, detail="Premium subscription required")
+    """Get a specific NBA write-up by numeric ID or SEO slug. Matches MLB pattern for frontend compatibility.
+
+    A row flagged `is_free_feature` (the "Free Pick" giveaway) is served to ANYONE on
+    tier=premium — the gate is waived for exactly that writeup. 403 is deferred to after load.
+    """
     is_id = identifier.isdigit()
     result = await db.execute(
         text("""
@@ -1428,7 +1462,8 @@ async def get_nba_writeup(
                    g.date, ht.name AS home, ht.abbreviation AS home_abbr,
                    at.name AS away, at.abbreviation AS away_abbr,
                    w.accuracy_check, w.accuracy_check_tokens,
-                   w.rejection_history
+                   w.rejection_history,
+                   w.is_free_feature, w.free_featured_at
             FROM nba.game_writeups w
             JOIN nba.games g ON w.game_id = g.id
             JOIN nba.teams ht ON g.home_team_id = ht.id
@@ -1442,7 +1477,8 @@ async def get_nba_writeup(
                    g.date, ht.name AS home, ht.abbreviation AS home_abbr,
                    at.name AS away, at.abbreviation AS away_abbr,
                    w.accuracy_check, w.accuracy_check_tokens,
-                   w.rejection_history
+                   w.rejection_history,
+                   w.is_free_feature, w.free_featured_at
             FROM nba.game_writeups w
             JOIN nba.games g ON w.game_id = g.id
             JOIN nba.teams ht ON g.home_team_id = ht.id
@@ -1455,7 +1491,13 @@ async def get_nba_writeup(
     if not row:
         raise HTTPException(status_code=404, detail=f"Write-up {identifier} not found")
 
-    content = row[5] if tier == "premium" else row[4]
+    # Free-Pick gates: featured writeup unlocks premium to everyone; others stay premium-only.
+    is_free_feature = bool(row[24])
+    premium_allowed = user_is_premium(current_user) or is_free_feature
+    if tier == "premium" and not premium_allowed:
+        raise HTTPException(status_code=403, detail="Premium subscription required")
+
+    content = row[5] if tier == "premium" and premium_allowed else row[4]
 
     return {
         "id": row[0],
@@ -1482,6 +1524,8 @@ async def get_nba_writeup(
         "home_abbr": row[18],
         "away_team": row[19],
         "away_abbr": row[20],
+        "is_free_feature": bool(row[24]),
+        "free_featured_at": (str(row[25]) if row[25] else None),
     }
 
 
