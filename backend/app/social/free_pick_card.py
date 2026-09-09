@@ -56,18 +56,15 @@ def _free_pick_html(
     home_logo = home.get("logo_url") or ""
     away_name = (away.get("name") or "").upper()
     home_name = (home.get("name") or "").upper()
-    away_meta = (away.get("meta") or "").split("·")[0].strip()
-    home_meta = (home.get("meta") or "").split("·")[0].strip()
     esc = lambda s: (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     title = esc(title)[:110]
-    dek = esc(dek)[:140]
     url_path = f"{sport}/analysis/{slug}" if slug else "#"
 
     # ---- precompute conditional fragments as true f-strings (NO mid-string concat leaks) ----
     logo_html = (
-        f"<img src=\"{logo_uri}\" style=\"height:40px;width:auto;object-fit:contain;\" />"
+        f"<img src=\"{logo_uri}\" style=\"height:56px;width:auto;object-fit:contain;\" />"
         if logo_uri
-        else "<span style=\"font-size:17px;font-weight:900;letter-spacing:3px;color:#e8edf4;text-transform:uppercase;\">Earl&nbsp;Knows&nbsp;Ball</span>"
+        else "<span style=\"font-size:24px;font-weight:900;letter-spacing:3px;color:#e8edf4;text-transform:uppercase;\">Earl&nbsp;Knows&nbsp;Ball</span>"
     )
     if away_logo:
         away_logo_html = (
@@ -83,9 +80,6 @@ def _free_pick_html(
         )
     else:
         home_logo_html = f"<div style=\"width:210px;height:210px;margin:0 auto;\"></div>"
-    dek_html = (
-        f"<div style=\"color:#c7cdd6;font-size:19px;margin-top:12px;\">{dek}</div>" if dek else ""
-    )
 
     return f"""<!doctype html><html><head><meta charset="utf-8"/></head><body style="margin:0">
 <div style="width:1600px;height:900px;position:relative;overflow:hidden;
@@ -96,37 +90,36 @@ def _free_pick_html(
 
   <!-- top band -->
   <div style="position:absolute;top:0;left:0;right:0;height:9px;background:linear-gradient(90deg,{accent},{accent2});"></div>
-  <div style="display:flex;align-items:center;justify-content:space-between;padding:26px 46px 0;">
+  <div style="display:flex;align-items:center;justify-content:space-between;padding:44px 46px 0;">
     <div style="display:flex;align-items:center;">{logo_html}</div>
-    <div style="background:{accent};color:#fff;font-weight:800;font-size:16px;letter-spacing:2px;
-         padding:9px 20px;border-radius:40px;box-shadow:0 4px 22px {accent}66;">FREE PICKS</div>
+    <div style="background:{accent};color:#fff;font-weight:800;font-size:22px;letter-spacing:2px;
+         padding:13px 28px;border-radius:40px;box-shadow:0 4px 22px {accent}66;">FREE PICKS</div>
   </div>
 
   <!-- matchup -->
-  <div style="display:flex;align-items:center;justify-content:center;gap:40px;margin-top:34px;">
+  <div style="display:flex;align-items:center;justify-content:center;gap:40px;margin-top:30px;">
     <div style="text-align:center;width:350px;">
       {away_logo_html}
       <div style="font-size:27px;font-weight:800;letter-spacing:1px;margin-top:16px;">{away_name}</div>
-      <div style="font-size:16px;color:#aab2bd;margin-top:5px;">{away_meta}</div>
     </div>
     <div style="font-size:50px;font-weight:900;color:{accent2};letter-spacing:4px;">VS</div>
     <div style="text-align:center;width:350px;">
       {home_logo_html}
       <div style="font-size:27px;font-weight:800;letter-spacing:1px;margin-top:16px;">{home_name}</div>
-      <div style="font-size:16px;color:#aab2bd;margin-top:5px;">{home_meta}</div>
     </div>
   </div>
 
-  <!-- giveaway headline -->
-  <div style="text-align:center;margin-top:44px;padding:0 100px;">
-    <div style="font-size:32px;font-weight:900;line-height:1.28;color:#fff;text-transform:uppercase;letter-spacing:1px;">
+  <!-- giveaway headline + title + original gold pill (dek/description removed) -->
+  <div style="text-align:center;margin-top:34px;padding:0 100px;">
+    <div style="font-size:56px;font-weight:900;line-height:1.24;color:#fff;text-transform:uppercase;letter-spacing:1px;">
       Earl&rsquo;s full premium breakdown<br/>is yours &mdash; <span style="color:{accent2};">free</span>
     </div>
-    <div style="font-size:33px;font-weight:800;color:#fff;margin-top:12px;line-height:1.2;">{title}</div>
-    {dek_html}
-    <div style="display:inline-flex;align-items:center;gap:10px;margin-top:22px;background:{accent2};
-         color:#10141b;font-weight:900;font-size:17px;letter-spacing:1px;padding:11px 24px;border-radius:10px;
-         box-shadow:0 6px 24px {accent2}55;">LOCKED FOR PREMIUM &middot; NOW <u>UNLOCKED</u> FOR YOU</div>
+    <div style="font-size:36px;font-weight:800;color:#fff;margin-top:14px;line-height:1.2;">{title}</div>
+    <div style="display:flex;justify-content:center;">
+      <div style="display:inline-flex;align-items:center;gap:10px;margin-top:26px;background:{accent2};
+           color:#10141b;font-weight:900;font-size:28px;letter-spacing:1px;padding:13px 28px;border-radius:10px;
+           box-shadow:0 6px 24px {accent2}55;">LOCKED FOR PREMIUM &middot; NOW <u>UNLOCKED</u> FOR YOU</div>
+    </div>
   </div>
 
   <!-- bottom bar with earl portrait + cta -->
