@@ -87,6 +87,7 @@ def _mlb_games_store(key, payload: list):
                 del _mlb_games_cache[k]
 from app.models import User
 from app.routers.auth import get_optional_user
+from app.core.security import user_is_premium
 from app.handicapping.mlb.mlb_splits import MLBSplitAnalyzer
 from app.handicapping.mlb.mlb_situational import MLBSituationalAnalyzer
 import math
@@ -966,6 +967,7 @@ async def mlb_games(
     date: str = Query(None),
     team_abbr: str = Query(None),
     db: AsyncSession = Depends(get_db),
+    user: User | None = Depends(get_optional_user),
 ):
     # 30s TTL response cache (per-worker) keyed by query params.
     cache_key = (year, date, (team_abbr or "").upper())
@@ -1140,6 +1142,17 @@ async def mlb_games(
         pass
 
     out = jsonable_encoder(games_list)
+    # Premium gate (field-level): schedule stays public, picks/EV are premium.
+    # Strip BEFORE caching to avoid leaking premium payloads via the response cache.
+    if not user_is_premium(user):
+        for _g in out:
+            for _k in (
+                "pick_spread", "pick_over_under", "pick_moneyline",
+                "pick_ats_ev", "pick_ou_ev", "pick_ml_ev",
+                "predicted_margin", "predicted_total",
+            ):
+                if _k in _g:
+                    _g[_k] = None
     _mlb_games_store(cache_key, out)
     return JSONResponse(content=out, headers={"Cache-Control": "public, max-age=30"})
 
@@ -1281,8 +1294,13 @@ def _sanitize_json(obj):
 async def mlb_game_boxscore(
     game_id: int,
     db: AsyncSession = Depends(get_db),
+    user: User | None = Depends(get_optional_user),
 ):
-    """Return game details + proxy the MLB Stats API boxscore."""
+    """Return game details + proxy the MLB Stats API boxscore.
+
+    Box score itself is public (scores/lineups), but the premium pick payload
+    (pick_card / betting_lines / splits) is stripped for non-premium callers below.
+    """
     # Get game from our DB
     sql = """
     SELECT
@@ -1737,6 +1755,20 @@ async def mlb_game_boxscore(
 
             lineups = {"home": raw_home, "away": raw_away}
 
+    # Premium gate (field-level): the game-details page ALWAYS shows the betting
+    # lines card and Earl's Picks card shell (predicted score, lines, results) to
+    # everyone; only the PICK VALUES / model edge are premium. We therefore keep
+    # pick_card + betting_lines + splits in the payload for non-premium callers and
+    # redact just the premium sub-fields, so the card renders with the picks locked
+    # (the client PremiumGate blurs them). Never null the whole card.
+    _premium = user_is_premium(user)
+    if not _premium and pick_card is not None:
+        # Redact premium math/picks but keep the card shell intact.
+        pick_card = dict(pick_card)
+        pick_card["picks"] = None
+        pick_card["expected_value"] = None
+        pick_card["confidence"] = None
+
     return {
         "game": game_dict,
         "boxscore": boxscore_data,
@@ -1762,8 +1794,14 @@ async def mlb_game_boxscore(
 async def mlb_game_prop_bets(
     game_id: int,
     db: AsyncSession = Depends(get_db),
+    user: User | None = Depends(get_optional_user),
 ):
-    """Return all player prop bets stored for an MLB game, or empty list if none."""
+    """Return all player prop bets stored for an MLB game, or empty list if none.
+
+    Premium gate: player props are a premium feature.
+    """
+    if not user_is_premium(user):
+        raise HTTPException(status_code=403, detail="Premium subscription required")
     result = await db.execute(
         text(
             """
@@ -1856,7 +1894,11 @@ async def mlb_game_prediction_stats(
 
     Returns the same data the boxscore endpoint returns in pick_card,
     plus full features_json for the stats details view.
+
+    Premium gate: model features/pick card are a premium feature.
     """
+    if not user_is_premium(user):
+        raise HTTPException(status_code=403, detail="Premium subscription required")
     from app.models.mlb import MLBGamePrediction
 
     pred_r = await db.execute(
