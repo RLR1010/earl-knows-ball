@@ -229,15 +229,13 @@ export default function SportArticlesPage({ params }: { params: Promise<{ sport:
     const todayKey = todayEastern();
     if (requestedDate && days.includes(requestedDate)) return requestedDate;
     if (days.includes(todayKey)) return todayKey;
-    // Fall back to the closest day to today (prefer most recent on or before, else first).
-    const nearest = days.reduce<string | null>((best, d) => {
-      if (best === null) return d;
-      return Math.abs(Date.parse(d) - Date.parse(todayKey)) <
-        Math.abs(Date.parse(best) - Date.parse(todayKey))
-        ? d
-        : best;
-    }, null);
-    return nearest ?? todayKey;
+    // No games today -> default to the NEXT scheduled game day (first day >= today),
+    // NOT the nearest day (which could be yesterday's already-played game).
+    const upcoming = days.find((d) => d >= todayKey);
+    if (upcoming) return upcoming;
+    // No upcoming days at all (e.g. season over) -> use the most recent past day.
+    const past = days.filter((d) => d < todayKey);
+    return past.length ? past[past.length - 1] : todayKey;
   }, [requestedDate, days]);
 
   const dayPreviews = useMemo(() => {
