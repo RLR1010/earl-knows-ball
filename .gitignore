@@ -53,3 +53,18 @@ backend/test_lineup_*.py
 backend/tmp_diff_*.py
 backend/app/scripts/test_mlb_backtest_features.py
 backend/app/scripts/mlb_backtest_feature_parity_*.csv
+
+# Dev probe scripts / renders (never commit)
+backend/x_*.py
+/social-card-probe.png
+/template-B-scorecard-v1.png
+frontend/public/__probe_new__.png
+
+# Runtime-generated social card PNG output (legacy public/og location — cards
+# are now written to backend/var/cards and served via the writeups FileResponse)
+frontend/public/og/all/
+frontend/public/og/mlb/
+frontend/public/og/nba/
+
+# One-off ingress ops trigger (scratch)
+backend/app/scripts/ingress/_prod_fire_recap.py
