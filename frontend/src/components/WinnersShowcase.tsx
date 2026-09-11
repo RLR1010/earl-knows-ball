@@ -73,6 +73,7 @@ export default function WinnersShowcase() {
       recap={recap}
       containerClassName="max-w-6xl mx-auto px-4"
       subtitle="This week's calls that cashed — read the full lowdown."
+      resultsHref="/nfl/results"
     />
   );
 }

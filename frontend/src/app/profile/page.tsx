@@ -5,6 +5,7 @@ import { useAuth } from "@/lib/auth-context";
 import { api, type PaymentRecord, type TokenUsageResponse } from "@/lib/api";
 import { useRouter } from "next/navigation";
 import { useSeo } from "@/components/Seo";
+import { fireXEvent, X_EVENTS } from "@/components/TwclidCapture";
 
 declare global {
   interface Window {
@@ -94,6 +95,24 @@ export default function ProfilePage() {
   const [topupCheckoutOpen, setTopupCheckoutOpen] = useState(false);
   const [tokenTopup, setTokenTopup] = useState<string | null>(null); // token_topup=success query
   const checkoutRef = useRef<HTMLDivElement>(null);
+
+  // React to a successful membership checkout (redirect back from Stripe).
+  // Fires the X PURCHASE conversion ONCE per checkout — a sessionStorage guard
+  // prevents double-counting if the buyer refreshes the success page.
+  useEffect(() => {
+    const q = new URLSearchParams(window.location.search);
+    if (q.get("subscription") !== "success") return;
+    const guardKey = "earl_x_purchase_fired";
+    try {
+      if (sessionStorage.getItem(guardKey) === "1") return;
+      sessionStorage.setItem(guardKey, "1");
+    } catch {
+      // storage blocked — fall through; conversion still fires once this mount
+    }
+    fireXEvent(X_EVENTS.PURCHASE, { email_address: user?.email ?? null });
+    // clean the query param so a manual refresh won't re-trigger the effect
+    window.history.replaceState({}, document.title, window.location.pathname);
+  }, [user]);
 
   // React to a successful token top-up (redirect back from Stripe)
   useEffect(() => {

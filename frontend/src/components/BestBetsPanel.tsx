@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api, Game } from "../lib/api";
 import { useAuth } from "@/lib/auth-context";
 import LoginModal from "./LoginModal";
+import { usePollingRefresh } from "@/lib/usePollingRefresh";
 import { resolvePickTeam, spreadPickDisplay } from "./ScheduleGameCard";
 import type { CardSport } from "./ScheduleGameCard";
 
@@ -68,9 +69,9 @@ export default function BestBetsPanel({
   const [error, setError] = useState<string | null>(null);
   const [loginModalOpen, setLoginModalOpen] = useState(false);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (opts?: { silent?: boolean }) => {
     setError(null);
-    setGames(null);
+    if (!opts?.silent) setGames(null);
     try {
       const data = await api.bestBets.list({ sport, limit });
       setGames(data ?? []);
@@ -82,6 +83,9 @@ export default function BestBetsPanel({
   useEffect(() => {
     load();
   }, [load]);
+
+  // Auto-refresh silently (no spinner flash) so picks/odds stay current.
+  usePollingRefresh(() => load({ silent: true }));
 
   const isPremium =
     user?.subscription_tier === "premium" || user?.subscription_tier === "premium_yearly";

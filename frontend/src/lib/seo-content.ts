@@ -31,10 +31,13 @@ function buildMeta(opts: {
   url: string;
   /** Absolute URL of the social card image. Falls back to the site-wide OG image. */
   image?: string;
+  /** When false, emit `robots: noindex,follow` (paywalled / missing content). */
+  indexable?: boolean;
 }): {
   title: string;
   description: string;
   alternates: { canonical: string };
+  robots?: { index: boolean; follow: boolean };
   openGraph: { title: string; description: string; url: string; images?: string[]; siteName?: string; type?: string };
   twitter: { title: string; description: string; card?: string; image?: string };
 } {
@@ -44,6 +47,8 @@ function buildMeta(opts: {
     title: opts.title,
     description: opts.description,
     alternates: { canonical: opts.url },
+    // Default to indexable; only explicit false triggers noindex.
+    robots: opts.indexable === false ? { index: false, follow: true } : undefined,
     openGraph: {
       title: esctitle(opts.title),
       description: opts.description,
@@ -74,12 +79,139 @@ interface GameMeta {
   description?: string | null;
 }
 
+/**
+ * SEO-safe (NON-PREMIUM) game detail for server rendering.
+ *
+ * Deliberately does NOT include picks / probabilities / EV / prediction-stats —
+ * those are premium-gated (see the `<PremiumGate>` on the game page) and MUST
+ * NOT enter the public HTML (else the paywalled picks get indexed for free).
+ * Only matchup + teams + date/venue + live/final score, all of which the site
+ * already shows to anonymous users.
+ */
+export interface GameContent {
+  ok: boolean;
+  /** Canonical slug from /seo/game-meta (preferred for links). */
+  slug: string | null;
+  sport: string;
+  home: { name: string; abbr: string } | null;
+  away: { name: string; abbr: string } | null;
+  date: string | null;
+  status: string | null;
+  venue: string | null;
+  homeScore: number | null;
+  awayScore: number | null;
+  homeRecord?: string | null;
+  awayRecord?: string | null;
+}
+
+const EMPTY_GAME: Omit<GameContent, "sport"> = {
+  ok: false,
+  slug: null,
+  home: null,
+  away: null,
+  date: null,
+  status: null,
+  venue: null,
+  homeScore: null,
+  awayScore: null,
+  homeRecord: null,
+  awayRecord: null,
+};
+
+/**
+ * Server-fetch the game detail (matchup + score) for SSR of the game page.
+ * Combines two PUBLIC sources:
+ *   - /seo/game-meta/{sport}/{id}  -> canonical slug + team names/abbrs
+ *   - /{sport}/games/{id}          -> venue, status, live/final scores
+ * (NFL game detail is unprefixed `/games/{id}`; NBA/MLB are `/nba|mlb/games/{id}`.)
+ * Never throws; degrades to EMPTY_GAME so the page still renders.
+ */
+export async function gameContent(
+  sport: string,
+  segment: string
+): Promise<GameContent> {
+  const sp = sport.toLowerCase();
+  const numericId = gameIdFromSegment(segment) ?? segment;
+  // Detail source differs by sport:
+  //   NFL -> /games/{id}          (full game row: venue/status/scores)
+  //   NBA -> /nba/games/{id}/boxscore
+  //   MLB -> /mlb/games/{id}/boxscore
+  // NOTE: the boxscore payloads ALSO carry premium fields (pick_card,
+  // betting_lines, splits, lineups). We extract ONLY the non-premium game facts
+  // below and never pass the raw payload through.
+  const detailPath =
+    sp === "nfl"
+      ? `/games/${encodeURIComponent(numericId)}`
+      : sp === "nba"
+        ? `/nba/games/${encodeURIComponent(numericId)}/boxscore`
+        : `/mlb/games/${encodeURIComponent(numericId)}/boxscore`;
+  try {
+    const [meta, detail] = await Promise.all([
+      fetchSeoJson<GameMeta>(`/seo/game-meta/${sport}/${encodeURIComponent(numericId)}`),
+      fetchSeoJson<Record<string, unknown>>(detailPath),
+    ]);
+    const raw = (detail ?? {}) as Record<string, unknown>;
+    // The game facts live at the top level for NFL, under `.game` for MLB boxscore.
+    const d: Record<string, unknown> =
+      raw.game && typeof raw.game === "object"
+        ? (raw.game as Record<string, unknown>)
+        : raw;
+    const num = (v: unknown): number | null =>
+      typeof v === "number" ? v : v == null ? null : Number.isFinite(Number(v)) ? Number(v) : null;
+    const str = (v: unknown): string | null => (typeof v === "string" ? v : null);
+
+    const homeAbbr = str(d.home_team)?.slice(0, 3).toUpperCase() ?? meta?.home?.abbr ?? null;
+    const awayAbbr = str(d.away_team)?.slice(0, 3).toUpperCase() ?? meta?.away?.abbr ?? null;
+    const rec = (v: unknown): string | null => {
+      if (v && typeof v === "object" && "wins" in (v as object)) {
+        const o = v as { wins?: unknown; losses?: unknown };
+        return o.wins != null && o.losses != null ? `${o.wins}-${o.losses}` : null;
+      }
+      return null;
+    };
+
+    return {
+      ok: Boolean(meta || detail),
+      slug: meta?.slug ?? str(d.slug) ?? null,
+      sport,
+      home:
+        meta?.home ??
+        (str(d.home_team) ? { name: str(d.home_team) as string, abbr: homeAbbr ?? "" } : null),
+      away:
+        meta?.away ??
+        (str(d.away_team) ? { name: str(d.away_team) as string, abbr: awayAbbr ?? "" } : null),
+      date: meta?.date ?? str(d.date),
+      status: meta?.status ?? str(d.status),
+      venue: str(d.venue),
+      homeScore: num(d.home_score),
+      awayScore: num(d.away_score),
+      homeRecord: rec(raw.home_record),
+      awayRecord: rec(raw.away_record),
+    };
+  } catch (err) {
+    console.error(`[seo-content] gameContent failed: ${sport}/${segment}`, err);
+    return { ...EMPTY_GAME, sport };
+  }
+}
+
+/**
+ * SSR cache window for server-rendered SEO/game facts (seconds).
+ *
+ * The game-detail page server-renders non-premium game facts into the initial
+ * HTML for crawlers. Previously every request re-fetched the backend
+ * (`cache: "no-store"`), which is wasteful for a page that can get hit hard.
+ * We now cache the SSR payload for a short window (like the schedule page),
+ * small enough that live scores stay fresh — the client component additionally
+ * polls (see usePollingRefresh) so what the user SEES updates immediately
+ * regardless of this server cache.
+ */
+export const SSR_GAME_REVALIDATE_SECONDS = 60;
+
 async function fetchSeoJson<T>(path: string): Promise<T | null> {
   try {
     const base = backendBaseForPath(path);
     const res = await fetch(`${base}${path}`, {
-      next: { revalidate: 0 },
-      cache: "no-store",
+      next: { revalidate: SSR_GAME_REVALIDATE_SECONDS },
     });
     if (!res.ok) return null;
     return (await res.json()) as T;
@@ -181,6 +313,107 @@ interface WriteupMeta {
   canonical_slug?: string | null;
 }
 
+/** One row of a team's schedule, reduced to NON-PREMIUM fields only. */
+export interface TeamGameRow {
+  date: string | null;
+  status: string | null;
+  home: boolean;
+  opponent: string;
+  teamScore: number | null;
+  oppScore: number | null;
+}
+
+/**
+ * SEO-safe (NON-PREMIUM) team content for server rendering.
+ *
+ * Includes team name and the season schedule — all public.
+ * ⚠️ Deliberately EXCLUDES picks / spreads / totals / moneylines / EV (the
+ * source endpoint returns them, but they are premium and MUST NOT enter public
+ * HTML). Filter in `_scheduleRow` if the upstream shape changes.
+ */
+export interface TeamContent {
+  ok: boolean;
+  sport: string;
+  abbr: string;
+  name: string | null;
+  record: string | null;
+  games: TeamGameRow[];
+}
+
+function _scheduleRow(
+  g: Record<string, unknown>,
+  abbr: string,
+  sport: string
+): TeamGameRow | null {
+  const homeTeam = String(g.home_team ?? "").toUpperCase();
+  const awayTeam = String(g.away_team ?? "").toUpperCase();
+  const isHome = homeTeam === abbr;
+  const opp = isHome ? awayTeam : homeTeam;
+  if (!opp) return null;
+  const num = (v: unknown): number | null =>
+    typeof v === "number" ? v : v == null ? null : Number.isFinite(Number(v)) ? Number(v) : null;
+  return {
+    date:
+      (typeof g.game_date === "string" && g.game_date) ||
+      (typeof g.date === "string" ? g.date.slice(0, 10) : null),
+    status: typeof g.status === "string" ? g.status : null,
+    home: isHome,
+    opponent: opp,
+    teamScore: num(isHome ? g.home_score : g.away_score),
+    oppScore: num(isHome ? g.away_score : g.home_score),
+  };
+}
+
+/**
+ * Server-fetch a team's name and season schedule for SSR.
+ * Sources: /seo/team-meta/{sport}/{abbr} (name) and the public schedule list.
+ * Never throws; degrades to empty so the page still renders.
+ */
+export async function teamContent(sport: string, abbrRaw: string): Promise<TeamContent> {
+  const sp = sport.toLowerCase();
+  const abbr = abbrRaw.toUpperCase();
+  const base: TeamContent = { ok: false, sport, abbr, name: null, record: null, games: [] };
+  try {
+    const year = new Date().getUTCFullYear();
+    // NFL schedule list is UNPREFIXED (/games); NBA/MLB are sport-prefixed.
+    const listPath =
+      sp === "nfl"
+        ? `/games?year=${year}&team_abbr=${encodeURIComponent(abbr)}`
+        : `/${sp}/games?year=${year}&team_abbr=${encodeURIComponent(abbr)}`;
+    const [meta, list] = await Promise.all([
+      fetchSeoJson<{ name?: string | null }>(`/seo/team-meta/${sport}/${encodeURIComponent(abbr)}`),
+      fetchSeoJson<unknown>(listPath),
+    ]);
+    const rows0 = Array.isArray(list)
+      ? list
+      : ((list as { games?: unknown[] } | null)?.games ?? []);
+    // Endpoints differ: NBA/MLB honor ?team_abbr, but the NFL list returns ALL
+    // seasons and ignores the filter — so filter+sort defensively for every sport.
+    const all = (rows0 as Record<string, unknown>[]).filter((g) => {
+      const h = String(g.home_team ?? "").toUpperCase();
+      const a = String(g.away_team ?? "").toUpperCase();
+      return h === abbr || a === abbr;
+    });
+    const rows = all.filter((g) => {
+      const ds = String(g.game_date ?? g.date ?? "");
+      return ds.startsWith(String(year));
+    });
+    const useRows = rows.length > 0 ? rows : all;
+    const games = useRows
+      .slice()
+      .sort((x, y) =>
+        String(x.game_date ?? x.date ?? "").localeCompare(String(y.game_date ?? y.date ?? ""))
+      )
+      .map((g) => _scheduleRow(g, abbr, sp))
+      .filter((g): g is TeamGameRow => g !== null)
+      .slice(-16); // most recent 16 for the HTML block
+    return { ok: Boolean(meta || useRows.length), sport, abbr, name: meta?.name ?? null, record: null, games };
+  } catch (err) {
+    console.error(`[seo-content] teamContent failed: ${sport}/${abbr}`, err);
+    return base;
+  }
+}
+
 /**
  * Resolve whether a writeup identifier is an aliased (old) slug that should be
  * 301 → the live canonical slug. Returns null when no redirect is warranted.
@@ -228,13 +461,20 @@ function absolutizeImage(raw?: string | null): string | undefined {
 export async function writeupMetadata(
   sport: string,
   identifier: string
-): Promise<{ title: string; description: string; canonical?: string; image?: string }> {
+): Promise<{ title: string; description: string; canonical?: string; image?: string; robots?: { index: boolean; follow: boolean } }> {
   const label = sportLabel(sport);
-  const meta = await fetchSeoJson<{
-    title?: string | null;
-    preview_image?: string | null;
-    premium_social_card?: string | null;
-  }>(`/seo/writeup-meta/${sport}/${encodeURIComponent(identifier)}`);
+  const [meta, access] = await Promise.all([
+    fetchSeoJson<{
+      title?: string | null;
+      preview_image?: string | null;
+      premium_social_card?: string | null;
+    }>(`/seo/writeup-meta/${sport}/${encodeURIComponent(identifier)}`),
+    // Accessibility gate: only a free-feature writeup returns 200 to an
+    // anonymous request. Everything else (paywalled 403 / missing 404) must be
+    // noindex so crawlers don't index empty paywall shells or soft-404s.
+    writeupContent(sport, identifier),
+  ]);
+  const indexable = access.ok && (access.data?.is_free_feature ?? true);
   const writeupTitle = meta?.title?.trim();
   // Premium social card (free-pick promo) wins when present; else the standard
   // per-game card; else undefined so buildMeta falls back to the site OG image.
@@ -245,6 +485,7 @@ export async function writeupMetadata(
       description: BASE.description(writeupTitle),
       url: url(`/${sport}/analysis/${identifier}`),
       image,
+      indexable,
     });
   }
   return buildMeta({
@@ -252,7 +493,60 @@ export async function writeupMetadata(
     description: BASE.description(`${label} game analysis and writeups`),
     url: url(`/${sport}/analysis/${identifier}`),
     image,
+    indexable,
   });
+}
+
+export interface WriteupContent {
+  /** True only when the backend served the FULL article body to an anonymous request. */
+  ok: boolean;
+  /** HTTP status from the backend (200 free-feature, 403 paywalled, 404 missing). */
+  status: number;
+  /** Raw writeup payload (markdown content + metadata) when ok. */
+  data: {
+    title?: string | null;
+    content?: string | null;
+    body?: string | null;
+    matchup?: string | null;
+    game_date?: string | null;
+    published_at?: string | null;
+    game_id?: number | null;
+    is_free_feature?: boolean | null;
+    sport?: string | null;
+  } | null;
+}
+
+/**
+ * Server-side fetch of a writeup's FULL content, gated exactly like the page.
+ *
+ * Hits the same public endpoint the client uses (`/writeups/{sport}/{id}?
+ * tier=premium`): free-feature writeups return 200 + body, paywalled ones
+ * return 403 (no content). This lets the SERVER decide, before render, whether
+ * the article body belongs in the initial HTML — so Googlebot's first-wave
+ * fetch sees real content for the one class of writeup we actually want indexed
+ * (free-feature), and a clean paywall page for the rest.
+ *
+ * Never throws — any failure degrades to `{ ok: false }` so the page still
+ * renders (client component takes over).
+ */
+export async function writeupContent(
+  sport: string,
+  identifier: string
+): Promise<WriteupContent> {
+  try {
+    const path = `/writeups/${sport}/${encodeURIComponent(identifier)}?tier=premium`;
+    const base = backendBaseForPath(path);
+    const res = await fetch(`${base}${path}`, {
+      next: { revalidate: 0 },
+      cache: "no-store",
+    });
+    if (!res.ok) return { ok: false, status: res.status, data: null };
+    const data = (await res.json()) as WriteupContent["data"];
+    return { ok: true, status: res.status, data };
+  } catch (err) {
+    console.error(`[seo-content] writeupContent failed: ${sport}/${identifier}`, err);
+    return { ok: false, status: 0, data: null };
+  }
 }
 
 /**

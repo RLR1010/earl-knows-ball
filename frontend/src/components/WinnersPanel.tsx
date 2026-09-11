@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { api, Winner } from "../lib/api";
 import { getTeamLogoUrl } from "@/lib/team_logos";
+import { usePollingRefresh } from "@/lib/usePollingRefresh";
 
 /** Which winners to show (mirrors BestBetsPanel's sport scoping). */
 type WinnersSport = "all" | "mlb" | "nba" | "nfl";
@@ -69,6 +70,10 @@ interface WinnersPanelProps {
   limit?: number;
   /** When set, renders a two-column body: recap column beside the winner cards. */
   recap?: WinnersRecapSlot | null;
+  /** Explicit destination for the header "See all of our results" link.
+   *  Required to link out from cross-sport (sport="all") contexts like the
+   *  homepage, since Results is otherwise resolved per-sport. */
+  resultsHref?: string;
 }
 
 export default function WinnersPanel({
@@ -80,25 +85,30 @@ export default function WinnersPanel({
   hideIfEmpty = true,
   limit = 8,
   recap,
+  resultsHref,
 }: WinnersPanelProps) {
   const [winners, setWinners] = useState<Winner[] | null>(null);
   const [error, setError] = useState(false);
+  const winnersRef = useRef<Winner[] | null>(null);
+  useEffect(() => {
+    winnersRef.current = winners;
+  }, [winners]);
+
+  const load = useCallback(async () => {
+    try {
+      const res = await api.winners.list({ sport, limit });
+      setWinners(res.winners ?? []);
+    } catch {
+      if (winnersRef.current === null) setError(true);
+    }
+  }, [sport, limit]);
 
   useEffect(() => {
-    let active = true;
-    api.winners
-      .list({ sport, limit })
-      .then((res) => {
-        if (!active) return;
-        setWinners(res.winners ?? []);
-      })
-      .catch(() => {
-        if (active) setError(true);
-      });
-    return () => {
-      active = false;
-    };
-  }, [sport, limit]);
+    load();
+  }, [load]);
+
+  // Auto-refresh so newly graded winners appear without a manual reload.
+  usePollingRefresh(load);
 
   if (error) return null;
   if (winners === null) return null; // let parent server-render a stable container/loader
@@ -115,6 +125,23 @@ export default function WinnersPanel({
             </h2>
             {subtitle ? <p className="mt-0.5 text-sm text-zinc-400">{subtitle}</p> : null}
           </div>
+          {/* Link out to the per-sport Results page. Derived from this panel's
+              sport on single-sport hubs (/{sport}/results); on cross-sport
+              `all` contexts (homepage) the caller passes an explicit resultsHref
+              (e.g. the NFL results page). Hidden only when neither applies. */}
+          {(() => {
+            const href = resultsHref ?? (sport !== "all" ? `/${sport}/results` : null);
+            if (!href) return null;
+            return (
+              <Link
+                href={href}
+                className="group inline-flex shrink-0 items-center gap-1 text-sm font-medium text-amber-300/90 transition hover:text-amber-200"
+              >
+                See all of our results
+                <span className="transition-transform group-hover:translate-x-0.5">→</span>
+              </Link>
+            );
+          })()}
         </div>
 
         <div
@@ -127,19 +154,24 @@ export default function WinnersPanel({
         {recap ? (
           <div className="min-w-0">
             <Link href={recap.href} className="group flex h-full flex-col rounded-2xl border border-white/10 bg-gradient-to-br from-white/[0.06] to-white/[0.01] p-5 transition-colors hover:border-zinc-400/40">
+              {/* Kicker badge stays pinned to the top of the card. */}
               {recap.kicker ? (
                 <span className="mb-3 inline-flex w-fit items-center gap-1 rounded-full bg-zinc-500/15 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-zinc-300 ring-1 ring-white/10">
                   {recap.kicker}
                 </span>
               ) : null}
-              <h3 className="text-lg font-extrabold leading-snug tracking-tight text-white transition-colors group-hover:text-zinc-200">
-                {recap.title}
-              </h3>
-              <p className="mt-2 line-clamp-3 text-sm leading-relaxed text-zinc-400">
-                {recap.snippet}
-              </p>
+              {/* Title + text vertically centered in the space above the footnote,
+                  while the footnote stays pinned to the bottom. */}
+              <div className="my-auto flex flex-col">
+                <h3 className="text-lg font-extrabold leading-snug tracking-tight text-white transition-colors group-hover:text-zinc-200">
+                  {recap.title}
+                </h3>
+                <p className="mt-2 line-clamp-3 text-sm leading-relaxed text-zinc-400">
+                  {recap.snippet}
+                </p>
+              </div>
               {recap.footnote ? (
-                <span className="mt-auto inline-flex items-center gap-1.5 pb-0 pt-3 text-xs font-semibold uppercase tracking-wide text-zinc-400">
+                <span className="mt-auto inline-flex items-center gap-1.5 pt-3 text-xs font-semibold uppercase tracking-wide text-zinc-400">
                   {recap.footnote}
                   <svg viewBox="0 0 16 16" fill="currentColor" className="h-3 w-3"><path d="M5 3l5 5-5 5V3z" /></svg>
                 </span>

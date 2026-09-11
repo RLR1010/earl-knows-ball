@@ -34,6 +34,14 @@ interface ContentTypeMeta {
 interface AiOption {
   text: string;
   note?: string;
+  unverified?: boolean;
+}
+
+interface AiOptionsRes {
+  options: AiOption[];
+  model?: string;
+  note?: string;
+  resolved_sport?: string | null;
 }
 
 interface Draft {
@@ -92,6 +100,7 @@ interface ReplySuggestion {
   rationale?: string | null;
   status?: string | null;
   created_at?: string | null;
+  unverified?: boolean;
 }
 
 async function xFetch<T>(path: string, options?: RequestInit): Promise<T> {
@@ -682,6 +691,7 @@ function ComposeTab({ onSaved }: { onSaved: (ok: boolean, s: string) => void }) 
   const [aiBusy, setAiBusy] = useState(false);
   const [aiOptions, setAiOptions] = useState<AiOption[]>([]);
   const [aiError, setAiError] = useState("");
+  const [aiMeta, setAiMeta] = useState<{ sport?: string | null; note?: string }>({});
 
   useEffect(() => {
     authed(() => xFetch<{ content_types: Record<string, ContentTypeMeta> }>("/content-types"))
@@ -711,9 +721,10 @@ function ComposeTab({ onSaved }: { onSaved: (ok: boolean, s: string) => void }) 
     setAiBusy(true);
     setAiError("");
     setAiOptions([]);
+    setAiMeta({});
     try {
       const active = seeds[seedIdx];
-      const res = await authed(() => xFetch<{ options: AiOption[]; model?: string }>(
+      const res = await authed(() => xFetch<AiOptionsRes>(
         "/compose/options",
         { method: "POST", body: JSON.stringify({
           instruction: instruction.trim(),
@@ -724,6 +735,7 @@ function ComposeTab({ onSaved }: { onSaved: (ok: boolean, s: string) => void }) 
         }) },
       ));
       setAiOptions(res.options || []);
+      setAiMeta({ sport: res.resolved_sport ?? null, note: res.note });
     } catch (e) {
       setAiError((e as Error).message);
     } finally {
@@ -866,11 +878,44 @@ function ComposeTab({ onSaved }: { onSaved: (ok: boolean, s: string) => void }) 
 
         {aiOptions.length > 0 && (
           <div className="space-y-2">
-            <div className="text-xs text-gray-400 uppercase tracking-wide">Three options — copy one, paste into X</div>
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              <span className="text-gray-400 uppercase tracking-wide">Options — copy one, paste into X</span>
+              {aiMeta.sport && (
+                <span
+                  className="px-2 py-0.5 rounded-full bg-blue-500/15 text-blue-300 border border-blue-400/20 font-medium"
+                  title="Sport the research used"
+                >
+                  🎯 researches {String(aiMeta.sport).toUpperCase()}
+                </span>
+              )}
+              {aiOptions.length < 3 && (
+                <span className="px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-300 border border-amber-400/20 font-medium">
+                  {aiOptions.length} of 3 verified
+                </span>
+              )}
+            </div>
+            {aiMeta.note && <div className="text-[11px] text-gray-500">{aiMeta.note}</div>}
             {aiOptions.map((o, i) => (
               <div key={i} className="rounded-xl border border-white/10 bg-white/[0.02] p-3 space-y-2">
                 <div className="flex items-center justify-between gap-2">
-                  <span className="text-xs font-medium text-violet-300">Option {i + 1}</span>
+                  <span className="flex items-center gap-2">
+                    <span className="text-xs font-medium text-violet-300">Option {i + 1}</span>
+                    {o.unverified ? (
+                      <span
+                        className="px-2 py-0.5 rounded-full bg-red-500/15 text-red-300 border border-red-400/30 text-[10px] font-semibold"
+                        title="This option could not be confirmed against the research facts — double-check before posting"
+                      >
+                        ⚠️ UNVERIFIED
+                      </span>
+                    ) : (
+                      <span
+                        className="px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-400/20 text-[10px] font-semibold"
+                        title="Every concrete claim was checked against the research facts"
+                      >
+                        ✓ FACT-CHECKED
+                      </span>
+                    )}
+                  </span>
                   <span className="flex gap-1.5">
                     <button
                       onClick={() => setText(o.text)}
@@ -1192,6 +1237,14 @@ function TriageTab({ posts, suggestions, busyId, onRefresh, onBusyChange, onMsg 
                       )}
                     </div>
                     <StatusPill status={s.status || "draft"} />
+                    {s.unverified && (
+                      <span
+                        className="px-2 py-0.5 rounded-full bg-red-500/15 text-red-300 border border-red-400/30 text-[10px] font-semibold"
+                        title="Could not be confirmed against the research facts — double-check before posting"
+                      >
+                        ⚠️ UNVERIFIED
+                      </span>
+                    )}
                   </div>
                   <p className="text-sm text-gray-100 whitespace-pre-wrap break-words">{s.body}</p>
                   {s.rationale && <p className="text-xs text-gray-500 italic">why: {s.rationale}</p>}

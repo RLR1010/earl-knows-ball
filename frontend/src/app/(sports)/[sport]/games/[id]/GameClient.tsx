@@ -7,6 +7,7 @@ import NBAGameTabs from "@/components/NBAGameTabs";
 import MLBGameTabs from "@/components/MLBGameTabs";
 import NFLGameTabs, { BettingLinesCard } from "@/components/NFLGameTabs";
 import EarlsPicksPanel from "@/components/EarlsPicksPanel";
+import { usePollingRefresh } from "@/lib/usePollingRefresh";
 
 
 // ── Shared Types ─────────────────────────────────────────────
@@ -365,6 +366,9 @@ export default function GameDetailPage({ gameId: gameIdProp }: { gameId?: string
   const returnYear = searchParams.get('year');
   const returnWeek = searchParams.get('week');
   const returnDate = searchParams.get('date');
+  // Only auto-refresh pages that can actually change. A game viewed with an
+  // explicit non-current `year` is historical and static, so skip polling.
+  const isCurrentSeason = !returnYear || returnYear === String(new Date().getFullYear());
   const backHref = returnDate
     ? `/${sport}/schedule?year=${returnYear || ''}&date=${returnDate}`
     : `/${sport}/schedule${returnYear ? `?year=${returnYear}&week=${returnWeek}` : ''}`;
@@ -450,8 +454,8 @@ export default function GameDetailPage({ gameId: gameIdProp }: { gameId?: string
     return () => { if (timer) clearInterval(timer); };
   }, [gameId, isNfl]);
 
-  // NBA data fetching
-  useEffect(() => {
+  // NBA data fetching (silent auto-refresh keeps score/line current)
+  const loadNba = useCallback(() => {
     if (!gameId || sport !== "nba") return;
     const gid = parseInt(numericGameId);
     Promise.all([
@@ -462,11 +466,14 @@ export default function GameDetailPage({ gameId: gameIdProp }: { gameId?: string
       if (game?.spread != null) setNbaGameLine({ spread: game.spread, over_under: game.over_under });
       else if (pred?.line?.spread != null) setNbaGameLine(pred.line);
     });
-  }, [gameId, sport]);
+  }, [gameId, sport, numericGameId]);
+
+  useEffect(() => { loadNba(); }, [loadNba]);
+  usePollingRefresh(loadNba, sport === "nba" && isCurrentSeason);
 
   // MLB: show classic boxscore page
   if (sport === "mlb") {
-    return <MLBClassicPage gameId={gameId} backHref={backHref} />;
+    return <MLBClassicPage gameId={gameId} backHref={backHref} isCurrentSeason={isCurrentSeason} />;
   }
 
   if (sport === "nba") {
@@ -644,28 +651,26 @@ interface MLBBoxScoreResponse {
   lineups: { home: {order:number;name:string;position:string;stats?:{avg?:string;era?:string;ops?:string}}[]; away: {order:number;name:string;position:string;stats?:{avg?:string;era?:string;ops?:string}}[] } | null;
 }
 
-function MLBClassicPage({ gameId, backHref }: { gameId: string | undefined; backHref: string }) {
+function MLBClassicPage({ gameId, backHref, isCurrentSeason = true }: { gameId: string | undefined; backHref: string; isCurrentSeason?: boolean }) {
   const [data, setData] = useState<MLBBoxScoreResponse | null>(null);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
+  const load = useCallback(async () => {
     if (!gameId) return;
-    console.log('MLBClassicPage fetching for game', gameId);
-    fetch(`/api/mlb/games/${gameId}/boxscore`)
-      .then(r => {
-        console.log('MLBClassicPage response status', r.status);
-        return r.json();
-      })
-      .then(d => {
-        console.log('MLBClassicPage data received', d ? Object.keys(d) : 'null');
-        setData(d);
-        setLoading(false);
-      })
-      .catch(e => {
-        console.error('MLBClassicPage fetch error', e);
-        setLoading(false);
-      });
+    try {
+      const r = await fetch(`/api/mlb/games/${gameId}/boxscore`);
+      const d = await r.json();
+      setData(d);
+    } catch (e) {
+      console.error('MLBClassicPage fetch error', e);
+    } finally {
+      setLoading(false);
+    }
   }, [gameId]);
+
+  useEffect(() => { load(); }, [load]);
+  // Auto-refresh so live scores/innings update without a manual reload.
+  usePollingRefresh(load, isCurrentSeason);
 
   if (loading) return <div className="text-center py-12 text-gray-500">Loading...</div>;
   if (!data) return <div className="text-center py-12 text-gray-500">Game not found.</div>;

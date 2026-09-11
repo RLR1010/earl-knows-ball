@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import SiteChrome from "./SiteChrome";
+import TwclidCapture from "@/components/TwclidCapture";
 
 export const metadata: Metadata = {
   title: {
@@ -62,6 +63,17 @@ export default function RootLayout({
             `,
           }}
         />
+        {/* X (Twitter) conversion tracking base code */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `
+              !function(e,t,n,s,u,a){e.twq||(s=e.twq=function(){s.exe?s.exe.apply(s,arguments):s.queue.push(arguments);
+              },s.version='1.1',s.queue=[],u=t.createElement(n),u.async=!0,u.src='https://static.ads-twitter.com/uwt.js',
+              a=t.getElementsByTagName(n)[0],a.parentNode.insertBefore(u,a))}(window,document,'script');
+              twq('config','rf02z');
+            `,
+          }}
+        />
         <link rel="icon" type="image/png" href="/earl-icon.png" />
         <link rel="apple-touch-icon" href="/earl-icon.png" />
         <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -103,6 +115,7 @@ export default function RootLayout({
         />
       </head>
       <body className="min-h-screen flex flex-col bg-[#0a0a0f] text-gray-200 antialiased">
+        <TwclidCapture />
         <SiteChrome>{children}</SiteChrome>
       </body>
     </html>

@@ -1221,7 +1221,7 @@ function ContentWriteupSystem() {
           <Step num={2} label="Generation Phase">
             Research brief + system prompt sent to DeepSeek API via
             {" "}<code className="text-earl-400">base_generator.py</code> using <code className="text-earl-400">httpx.AsyncClient</code>.
-            Model: <code className="text-earl-400">deepseek-chat</code>, temp=0.5, max_tokens=4096, timeout=60s.
+            Model: <code className="text-earl-400">deepseek-flash</code>, temp=0.5, max_tokens=4096, timeout=60s.
             Returns JSON: <code className="text-earl-400">{"{title, public_content, premium_content}"}</code>
           </Step>
           <Arrow />

@@ -2,7 +2,8 @@ import { Metadata } from "next";
 import { permanentRedirect } from "next/navigation";
 
 import GameDetailPage from "./GameClient";
-import { gameMetadata } from "@/lib/seo-content";
+import ServerGameBody from "./ServerGameBody";
+import { gameMetadata, gameContent } from "@/lib/seo-content";
 import { gameStructuredData } from "@/lib/structured-data";
 import { gameIdFromSegment } from "@/lib/game-slug";
 import { backendBaseForPath } from "@/lib/backend-url";
@@ -77,9 +78,16 @@ export default async function GamePage({ params }: Props) {
   }
 
   const jsonLd = await gameStructuredData(sport, gameId);
+  // SEO (2026-09-10): server-render the NON-PREMIUM game facts (matchup, teams,
+  // date, venue, live/final score) into the initial HTML. The client component
+  // below was fully client-fetched, so crawlers saw an empty shell. Picks /
+  // probabilities / EV are premium-gated and deliberately EXCLUDED from this
+  // server block (see ServerGameBody.tsx).
+  const content = await gameContent(sport, gameId);
   return (
     <>
       {jsonLd ? <JsonLd data={jsonLd} /> : null}
+      <ServerGameBody content={content} />
       <GameDetailPage gameId={gameId} />
     </>
   );

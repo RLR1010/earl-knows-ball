@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import ScheduleGameCard, { type ScheduleGameLike, type CardSport } from "@/components/ScheduleGameCard";
+import { usePollingRefresh } from "@/lib/usePollingRefresh";
 
 interface UpcomingGame extends ScheduleGameLike {
   sport: CardSport;
@@ -18,21 +19,24 @@ export default function UpcomingGames() {
   const [games, setGames] = useState<UpcomingGame[]>([]);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    let cancelled = false;
-    fetch("/api/home/upcoming-games")
-      .then((res) => res.json())
-      .then((data) => {
-        if (!cancelled) {
-          setGames(data || []);
-          setLoading(false);
-        }
-      })
-      .catch(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => { cancelled = true; };
+  const load = useCallback(async () => {
+    try {
+      const res = await fetch("/api/home/upcoming-games");
+      const data = await res.json();
+      setGames(data || []);
+    } catch {
+      // keep last-known-good list on transient errors
+    } finally {
+      setLoading(false);
+    }
   }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  // Auto-refresh so scores/picks update without a manual reload (mirrors schedule).
+  usePollingRefresh(load);
 
   if (loading) {
     return (

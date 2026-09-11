@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useState, type FormEvent } from "react";
 import { useAuth } from "@/lib/auth-context";
 import { useSeo } from "@/components/Seo";
+import { fireXEvent, X_EVENTS } from "@/components/TwclidCapture";
 
 export default function LoginPage() {
   useSeo({
@@ -60,6 +61,10 @@ export default function LoginPage() {
     setBusy(true);
     try {
       await verifyCode(email, code);
+      // X (Twitter) conversion event: LOGIN. Fires ONLY on a successful login
+      // (never site-wide). Browser pixel event; the server-side Logins API
+      // fires the matching event for dedup. Raw email here — X hashes it.
+      fireXEvent(X_EVENTS.LOGIN, { email_address: email });
       const { to, back } = resolveDestination();
       if (back && !to) {
         router.back();

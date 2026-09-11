@@ -3,6 +3,7 @@
 import { Suspense, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { useSeo } from "@/components/Seo";
+import { getTwclid } from "@/components/TwclidCapture";
 
 declare global {
   interface Window {
@@ -44,6 +45,7 @@ function CheckoutForm() {
           success_url: `${window.location.origin}/profile?subscription=success`,
           cancel_url: `${window.location.origin}/pricing`,
           ui_mode: "embedded_page",
+          twclid: getTwclid(),
         }),
       });
 

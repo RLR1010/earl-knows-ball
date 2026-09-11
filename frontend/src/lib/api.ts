@@ -1,5 +1,8 @@
 const API_BASE = "";
 
+/** Imported lazily-safe helper (client-only). Kept as a local import alias. */
+import { getTwclid } from "@/components/TwclidCapture";
+
 /**
  * Return the JWT from localStorage if present and not expired.
  * The backend accepts it as `Authorization: Bearer`, which lets API calls
@@ -566,7 +569,7 @@ export const api = {
     verifyCode: (email: string, code: string) =>
       fetchAPI<{ user: any; token: string; message: string }>("/auth/verify-code", {
         method: "POST",
-        body: JSON.stringify({ email, code }),
+        body: JSON.stringify({ email, code, twclid: getTwclid() }),
       }),
     me: () => fetchAPI<any>("/auth/me"),
     logout: () =>
