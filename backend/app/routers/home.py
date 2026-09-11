@@ -9,6 +9,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.routers.games import _records_as_of_batch
+from app.routers.auth import get_optional_user
+from app.core.security import user_is_premium
+from app.models import User
 
 
 # ---------------------------------------------------------------------------
@@ -367,22 +370,32 @@ async def best_bets(
     sport: str = Query("all", description="Filter by sport: all, mlb, nba, nfl"),
     limit: int = Query(6, description="Max best bets to return across all sports"),
     db: AsyncSession = Depends(get_db),
+    user: User | None = Depends(get_optional_user),
 ):
     """Return Earl's single best bet per upcoming game, ranked by edge.
 
-    For each upcoming game with a real api prediction, compute the edge
-    (calibrated model confidence minus the book's implied probability) for all
-    three markets (ATS/OU/ML), keep the single highest-edge leg, then sort
-    across sports by edge and return the top `limit`.
-
-    Each returned row is the SAME shared shape the ScheduleGameCard expects
-    (so the frontend can drop it straight into a card), plus best-bet metadata:
-      - best_bet_type: "ats" | "ou" | "ml"
-      - best_bet_label: human readable pick for that leg (e.g. "LAD -1.5")
-      - best_bet_edge:   decimal edge (0..1), conf_cal - implied
-      - best_bet_edge_pct / best_bet_confidence_pct: whole-number percentages
-      - best_bet_ev:     model EV for that leg
+    Premium gate: the *pick values / edge / EV* are premium, but the panel and
+    its game cards MUST still render for everyone (home page + sport hubs). We
+    therefore always return the rows and, for non-premium callers, redact only the
+    premium pick fields; the client renders the teaser ("Earl has N high-value
+    top picks") and locks the values. Never 403 the whole request — that made the
+    block show "Couldn't load top picks" to logged-out visitors.
     """
+    _premium = user_is_premium(user)
+
+    # For each upcoming game with a real api prediction, compute the edge
+    # (calibrated model confidence minus the book's implied probability) for all
+    # three markets (ATS/OU/ML), keep the single highest-edge leg, then sort
+    # across sports by edge and return the top `limit`.
+    #
+    # Each returned row is the SAME shared shape the ScheduleGameCard expects
+    # (so the frontend can drop it straight into a card), plus best-bet metadata:
+    #   - best_bet_type: "ats" | "ou" | "ml"
+    #   - best_bet_label: human readable pick for that leg (e.g. "LAD -1.5")
+    #   - best_bet_edge:   decimal edge (0..1), conf_cal - implied
+    #   - best_bet_edge_pct / best_bet_confidence_pct: whole-number percentages
+    #   - best_bet_ev:     model EV for that leg
+    rows: list[dict] = []
     sport = (sport or "all").lower()
     if sport not in ("all", "mlb", "nba", "nfl"):
         sport = "all"
@@ -472,6 +485,21 @@ async def best_bets(
             gg["away_record"] = records.get(
                 (gg.get("away_team_id"), str(gg.get("game_date")), gg.get("season_id"))
             )
+
+    # Premium gate (field-level): keep the game-card shell + row count for everyone,
+    # but redact the pick values / edge / EV for non-premium callers. The client's
+    # !isPremium branch renders the teaser using only the row count.
+    if not _premium:
+        _premium_fields = (
+            "best_bet_type", "best_bet_label", "best_bet_edge", "best_bet_edge_pct",
+            "best_bet_confidence_pct", "best_bet_implied_pct", "best_bet_ev",
+            "pick_spread", "pick_over_under", "pick_moneyline",
+            "pick_ats_ev", "pick_ou_ev", "pick_ml_ev",
+        )
+        for gg in results:
+            for _k in _premium_fields:
+                if _k in gg:
+                    gg[_k] = None
 
     return results
 
