@@ -513,7 +513,7 @@ async def earl_winners(
     """Return Earl's most recent cashed picks ("Earl's Winners" block).
 
     Reads the denormalized `public.earl_winners` snapshot, which the
-    `earl-winners-refresh` subprocess job rematerializes whenever >= 10 NEW
+    `earl-winners-refresh` subprocess job rematerializes whenever >= 1 NEW
     settled wins have occurred AND it is a new Chicago calendar day (so the
     block is pin-stable within a day). We never recompute win/loss math here —
     the snapshot only holds rows whose per-market result was already 'Win'

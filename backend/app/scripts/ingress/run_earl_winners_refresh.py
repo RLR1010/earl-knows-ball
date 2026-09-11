@@ -18,10 +18,10 @@ WHAT A "WINNER" IS (ground truth, single source):
   Winner semantics: result='Win', ANY source (api OR backtest) — per Rich, do
   NOT filter by source. 'Push' and 'Loss' are excluded (not a braggable win).
 
-CADENCE RULE (the "every ~10 new, but ≤ once per day" gate):
+CADENCE RULE (the "every ≥ MIN_NEW_WINS new, but ≤ once per day" gate):
   - The block must stay pin-stable within a Chicago calendar day.
   - A (re)materialize happens only when BOTH hold:
-      (1) there are >= MIN_NEW_WINS (10) winners that settled AFTER the most
+      (1) there are >= MIN_NEW_WINS (1) winners that settled AFTER the most
           recent pick already in the snapshot (i.e. genuinely new since last
           rotate), on a FINAL game, AND
       (2) the snapshot has not been rotated today (America/Chicago).
@@ -65,7 +65,9 @@ logging.basicConfig(
 logger = logging.getLogger("earl.winners_refresh")
 
 TASK_NAME = "earl-winners-refresh"
-MIN_NEW_WINS = 10      # rotate only when >= this many NEWLY-settled +EV wins
+MIN_NEW_WINS = 1       # rotate as soon as ANY newly-settled +EV win exists
+                       # (Rich 2026-09-11: lower from 10 -> 1 so users always see
+                       # fresh wins; the block simply rotates as it fills up)
 SNAPSHOT_KEEP = 24     # winners held in the block at once
 MIN_EV = 0.0           # only showcase picks that were +EV recommendations at tip
                        # (ev = *_ev model expected value, profit $/100 stake)
@@ -315,18 +317,19 @@ async def refresh_winners(started_at=None) -> dict:
 
 async def main() -> int:
     started_at = datetime.now(timezone.utc)
-    ok = False
     err = ""
     try:
         summary = await refresh_winners(started_at)
-        ok = summary["rotated"]  # a (correct) no-op is still success - task didn't fail
+        # A no-op (already rotated today / fewer than MIN_NEW_WINS new +EV wins is
+        # still SUCCESS - the task did not fail. Only a thrown exception is a failure.
         logger.info("Winners refresh summary: %s", summary)
     except Exception as e:  # noqa: BLE001
         err = f"{type(e).__name__}: {e}"
         logger.exception("Winners refresh FAILED")
-        ok = False
-    await report_task_outcome(TASK_NAME, ok, err, started_at)
-    return 0 if ok else 1
+        await report_task_outcome(TASK_NAME, False, err, started_at)
+        return 1
+    await report_task_outcome(TASK_NAME, True, "", started_at)
+    return 0
 
 
 if __name__ == "__main__":
