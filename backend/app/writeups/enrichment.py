@@ -20,7 +20,7 @@ from app.ingestion.pgvector_search import search_articles
 
 logger = logging.getLogger("writeups.enrichment")
 
-DEEPSEEK_MODEL = "deepseek-v4-flash"
+DEEPSEEK_MODEL = settings.deepseek_model
 MAX_RETURN_WORDS = 300  # keep the final summary tight
 
 

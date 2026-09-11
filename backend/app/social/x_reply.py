@@ -29,6 +29,88 @@ from app.routers.original_articles import (
 logger = logging.getLogger("x_reply")
 
 
+async def verify_claims_with_reasons(candidates: list[str], grounding: str) -> list[dict]:
+    """Grounding check pass. For each candidate post text, ask the model whether EVERY concrete
+    factual claim (team/player/score/record/odds/date/stat) is SUPPORTED by the grounding brief.
+    Returns a list of {"supported": bool, "reason": str} aligned to `candidates`.
+
+    Fail-open: any error / unparseable output conservatively marks candidates as supported so we
+    never silently drop good options when the verifier itself is unavailable.
+    """
+    n = len(candidates)
+    if n == 0:
+        return []
+    # No grounding = nothing to verify against; can't flag unsupported claims.
+    if not (grounding or "").strip():
+        return [{"supported": True, "reason": "no grounding"} for _ in candidates]
+    numbered = "\n".join(f'{i + 1}. {"" if c else "(empty)"}{c}' for i, c in enumerate(candidates))
+    system = (
+        "You are a strict fact-checker for @earl_knows_ball social posts. You are given a GROUNDING "
+        "brief (authoritative researched facts, INCLUDING relevant article excerpts) and a numbered "
+        "list of proposed post texts. For EACH post, decide if EVERY concrete, verifiable claim it "
+        "makes (team, player, score, record, odds/line, date, ranking, season stat, matchup) is "
+        "SUPPORTED by the grounding brief.\n"
+        "RULES:\n"
+        "- A claim is unsupported if it asserts a specific fact that is absent from, or contradicts, "
+        "the grounding brief.\n"
+        "- Vague/hype language, opinions, and clearly rhetorical statements are NOT claims; do not "
+        "flag them.\n"
+        "- Be strict with numbers, names, and dates: an invented figure or wrong team is unsupported.\n"
+        "- If a post makes no concrete claims, it is supported.\n"
+        "- For unsupported posts, `reason` must NAME the exact unsupported claim (e.g. 'claims a 7-2 "
+        "score not present in the brief').\n"
+        'Return ONLY JSON: {"results":[{"i":<number>,"supported":true|false,"reason":"<short>"}]}'
+    )
+    user = (
+        f"<grounding brief>\n{grounding}\n</grounding brief>\n\n"
+        f"<proposed posts>\n{numbered}\n</proposed posts>\n\n"
+        'Return the JSON verdict for all posts.'
+    )
+    try:
+        raw = await _chat(
+            [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            max_tokens=900, json_mode=True,
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("verify_claims call failed; failing open")
+        return [{"supported": True, "reason": "verifier error"} for _ in candidates]
+    raw = (raw or "").strip()
+    raw = re.sub(r"^```(?:json)?|```$", "", raw, flags=re.M).strip()
+    parsed = {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        m = re.search(r"\{.*\}", raw, re.S)
+        if m:
+            try:
+                parsed = json.loads(m.group(0))
+            except json.JSONDecodeError:
+                parsed = {}
+    results = parsed.get("results") or []
+    verdicts = [{"supported": True, "reason": ""} for _ in candidates]
+    seen = False
+    for r in results:
+        try:
+            idx = int(r.get("i")) - 1
+        except (TypeError, ValueError):
+            continue
+        if 0 <= idx < n:
+            seen = True
+            verdicts[idx] = {
+                "supported": bool(r.get("supported", True)),
+                "reason": str(r.get("reason", "") or ""),
+            }
+    if not seen:
+        logger.warning("verify_claims returned no usable verdicts; failing open")
+        return [{"supported": True, "reason": "no verdicts"} for _ in candidates]
+    return verdicts
+
+
+async def verify_claims(candidates: list[str], grounding: str) -> list[bool]:
+    """Boolean convenience wrapper over verify_claims_with_reasons (True = supported)."""
+    return [v["supported"] for v in await verify_claims_with_reasons(candidates, grounding)]
+
+
 async def load_post(db: AsyncSession, post_row_id: int) -> dict | None:
     r = (
         await db.execute(
@@ -47,8 +129,18 @@ async def draft_replies_for_post(db: AsyncSession, post: dict, n: int = 3) -> li
 
     Returns list of {body, rationale}. Pure generation - caller persists.
     """
-    engine = ENGINES["all"]
+    # Pick the right per-sport research engine from the post itself; fall back to the cross-sport
+    # engine if detection is unavailable or the topic is ambiguous.
+    engine = ENGINES.get("all")
     post_text = (post.get("text") or "").strip()
+    try:
+        from app.routers.social_x import _detect_sport
+        _detected = await _detect_sport(post_text)
+        if _detected in ENGINES:
+            engine = ENGINES[_detected]
+            logger.info("x_reply using engine=%s for post %s", _detected, post.get("id"))
+    except Exception:  # noqa: BLE001
+        logger.exception("x_reply sport detection failed; using cross-sport engine")
     author = post.get("author_username") or "X"
     created = post.get("created_at")
 
@@ -76,7 +168,7 @@ async def draft_replies_for_post(db: AsyncSession, post: dict, n: int = 3) -> li
                 {"role": "system", "content": research_system},
                 {"role": "user", "content": research_user},
             ],
-            max_turns=5, timeout=240.0,
+            max_turns=7, timeout=240.0,
         )
         trace = _capture_research(full_msgs)
         brief = _deterministic_research_brief(trace.get("tool_calls") or [])
@@ -138,4 +230,91 @@ async def draft_replies_for_post(db: AsyncSession, post: dict, n: int = 3) -> li
     if not out:
         logger.warning("x_reply empty replies for post %s: raw=%.300s", post.get("id"), raw)
         raise HTTPException(status_code=502, detail="Model returned no usable replies.")
+
+    # ---- Phase C: grounding verification + ONE regeneration backfill ------------- #
+    try:
+        verdicts = await verify_claims_with_reasons([o["body"] for o in out], brief)
+        kept = [o for o, v in zip(out, verdicts) if v["supported"]]
+        failed = [o for o, v in zip(out, verdicts) if not v["supported"]]
+        dropped = len(failed)
+        if dropped:
+            logger.info("x_reply verification dropped %d/%d unsupported reply option(s) for post %s",
+                        dropped, len(out), post.get("id"))
+            # ---- ONE regeneration attempt to backfill the failures --------------------- #
+            reasons = "; ".join(
+                (v.get("reason") or "unsupported claim")
+                for o, v in zip(out, verdicts) if not v["supported"]
+            )
+            regen = await _regen_replies(
+                post, author, post_text, brief, n=len(failed), avoid=[o["body"] for o in out],
+                reasons=reasons,
+            )
+            if regen:
+                rv = await verify_claims_with_reasons([r["body"] for r in regen], brief)
+                kept += [r for r, v in zip(regen, rv) if v["supported"]]
+                logger.info("x_reply regeneration backfilled %d reply option(s) for post %s",
+                            len(kept) - (len(out) - dropped), post.get("id"))
+        if kept:
+            out = kept[:n]
+        else:
+            # Nothing survived even after regeneration: return originals flagged so the UI can warn.
+            for o in out:
+                o["unverified"] = True
+    except Exception:  # noqa: BLE001
+        logger.exception("x_reply verification pass failed for post %s; keeping unverified options",
+                         post.get("id"))
+    return out
+
+
+async def _regen_replies(post: dict, author: str, post_text: str, brief: str, n: int,
+                         avoid: list[str], reasons: str) -> list[dict]:
+    """One-shot regeneration of `n` reply options that AVOID the flagged unsupported claims.
+    Returns [] on any failure (caller simply keeps fewer options)."""
+    if n <= 0:
+        return []
+    avoid_block = "\n".join(f"- {a}" for a in avoid[:5])
+    system = (
+        f"You are drafting X REPLY SUGGESTIONS for @earl_knows_ball replying to @{author}'s tweet. "
+        f"Voice: sharp, sports-culture betting-takes, witty, a touch crusty, never mean. Each reply "
+        f"<= 280 chars, feels human, and NEVER gives a free pick.\n"
+        f"CRITICAL: the previous drafts failed fact-checking. Do NOT repeat those claims, and do NOT "
+        f"state any specific fact (score, record, stat, date, injury, odds, matchup result) unless it "
+        f"is SUPPORTED by the research brief below. If unsure of a number, write the take WITHOUT the "
+        f"number instead of guessing.\n"
+        f"Return ONLY valid JSON:\n"
+        f'{{"replies":[{{"body":"<reply text>","rationale":"<1 line why this works>"}}]}}'
+    )
+    user = (
+        f"@{author} tweeted:\n\n\"{post_text}\"\n"
+        + (f"\nResearch brief (grounded - use it):\n{brief}\n" if brief else "")
+        + f"\nThese earlier drafts FAILED fact-check: {reasons}\n"
+        + f"Avoid claims like:\n{avoid_block}\n"
+        + f"\nDraft {n} NEW reply option(s) as JSON."
+    )
+    try:
+        raw = await _chat(
+            [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            max_tokens=1000, json_mode=True,
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("x_reply regeneration failed for post %s", post.get("id"))
+        return []
+    raw = (raw or "").strip()
+    raw = re.sub(r"^```(?:json)?|```$", "", raw, flags=re.M).strip()
+    parsed = {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        m = re.search(r"\{.*\}", raw, re.S)
+        if m:
+            try:
+                parsed = json.loads(m.group(0))
+            except json.JSONDecodeError:
+                parsed = {}
+    out = []
+    for r in (parsed.get("replies") or []):
+        body = (r.get("body") or "").strip()
+        if body:
+            body = re.sub(r"\s+", " ", body)
+            out.append({"body": body[:280], "rationale": (r.get("rationale") or "")[:400]})
     return out

@@ -1,5 +1,5 @@
 import json
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy import select, func, text
@@ -10,6 +10,7 @@ import threading
 from app.database import get_db
 from app.models import Game, Season, Team, PlayerWeeklyStats, Player, BettingLine, NFLGamePrediction, User
 from app.routers.auth import get_optional_user
+from app.core.security import user_is_premium
 from app.models.nba.game import NBAGame
 from app.models.nba.team import NBATeam
 from app.models.nba.season import NBASeason
@@ -368,6 +369,7 @@ async def list_games(
     week: int | None = Query(None),
     team_id: int | None = Query(None),
     db: AsyncSession = Depends(get_db),
+    user: User | None = Depends(get_optional_user),
 ):
     # 30s TTL response cache (per-worker) keyed by query params.
     cache_key = (season_year, week, team_id)
@@ -454,6 +456,18 @@ async def list_games(
             _o["home_record"] = _records.get((_g.home_team_id, str(_g.date.date()), _g.season_id)) if _g and _g.home_team_id else None
             _o["away_record"] = _records.get((_g.away_team_id, str(_g.date.date()), _g.season_id)) if _g and _g.away_team_id else None
 
+    # Premium gate (field-level): schedule stays public, picks/EV are premium.
+    # Strip BEFORE caching to avoid leaking premium payloads via the response cache.
+    if not user_is_premium(user):
+        for _g in out:
+            if isinstance(_g, dict):
+                for _k in (
+                    "pick_spread", "pick_over_under", "pick_moneyline",
+                    "pick_ats_ev", "pick_ou_ev", "pick_ml_ev",
+                    "predicted_margin", "predicted_total",
+                ):
+                    if _k in _g:
+                        _g[_k] = None
     _nfl_games_store(cache_key, out)
     return JSONResponse(content=out, headers={"Cache-Control": "public, max-age=30"})
 
@@ -707,8 +721,14 @@ async def get_game(game_id: int, db: AsyncSession = Depends(get_db)):
 async def get_nfl_prop_bets(
     game_id: int,
     db: AsyncSession = Depends(get_db),
+    user: User | None = Depends(get_optional_user),
 ):
-    """Return all player prop bets stored for an NFL game, or empty list if none."""
+    """Return all player prop bets stored for an NFL game, or empty list if none.
+
+    Premium gate: player props are a premium feature.
+    """
+    if not user_is_premium(user):
+        raise HTTPException(status_code=403, detail="Premium subscription required")
     result = await db.execute(
         text(
             """
@@ -729,8 +749,15 @@ async def get_nfl_prop_bets(
 async def get_nfl_prediction(
     game_id: int,
     db: AsyncSession = Depends(get_db),
+    user: User | None = Depends(get_optional_user),
 ):
-    """Get NFL game prediction for the Earl's Picks tab."""
+    """Get NFL game prediction for the Earl's Picks tab.
+
+    Premium gate: picks/probabilities/EV are a premium feature (client-side
+    <PremiumGate> only hid them; the API returned them to anyone).
+    """
+    if not user_is_premium(user):
+        raise HTTPException(status_code=403, detail="Premium subscription required")
     result = await db.execute(
         select(NFLGamePrediction)
         .where(NFLGamePrediction.game_id == game_id)
@@ -877,8 +904,14 @@ async def get_nfl_prediction(
 async def get_nba_prediction(
     game_id: int,
     db: AsyncSession = Depends(get_db),
+    user: User | None = Depends(get_optional_user),
 ):
-    """Get NBA game prediction for the Earl's Picks tab."""
+    """Get NBA game prediction for the Earl's Picks tab.
+
+    Premium gate: picks/probabilities/EV are a premium feature.
+    """
+    if not user_is_premium(user):
+        raise HTTPException(status_code=403, detail="Premium subscription required")
     result = await db.execute(
         select(NBAGamePrediction)
         .where(NBAGamePrediction.game_id == game_id)
@@ -1042,7 +1075,12 @@ async def get_nfl_prediction_stats(
     db: AsyncSession = Depends(get_db),
     user: User | None = Depends(get_optional_user),
 ):
-    """Return detailed prediction stats for an NFL game: features, splits, situational data."""
+    """Return detailed prediction stats for an NFL game: features, splits, situational data.
+
+    Premium gate: model features/splits/EV are a premium feature.
+    """
+    if not user_is_premium(user):
+        raise HTTPException(status_code=403, detail="Premium subscription required")
     result = await db.execute(
         select(NFLGamePrediction).where(NFLGamePrediction.game_id == game_id).limit(1)
     )
@@ -1112,7 +1150,12 @@ async def get_nba_prediction_stats(
     db: AsyncSession = Depends(get_db),
     user: User | None = Depends(get_optional_user),
 ):
-    """Return detailed prediction stats for an NBA game: features, splits, situational data."""
+    """Return detailed prediction stats for an NBA game: features, splits, situational data.
+
+    Premium gate: model features/splits are a premium feature.
+    """
+    if not user_is_premium(user):
+        raise HTTPException(status_code=403, detail="Premium subscription required")
     result = await db.execute(
         select(NBAGamePrediction).where(NBAGamePrediction.game_id == game_id).limit(1)
     )

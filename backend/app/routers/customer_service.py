@@ -33,7 +33,7 @@ router = APIRouter(prefix="/cs", tags=["customer-service"])
 MONTHLY_TOKEN_LIMIT = int(os.environ.get("EARL_CS_MONTHLY_TOKEN_LIMIT", "100000"))
 # How many most-relevant knowledge entries to include in the system context.
 MAX_KB_CHUNKS = 10
-MODEL = getattr(settings, "deepseek_model", "deepseek-chat")
+MODEL = settings.deepseek_model
 
 SYSTEM_PROMPT = """You are the customer service assistant for Earl Knows Ball, an AI-powered sports handicapping service covering the NFL, MLB, and NBA. Your job is to help users with account, billing, subscription, product, and support questions — not to provide betting picks or gambling advice.
 

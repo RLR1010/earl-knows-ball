@@ -42,6 +42,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger("earl.nfl_lines_and_picks")
 
+# How far ahead (in days) we may predict an NFL game. NFL plays weekly (mostly
+# Sun + Mon/Thu), so books legitimately carry lines ~6 days out and we must not
+# zero picks for the next slate. 8 days still keeps us far short of a 2-week horizon.
+PREDICT_LOOKAHEAD_DAYS = 8
+
 
 def _run_in_thread(fn, *args, **kwargs):
     """Existing ingest.py helper: run a sync fn off the event loop."""
@@ -65,6 +70,12 @@ async def run(api_key: str, db: AsyncSession):
         return {"status": "error", "message": "No API key"}
 
     try:
+        # ── Step 0: Purge stale far-future lines+picks ──────────────
+        from app.scripts.ingress._purge_farfuture import purge_farfuture_lines_and_picks
+        results["purged_farfuture"] = await purge_farfuture_lines_and_picks(
+            db, "nfl", PREDICT_LOOKAHEAD_DAYS
+        )
+
         # ── Step 1: Fetch lines ──────────────────────────────────────
         lines_result = await snapshot_nfl_opening_lines(
             db=db,
@@ -94,10 +105,11 @@ async def run(api_key: str, db: AsyncSession):
                     FROM nfl.betting_lines_consolidated blc
                     JOIN nfl.games g ON g.id = blc.game_id
                     WHERE g.date > NOW()
+                      AND g.date <= NOW() + make_interval(days => :predict_days)
                       AND g.status = 'SCHEDULED'
                       AND blc.closing_spread IS NOT NULL
                       AND blc.closing_ou IS NOT NULL
-                """)
+                """, {"predict_days": PREDICT_LOOKAHEAD_DAYS})
             )
         ).fetchall()
         game_ids = [r[0] for r in predict_rows]

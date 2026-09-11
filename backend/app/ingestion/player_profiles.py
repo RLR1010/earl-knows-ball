@@ -92,7 +92,7 @@ Receiving TDs: {int(s.rec_tds or 0)}
                     "Content-Type": "application/json",
                 },
                 json={
-                    "model": "deepseek-v4-flash",
+                    "model": settings.deepseek_model,
                     "messages": [
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": f"Write a career summary for this player:\n\n{data}"},

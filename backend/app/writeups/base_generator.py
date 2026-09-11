@@ -84,8 +84,8 @@ class BaseWriteupGenerator(ABC):
     Subclasses implement *research_brief()* and *prompt_builder()*.
     """
 
-    # DeepSeek model to use
-    MODEL = "deepseek-v4-flash"
+    # DeepSeek model to use (single source of truth: settings.deepseek_model)
+    MODEL = settings.deepseek_model
     TEMPERATURE = 0.5  # moderate creativity for sports writing
     MAX_TOKENS = 24576  # fallback when a call omits max_tokens; PUBLIC=24576, PREMIUM=32768
     TIMEOUT = 120.0  # generous for longer generation
@@ -389,8 +389,8 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
             + self.premium_system_prompt(is_historical)
         )
 
-        # NOTE: deepseek-v4-flash is a reasoning model — it spends a large
-        # chunk of max_tokens on reasoning_content even without the thinking
+        # NOTE: the DeepSeek reasoning model (settings.deepseek_model) spends a
+        # large chunk of max_tokens on reasoning_content even without the thinking
         # flag (observed ~7k tokens of reasoning on a 26k-char research brief).
         # Budgets below 16k caused empty premium content (finish=length with
         # all tokens consumed by reasoning). 32768 gives ample headroom.

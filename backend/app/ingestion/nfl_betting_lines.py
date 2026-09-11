@@ -52,7 +52,7 @@ def _nfl_config(year: int) -> SportConfig:
         name="NFL",
         odds_key="americanfootball_nfl",
         odds_keys=["americanfootball_nfl_preseason"],
-        window_hours=144,  # 6 days: NFL regular-season lines post weeks out; preseason games appear ~1 day before
+        window_hours=168,  # 7 days: fetch odds for a full NFL slate ahead (Mon-Sun); stays under the 8-day predict cap. Games post further out near game time if not on the slate.
         schema="nfl",
         bets_table="nfl.betting_lines",
         games="nfl.games",

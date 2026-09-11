@@ -42,6 +42,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger("earl.mlb_lines_and_picks")
 
+# How far ahead (in days) we may predict an MLB game. Odds are only reliable within
+# this window; never generate a pick for a game scheduled further out. MLB plays daily,
+# so 3 days is plenty of run-up. (Matches the days_from_now=3 line fetch above.)
+PREDICT_LOOKAHEAD_DAYS = 3
+
 
 def _run_in_thread(fn, *args, **kwargs):
     """Existing ingest.py helper: run a sync fn off the event loop."""
@@ -71,6 +76,15 @@ async def run(api_key: str, db: AsyncSession):
         return {"status": "error", "message": "No API key"}
 
     try:
+        # ── Step 0: Purge stale far-future lines+picks ──────────────
+        # Games scheduled beyond PREDICT_LOOKAHEAD_DAYS carry only placeholder odds
+        # and must never be predicted. Remove leftovers (e.g. lines recorded months
+        # ago for a game 2 weeks out) before we fetch fresh lines this run.
+        from app.scripts.ingress._purge_farfuture import purge_farfuture_lines_and_picks
+        results["purged_farfuture"] = await purge_farfuture_lines_and_picks(
+            db, "mlb", PREDICT_LOOKAHEAD_DAYS
+        )
+
         # ── Step 1: Fetch lines ──────────────────────────────────────
         lines_result = await snapshot_mlb_opening_lines(
             db=db,
@@ -105,10 +119,12 @@ async def run(api_key: str, db: AsyncSession):
                 JOIN mlb.betting_lines_consolidated blc ON blc.game_id = g.id
                 WHERE g.status = 'SCHEDULED'
                   AND g.date > NOW()
+                  AND g.date <= NOW() + make_interval(days => :predict_days)
                   AND blc.closing_spread IS NOT NULL
                   AND blc.closing_ou IS NOT NULL
                 ORDER BY g.date
-            """)
+            """),
+            {"predict_days": PREDICT_LOOKAHEAD_DAYS},
         )
         game_ids_needing_picks = [row[0] for row in result.fetchall()]
 

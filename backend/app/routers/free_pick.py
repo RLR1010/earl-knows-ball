@@ -3,11 +3,17 @@
 Endpoints (mounted under /writeups in main.py):
   GET    /writeups/free-pick                    -> active free pick (public, powers homepage section)
   GET    /writeups/admin/free-pick/candidates   -> published premium writeups to choose from (admin)
-  POST   /writeups/admin/free-pick/{sport}/{game_id}   -> set THE free pick (single-active, clears others), (re)generate card
+  POST   /writeups/admin/free-pick/{sport}/{game_id}   -> set THE free pick (keeps recent picks free), (re)generate card
   DELETE /writeups/admin/free-pick/{sport}/{game_id}   -> unset the free pick
 
-Single-active rule: publishing a new free pick clears the flag + free_featured_at on all
-other writeups across the three sports (game_writeups.is_free_feature).
+CURRENT vs HISTORICAL (2026-09-10):
+  `is_free_feature` marks a writeup as PERMANENTLY unlocked (public + indexable).
+  The *current* free pick is whichever flagged writeup has the newest
+  `free_featured_at` (see _ACTIVE_SQL). Publishing a new pick NO LONGER clears the
+  flag on older picks: past picks stay unlocked so Google can keep crawling and
+  indexing them (they remain in the sitemap + returned by the public writeup
+  endpoint). We only PRUNE beyond `FREE_PICK_RETENTION` so the free set doesn't
+  grow without bound — picks older than that are re-gated.
 Only writeups with premium_content (a real paid analysis) are eligible.
 """
 from __future__ import annotations
@@ -30,6 +36,11 @@ router = APIRouter(prefix="/writeups")
 
 # Allowlisted sport->schema (values are schema names used only in string interpolation below).
 SPORTS = ("mlb", "nfl", "nba")
+
+# How many of the most-recently-featured picks stay unlocked (public + indexable).
+# New picks no longer re-gate older ones; we only prune beyond this window so the
+# free set stays bounded. See module docstring.
+FREE_PICK_RETENTION = 30
 
 # Prefer premium writeups (have real paid pick content) over bare public ones.
 _CANDIDATE_SQL = """
@@ -258,16 +269,11 @@ async def set_free_pick(
 
     now = datetime.now(timezone.utc)
 
-    # Single-active: clear every existing free pick across all sports.
-    for s in SPORTS:
-        await db.execute(
-            text(
-                f"UPDATE {s}.game_writeups "
-                "SET is_free_feature = FALSE, free_featured_at = NULL WHERE is_free_feature = TRUE"
-            )
-        )
-
-    # Set this one.
+    # Set this one FIRST (so it is always kept), then prune older picks beyond the
+    # retention window. Publishing a new pick does NOT re-gate recent/ past picks:
+    # they stay unlocked so Google keeps crawling + indexing them (they remain in
+    # the sitemap and are still readable anonymously). The CURRENT pick is derived
+    # from free_featured_at recency (_ACTIVE_SQL), not from being the only flag.
     await db.execute(
         text(
             f"UPDATE {sport}.game_writeups "
@@ -275,6 +281,26 @@ async def set_free_pick(
         ),
         {"now": now, "gid": int(game_id)},
     )
+
+    # Prune: across all sports, keep only the FREE_PICK_RETENTION newest featured
+    # picks unlocked; re-gate anything older (drop its flag + featured timestamp).
+    for s in SPORTS:
+        await db.execute(
+            text(
+                f"""
+                UPDATE {s}.game_writeups
+                SET is_free_feature = FALSE, free_featured_at = NULL
+                WHERE is_free_feature = TRUE
+                  AND game_id NOT IN (
+                    SELECT game_id FROM {s}.game_writeups
+                    WHERE is_free_feature = TRUE AND free_featured_at IS NOT NULL
+                    ORDER BY free_featured_at DESC
+                    LIMIT :keep
+                  )
+                """
+            ),
+            {"keep": FREE_PICK_RETENTION},
+        )
     await db.commit()
 
     # Build the bespoke Free Pick premium social card (distinct from the public gw- card) store
@@ -299,7 +325,12 @@ async def unset_free_pick(
     db: AsyncSession = Depends(get_db),
     _admin=Depends(require_admin),
 ):
-    """Retract the free pick for {sport}/{game_id} (only if it is the current free pick)."""
+    """Retract the free pick for {sport}/{game_id}.
+
+    Note: rotating to a new pick no longer re-gates older picks (they stay free
+    for indexing). This manual unset un-flags the named pick only — use it to
+    deliberately retire a specific pick.
+    """
     sport = _check_sport(sport)
     await db.execute(
         text(
@@ -318,13 +349,21 @@ async def unset_free_pick(
 
 
 async def _get_active(db: AsyncSession) -> dict:
+    # Return the GLOBALLY newest featured pick across all sports. Past free picks
+    # stay flagged (is_free_feature=TRUE) for indexing, so we can no longer just
+    # grab the first sport that has any flag — order by free_featured_at across sports.
+    best: dict | None = None
     for sport in SPORTS:
         res = await db.execute(text(_ACTIVE_SQL.format(schema=sport)))
         r = res.mappings().first()
-        if r:
-            pick = _row_to_pick(dict(r), sport)
-            pick["content"] = await _fetch_writeup_content(db, sport, pick["game_id"])
-            return pick
+        if not r:
+            continue
+        pick = _row_to_pick(dict(r), sport)
+        if best is None or (pick.get("free_featured_at") or "") > (best.get("free_featured_at") or ""):
+            best = pick
+    if best is not None:
+        best["content"] = await _fetch_writeup_content(db, best["sport"], best["game_id"])
+        return best
     return {"ok": True, "active_free_picks": 0, "content": None}
 
 

@@ -13,6 +13,7 @@ from app.models import User
 from app.models.admin import SubscriptionPlan, UserSubscription, Payment
 from app.core.config import settings
 from app.routers.auth import get_current_user, get_token_user
+from app.social import x_conversions
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +45,7 @@ class CheckoutRequest(BaseModel):
     success_url: Optional[str] = None
     cancel_url: Optional[str] = None
     ui_mode: str = "hosted"  # "hosted" (redirect) or "embedded_page" (modal)
+    twclid: Optional[str] = None  # X ad click ID, for server-side conversion attribution
 
 
 class TokenTopupRequest(BaseModel):
@@ -189,11 +191,13 @@ async def create_checkout_session(
             "metadata": {
                 "user_id": user.id,
                 "plan_id": plan.id,
+                **(({"twclid": req.twclid}) if req.twclid else {}),
             },
             "subscription_data": {
                 "metadata": {
                     "user_id": user.id,
                     "plan_id": plan.id,
+                    **(({"twclid": req.twclid}) if req.twclid else {}),
                 },
                 "trial_period_days": plan.trial_days or None,
             },
@@ -456,6 +460,7 @@ async def _handle_checkout_completed(session: dict, db: AsyncSession):
     """When checkout is completed, create/update the subscription record."""
     user_id = session.get("metadata", {}).get("user_id")
     plan_id = session.get("metadata", {}).get("plan_id")
+    twclid = session.get("metadata", {}).get("twclid")
     stripe_sub_id = session.get("subscription")
     customer_id = session.get("customer")
 
@@ -533,6 +538,19 @@ async def _handle_checkout_completed(session: dict, db: AsyncSession):
     # wrote a payment for the same order).
 
     await db.commit()
+
+    # ── X (Twitter) server-side conversion: CHECKOUT ──────────────────
+    # Fired after the checkout completes. Uses the buyer's verified email
+    # (hashed) for matching. Best-effort; never affects the webhook response.
+    # conversion_id is tied to the Stripe subscription so a duplicate webhook
+    # delivery dedups against itself.
+    if user and user.email:
+        x_conversions.fire_conversion(
+            event_id=x_conversions.X_EVENT_PURCHASE,
+            conversion_id=f"checkout-{stripe_sub_id}",
+            twclid=twclid,
+            email=user.email,
+        )
 
 
 async def _handle_token_topup_completed(checkout_session: dict, db: AsyncSession):

@@ -270,12 +270,21 @@ async def sitemap_data(db: AsyncSession = Depends(get_db)):
         # (slug preferred), and the backend /{sport}/{identifier} resolves by slug,
         # so emitting slugs yields stable SEO URLs. Fall back to the writeup id
         # only when no slug exists.
+        #
+        # IMPORTANT: only FREE-FEATURE writeups are crawlable. The analysis page
+        # fetches with `?tier=premium`; the backend returns 403 for paywalled
+        # writeups and the page renders a <PremiumGate> with no content. Submitting
+        # those to crawlers (a) wastes crawl budget, (b) produces soft-404 /
+        # "crawled - currently not indexed" signals that suppress discovery of the
+        # rest of the sitemap. So emit ONLY writeups an anonymous crawler can read
+        # (is_free_feature = true). Same principle as the original_articles
+        # `visibility = 'public'` filter below.
         writeup_slugs = []
         try:
             rows = await db.execute(text(f"""
                 SELECT COALESCE(NULLIF(slug, ''), CAST(id AS text)) AS ident
                 FROM {sport}.game_writeups
-                WHERE status = 'published'
+                WHERE status = 'published' AND is_free_feature = true
                 ORDER BY id DESC
                 LIMIT {GAMES_LIMIT}
             """))

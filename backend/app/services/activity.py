@@ -25,9 +25,30 @@ logger = logging.getLogger(__name__)
 # because Caddy (not the client) sets/overwrites it.
 CLIENT_IP_HEADER = "X-Forwarded-For"
 
+# Cloudflare sits in FRONT of Caddy now (browser -> Cloudflare -> Caddy -> app).
+# Cloudflare SETS/OVERWRITES CF-Connecting-IP on every request, so it carries
+# the true client IP and a client cannot spoof it. X-Forwarded-For is now
+# unreliable as the primary source: the browser's own XFF (if any) survives as
+# the left-most entry, and Caddy appends the Cloudflare edge IP after it — so
+# left-most XFF can be client-forged. Prefer CF-Connecting-IP, then fall back to
+# XFF/peer for traffic that bypasses Cloudflare (LAN/direct).
+CF_IP_HEADER = "CF-Connecting-IP"
+
 
 def client_ip(request: Request) -> str | None:
-    """Resolve the client IP, preferring the real one behind the Caddy proxy."""
+    """Resolve the real client IP behind Cloudflare + Caddy.
+
+    Precedence:
+      1. CF-Connecting-IP  - set by Cloudflare, not spoofable through CF.
+      2. first X-Forwarded-For entry - fallback for requests that bypass
+         Cloudflare (e.g. LAN/direct calls to Caddy or the app boxes).
+      3. immediate peer (request.client.host).
+    """
+    cf = request.headers.get(CF_IP_HEADER)
+    if cf:
+        first = cf.split(",")[0].strip()
+        if first:
+            return first
     fwd = request.headers.get(CLIENT_IP_HEADER)
     if fwd:
         # Take the left-most entry (closest to the client). Caddy appends.

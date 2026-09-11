@@ -31,7 +31,10 @@ class Settings(BaseSettings):
     # DeepSeek
     deepseek_api_key: str = ""
     deepseek_base_url: str = "https://api.deepseek.com"
-    deepseek_model: str = "deepseek-v4-flash"
+    # Single source of truth for the DeepSeek model used by chat, article
+    # writing, and tweet writing. Override per-environment with DEEPSEEK_MODEL
+    # in .env (e.g. DEEPSEEK_MODEL=deepseek-flash) — no code change needed.
+    deepseek_model: str = "deepseek-flash"
 
     # Cognee (OpenClaw memory)
     cognee_url: str = "http://localhost:8000"
@@ -68,6 +71,12 @@ class Settings(BaseSettings):
     x_client_id: str = ""            # Client ID
     x_client_secret: str = ""        # Client Secret (chmod-600 .env)
     x_oauth_redirect_uri: str = "https://earlknowsball.com/api/admin/x/oauth/callback"
+
+    # X Ads server-side Conversions (measurement) API. Server-side ONLY — never
+    # exposed to the browser. Sends login/checkout conversions to
+    # ads-api.x.com/12/measurement/conversions/<pixel_id> via the X-Pixel-Token header.
+    x_pixel_token: str = ""          # X-Pixel-Token (chmod-600 .env)
+    x_pixel_id: str = "rf02z"        # Pixel ID (path segment of the measurement endpoint)
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

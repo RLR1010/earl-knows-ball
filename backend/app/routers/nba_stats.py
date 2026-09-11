@@ -1,6 +1,6 @@
 """NBA stats endpoints — player stats, team standings, game schedules."""
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.encoders import jsonable_encoder
 import datetime
@@ -12,6 +12,9 @@ from app.database import get_db
 from sqlalchemy.orm import joinedload
 from sqlalchemy import func
 from app.routers.games import _records_as_of_batch
+from app.routers.auth import get_optional_user
+from app.core.security import user_is_premium
+from app.models import User
 from app.models.nba import NBAGame, NBAPlayer, NBAPlayerSeasonStats, NBASeason, NBATeam
 
 router = APIRouter()
@@ -221,8 +224,12 @@ async def _team_record_as_of(db: AsyncSession, team_id: int, game_date, season_i
 async def nba_game_boxscore(
     game_id: int,
     db: AsyncSession = Depends(get_db),
+    user: User | None = Depends(get_optional_user),
 ):
-    """Return detailed NBA game boxscore with home/away stats."""
+    """Return detailed NBA game boxscore with home/away stats.
+
+    Box score is public; betting lines are premium and stripped for non-premium.
+    """
     result = await db.execute(
         select(NBAGame)
         .options(joinedload(NBAGame.home_team), joinedload(NBAGame.away_team))
@@ -370,6 +377,10 @@ async def nba_game_boxscore(
         home_stats["record"] = {"wins": 0, "losses": 0}
         away_stats["record"] = {"wins": 0, "losses": 0}
 
+    # Premium gate (field-level): box score is public, betting lines are premium.
+    if not user_is_premium(user):
+        betting_lines = None
+
     return {
         "game_id": game.id,
         "nba_game_id": game.nba_game_id,
@@ -389,8 +400,14 @@ async def nba_game_boxscore(
 async def nba_game_prop_bets(
     game_id: int,
     db: AsyncSession = Depends(get_db),
+    user: User | None = Depends(get_optional_user),
 ):
-    """Return all player prop bets stored for an NBA game, or empty list if none."""
+    """Return all player prop bets stored for an NBA game, or empty list if none.
+
+    Premium gate: player props are a premium feature.
+    """
+    if not user_is_premium(user):
+        raise HTTPException(status_code=403, detail="Premium subscription required")
     result = await db.execute(
         text(
             """
@@ -426,6 +443,7 @@ async def nba_games(
     date: str = Query(None),
     team_abbr: str = Query(None),
     db: AsyncSession = Depends(get_db),
+    user: User | None = Depends(get_optional_user),
 ):
     # 30s TTL response cache (per-worker) keyed by query params.
     cache_key = (year, date, (team_abbr or "").upper())
@@ -499,6 +517,19 @@ async def nba_games(
         _g["away_record"] = _records.get((_g["away_team_id"], str(_g["game_date"]), _season_id))
 
     games_list = jsonable_encoder(_nba_docs)
+    # Premium gate (field-level): schedule/list stays public, but pick + EV fields
+    # are premium. Strip them BEFORE caching so a non-premium request can never
+    # receive (or poison the cache with) a premium-bearing payload.
+    if not user_is_premium(user):
+        _PREMIUM_KEYS = (
+            "pick_spread", "pick_over_under", "pick_moneyline",
+            "pick_ats_ev", "pick_ou_ev", "pick_ml_ev",
+            "predicted_margin", "predicted_total",
+        )
+        for _g in games_list:
+            for _k in _PREMIUM_KEYS:
+                if _k in _g:
+                    _g[_k] = None
     _nba_games_store(cache_key, games_list)
     return JSONResponse(content=games_list, headers={"Cache-Control": "public, max-age=30"})
 

@@ -636,7 +636,7 @@ async def get_shap_digest(
 #  5b. Sanitized SHAP rationale (Option A)
 # ──────────────────────────────────────────────
 
-DEEPSEEK_MODEL = "deepseek-v4-flash"
+DEEPSEEK_MODEL = settings.deepseek_model
 
 
 def _flatten_shap_digest(digest: dict[str, Any]) -> list[dict[str, Any]]:

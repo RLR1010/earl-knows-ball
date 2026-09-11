@@ -13,7 +13,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.models import User
 from app.core.config import settings
-from app.services.activity import record_activity
+from app.services.activity import record_activity, client_ip
+from app.social import x_conversions
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,7 @@ class SendCodeResponse(BaseModel):
 class VerifyCodeRequest(BaseModel):
     email: EmailStr
     code: str
+    twclid: str | None = None  # X ad click ID, for server-side conversion attribution
 
 
 class VerifyCodeResponse(BaseModel):
@@ -280,7 +282,7 @@ async def send_code(req: SendCodeRequest, db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/verify-code", response_model=VerifyCodeResponse)
-async def verify_code(req: VerifyCodeRequest, response: Response, db: AsyncSession = Depends(get_db)):
+async def verify_code(request: Request, req: VerifyCodeRequest, response: Response, db: AsyncSession = Depends(get_db)):
     """
     Step 2: Submit the 6-digit code.
     If valid, logs the user in and sets a 30-day cookie.
@@ -330,6 +332,21 @@ async def verify_code(req: VerifyCodeRequest, response: Response, db: AsyncSessi
         secure=settings.base_url.startswith("https"),
         httponly=True,
         samesite="lax",
+    )
+
+    # ── X (Twitter) server-side conversion: LOGIN ─────────────────────
+    # Best-effort, fire-and-forget. Sending uses the verified email (hashed)
+    # plus request IP/user-agent for matching; never blocks the login.
+    _ua = request.headers.get("user-agent")
+    _ip = client_ip(request)
+    x_conversions.fire_conversion(
+        event_id=x_conversions.X_EVENT_LOGIN,
+        conversion_id=f"login-{user.id}-{uuid.uuid4().hex[:12]}",
+        event_source_url=str(request.url),
+        twclid=req.twclid,
+        email=email,
+        ip_address=_ip,
+        user_agent=_ua,
     )
 
     return VerifyCodeResponse(

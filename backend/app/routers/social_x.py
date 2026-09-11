@@ -541,6 +541,7 @@ class XReplySuggestionOut(BaseModel):
     created_at: Optional[datetime] = None
     posted_tweet_id: Optional[str] = None
     posted_at: Optional[datetime] = None
+    unverified: Optional[bool] = None    # set on the immediate draft response when no supported reply could be produced
 
 
 class XReplySendResult(BaseModel):
@@ -619,7 +620,12 @@ async def draft_reply(
                      RETURNING id, post_id, tweet_id, author_username, body, rationale, status, created_at"""),
             {"pid": post_id, "tid": post_row["tweet_id"], "au": post_row["author_username"],
              "b": o["body"], "r": o.get("rationale")})).mappings().first()
-        saved.append(dict(row))
+        d = dict(row)
+        # Surface the verification flag on the immediate response (not persisted): True only when
+        # even the regeneration backfill could not produce a supportable reply.
+        if o.get("unverified"):
+            d["unverified"] = True
+        saved.append(d)
     await db.commit()
     return XReplySuggestionsOut(suggestions=saved, count=len(saved))
 
@@ -1092,10 +1098,50 @@ class ComposeOptionsOut(BaseModel):
     options: list[ComposeOption] = []
     model: Optional[str] = None
     note: Optional[str] = None
+    resolved_sport: Optional[str] = None    # sport actually used for research: mlb|nfl|nba|all
 
 
 # sport -> (engine constructor args) so the composer can run REAL chat research tools
 _SPORT_ENGINES: dict = {}
+
+
+async def _detect_sport(instruction: str, seed_text: str = "") -> str:
+    """Pick the sport the instruction is about: 'mlb' | 'nfl' | 'nba' | 'all'.
+
+    Small, cheap classification call so live research tools get the RIGHT engine instead of the
+    composer silently degrading to articles-only when no sport is picked. Returns 'all' when the
+    topic is cross-sport or genuinely ambiguous, so we never hard-fail to the wrong league.
+    """
+    from openai import AsyncOpenAI  # lazy on-demand
+    model = settings.deepseek_model
+    text = (instruction or "").strip()
+    if seed_text and seed_text.strip():
+        text += "\n\nContext: " + seed_text.strip()[:600]
+    if not text:
+        return "all"
+    client = AsyncOpenAI(api_key=settings.deepseek_api_key, base_url=settings.deepseek_base_url)
+    system = (
+        "Classify which sport a social post is about. Choose exactly one of: "
+        "mlb (baseball), nfl (American football), nba (basketball), all (cross-sport or unclear). "
+        'Reply with ONLY JSON: {"sport":"<mlb|nfl|nba|all>"}'
+    )
+    try:
+        resp = await client.chat.completions.create(
+            model=model,
+            messages=[{"role": "system", "content": system},
+                      {"role": "user", "content": text}],
+            max_tokens=2000, temperature=0.0,
+            response_format={"type": "json_object"},
+        )
+        raw = (resp.choices[0].message.content or "").strip()
+        raw = re.sub(r"^```(?:json)?|```$", "", raw, flags=re.M).strip()
+        sp = str((json.loads(raw) or {}).get("sport", "")).strip().lower()
+        if sp in ("mlb", "nfl", "nba"):
+            return sp
+        return "all"
+    except Exception:  # noqa: BLE001
+        logger.exception("sport detection failed; defaulting to 'all'")
+        return "all"
 
 
 def _get_chat_engine(sport: str | None):
@@ -1127,17 +1173,17 @@ def _get_chat_engine(sport: str | None):
     return eng
 
 
-async def _compose_research(brief: str, sport: str | None, db, level: str = "live") -> tuple[str, str | None]:
+async def _compose_research(brief: str, sport: str | None, db, level: str = "live") -> tuple[str, str | None, str]:
     """Research the topic for tweet grounding. level: none|articles|live|deep.
-    Returns (grounding_block_or_'', engine_model).
+    Returns (grounding_block_truncated_or_'', engine_model, full_grounding_for_factcheck).
       none    -> no research (freestyle, fastest)
       articles-> RAG over recent Earl articles on the topic (no live tools)
       live    -> live sport tools digest + RAG articles (with optional seed facts)
       deep    -> like live, but lets the engine run extra research rounds first
     Never raises — degrades gracefully to whatever research level succeeds (or freestyle)."""
     if level == "none":
-        return "", None
-    model = getattr(settings, "deepseek_model", "deepseek-v4-flash") or "deepseek-v4-flash"
+        return "", None, ""
+    model = settings.deepseek_model
     parts: list[str] = []
 
     # Articles-only always available (RAG needs no sport engine)
@@ -1169,7 +1215,9 @@ async def _compose_research(brief: str, sport: str | None, db, level: str = "liv
                 logger.exception("compose research: live pass failed")
 
     joined = "\n\n".join(parts)
-    return joined[:3200], (model if (joined or level != "none") else None)
+    # NOTE: return the FULL grounding (articles + live research) for the fact-check pass; the drafting
+    # step still gets the truncated <=3200 view. Verifier must see article results too.
+    return joined[:3200], (model if (joined or level != "none") else None), joined
 
 
 async def _llm_three_tweet_options(instruction: str, style: str, sport: Optional[str],
@@ -1206,7 +1254,7 @@ async def _llm_three_tweet_options(instruction: str, style: str, sport: Optional
         '{"options":[{"text":"...","note":"one-line reason for this angle"}]}'
     )
     resp = await client.chat.completions.create(
-        model=settings.deepseek_model or "deepseek-v4-flash",
+        model=settings.deepseek_model,
         temperature=0.9,
         max_tokens=1800,
         response_format={"type": "json_object"},
@@ -1243,6 +1291,70 @@ async def _llm_three_tweet_options(instruction: str, style: str, sport: Optional
     return out[:3]
 
 
+async def _regen_tweet_options(instruction: str, style: str, sport: Optional[str], grounding: str,
+                               n: int, avoid: list[str], reasons: str) -> list[dict]:
+    """One-shot regeneration of `n` tweet options that AVOID flagged unsupported claims.
+    Returns [] on any failure (caller simply keeps fewer options)."""
+    if n <= 0:
+        return []
+    from openai import AsyncOpenAI  # lazy on-demand
+    client = AsyncOpenAI(api_key=settings.deepseek_api_key, base_url=settings.deepseek_base_url)
+    style_guide = {
+        "casual": "natural, friendly sports-fan voice; light hook; reads well on a phone",
+        "short-punchy": "short + punchy (aim under ~160 chars); a crisp verdict, minimal fluff",
+        "hype-hashtags": "energetic hype with 1-3 relevant hashtags and a call-to-action",
+        "factual": "numbers-first and analytical; cite the stat/edge without spin",
+    }.get(style or "casual", "natural sports-fan voice")
+    avoid_block = "\n".join(f"- {a}" for a in avoid[:5])
+    sys_prompt = (
+        f"You write X (Twitter) post DRAFTS for @earl_knows_ball. Style: {style_guide}. "
+        f"Brand: sharp sports-culture betting-takes, credible, a little crusty, never mean, never spammy.\n"
+        f"CRITICAL: earlier drafts FAILED fact-checking. Do NOT repeat those claims, and NEVER state a "
+        f"specific fact (score, record, stat, date, injury, odds, matchup result) unless it is SUPPORTED "
+        f"by the research facts below. If unsure of a number, write the take WITHOUT the number rather "
+        f"than guessing.\n"
+        f"Return ONLY valid JSON: {{\"options\":[{{\"text\":\"<tweet>\",\"note\":\"<short why>\"}}]}}"
+    )
+    user_prompt = (
+        f"Instruction from Rich: {instruction}\n"
+        + (f"Sport: {sport}\n" if sport else "")
+        + (f"\nResearch facts (grounded — use ONLY these for any concrete claim):\n{grounding}\n" if grounding else "")
+        + f"\nEarlier drafts FAILED fact-check: {reasons}\n"
+        + f"Claims to avoid:\n{avoid_block}\n"
+        + f"\nWrite {n} NEW tweet option(s) that do NOT repeat those errors. JSON only."
+    )
+    try:
+        resp = await client.chat.completions.create(
+            model=settings.deepseek_model,
+            messages=[{"role": "system", "content": sys_prompt},
+                      {"role": "user", "content": user_prompt}],
+            temperature=0.7, max_tokens=1200,
+            response_format={"type": "json_object"},
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("compose/options regeneration failed")
+        return []
+    content = (resp.choices[0].message.content or "").strip()
+    if content.startswith("```"):
+        parts = content.split("```")
+        content = parts[1] if len(parts) >= 2 else content.replace("```", "")
+        content = content.strip()
+    out: list[dict] = []
+    try:
+        data = json.loads(content)
+    except Exception:
+        s, e = content.find("{"), content.rfind("}")
+        try:
+            data = json.loads(content[s: e + 1]) if s != -1 and e > s else {}
+        except Exception:
+            data = {}
+    for o in (data.get("options") if isinstance(data, dict) else []) or []:
+        if isinstance(o, dict) and (o.get("text") or "").strip():
+            out.append({"text": str(o["text"]).strip()[:280].rstrip(),
+                        "note": str(o.get("note") or "").strip()})
+    return out[:n]
+
+
 @admin_router.post("/compose/options", response_model=ComposeOptionsOut)
 async def compose_options(
     body: ComposeOptionsIn,
@@ -1254,21 +1366,29 @@ async def compose_options(
     plus optional seed/pick grounding. Never posts. Copy one and paste into X."""
     if not (body.instruction or "").strip():
         raise HTTPException(status_code=400, detail="Type an instruction for the AI first.")
-    model = (settings.deepseek_model or "deepseek-v4-flash")
+    model = settings.deepseek_model
     level = (body.research or "live").strip().lower()
     if level not in ("none", "articles", "live", "deep"):
         level = "live"
     grounding = ""
+    full_grounding = ""
+    resolved_sport = (body.sport or "").strip().lower() or None
     if level != "none":
-        sport_for_research = (body.sport or "").strip().lower() or None
-        if level in ("live", "deep") and not sport_for_research:
-            level = "articles"  # live tools need a sport; fall back to article grounding
+        # If no sport was picked, auto-detect it so live tools still fire (instead of silently
+        # degrading to articles-only). Detection falls back to 'all' (cross-sport engine).
+        if level in ("live", "deep") and not resolved_sport:
+            try:
+                resolved_sport = await _detect_sport(body.instruction, body.seed_text or "")
+                logger.info("compose/options auto-detected sport=%s", resolved_sport)
+            except Exception:
+                logger.exception("compose/options sport detection failed")
+                resolved_sport = "all"
         try:
-            grounding, model = await _compose_research(
-                body.instruction, sport_for_research, db, level=level)
+            grounding, model, full_grounding = await _compose_research(
+                body.instruction, resolved_sport, db, level=level)
         except Exception:
             logger.exception("compose/options research failed")
-            grounding = ""
+            grounding, full_grounding = "", ""
     try:
         raw = await _llm_three_tweet_options(
             body.instruction, body.style or "casual", body.sport,
@@ -1281,6 +1401,37 @@ async def compose_options(
         raise HTTPException(status_code=502, detail="AI generation failed — try again in a moment.")
     if not raw:
         raise HTTPException(status_code=502, detail="AI returned no usable options — try a clearer instruction.")
+    # Grounding verification: drop options whose claims aren't supported by the FULL grounding
+    # (articles + live research), then do ONE regeneration to backfill what we dropped.
+    dropped = 0
+    if (full_grounding or grounding) and raw:
+        fact_base = full_grounding or grounding
+        try:
+            from app.social.x_reply import verify_claims_with_reasons
+            verdicts = await verify_claims_with_reasons([o["text"] for o in raw], fact_base)
+            kept = [o for o, v in zip(raw, verdicts) if v["supported"]]
+            failed = [o for o, v in zip(raw, verdicts) if not v["supported"]]
+            dropped = len(failed)
+            if dropped:
+                logger.info("compose/options verification dropped %d/%d unsupported option(s)", dropped, len(raw))
+                reasons = "; ".join(
+                    (v.get("reason") or "unsupported claim")
+                    for o, v in zip(raw, verdicts) if not v["supported"]
+                )
+                regen = await _regen_tweet_options(
+                    body.instruction, body.style or "casual", resolved_sport, fact_base,
+                    n=dropped, avoid=[o["text"] for o in raw], reasons=reasons,
+                )
+                if regen:
+                    rv = await verify_claims_with_reasons([o["text"] for o in regen], fact_base)
+                    kept += [o for o, v in zip(regen, rv) if v["supported"]]
+            if kept:
+                raw = kept[:3]
+            else:
+                for o in raw:
+                    o["note"] = ((o.get("note") or "") + " [UNVERIFIED: could not confirm against research]").strip()
+        except Exception:  # noqa: BLE001
+            logger.exception("compose/options verification pass failed; keeping unverified options")
     if grounding:
         if level == "live":
             note = ("Grounded in live research + your pick context. " if body.seed_text
@@ -1299,6 +1450,7 @@ async def compose_options(
     return ComposeOptionsOut(
         options=[ComposeOption(text=o["text"], note=o["note"]) for o in raw],
         model=model,
-        note=note + "3 AI options → copy one and paste it into X.",
+        note=note + ("1 option removed as unverified. " if dropped == 1 else f"{dropped} options removed as unverified. " if dropped > 1 else "") + "3 AI options → copy one and paste it into X.",
+        resolved_sport=resolved_sport,
     )
 
