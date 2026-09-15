@@ -55,7 +55,13 @@ CRITICAL RULES:
   internals, retrieval/search mechanisms, a "Data-Conflict Flag", or any contradiction
   between your data sources. If sources disagree, reconcile silently using the rule above
   and just answer with the current, correct facts. Only say you're unsure if you genuinely
-  have no authoritative data — say it plainly without referencing internal systems."""
+  have no authoritative data — say it plainly without referencing internal systems.
+- NEVER surface tool/query errors, invalid field names, or "not supported"/"unknown stat"
+  messages to the user, and never claim data is unavailable merely because one query failed.
+  If a lookup errors, silently retry with a valid field or an alternate stat and answer with
+  whatever real data you have. If a breakdown truly does not exist, say so in plain
+  fan-friendly terms ("I don't have that split") with NO mention of stats, columns, schema,
+  queries, or tool internals."""
 
 
 class ToolChatEngine:

@@ -5,7 +5,8 @@ All raw SQL queries use actual nfl schema column names (verified against the DB)
 
 import json
 import logging
-from datetime import date, datetime, timedelta, timezone as dt_timezone
+from datetime import date, datetime, time, timedelta, timezone as dt_timezone
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,8 +18,24 @@ logger = logging.getLogger("earl.chat_tools.nfl")
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
+#: User-facing timezone for "today"/"tonight" questions (Rich + site visitors are US/Central).
+_CHI = ZoneInfo("America/Chicago")
+
+
 def _today_chicago() -> date:
-    return datetime.now(dt_timezone(timedelta(hours=-5))).date()  # CDT
+    return datetime.now(_CHI).date()
+
+
+def _day_utc_bounds(d: date) -> tuple[datetime, datetime]:
+    """UTC ``[start, end)`` instants spanning the US/Central calendar day ``d``.
+
+    Games are stored as ``timestamptz`` (UTC). Bucketing with ``g.date::date`` casts in the
+    DB session timezone (UTC), which rolls evening kickoffs onto the *next* UTC day (a
+    Monday-night game gets filed under Tuesday). Compare against these bounds instead.
+    """
+    start = datetime.combine(d, time.min, tzinfo=_CHI)
+    end = datetime.combine(d + timedelta(days=1), time.min, tzinfo=_CHI)
+    return start.astimezone(dt_timezone.utc), end.astimezone(dt_timezone.utc)
 
 
 async def _resolve_season_year(db: AsyncSession) -> int:
@@ -435,18 +452,31 @@ TOOL_DEFINITIONS = [
                 "opponent/home_or_away/min_week/max_week), optional top+order for leaderboards "
                 "(group_by=['team'] for league-wide). Core stats: wins, losses, win_pct, "
                 "points_for, avg_points_for, total_yards, avg_total_yards_per_game, pass_yards, "
-                "rush_yards, turnovers, turnover_diff, sacks, third_down_pct, fourth_down_pct, "
+                "rush_yards, pass_completions, pass_attempts, rush_attempts, total_first_downs, "
+                "penalties, turnovers, turnover_diff, sacks, third_down_pct, fourth_down_pct, "
                 "red_zone_td_pct, passing_tds, rushing_tds, interceptions_thrown, fumbles. "
-                "EFFICIENCY/ADVANCED: yards_per_play, pass_ypa, rush_ypa, passing_epa, rushing_epa, "
-                "receiving_epa, passing_cpoe, explosive_plays, three_and_outs, passing_air_yards, "
-                "passing_yards_after_catch, receiving_yards_after_catch, avg_time_of_possession_secs. "
+                "EXPLOSIVE PLAYS: explosive_plays (total), explosive_runs (20+ yd rushes), "
+                "explosive_passes / explosive_receptions (20+ yd completions), explosive_runs_10, "
+                "explosive_runs_40. DEPTH/BURST buckets (play counts): rushing_10/12/20/40, "
+                "passing_10/16/20/40, receiving_10/16/20/40. "
+                "EFFICIENCY/ADVANCED: yards_per_play, epa_per_play, total_epa, pass_ypa, rush_ypa, "
+                "passing_epa, rushing_epa, receiving_epa, passing_cpoe, three_and_outs, "
+                "passing_air_yards, passing_yards_after_catch, receiving_yards_after_catch, "
+                "avg_time_of_possession_secs. "
                 "DEFENSE DETAIL: def_tackles_solo, def_tackles_for_loss, def_sack_yards, def_qb_hits, "
-                "def_fumbles_forced, def_pass_defended, def_interception_yards, def_tds, def_safeties. "
-                "KICKING: fg_made, fg_attempts, fg_pct, fg_long, fg_made_50_59, pat_made, pat_pct. "
-                "PUNTING: punts, punt_yards, punt_avg, punts_inside_20, punt_touchbacks, punt_net_avg. "
+                "def_fumbles_forced, def_pass_defended, def_interception_yards, def_tds, def_safeties, "
+                "def_pass_yards, def_rush_yards, def_interceptions, def_fumbles_recovered. "
+                "KICKING: fg_made, fg_attempts, fg_pct, fg_long, fg_made_0_19/20_29/30_39/40_49/50_59, "
+                "gwfg_made, gwfg_attempts, pat_made, pat_pct. "
+                "PUNTING: punts, punt_yards, punt_avg, punts_inside_20, punt_touchbacks, punt_net_avg, "
+                "punt_downed. "
                 "RETURNS: kickoff_returns, kickoff_return_yards, punt_returns, punt_return_yards. "
+                "FUMBLE RECOVERIES: fumble_recovery_own/opp, fumble_recovery_tds, fumbles_forced_by_opp. "
                 "ROLLING (past-3/5/10-game windows): win_pct_5, off_yds_per_game_5, cover_pct_5, "
-                "ou_over_pct_5, win_pct_3, win_pct_10. Unsupported fields return an error, never SQL. "
+                "ou_over_pct_5, win_pct_3, win_pct_10. If a requested stat name is not in this list "
+                "it is invalid — use the closest valid name; NEVER reveal the invalid name, an error "
+                "message, or any schema/tooling detail to the user. "
+                "season_year is the season START year (NFL season spans calendar years)."
                 "season_year is the season START year (NFL season spans calendar years)."
             ),
             "parameters": {
@@ -776,10 +806,11 @@ async def _get_todays_games(db: AsyncSession, args: dict) -> dict:
         FROM nfl.games g
         JOIN nfl.teams ht ON ht.id = g.home_team_id
         JOIN nfl.teams at2 ON at2.id = g.away_team_id
-        WHERE g.date::date = :d
+        WHERE g.date >= :start AND g.date < :end
         ORDER BY g.date ASC
     """)
-    r = await db.execute(sql, {"d": parsed})
+    start, end = _day_utc_bounds(parsed)
+    r = await db.execute(sql, {"start": start, "end": end})
     games = []
     for row in r.mappings():
         games.append({
@@ -1199,11 +1230,11 @@ async def _get_team_game_log(db: AsyncSession, args: dict) -> dict:
     elif hod == "away":
         frags.append("g.away_team_id = :tid")
     if month is not None:
-        frags.append("EXTRACT(MONTH FROM g.date) = :month")
+        frags.append("EXTRACT(MONTH FROM (g.date AT TIME ZONE 'America/Chicago')) = :month")
     if start_date:
         frags.append("g.date >= :start_date")
     if end_date:
-        frags.append("g.date <= :end_date")
+        frags.append("g.date < :end_date")
     if opponent:
         oid = await _resolve_team_id(db, opponent)
         if not oid:
@@ -1211,7 +1242,8 @@ async def _get_team_game_log(db: AsyncSession, args: dict) -> dict:
         frags.append("(g.home_team_id = :oid OR g.away_team_id = :oid)")
 
     params = {"tid": tid, "sid": sid, "month": month,
-              "start_date": _coerce_date(start_date), "end_date": _coerce_date(end_date)}
+              "start_date": (_day_utc_bounds(_coerce_date(start_date))[0] if start_date else None),
+              "end_date": (_day_utc_bounds(_coerce_date(end_date))[1] if end_date else None)}
     if opponent:
         oid = await _resolve_team_id(db, opponent)
         if not oid:
@@ -1292,17 +1324,18 @@ async def _get_player_weekly_log(db: AsyncSession, args: dict) -> dict:
 
     frags = ["pws.player_id = :pid", "pws.season_id = :sid"]
     params = {"pid": player.id, "sid": sid, "month": month,
-              "start_date": _coerce_date(start_date), "end_date": _coerce_date(end_date)}
+              "start_date": (_day_utc_bounds(_coerce_date(start_date))[0] if start_date else None),
+              "end_date": (_day_utc_bounds(_coerce_date(end_date))[1] if end_date else None)}
     if hod == "home":
         frags.append("g.home_team_id = pws.team_id")
     elif hod == "away":
         frags.append("g.away_team_id = pws.team_id")
     if month is not None:
-        frags.append("EXTRACT(MONTH FROM g.date) = :month")
+        frags.append("EXTRACT(MONTH FROM (g.date AT TIME ZONE 'America/Chicago')) = :month")
     if start_date:
         frags.append("g.date >= :start_date")
     if end_date:
-        frags.append("g.date <= :end_date")
+        frags.append("g.date < :end_date")
     if opponent:
         oid = await _resolve_team_id(db, opponent)
         if not oid:

@@ -6,7 +6,8 @@ All raw SQL queries use actual nba schema column names (verified against the DB)
 import json
 import logging
 import unicodedata
-from datetime import date, datetime, timedelta, timezone as dt_timezone
+from datetime import date, datetime, time, timedelta, timezone as dt_timezone
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -24,8 +25,24 @@ logger = logging.getLogger("earl.chat_tools.nba")
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
+#: User-facing timezone for "today"/"tonight" questions (site visitors are US/Central).
+_CHI = ZoneInfo("America/Chicago")
+
+
 def _today_chicago() -> date:
-    return datetime.now(dt_timezone(timedelta(hours=-5))).date()  # CDT
+    return datetime.now(_CHI).date()
+
+
+def _day_utc_bounds(d: date) -> tuple[datetime, datetime]:
+    """UTC ``[start, end)`` instants spanning the US/Central calendar day ``d``.
+
+    Games are stored as ``timestamptz`` (UTC). Bucketing with ``g.date::date`` casts in the
+    DB session timezone (UTC), which rolls evening tip-offs onto the *next* UTC day. Compare
+    against these bounds instead.
+    """
+    start = datetime.combine(d, time.min, tzinfo=_CHI)
+    end = datetime.combine(d + timedelta(days=1), time.min, tzinfo=_CHI)
+    return start.astimezone(dt_timezone.utc), end.astimezone(dt_timezone.utc)
 
 
 async def _resolve_season_year(db: AsyncSession) -> int:
@@ -611,10 +628,11 @@ async def _get_todays_games(db: AsyncSession, args: dict) -> dict:
         FROM nba.games g
         JOIN nba.teams ht ON ht.id = g.home_team_id
         JOIN nba.teams at2 ON at2.id = g.away_team_id
-        WHERE g.date::date = :d
+        WHERE g.date >= :start AND g.date < :end
         ORDER BY g.date ASC
     """)
-    r = await db.execute(sql, {"d": parsed})
+    start, end = _day_utc_bounds(parsed)
+    r = await db.execute(sql, {"start": start, "end": end})
     games = []
     for row in r.mappings():
         games.append({
@@ -843,17 +861,18 @@ async def _get_player_game_logs(db: AsyncSession, args: dict) -> dict:
 
     frags = ["pgs.player_id = :pid", "g.season_id = (SELECT id FROM nba.seasons WHERE year = :year)"]
     params = {"pid": player.id, "year": year, "lim": lim, "month": month,
-              "start_date": _coerce_date(start_date), "end_date": _coerce_date(end_date)}
+              "start_date": (_day_utc_bounds(_coerce_date(start_date))[0] if start_date else None),
+              "end_date": (_day_utc_bounds(_coerce_date(end_date))[1] if end_date else None)}
     if hod == "home":
         frags.append("g.home_team_id = pgs.team_id")
     elif hod == "away":
         frags.append("g.away_team_id = pgs.team_id")
     if month is not None:
-        frags.append("EXTRACT(MONTH FROM g.date) = :month")
+        frags.append("EXTRACT(MONTH FROM (g.date AT TIME ZONE 'America/Chicago')) = :month")
     if start_date:
         frags.append("g.date >= :start_date")
     if end_date:
-        frags.append("g.date <= :end_date")
+        frags.append("g.date < :end_date")
     if opponent:
         oid = await _resolve_team_id(db, opponent)
         if not oid:
@@ -1446,7 +1465,7 @@ async def _get_team_game_log(db: AsyncSession, args: dict) -> dict:
     elif hod == "away":
         frags.append("g.away_team_id = :tid")
     if month is not None:
-        frags.append("EXTRACT(MONTH FROM g.date) = :month")
+        frags.append("EXTRACT(MONTH FROM (g.date AT TIME ZONE 'America/Chicago')) = :month")
     if opponent:
         oid = await _resolve_team_id(db, opponent)
         if not oid:
@@ -1455,10 +1474,11 @@ async def _get_team_game_log(db: AsyncSession, args: dict) -> dict:
     if start_date:
         frags.append("g.date >= :start_date")
     if end_date:
-        frags.append("g.date <= :end_date")
+        frags.append("g.date < :end_date")
 
     params = {"tid": tid, "sid": sid, "month": month,
-              "start_date": _coerce_date(start_date), "end_date": _coerce_date(end_date)}
+              "start_date": (_day_utc_bounds(_coerce_date(start_date))[0] if start_date else None),
+              "end_date": (_day_utc_bounds(_coerce_date(end_date))[1] if end_date else None)}
     if opponent:
         oid = await _resolve_team_id(db, opponent)
         if not oid:
@@ -1908,6 +1928,7 @@ async def _get_game_writeup(db: AsyncSession, args: dict) -> dict:
 
 # ─── Query-engine tools ───────────────────────────────────────────────────────
 
+NBA_QUERY_TOOL_DEFINITIONS = [
 {
     "type": "function",
     "function": {
@@ -1921,12 +1942,13 @@ async def _get_game_writeup(db: AsyncSession, args: dict) -> dict:
             "free_throws_made/attempted, rebounds_offensive/defensive/total, assists, "
             "steals, blocks, turnovers, fouls_personal, plus_minus, field_goal_pct, "
             "three_pointer_pct, free_throw_pct. aggregate sum/avg/max/count. "
-            "filters: season_year(int, START year e.g. 2024=2024-25)/week/home_or_away/team/",
+            "filters: season_year(int, START year e.g. 2024=2024-25)/week/home_or_away/team/"\
             "opponent/game_type. top+order for leaderboards (group_by=['player']). To look\n"\
             "up ONE specific player, pass the name in the TOP-LEVEL 'player_name' argument —\n"\
             "do NOT put it inside 'filters' (filters only takes\n"\
-            "season_year/home_or_away/team/opponent/game_type). Unsupported fields return an\n"\
-            "error, never SQL."
+            "season_year/home_or_away/team/opponent/game_type). If a requested stat name is not\n"\
+            "in this list it is invalid — use the closest valid name; NEVER reveal the invalid\n"\
+            "name, an error message, or any schema/tooling detail to the user."
         ),
         "parameters": {
             "type": "object",
@@ -1952,12 +1974,19 @@ async def _get_game_writeup(db: AsyncSession, args: dict) -> dict:
             "GENERAL-PURPOSE allowlisted NBA team-stats query engine. Express ANY "
             "team stat question (records, scoring, rebounding, 3-pointers, rolling form). "
             "stats (allowed): wins, losses, win_pct, points_for, points_against, "
-            "point_margin, field_goals_made/attempted, three_pointers_made/attempted, "
-            "free_throws_made/attempted, rebounds, assists, steals, blocks, turnovers, "
-            "fouls, offensive_rebounds, defensive_rebounds, points_in_paint, "
-            "win_pct_3/5, off_pts_5, def_pts_5, cover_pct_5, ou_over_pct_5. filters: "
+            "point_margin, field_goals_made/attempted, two_point_field_goals_made/attempted, "
+            "three_pointers_made/attempted, free_throws_made/attempted, rebounds, assists, "
+            "steals, blocks, turnovers, team_turnovers, total_turnovers, turnover_points, "
+            "fast_break_points, fouls, offensive_rebounds, defensive_rebounds, points_in_paint, "
+            "estimated_possessions, lead_changes, double_double, triple_double, technical_fouls, "
+            "flagrant_fouls, ejections, disqualifications, "
+            "ROLLING (last-N game windows from team_rolling_stats): wins_5, wins_10, "
+            "net_rtg_r5/r10, ortg_r5/r10, drtg_r5/r10, efg_r5/r10, pace_r5/r10, "
+            "ats_wins_5/10, ou_wins_5/10, ats_margin_5, ou_margin_5, rw5_ppg, rw3_ppg, rw5_net_rtg. filters: "
             "team/season_year/opponent/home_or_away. Data from nba.games (home/away "
-            "team columns) + team_rolling_stats. Unsupported fields return an error."
+            "team columns) + team_rolling_stats. If a requested stat name is not in this list "
+            "it is invalid — use the closest valid name; NEVER reveal the invalid name, an "
+            "error message, or any schema/tooling detail to the user."
         ),
         "parameters": {
             "type": "object",
@@ -1971,6 +2000,9 @@ async def _get_game_writeup(db: AsyncSession, args: dict) -> dict:
         },
     },
 },
+]
+TOOL_DEFINITIONS = TOOL_DEFINITIONS + NBA_QUERY_TOOL_DEFINITIONS
+
 
 async def _get_player_query(db: AsyncSession, args: dict) -> dict:
     from . import nba_query

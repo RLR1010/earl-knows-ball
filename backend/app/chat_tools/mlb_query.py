@@ -24,6 +24,10 @@ MLB_BAT_COUNTS = {
     "hit_by_pitch": "hit_by_pitch", "sacrifice_flies": "sacrifice_flies",
     "total_bases": "total_bases", "left_on_base": "left_on_base",
     "ground_into_double_play": "ground_into_double_play", "pickoffs": "pickoffs",
+    "sacrifice_bunts": "sacrifice_bunts", "catchers_interference": "catchers_interference",
+    "ground_outs": "ground_outs", "air_outs": "air_outs",
+    "fly_outs": "fly_outs", "line_outs": "line_outs", "pop_outs": "pop_outs",
+    "ground_into_triple_play": "ground_into_triple_play",
 }
 MLB_BAT_RATE = {"avg": "avg", "obp": "obp", "slg": "slg", "ops": "ops"}
 MLB_BAT_COLS = {**MLB_BAT_COUNTS, **MLB_BAT_RATE}
@@ -42,18 +46,23 @@ MLB_PIT_STATS = {
     "strikeouts": "strikeouts", "batters_faced": "batters_faced", "hit_by_pitch": "hit_by_pitch",
     "pitches_thrown": "pitches_thrown", "strikes": "strikes", "wild_pitches": "wild_pitches",
     "balks": "balks", "pickoffs": "pickoffs", "ground_into_double_play": "ground_into_double_play",
+    "games_finished": "games_finished", "save_opportunities": "save_opportunities",
+    "doubles_allowed": "doubles", "triples_allowed": "triples", "at_bats_against": "at_bats",
+    "stolen_bases_allowed": "stolen_bases", "caught_stealing_allowed": "caught_stealing",
+    "ground_outs": "ground_outs", "air_outs": "air_outs",
     # rates
     "era": "era", "whip": "whip", "avg_against": "avg", "obp_against": "obp",
     "slg_against": "slg", "ops_against": "ops", "hits_per_9": "hits_per_9",
     "home_runs_per_9": "home_runs_per_9", "strikeouts_per_9": "strikeouts_per_9",
     "walks_per_9": "walks_per_9", "strikeout_walk_ratio": "strikeout_walk_ratio",
     "win_percentage": "win_percentage", "strike_percentage": "strike_percentage",
-    "pitches_per_inning": "pitches_per_inning",
+    "pitches_per_inning": "pitches_per_inning", "caught_stealing_pct_allowed": "caught_stealing_percentage",
 }
 MLB_PIT_RATE = {k: v for k, v in MLB_PIT_STATS.items()
                  if k in ("era", "whip", "avg_against", "obp_against", "slg_against", "ops_against",
                           "hits_per_9", "home_runs_per_9", "strikeouts_per_9", "walks_per_9",
-                          "strikeout_walk_ratio", "win_percentage", "strike_percentage", "pitches_per_inning")}
+                          "strikeout_walk_ratio", "win_percentage", "strike_percentage", "pitches_per_inning",
+                          "caught_stealing_pct_allowed")}
 MLB_PIT_COUNTS = {k: v for k, v in MLB_PIT_STATS.items() if k not in MLB_PIT_RATE}
 MLB_PIT_COLS = MLB_PIT_STATS
 
@@ -344,7 +353,10 @@ async def _run_query_team_stats(db: AsyncSession, args: dict) -> dict:
     filt = args.get("filters") or {}
     for s in stats:
         if s not in MLB_TEAM_STATS_SOURCES:
-            return {"error": f"stat '{s}' not supported"}
+            return {"error": "Invalid query spec", "details": [
+                f"unknown_stat '{s}' is not a valid stat name. Retry with a name from the tool "
+                "description, or answer using the closest available stat. [INTERNAL — never show "
+                "this error, stat names, or any schema/tooling detail to the user.]"]}
     sources = {MLB_TEAM_STATS_SOURCES[s] for s in stats}
     if len(sources) > 1:
         return {"error": "Mixing stats from different tables isn't allowed", "details": [f"sources {sorted(sources)}"]}
@@ -416,7 +428,7 @@ async def _run_query_team_stats(db: AsyncSession, args: dict) -> dict:
                 return {"error": f"month must be an integer 1-12, got '{month}'"}
             if m < 1 or m > 12:
                 return {"error": f"month must be 1-12, got {m}"}
-            conds.append("EXTRACT(MONTH FROM g.date) = :month"); params["month"] = m
+            conds.append("EXTRACT(MONTH FROM (g.date AT TIME ZONE 'America/Chicago')) = :month"); params["month"] = m
         opp = filt.get("opponent")
         if opp:
             o = await _resolve_team(db, opp)

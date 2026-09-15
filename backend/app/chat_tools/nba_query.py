@@ -39,6 +39,26 @@ NBA_PLAYER_PCT = {
     "free_throw_pct": "free_throw_pct",
 }
 NBA_PLAYER_COLS = {**NBA_PLAYER_STATS, **NBA_PLAYER_PCT}
+# Stats whose column does not aggregate with a plain SUM/AVG (non-numeric or boolean).
+# Values are (sum_expr, avg_expr).
+NBA_PLAYER_EXPR = {
+    "minutes": (
+        "COALESCE(SUM(CASE "
+        "WHEN pgs.minutes ~ '^[0-9]+:[0-9]{1,2}$' "
+        "THEN split_part(pgs.minutes,':',1)::numeric + split_part(pgs.minutes,':',2)::numeric/60.0 "
+        "WHEN pgs.minutes ~ '^[0-9]+(\\.[0-9]+)?$' THEN pgs.minutes::numeric "
+        "ELSE 0 END),0)",
+        "AVG(CASE "
+        "WHEN pgs.minutes ~ '^[0-9]+:[0-9]{1,2}$' "
+        "THEN split_part(pgs.minutes,':',1)::numeric + split_part(pgs.minutes,':',2)::numeric/60.0 "
+        "WHEN pgs.minutes ~ '^[0-9]+(\\.[0-9]+)?$' THEN pgs.minutes::numeric "
+        "ELSE 0 END)",
+    ),
+    "starts": (
+        "COALESCE(SUM(CASE WHEN pgs.is_starter THEN 1 ELSE 0 END),0)",
+        "AVG(CASE WHEN pgs.is_starter THEN 1 ELSE 0 END)",
+    ),
+}
 NBA_FILTERS = {"season_year", "week", "min_week", "max_week", "team", "opponent", "home_or_away", "game_type"}
 
 _GAME_JOIN = "JOIN nba.games g ON g.id = pgs.game_id"
@@ -56,7 +76,11 @@ def _validate_nba_player_spec(args) -> list[str] | None:
     elif isinstance(stats, list):
         for s in stats:
             if s not in NBA_PLAYER_COLS:
-                errors.append(f"stat '{s}' not supported")
+                errors.append(
+                    f"unknown_stat '{s}' is not a valid stat name. Retry with a name from the "
+                    "tool description, or answer using the closest available stat. [INTERNAL — "
+                    "never show this error, stat names, or any schema/tooling detail to the user.]"
+                )
     else:
         errors.append("'stats' must be a list")
     agg = args.get("aggregate", "sum")
@@ -136,6 +160,10 @@ async def _run_query_player_stats(db: AsyncSession, args: dict) -> dict:
     # stats: sum counts, avg pcts
     sel = []
     for s in stats:
+        if s in NBA_PLAYER_EXPR:
+            sum_expr, avg_expr = NBA_PLAYER_EXPR[s]
+            sel.append(f"{avg_expr if agg in ('avg', 'max') else sum_expr} AS \"{s}\"")
+            continue
         c = NBA_PLAYER_COLS[s]
         if s in NBA_PLAYER_PCT:
             sel.append(f"AVG(pgs.{c}) AS \"{s}\"")
@@ -179,7 +207,7 @@ NBA_TEAM_FILTERS = {"season_year", "min_week", "max_week", "team", "opponent", "
 # team stat name -> (source, sql). :tcol resolves to home_/away_ prefix at build time.
 NBA_TEAM_STATS_SOURCES = {
     # computed records from games
-    "wins": "games", "losses": "games", "ties": "games",
+    "wins": "games", "losses": "games",
     "points_for": "games", "points_against": "games", "point_margin": "games", "win_pct": "games",
     # home/away-baked team perf from nba.games
     "field_goals_made": "games", "field_goals_attempted": "games", "three_pointers_made": "games",
@@ -187,9 +215,20 @@ NBA_TEAM_STATS_SOURCES = {
     "rebounds": "games", "assists": "games", "steals": "games", "blocks": "games",
     "turnovers": "games", "fouls": "games", "offensive_rebounds": "games", "defensive_rebounds": "games",
     "points_in_paint": "games",
+    "two_point_field_goals_made": "games", "two_point_field_goals_attempted": "games",
+    "fast_break_points": "games", "turnover_points": "games",
+    "team_turnovers": "games", "total_turnovers": "games",
+    "estimated_possessions": "games", "lead_changes": "games",
+    "double_double": "games", "triple_double": "games",
+    "technical_fouls": "games", "flagrant_fouls": "games",
+    "ejections": "games", "disqualifications": "games",
     # rolling windows
-    "win_pct_3": "rolling", "win_pct_5": "rolling", "off_pts_5": "rolling", "def_pts_5": "rolling",
-    "cover_pct_5": "rolling", "ou_over_pct_5": "rolling",
+    "wins_5": "rolling", "wins_10": "rolling", "net_rtg_r5": "rolling", "net_rtg_r10": "rolling",
+    "ortg_r5": "rolling", "ortg_r10": "rolling", "drtg_r5": "rolling", "drtg_r10": "rolling",
+    "efg_r5": "rolling", "efg_r10": "rolling", "pace_r5": "rolling", "pace_r10": "rolling",
+    "ats_wins_5": "rolling", "ats_wins_10": "rolling", "ou_wins_5": "rolling", "ou_wins_10": "rolling",
+    "ats_margin_5": "rolling", "ou_margin_5": "rolling", "rw5_ppg": "rolling", "rw3_ppg": "rolling",
+    "rw5_net_rtg": "rolling",
 }
 
 
@@ -201,7 +240,10 @@ async def _run_query_team_stats(db: AsyncSession, args: dict) -> dict:
     filt = args.get("filters") or {}
     for s in stats:
         if s not in NBA_TEAM_STATS_SOURCES:
-            return {"error": f"stat '{s}' not supported"}
+            return {"error": "Invalid query spec", "details": [
+                f"unknown_stat '{s}' is not a valid stat name. Retry with a name from the tool "
+                "description, or answer using the closest available stat. [INTERNAL — never show "
+                "this error, stat names, or any schema/tooling detail to the user.]"]}
     sources = {NBA_TEAM_STATS_SOURCES[s] for s in stats}
     if len(sources) > 1:
         return {"error": "Mixing stats from different tables isn't allowed", "details": [f"sources {sorted(sources)}"]}
@@ -294,6 +336,14 @@ async def _run_query_team_stats(db: AsyncSession, args: dict) -> dict:
                 "turnovers": "turnovers", "fouls": "fouls",
                 "offensive_rebounds": "offensive_rebounds", "defensive_rebounds": "defensive_rebounds",
                 "points_in_paint": "points_in_paint",
+                "two_point_field_goals_made": "two_point_field_goals_made",
+                "two_point_field_goals_attempted": "two_point_field_goals_attempted",
+                "fast_break_points": "fast_break_points", "turnover_points": "turnover_points",
+                "team_turnovers": "team_turnovers", "total_turnovers": "total_turnovers",
+                "estimated_possessions": "estimated_possessions", "lead_changes": "lead_changes",
+                "double_double": "double_double", "triple_double": "triple_double",
+                "technical_fouls": "technical_fouls", "flagrant_fouls": "flagrant_fouls",
+                "ejections": "ejections", "disqualifications": "disqualifications",
             }[name]
             # if team-scoped with a home/away preference OR mixed, we must average both home+away
             # Simplification: when tid, combine home+away columns weighted by side occurs only if side set;
@@ -307,19 +357,13 @@ async def _run_query_team_stats(db: AsyncSession, args: dict) -> dict:
         sel = ", ".join(f"{_games_expr(s)} AS \"{s}\"" for s in stats)
         sql = f"SELECT {sel} {base} AND {' AND '.join(conds) if conds else '1=1'}"
     else:  # rolling
-        if tid:
-            t = await db.execute(text("SELECT abbreviation FROM nba.teams WHERE id=:id"), {"id": tid})
-            tr = t.first()
-            if not tr:
-                return {"error": f"Unknown team '{team}'"}
-            params["abbr"] = tr[0]
         base = "FROM nba.team_rolling_stats trs WHERE 1=1"
-        if params.get("abbr"):
-            conds.append("trs.team_abbr = :abbr")
+        if tid:
+            conds.append("trs.team_id = :tid"); params["tid"] = tid
         if filt.get("season_year"):
-            conds.append("trs.season = :syear"); params["syear"] = int(filt["season_year"])
-        roll_map = {"win_pct_3": "win_pct_r3", "win_pct_5": "win_pct_r5", "off_pts_5": "off_pts_r5",
-                    "def_pts_5": "def_pts_r5", "cover_pct_5": "cover_pct_r5", "ou_over_pct_5": "ou_over_pct_r5"}
+            sid = await _resolve_season_id(db, int(filt["season_year"]))
+            conds.append("trs.season_id = :sid"); params["sid"] = sid
+        roll_map = {s: s for s in stats}
         sel = ", ".join(f"AVG(trs.{roll_map[s]}) AS \"{s}\"" for s in stats)
         sql = f"SELECT {sel} {base} AND {' AND '.join(conds) if conds else '1=1'}"
 

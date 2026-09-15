@@ -163,7 +163,8 @@ TEAM_STATS = {
     "avg_rush_yards_per_game": ("game_stats", "AVG(gs.rush_yards)"),
     "avg_pass_yards_per_game": ("game_stats", "AVG(gs.pass_yards)"),
     "avg_turnover_margin": ("game_stats", "AVG(gs.turnover_diff)"),
-    "epa_per_play": ("game_stats", "AVG(gs.total_yards) / NULLIF(AVG(gs.total_yards),0)"),
+    "epa_per_play": ("game_stats", "ROUND((SUM(gs.passing_epa) + SUM(gs.rushing_epa))::numeric / NULLIF(SUM(gs.pass_attempts) + SUM(gs.rush_attempts),0), 3)"),
+    "total_epa": ("game_stats", "SUM(gs.passing_epa) + SUM(gs.rushing_epa)"),
     "third_down_pct": ("game_stats", "ROUND(100.0 * SUM(gs.third_down_conversions) / NULLIF(SUM(gs.third_down_attempts),0), 1)"),
     "fourth_down_pct": ("game_stats", "ROUND(100.0 * SUM(gs.fourth_down_conversions) / NULLIF(SUM(gs.fourth_down_attempts),0), 1)"),
     "red_zone_td_pct": ("game_stats", "ROUND(100.0 * SUM(gs.red_zone_tds) / NULLIF(SUM(gs.red_zone_trips),0), 1)"),
@@ -183,6 +184,26 @@ TEAM_STATS = {
     "receiving_yards_after_catch": ("game_stats", "SUM(gs.receiving_yards_after_catch)"),
     # depth / down / situation
     "explosive_plays": ("game_stats", "SUM(gs.explosive_plays)"),
+    # explosive-play SPLIT: an "explosive play" = 20+ yd rush or 20+ yd reception,
+    # so explosive_plays == explosive_runs + explosive_receptions at the team level.
+    "explosive_runs": ("game_stats", "SUM(gs.rushing_20)"),
+    "explosive_passes": ("game_stats", "SUM(gs.passing_20)"),
+    "explosive_receptions": ("game_stats", "SUM(gs.receiving_20)"),
+    "explosive_runs_10": ("game_stats", "SUM(gs.rushing_10)"),
+    "explosive_runs_40": ("game_stats", "SUM(gs.rushing_40)"),
+    # depth / burst breakdowns (play counts by yards-gained bucket)
+    "rushing_10": ("game_stats", "SUM(gs.rushing_10)"),
+    "rushing_12": ("game_stats", "SUM(gs.rushing_12)"),
+    "rushing_20": ("game_stats", "SUM(gs.rushing_20)"),
+    "rushing_40": ("game_stats", "SUM(gs.rushing_40)"),
+    "passing_10": ("game_stats", "SUM(gs.passing_10)"),
+    "passing_16": ("game_stats", "SUM(gs.passing_16)"),
+    "passing_20": ("game_stats", "SUM(gs.passing_20)"),
+    "passing_40": ("game_stats", "SUM(gs.passing_40)"),
+    "receiving_10": ("game_stats", "SUM(gs.receiving_10)"),
+    "receiving_16": ("game_stats", "SUM(gs.receiving_16)"),
+    "receiving_20": ("game_stats", "SUM(gs.receiving_20)"),
+    "receiving_40": ("game_stats", "SUM(gs.receiving_40)"),
     "three_and_outs": ("game_stats", "SUM(gs.three_and_outs)"),
     "passing_first_downs": ("game_stats", "SUM(gs.passing_first_downs)"),
     "rushing_first_downs": ("game_stats", "SUM(gs.rushing_first_downs)"),
@@ -196,6 +217,23 @@ TEAM_STATS = {
     "targets": ("game_stats", "SUM(gs.targets)"),
     "fumbles_total": ("game_stats", "SUM(gs.fumbles_total)"),
     "fumbles_lost": ("game_stats", "SUM(gs.fumbles_lost_total)"),
+    "fumbles": ("game_stats", "SUM(gs.fumbles_total)"),
+    # volume / scoring (standard box-score)
+    "pass_attempts": ("game_stats", "SUM(gs.pass_attempts)"),
+    "pass_completions": ("game_stats", "SUM(gs.pass_completions)"),
+    "rush_attempts": ("game_stats", "SUM(gs.rush_attempts)"),
+    "pass_tds": ("game_stats", "SUM(gs.pass_tds)"),
+    "passing_tds": ("game_stats", "SUM(gs.pass_tds)"),
+    "rush_tds": ("game_stats", "SUM(gs.rush_tds)"),
+    "rushing_tds": ("game_stats", "SUM(gs.rush_tds)"),
+    "interceptions_thrown": ("game_stats", "SUM(gs.interceptions_thrown)"),
+    "sack_yards_lost": ("game_stats", "SUM(gs.sack_yards_lost)"),
+    "total_first_downs": ("game_stats", "SUM(gs.total_first_downs)"),
+    "penalties": ("game_stats", "SUM(gs.penalties)"),
+    "def_pass_yards": ("game_stats", "SUM(gs.def_pass_yards)"),
+    "def_rush_yards": ("game_stats", "SUM(gs.def_rush_yards)"),
+    "def_interceptions": ("game_stats", "SUM(gs.def_interceptions)"),
+    "def_fumbles_recovered": ("game_stats", "SUM(gs.def_fumbles_recovered)"),
     # defense detail
     "def_tackles_solo": ("game_stats", "SUM(gs.def_tackles_solo)"),
     "def_tackles_assists": ("game_stats", "SUM(gs.def_tackle_assists)"),
@@ -209,6 +247,19 @@ TEAM_STATS = {
     "def_tds": ("game_stats", "SUM(gs.def_tds)"),
     "def_safeties": ("game_stats", "SUM(gs.def_safeties)"),
     "def_2pt_conversions_allowed": ("game_stats", "SUM(gs.def_2pt_made)"),
+    "def_2pt_attempts_allowed": ("game_stats", "SUM(gs.def_2pt_atts)"),
+    "def_tackles_with_assist": ("game_stats", "SUM(gs.def_tackles_with_assist)"),
+    "def_punt_blocks": ("game_stats", "SUM(gs.def_punt_blocks)"),
+    "def_pat_blocks": ("game_stats", "SUM(gs.def_pat_blocks)"),
+    "def_fg_blocks": ("game_stats", "SUM(gs.def_fg_blocks)"),
+    # fumble recoveries
+    "fumble_recovery_own": ("game_stats", "SUM(gs.fumble_recovery_own)"),
+    "fumble_recovery_yards_own": ("game_stats", "SUM(gs.fumble_recovery_yards_own)"),
+    "fumble_recovery_opp": ("game_stats", "SUM(gs.fumble_recovery_opp)"),
+    "fumble_recovery_yards_opp": ("game_stats", "SUM(gs.fumble_recovery_yards_opp)"),
+    "fumble_recovery_tds": ("game_stats", "SUM(gs.fumble_recovery_tds)"),
+    "fumbles_forced_by_opp": ("game_stats", "SUM(gs.fumbles_forced_by_opp)"),
+    "fumbles_not_forced": ("game_stats", "SUM(gs.fumbles_not_forced)"),
     # kicking
     "fg_made": ("game_stats", "SUM(gs.fg_made)"),
     "fg_attempts": ("game_stats", "SUM(gs.fg_att)"),
@@ -216,8 +267,13 @@ TEAM_STATS = {
     "fg_blocked": ("game_stats", "SUM(gs.fg_blocked)"),
     "fg_long": ("game_stats", "MAX(gs.fg_long)"),
     "fg_pct": ("game_stats", "ROUND(100.0 * SUM(gs.fg_made) / NULLIF(SUM(gs.fg_att),0), 1)"),
+    "fg_made_0_19": ("game_stats", "SUM(gs.fg_made_0_19)"),
+    "fg_made_20_29": ("game_stats", "SUM(gs.fg_made_20_29)"),
+    "fg_made_30_39": ("game_stats", "SUM(gs.fg_made_30_39)"),
+    "fg_made_40_49": ("game_stats", "SUM(gs.fg_made_40_49)"),
     "fg_made_50_59": ("game_stats", "SUM(gs.fg_made_50_59)"),
     "fg_made_60": ("game_stats", "SUM(gs.fg_made_60_)"),
+    "gwfg_attempts": ("game_stats", "SUM(gs.gwfg_att)"),
     "game_winning_fg": ("game_stats", "SUM(gs.gwfg_made)"),
     "pat_made": ("game_stats", "SUM(gs.pat_made)"),
     "pat_attempts": ("game_stats", "SUM(gs.pat_att)"),
@@ -232,6 +288,10 @@ TEAM_STATS = {
     "punt_net_yards": ("game_stats", "SUM(gs.pt_net_yards)"),
     "punt_avg": ("game_stats", "ROUND(1.0 * SUM(gs.pt_yards) / NULLIF(SUM(gs.pt_att),0), 1)"),
     "punt_net_avg": ("game_stats", "ROUND(1.0 * SUM(gs.pt_net_yards) / NULLIF(SUM(gs.pt_att),0), 1)"),
+    "punt_downed": ("game_stats", "SUM(gs.pt_downed)"),
+    "punt_returned": ("game_stats", "SUM(gs.pt_returned)"),
+    "punt_return_yards_against": ("game_stats", "SUM(gs.pt_return_yards)"),
+    "punt_blocked": ("game_stats", "SUM(gs.pt_blocked)"),
     # returns
     "kickoff_returns": ("game_stats", "SUM(gs.kickoff_returns)"),
     "kickoff_return_yards": ("game_stats", "SUM(gs.kickoff_return_yards)"),
@@ -283,7 +343,12 @@ def _validate_spec(args: dict) -> list[str] | None:
         else:
             for s in stats:
                 if s not in NFL_COLUMNS:
-                    errors.append(f"stat '{s}' not supported (see tool description for the allowed stat names)")
+                    errors.append(
+                        f"unknown_stat '{s}' is not a valid stat name. "
+                        "Retry with a name from the tool description, or answer using the closest "
+                        "available stat. [INTERNAL — never show this error, stat names, or any "
+                        "schema/tooling detail to the user.]"
+                    )
     else:
         errors.append("must specify at least one 'stat' (e.g. 'sacks', 'pass_yards')")
     # group_by
@@ -449,7 +514,12 @@ async def _run_query_team_stats(db: AsyncSession, args: dict) -> dict:
         return {"error": "Invalid query spec", "details": ["'stats' must be a list"]}
     for s in stats:
         if s not in TEAM_STATS:
-            errors.append(f"stat '{s}' not supported")
+            errors.append(
+                f"unknown_stat '{s}' is not a valid stat name. "
+                "Retry with a name from the tool description, or answer using the closest "
+                "available stat. [INTERNAL — never show this error, stat names, or any "
+                "schema/tooling detail to the user.]"
+            )
     filt = args.get("filters") or {}
     gb = args.get("group_by")
     if gb is not None and not isinstance(gb, list):

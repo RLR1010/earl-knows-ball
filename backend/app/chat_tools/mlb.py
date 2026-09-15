@@ -10,7 +10,8 @@ import json
 import logging
 import re
 import unicodedata
-from datetime import date, datetime, timedelta, timezone as dt_timezone
+from datetime import date, datetime, time, timedelta, timezone as dt_timezone
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -613,17 +614,22 @@ TOOL_DEFINITIONS = [
                 "pitching). Express ANY hitter/pitcher stat question as a structured spec. "
                 "stats (batting): hits, home_runs, runs_batted_in, at_bats, runs, doubles, "
                 "triples, base_on_balls, strikeouts, stolen_bases, caught_stealing, "
-                "plate_appearances, total_bases, avg, obp, slg, ops. stats (pitching): wins, "
+                "plate_appearances, total_bases, avg, obp, slg, ops, sacrifice_bunts, "
+                "catchers_interference, ground_outs, air_outs, fly_outs, line_outs, pop_outs. "
+                "stats (pitching): wins, "
                 "losses, saves, holds, strikeouts, innings_pitched, earned_runs, "
                 "hits_allowed, walks_allowed, home_runs_allowed, era, whip, strikeouts_per_9, "
-                "strikeout_walk_ratio. filters: season_year/home_or_away/opponent (venue/opp "
+                "strikeout_walk_ratio, games_finished, save_opportunities, doubles_allowed, "
+                "triples_allowed, at_bats_against, stolen_bases_allowed, caught_stealing_allowed, "
+                "ground_outs, air_outs, caught_stealing_pct_allowed. filters: season_year/home_or_away/opponent (venue/opp "
                 "only for batting)/min_innings (pitching leaderboard qualification, e.g. 162), "
                 "min_at_bats (batting leaderboard qualification, e.g. 400). "
                 "group_by=['player']+top+order for leaderboards. To look up ONE specific\n"\
                 "player (career/season totals), pass the name in the TOP-LEVEL 'player_name'\n"\
                 "argument — do NOT put it inside 'filters' (filters only takes\n"\
-                "season_year/home_or_away/opponent). Unsupported fields return an error,\n"\
-                "never SQL."
+                "season_year/home_or_away/opponent). If a requested stat name is not in this "\
+                "list it is invalid — use the closest valid name; NEVER reveal the invalid "\
+                "name, an error message, or any schema/tooling detail to the user."
             ),
             "parameters": {
                 "type": "object",
@@ -654,7 +660,9 @@ TOOL_DEFINITIONS = [
                 "wins_last_10, avg_runs_scored, avg_runs_allowed, avg_ops_5, avg_ops_10, "
                 "era_5, era_10, over_pct_5, spread_pct_5. filters: team/season_year "
                 "(all sources) + month (1-12)/home_or_away (home|away)/opponent (pitching only). "
-                "Unsupported fields return an error, never SQL."
+                "If a requested stat name is not in this list it is invalid — use the closest "
+                "valid name; NEVER reveal the invalid name, an error message, or any "
+                "schema/tooling detail to the user."
             ),
             "parameters": {
                 "type": "object",
@@ -1025,11 +1033,10 @@ async def _get_todays_games(db: AsyncSession, args: dict) -> list[dict]:
         #   start: 05:00 UTC today (game_date)
         #   end:   05:00 UTC tomorrow
         now_utc = datetime.now(dt_timezone.utc)
-        cdt_offset = timedelta(hours=-5)  # UTC-5 (CDT)
-        now_cdt = now_utc.astimezone(dt_timezone(cdt_offset))
-        chicago_date = now_cdt.date()
+        chicago_tz = ZoneInfo("America/Chicago")
+        chicago_date = now_utc.astimezone(chicago_tz).date()
         # Start of Chicago day in UTC
-        start_cdt = datetime.combine(chicago_date, datetime.min.time()).replace(tzinfo=dt_timezone(cdt_offset))
+        start_cdt = datetime.combine(chicago_date, datetime.min.time(), tzinfo=chicago_tz)
         end_cdt = start_cdt + timedelta(days=1)
         day_start = start_cdt.astimezone(dt_timezone.utc)
         day_end = end_cdt.astimezone(dt_timezone.utc)
@@ -1781,26 +1788,39 @@ def _coerce_date(value):
     return None
 
 
+def _day_utc_bounds(d: date):
+    """UTC [start, end) instants spanning the US/Central calendar day ``d`` (games are UTC)."""
+    chi = ZoneInfo("America/Chicago")
+    start = datetime.combine(d, time.min, tzinfo=chi)
+    end = datetime.combine(d + timedelta(days=1), time.min, tzinfo=chi)
+    return start.astimezone(dt_timezone.utc), end.astimezone(dt_timezone.utc)
+
+
 def _build_date_where(season, month, start_date, end_date):
     """Return (sqlfrag, params) constraining mlb.games.date to the requested window.
 
     season: resolved MLBSeason (or None). When a month is given and no explicit
     date range, we also constrain the calendar year to the season's year so e.g.
     "April of 2022" correctly scopes to April 2022, not April of the current season.
+
+    Dates are bucketed by the US/Central calendar day (games are stored as timestamptz
+    UTC; a raw ::date cast would misfile evening games onto the next UTC day).
     """
     frags = []
     params = {}
-    if start_date:
+    sd = _coerce_date(start_date) if start_date else None
+    ed = _coerce_date(end_date) if end_date else None
+    if sd:
         frags.append("g.date >= :start_date")
-        params["start_date"] = _coerce_date(start_date)
-    if end_date:
-        frags.append("g.date <= :end_date")
-        params["end_date"] = _coerce_date(end_date)
+        params["start_date"] = _day_utc_bounds(sd)[0]
+    if ed:
+        frags.append("g.date < :end_date")
+        params["end_date"] = _day_utc_bounds(ed)[1]
     if month is not None:
-        frags.append("EXTRACT(MONTH FROM g.date) = :month")
+        frags.append("EXTRACT(MONTH FROM (g.date AT TIME ZONE 'America/Chicago')) = :month")
         params["month"] = month
         if season and not start_date and not end_date:
-            frags.append("EXTRACT(YEAR FROM g.date) = :year")
+            frags.append("EXTRACT(YEAR FROM (g.date AT TIME ZONE 'America/Chicago')) = :year")
             params["year"] = season.year
     return " AND ".join(frags), params
 
