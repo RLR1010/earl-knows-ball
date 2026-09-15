@@ -121,9 +121,7 @@ export default function ProfilePage() {
       setTokenTopup(q.get("token_topup"));
       setBuyMessage("Your token top-up was successful! Extra tokens have been added to your balance.");
       // refresh token usage so the new balance shows
-      if (user?.subscription_tier?.startsWith("premium")) {
-        api.tokenUsage.my().then(setTokenUsage).catch(() => {});
-      }
+      api.tokenUsage.my().then(setTokenUsage).catch(() => {});
       // clean the query param
       window.history.replaceState({}, document.title, window.location.pathname);
     }
@@ -160,7 +158,7 @@ export default function ProfilePage() {
   }, [user]);
 
   useEffect(() => {
-    if (!user || !(user.subscription_tier?.startsWith("premium"))) return;
+    if (!user) return;
     setTokenUsageLoading(true);
     api.tokenUsage
       .my()
