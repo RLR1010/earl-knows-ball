@@ -312,10 +312,25 @@ def process_stats_team(df: pd.DataFrame) -> pd.DataFrame:
     """
     records = []
 
+    # Canonicalize playoff week numbering to match nfl.games (Wild Card = week 19 ...
+    # Super Bowl = week 22). nflverse's stats_team file uses 18..21 for pre-2021
+    # seasons (REG had 17 weeks) but 19..22 for 2021+ (REG has 18 weeks); our
+    # nfl.games uses 19..22 for ALL seasons. Without this shift the same real playoff
+    # game gets written a second time under a parallel (off-by-one) week and does not
+    # update the existing row (upsert key includes week).
+    post_shift = 0
+    _post_mask = df["season_type"].astype(str).str.upper().str.startswith("POST")
+    if _post_mask.any():
+        _min_post = int(df.loc[_post_mask, "week"].min())
+        post_shift = 19 - _min_post if _min_post < 19 else 0
+
     for _, row in df.iterrows():
         team = TEAM_ABBR_MAP.get(str(row.get("team", "")).strip(), str(row.get("team", "")).strip())
         opp = TEAM_ABBR_MAP.get(str(row.get("opponent_team", "")).strip(), str(row.get("opponent_team", "")).strip())
+        season_type = str(row.get("season_type", "REG"))
         week = int(row.get("week", 0))
+        if season_type.upper().startswith("POST"):
+            week += post_shift
         season = int(row.get("season", 0))
         if not season:
             continue
@@ -347,7 +362,7 @@ def process_stats_team(df: pd.DataFrame) -> pd.DataFrame:
         record = {
             "season": season,
             "week": week,
-            "season_type": str(row.get("season_type", "REG")),
+            "season_type": season_type,
             "team_abbr": team,
             "opponent_abbr": opp,
             # Offense
