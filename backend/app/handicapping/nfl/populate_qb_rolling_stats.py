@@ -209,9 +209,10 @@ WITH qb_games AS (
     JOIN nfl.teams ot    ON ot.id   = pws.opponent_id
     JOIN nfl.players p   ON p.id    = pws.player_id
     LEFT JOIN nfl.game_stats gs
-           ON gs.season     = s.year
-          AND gs.week       = g.week
-          AND gs.team_abbr  = t.abbreviation
+           ON gs.season        = s.year
+          AND gs.week          = g.week
+          AND gs.team_abbr     = t.abbreviation
+          AND gs.opponent_abbr = ot.abbreviation  -- pin the exact game; (season,week,team) alone is not unique for playoff rows (bogus duplicate game_stats rows would fan out and violate the rolling PK)
     WHERE p.position = 'QB'
       AND pws.game_id IS NOT NULL
       AND s.year IS NOT NULL
