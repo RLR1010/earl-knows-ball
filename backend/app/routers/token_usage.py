@@ -13,6 +13,7 @@ from app.routers.auth import get_current_user
 from app.database import get_db
 from app.models.token_usage import UserTokenUsage
 from app.models.user import User
+from app.services.app_settings import get_free_chat_config
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +48,13 @@ async def get_token_usage(
 
     tokens_used = usage.tokens_used if usage else 0
     token_limit = user.monthly_token_limit
+    # Non-premium members are capped by the admin-configured global free grant
+    # (unless a per-user override exists). Reflect that here so the profile shows
+    # the real limit instead of "unlimited".
+    if token_limit is None and user.subscription_tier not in ("premium", "premium_yearly"):
+        free_cfg = await get_free_chat_config(db)
+        if free_cfg["enabled"]:
+            token_limit = free_cfg["monthly_tokens"]
 
     percent_used = None
     if token_limit and token_limit > 0:
