@@ -45,8 +45,13 @@ function formatDate(iso: string | null): string {
 }
 
 function todayString(): string {
+  // LOCAL calendar date (NOT UTC). toISOString() would roll to tomorrow's date for
+  // users west of UTC late in the evening (e.g. 21:00 CDT -> next day in UTC).
   const d = new Date();
-  return d.toISOString().slice(0, 10); // YYYY-MM-DD
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`; // YYYY-MM-DD (local)
 }
 
 const STATUS_COLORS: Record<string, string> = {
@@ -73,8 +78,11 @@ export default function AdminPayments() {
     setError("");
     try {
       const params = new URLSearchParams();
-      if (dateFrom) params.set("date_from", dateFrom + "T00:00:00");
-      if (dateTo) params.set("date_to", dateTo + "T23:59:59");
+      // The date pickers are LOCAL calendar days; convert those local-day bounds to
+      // explicit UTC instants so the backend filters on the admin's actual local day
+      // instead of treating the naive value as UTC.
+      if (dateFrom) params.set("date_from", new Date(dateFrom + "T00:00:00").toISOString());
+      if (dateTo) params.set("date_to", new Date(dateTo + "T23:59:59.999").toISOString());
       if (statusFilter) params.set("status_filter", statusFilter);
       params.set("page", String(p));
       params.set("page_size", "50");

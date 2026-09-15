@@ -91,6 +91,25 @@ from app.core.security import user_is_premium
 from app.handicapping.mlb.mlb_splits import MLBSplitAnalyzer
 from app.handicapping.mlb.mlb_situational import MLBSituationalAnalyzer
 import math
+from zoneinfo import ZoneInfo
+
+_CHI_TZ = ZoneInfo("America/Chicago")
+
+
+def _is_past_game_date(dt) -> bool:
+    """True when dt (datetime or ISO string) is on a calendar date before today
+    in America/Chicago. Used to make past games' picks public."""
+    if dt is None:
+        return False
+    try:
+        if isinstance(dt, str):
+            return dt[:10] < datetime.datetime.now(_CHI_TZ).date().isoformat()
+        if isinstance(dt, datetime.datetime):
+            d = dt.astimezone(_CHI_TZ).date() if dt.tzinfo else dt.date()
+            return d < datetime.datetime.now(_CHI_TZ).date()
+    except Exception:
+        return False
+    return False
 
 router = APIRouter()
 
@@ -970,7 +989,9 @@ async def mlb_games(
     user: User | None = Depends(get_optional_user),
 ):
     # 30s TTL response cache (per-worker) keyed by query params.
-    cache_key = (year, date, (team_abbr or "").upper())
+    # Include premium status in the key so the field-level strip below cannot
+    # leak picks into an anonymous cache slot (or wipe picks for premium users).
+    cache_key = (year, date, (team_abbr or "").upper(), bool(user_is_premium(user)))
     cached = _mlb_games_cached(cache_key)
     if cached is not None:
         return JSONResponse(content=cached, headers={"Cache-Control": "public, max-age=30"})
@@ -1145,7 +1166,17 @@ async def mlb_games(
     # Premium gate (field-level): schedule stays public, picks/EV are premium.
     # Strip BEFORE caching to avoid leaking premium payloads via the response cache.
     if not user_is_premium(user):
+        _today = datetime.datetime.now(_CHI_TZ).date().isoformat()
         for _g in out:
+            _gd = _g.get("game_date") or _g.get("date")
+            if _gd and str(_gd)[:10] < _today:
+                # Game played yesterday or earlier: picks are public (historical).
+                _g["picks_unlocked"] = True
+                continue
+            _had_picks = any(
+                _g.get(_k) is not None
+                for _k in ("pick_spread", "pick_over_under", "pick_moneyline")
+            )
             for _k in (
                 "pick_spread", "pick_over_under", "pick_moneyline",
                 "pick_ats_ev", "pick_ou_ev", "pick_ml_ev",
@@ -1153,6 +1184,8 @@ async def mlb_games(
             ):
                 if _k in _g:
                     _g[_k] = None
+            # Signal the client picks exist but are gated (schedule-card gate msg).
+            _g["picks_locked"] = bool(_had_picks)
     _mlb_games_store(cache_key, out)
     return JSONResponse(content=out, headers={"Cache-Control": "public, max-age=30"})
 
@@ -1762,12 +1795,17 @@ async def mlb_game_boxscore(
     # redact just the premium sub-fields, so the card renders with the picks locked
     # (the client PremiumGate blurs them). Never null the whole card.
     _premium = user_is_premium(user)
+    # Games played yesterday or earlier have public picks (no gate).
+    _past = _is_past_game_date(game_dict.get("date"))
     if not _premium and pick_card is not None:
-        # Redact premium math/picks but keep the card shell intact.
         pick_card = dict(pick_card)
-        pick_card["picks"] = None
-        pick_card["expected_value"] = None
-        pick_card["confidence"] = None
+        if _past:
+            pick_card["unlocked"] = True
+        else:
+            # Redact premium math/picks but keep the card shell intact.
+            pick_card["picks"] = None
+            pick_card["expected_value"] = None
+            pick_card["confidence"] = None
 
     return {
         "game": game_dict,

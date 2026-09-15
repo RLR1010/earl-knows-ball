@@ -20,6 +20,18 @@ router = APIRouter(prefix="/results", tags=["results"])
 
 SPORTS = {"nfl", "nba", "mlb"}
 
+# Game types that are NOT real, gradeable competition and must never be counted
+# on the public results page: preseason / exhibition / all-star games.
+#   NFL/NBA use 'PRE' (preseason)
+#   MLB uses 'S' (spring training), 'E' (exhibition), 'A' (all-star)
+# Compared case-insensitively so 'pre'/'PRE'/'R'/'D' etc. all behave.
+EXCLUDED_GAME_TYPES = ("PRE", "PRESEASON", "PRES", "EXHIBITION", "EXH", "S", "E", "A", "AS")
+EXCLUDE_GAME_TYPES_SQL = (
+    "UPPER(COALESCE(g.game_type, '')) NOT IN ("
+    + ", ".join("'" + t + "'" for t in EXCLUDED_GAME_TYPES)
+    + ")"
+)
+
 def _rl_col(sport: str) -> str:
     """Return the result column for the spread/run-line pick type."""
     return "run_line_result" if sport == "mlb" else "ats_result"
@@ -369,6 +381,7 @@ async def get_results_yearly(
            OR gp.ou_result IS NOT NULL
            OR gp.ml_result IS NOT NULL)
           AND s.year != 2021
+          AND {EXCLUDE_GAME_TYPES_SQL}
         GROUP BY s.year
         ORDER BY s.year ASC
     """))
@@ -440,6 +453,7 @@ async def get_calibration(
         JOIN {schema}.games g ON g.id = gp.game_id
         JOIN {schema}.seasons s ON s.id = g.season_id
         WHERE gp.{cal_main} IS NOT NULL
+          AND {EXCLUDE_GAME_TYPES_SQL}
     """))
 
     rows = list(rows_result.fetchall())
@@ -550,7 +564,8 @@ async def get_results_ev_distribution(
         ) gp
         JOIN {schema}.games g ON g.id = gp.game_id
         JOIN {schema}.seasons s ON s.id = g.season_id
-        WHERE gp.ats_ev IS NOT NULL OR gp.ou_ev IS NOT NULL OR gp.ml_ev IS NOT NULL
+        WHERE (gp.ats_ev IS NOT NULL OR gp.ou_ev IS NOT NULL OR gp.ml_ev IS NOT NULL)
+          AND {EXCLUDE_GAME_TYPES_SQL}
     """))
 
     all_rows = list(rows_result.fetchall())
@@ -670,6 +685,7 @@ async def get_results_ev_distribution_by_year(
         JOIN {schema}.seasons s ON s.id = g.season_id
         WHERE (gp.ats_ev IS NOT NULL OR gp.ou_ev IS NOT NULL OR gp.ml_ev IS NOT NULL)
           AND s.year != 2021
+          AND {EXCLUDE_GAME_TYPES_SQL}
     """))
 
     all_rows = list(rows_result.fetchall())
@@ -789,6 +805,7 @@ async def get_results_summary(
         JOIN {schema}.games g ON g.id = gp.game_id
         JOIN {schema}.seasons s ON s.id = g.season_id
         WHERE s.year != 2021
+          AND {EXCLUDE_GAME_TYPES_SQL}
     """))
 
     r = rows.fetchone()

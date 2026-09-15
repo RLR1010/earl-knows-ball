@@ -155,8 +155,8 @@ export default function EarlsPicksPanel({
   ungated = false,
 }: EarlsPicksPanelProps) {
   return (
-    <div className={ungated ? "space-y-4" : `${compact ? "mt-2" : "mt-4 pt-4 border-t border-white/10 space-y-4"} ${compact ? "space-y-2" : ""}`}>
-      {compact && !ungated ? (
+    <div className={compact ? "mt-2 space-y-2" : (ungated ? "space-y-4" : "mt-4 pt-4 border-t border-white/10 space-y-4")}>
+      {compact ? (
         <h3 className="text-sm font-semibold tracking-tight text-gray-100">{title}</h3>
       ) : (
         <div className="flex items-center gap-2">
@@ -181,7 +181,7 @@ export default function EarlsPicksPanel({
           {predicted && <ScoreLine heading="Predicted" score={predicted} />}
           <div className="grid grid-cols-3 divide-x divide-white/10">
             {items.map((item) => (
-              <PickItemCard key={item.label} item={item} compact={false} />
+              <PickItemCard key={item.label} item={item} compact={compact} />
             ))}
           </div>
         </>

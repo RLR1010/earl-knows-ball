@@ -171,25 +171,22 @@ async def get_free_pick(
     db: AsyncSession = Depends(get_db),
 ):
     """Return the single active free pick (full premium content unlocked), or 204/None if none set."""
-    for sport in SPORTS:
-        res = await db.execute(text(_ACTIVE_SQL.format(schema=sport)))
-        r = res.mappings().first()
-        if r:
-            pick = _row_to_pick(dict(r), sport)
-            # Pull + attach the full unlocked premium writeup content so the homepage
-            # can render the giveaway inline without a second premium-gated call.
-            detail = await _fetch_writeup_content(db, sport, pick["game_id"])
-            pick["content"] = detail
-            # Attach the matchup teams (away/home logo + record) for the homepage card art.
-            try:
-                pick["teams"] = await asyncio.to_thread(
-                    _resolve_matchup, sport, int(pick["game_id"])
-                )
-            except Exception as e:
-                logger.warning("free-pick matchup resolve failed (%s %s): %s", sport, pick["game_id"], e)
-                pick["teams"] = None
-            return pick
-    raise HTTPException(status_code=404, detail="No free pick is currently featured")
+    # Delegate to _get_active so we return the GLOBALLY newest featured pick across ALL
+    # sports (by free_featured_at), NOT the first sport in SPORTS order. The old
+    # first-sport-wins loop let a recent MLB pick shadow a newer NFL/NBA pick, so
+    # featuring an NFL game appeared to "not work" on the homepage + admin page.
+    pick = await _get_active(db)
+    if not pick or not pick.get("sport"):
+        raise HTTPException(status_code=404, detail="No free pick is currently featured")
+    # Attach the matchup teams (away/home logo + record) for the homepage card art.
+    try:
+        pick["teams"] = await asyncio.to_thread(
+            _resolve_matchup, pick["sport"], int(pick["game_id"])
+        )
+    except Exception as e:
+        logger.warning("free-pick matchup resolve failed (%s %s): %s", pick["sport"], pick["game_id"], e)
+        pick["teams"] = None
+    return pick
 
 
 async def _fetch_writeup_content(db: AsyncSession, sport: str, game_id: int) -> dict:

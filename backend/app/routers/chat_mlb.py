@@ -19,7 +19,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sse_starlette.sse import EventSourceResponse
 from openai import AsyncOpenAI
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -159,6 +159,18 @@ async def chat_mlb(
                 for h in history[-20:]:
                     if h.role in ("user", "assistant"):
                         messages.append({"role": h.role, "content": h.message})
+                # Cross-sport continuity (prototype B): if this thread was started in another
+                # sport, adopt it here so continuing it stays one clean conversation/list.
+                if any(h.sport != "mlb" for h in history):
+                    await db.execute(
+                        update(ChatHistory)
+                        .where(
+                            ChatHistory.conversation_id == request.conversation_id,
+                            ChatHistory.user_id == current_user.id,
+                        )
+                        .values(sport="mlb")
+                    )
+                    await db.commit()
                 conv_id = request.conversation_id
             else:
                 conv_id = str(uuid4())

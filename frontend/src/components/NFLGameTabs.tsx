@@ -105,6 +105,8 @@ interface GamePrediction {
     spread: number | null;
     over_under: number | null;
   };
+  /** Backend flag: historical game, picks are public (skip premium gate). */
+  unlocked?: boolean;
 }
 
 // ── Helpers ────────────────────────────────────────────────────
@@ -399,6 +401,7 @@ export function BettingLinesCard({
       {prediction && (
         <EarlsPicksPanel
           title="Earl's Picks"
+          ungated={!!prediction.unlocked}
           predicted={
             pred && pred.away_score != null
               ? {

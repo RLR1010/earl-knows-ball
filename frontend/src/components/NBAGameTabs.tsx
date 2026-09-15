@@ -803,6 +803,7 @@ export default function NBAGameTabs({ gameId, prediction }: NBAGameTabsProps) {
           {prediction && !prediction.detail && (
             <EarlsPicksPanel
               title="Earl's Picks"
+              ungated={!!prediction.unlocked}
               predicted={
                 prediction.predicted?.away_score != null && prediction.predicted?.home_score != null
                   ? {

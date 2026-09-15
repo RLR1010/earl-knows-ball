@@ -107,7 +107,8 @@ async def run(api_key: str, db: AsyncSession):
                       AND g.status = 'SCHEDULED'
                       AND blc.closing_spread IS NOT NULL
                       AND blc.closing_ou IS NOT NULL
-                """, {"predict_days": PREDICT_LOOKAHEAD_DAYS})
+                """),
+                {"predict_days": PREDICT_LOOKAHEAD_DAYS},
             )
         ).fetchall()
         game_ids = [r[0] for r in predict_rows]
@@ -124,9 +125,11 @@ async def run(api_key: str, db: AsyncSession):
         else:
             results["predictions"] = {"games": 0, "skipped": "no games with lines"}
 
-    except Exception:
+    except Exception as exc:
         import traceback
         logger.error(f"NBA lines+picks refresh failed: {traceback.format_exc()}")
+        results["fatal_error"] = str(exc)[:500]
+        return {"status": "error", "results": results}
 
     return {"status": "ok", "results": results}
 

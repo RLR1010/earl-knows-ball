@@ -18,6 +18,12 @@ function fmtDate(value?: string | null): string {
  *
  * ⚠️ Deliberately EXCLUDES picks / spreads / totals / moneylines / EV: those are
  * premium and must never enter public HTML. Do NOT add them here.
+ *
+ * ⚠️ VISUALLY HIDDEN (sr-only): the client TeamClient already renders the team
+ * header + a full Schedule tab, so this SSR block is a crawler-only fallback.
+ * Rendering it visibly dumped a duplicate "Schedule & Results" table at the TOP
+ * of every tab (e.g. ?tab=depth-chart) — looked broken. Keep it in the DOM for
+ * non-JS crawlers, but out of the visual layout. Do not un-hide without moving it.
  */
 export default function ServerTeamBody({ content }: { content: TeamContent }) {
   const { sport, abbr, name, games } = content;
@@ -29,7 +35,7 @@ export default function ServerTeamBody({ content }: { content: TeamContent }) {
   const hasResults = wins + losses > 0;
 
   return (
-    <section className="max-w-5xl mx-auto px-4 pt-10" aria-label="Team summary">
+    <section className="sr-only" aria-label="Team summary">
       <div className="text-sm text-gray-500 mb-4">
         <Link href={`/${sport}`} className="hover:text-earl-400 transition">
           {label}

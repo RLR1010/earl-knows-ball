@@ -258,7 +258,7 @@ Bullet lists work for key points. Keep it article-like — no blockquotes, no em
 
 Write an exclusive insider analysis article for PAYING SUBSCRIBERS. This is a full article, not a short snippet.
 
-Length: 1000-1400 words. This is a HARD LIMIT — write 1000-1400 words, target ~1200. Do not exceed 1400 words. Be detailed and comprehensive, but every section must earn its length — cut filler rather than padding past 1400.
+Length: 900-1200 words. This is a HARD LIMIT — write 900-1200 words, target ~1050. Do not exceed 1200 words. Be detailed and comprehensive, but every section must earn its length — cut filler rather than padding past 1200.
 
 What to include:
 - Advanced stats breakdown and key matchup analysis
@@ -779,13 +779,17 @@ On paper, this looks like a battle of two middling AL West teams with losing Jun
             if attempt < attempts_limit:
                 await asyncio.sleep(backoff * attempt)
 
-        # Fallback: thinking mode likely ate the whole token budget. Try once
-        # without thinking to guarantee content comes back.
+        # Fallback: thinking mode likely ate the whole token budget. Retry with
+        # thinking EXPLICITLY disabled to guarantee content comes back.
+        # NOTE: passing None here is NOT enough — V4.x models (deepseek-flash)
+        # reason by default when the `thinking` block is omitted, which
+        # re-exhausts the token budget and returns empty content again. The
+        # "disabled" sentinel is required to actually turn reasoning off.
         if reasoning and empty_attempts == attempts_limit:
-            logger.warning("DeepSeek empty responses with thinking enabled — retrying without thinking")
+            logger.warning("DeepSeek empty responses with thinking enabled — retrying with thinking disabled")
             for fb_attempt in range(1, attempts_limit + 1):
                 try:
-                    content = await _attempt(None)
+                    content = await _attempt("disabled")
                     if content is not None:
                         return content
                 except Exception as e:

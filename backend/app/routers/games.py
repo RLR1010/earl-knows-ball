@@ -7,6 +7,8 @@ from sqlalchemy.orm import joinedload
 from sqlalchemy.ext.asyncio import AsyncSession
 import time
 import threading
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from app.database import get_db
 from app.models import Game, Season, Team, PlayerWeeklyStats, Player, BettingLine, NFLGamePrediction, User
 from app.routers.auth import get_optional_user
@@ -18,6 +20,65 @@ from app.models.nba.game_prediction import NBAGamePrediction
 from pydantic import BaseModel
 
 router = APIRouter()
+
+_CHI_TZ = ZoneInfo("America/Chicago")
+
+
+def _to_chi_date(dt):
+    """Normalize a datetime/ISO string to its America/Chicago calendar date."""
+    if dt is None:
+        return None
+    try:
+        if hasattr(dt, "tzinfo") and dt.tzinfo is not None:
+            return dt.astimezone(_CHI_TZ).date()
+        if hasattr(dt, "date") and callable(getattr(dt, "date")):
+            return dt.date()
+    except Exception:
+        pass
+    try:
+        return datetime.fromisoformat(str(dt)[:19]).date()
+    except Exception:
+        return None
+
+
+def _is_past_date(dt) -> bool:
+    """True when the game's calendar date is before today (America/Chicago)."""
+    d = _to_chi_date(dt)
+    return d is not None and d < datetime.now(_CHI_TZ).date()
+
+
+async def _nfl_current_week_for_season(db: AsyncSession, season_id) -> int | None:
+    """Earliest week that still has a game today or later; max_week + 1 if the
+    season is fully in the past; None when there are no games. Picks in earlier
+    weeks are public; the current week and later stay premium-gated."""
+    if season_id is None:
+        return None
+    today = datetime.now(_CHI_TZ).replace(hour=0, minute=0, second=0, microsecond=0)
+    w = (await db.execute(
+        text(
+            "SELECT MIN(week) FROM nfl.games "
+            "WHERE season_id = :s AND game_type <> 'PRE' AND date >= :t"
+        ),
+        {"s": season_id, "t": today},
+    )).scalar()
+    if w is not None:
+        return int(w)
+    mx = (await db.execute(
+        text(
+            "SELECT MAX(week) FROM nfl.games "
+            "WHERE season_id = :s AND game_type <> 'PRE'"
+        ),
+        {"s": season_id},
+    )).scalar()
+    return (int(mx) + 1) if mx is not None else None
+
+
+async def _nfl_game_is_past(db: AsyncSession, game) -> bool:
+    """True when an NFL game's week predates the season's current week."""
+    if game is None or game.week is None or game.season_id is None:
+        return False
+    cur = await _nfl_current_week_for_season(db, game.season_id)
+    return cur is not None and int(game.week) < cur
 
 
 # ---------------------------------------------------------------------
@@ -372,7 +433,10 @@ async def list_games(
     user: User | None = Depends(get_optional_user),
 ):
     # 30s TTL response cache (per-worker) keyed by query params.
-    cache_key = (season_year, week, team_id)
+    # Include premium status so the field-level strip below can never leak a
+    # premium payload into an anonymous cache slot (or wipe picks for a premium
+    # user served from an anonymous slot).
+    cache_key = (season_year, week, team_id, bool(user_is_premium(user)))
     cached = _nfl_games_cached(cache_key)
     if cached is not None:
         return JSONResponse(content=cached, headers={"Cache-Control": "public, max-age=30"})
@@ -391,6 +455,11 @@ async def list_games(
         query = query.where(
             (Game.home_team_id == team_id) | (Game.away_team_id == team_id)
         )
+
+    # Exclude preseason — mirrors the NBA (g.game_type != 'PRE') and MLB
+    # (g.game_type != 'S') schedule endpoints. Team-page schedules / schedule
+    # lists should show only regular-season + postseason games.
+    query = query.where(Game.game_type != "PRE")
 
     query = query.order_by(Game.date)
     result = await db.execute(query)
@@ -459,8 +528,25 @@ async def list_games(
     # Premium gate (field-level): schedule stays public, picks/EV are premium.
     # Strip BEFORE caching to avoid leaking premium payloads via the response cache.
     if not user_is_premium(user):
+        # Previous weeks' picks are public; only the current/future weeks stay gated.
+        _cur_week = await _nfl_current_week_for_season(
+            db, games[0].season_id if games else None
+        )
         for _g in out:
             if isinstance(_g, dict):
+                _w = _g.get("week")
+                _past = (
+                    _cur_week is not None
+                    and _w is not None
+                    and int(_w) < _cur_week
+                )
+                _had_picks = any(
+                    _g.get(_k) is not None
+                    for _k in ("pick_spread", "pick_over_under", "pick_moneyline")
+                )
+                if _past:
+                    _g["picks_unlocked"] = True
+                    continue
                 for _k in (
                     "pick_spread", "pick_over_under", "pick_moneyline",
                     "pick_ats_ev", "pick_ou_ev", "pick_ml_ev",
@@ -468,6 +554,9 @@ async def list_games(
                 ):
                     if _k in _g:
                         _g[_k] = None
+                # Tell the client picks exist but are gated, so the schedule card
+                # can still show the "Upgrade to Premium" message.
+                _g["picks_locked"] = bool(_had_picks)
     _nfl_games_store(cache_key, out)
     return JSONResponse(content=out, headers={"Cache-Control": "public, max-age=30"})
 
@@ -756,7 +845,10 @@ async def get_nfl_prediction(
     Premium gate: picks/probabilities/EV are a premium feature (client-side
     <PremiumGate> only hid them; the API returned them to anyone).
     """
-    if not user_is_premium(user):
+    # Past weeks' picks are public; only the current/future weeks stay gated.
+    _g0 = (await db.execute(select(Game).where(Game.id == game_id))).scalar_one_or_none()
+    unlocked = await _nfl_game_is_past(db, _g0)
+    if not unlocked and not user_is_premium(user):
         raise HTTPException(status_code=403, detail="Premium subscription required")
     result = await db.execute(
         select(NFLGamePrediction)
@@ -857,6 +949,7 @@ async def get_nfl_prediction(
 
     return {
         "game_id": game_id,
+        "unlocked": unlocked,
         "season": season_year,
         "week": game.week or 0,
         "home_team": home_abbr,
@@ -910,7 +1003,10 @@ async def get_nba_prediction(
 
     Premium gate: picks/probabilities/EV are a premium feature.
     """
-    if not user_is_premium(user):
+    # Past games' picks are public; today's and future games stay gated.
+    _g0 = (await db.execute(select(NBAGame).where(NBAGame.id == game_id))).scalar_one_or_none()
+    unlocked = _is_past_date(getattr(_g0, "date", None))
+    if not unlocked and not user_is_premium(user):
         raise HTTPException(status_code=403, detail="Premium subscription required")
     result = await db.execute(
         select(NBAGamePrediction)
@@ -1027,6 +1123,7 @@ async def get_nba_prediction(
 
     return {
         "game_id": game_id,
+        "unlocked": unlocked,
         "season": season_year,
         "home_team": home_abbr,
         "away_team": away_abbr,

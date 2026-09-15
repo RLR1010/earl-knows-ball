@@ -170,7 +170,7 @@ FORMATTING: Start with the article TITLE on its own line (use `##` as a heading)
 
 Bullet lists work for key points in moderation. Keep it article-like — no blockquotes, no emoji, no chat-style formatting.
 
-Length: 1000-1400 words. This is a HARD LIMIT — write 1000-1400 words, target ~1200. Do not exceed 1400 words. Be detailed and comprehensive, but every section must earn its length — cut filler rather than padding past 1400."""
+Length: 900-1200 words. This is a HARD LIMIT — write 900-1200 words, target ~1050. Do not exceed 1200 words. Be detailed and comprehensive, but every section must earn its length — cut filler rather than padding past 1200."""
 
     def public_system_prompt(self, is_historical: bool = False) -> str:
         tense = (
@@ -512,10 +512,13 @@ Bullet lists work for key points. Keep it article-like — no blockquotes, no em
         )
 
         usage_log = []
+        system = shared.build_system_prompt()
         content = await self._call_deepseek(
+            system,
             user_prompt,
-            max_tokens=2000,
+            max_tokens=8192,
             reasoning="minimal",
+            max_attempts=1,
             usage_log=usage_log,
             call="generate_props_article",
         )

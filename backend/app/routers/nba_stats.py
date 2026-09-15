@@ -15,6 +15,25 @@ from app.routers.games import _records_as_of_batch
 from app.routers.auth import get_optional_user
 from app.core.security import user_is_premium
 from app.models import User
+from zoneinfo import ZoneInfo
+
+_CHI_TZ = ZoneInfo("America/Chicago")
+
+
+def _chi_today_iso() -> str:
+    return datetime.datetime.now(_CHI_TZ).date().isoformat()
+
+
+def _is_past_game(game) -> bool:
+    """True when the game's date is before today (America/Chicago)."""
+    d = getattr(game, "date", None)
+    if d is None:
+        return False
+    try:
+        dd = d.astimezone(_CHI_TZ).date() if getattr(d, "tzinfo", None) else d.date()
+    except Exception:
+        return False
+    return dd < datetime.datetime.now(_CHI_TZ).date()
 from app.models.nba import NBAGame, NBAPlayer, NBAPlayerSeasonStats, NBASeason, NBATeam
 
 router = APIRouter()
@@ -377,8 +396,9 @@ async def nba_game_boxscore(
         home_stats["record"] = {"wins": 0, "losses": 0}
         away_stats["record"] = {"wins": 0, "losses": 0}
 
-    # Premium gate (field-level): box score is public, betting lines are premium.
-    if not user_is_premium(user):
+    # Premium gate (field-level): box score is public, betting lines are premium —
+    # except for games played yesterday or earlier (historical = public).
+    if not user_is_premium(user) and not _is_past_game(game):
         betting_lines = None
 
     return {
@@ -446,7 +466,9 @@ async def nba_games(
     user: User | None = Depends(get_optional_user),
 ):
     # 30s TTL response cache (per-worker) keyed by query params.
-    cache_key = (year, date, (team_abbr or "").upper())
+    # Include premium status in the key so the field-level strip below cannot
+    # leak picks into an anonymous cache slot (or wipe picks for premium users).
+    cache_key = (year, date, (team_abbr or "").upper(), bool(user_is_premium(user)))
     cached = _nba_games_cached(cache_key)
     if cached is not None:
         return JSONResponse(content=cached, headers={"Cache-Control": "public, max-age=30"})
@@ -521,15 +543,27 @@ async def nba_games(
     # are premium. Strip them BEFORE caching so a non-premium request can never
     # receive (or poison the cache with) a premium-bearing payload.
     if not user_is_premium(user):
+        _today = _chi_today_iso()
         _PREMIUM_KEYS = (
             "pick_spread", "pick_over_under", "pick_moneyline",
             "pick_ats_ev", "pick_ou_ev", "pick_ml_ev",
             "predicted_margin", "predicted_total",
         )
         for _g in games_list:
+            _gd = _g.get("game_date") or _g.get("date")
+            if _gd and str(_gd)[:10] < _today:
+                # Game played yesterday or earlier: picks are public (historical).
+                _g["picks_unlocked"] = True
+                continue
+            _had_picks = any(
+                _g.get(_k) is not None
+                for _k in ("pick_spread", "pick_over_under", "pick_moneyline")
+            )
             for _k in _PREMIUM_KEYS:
                 if _k in _g:
                     _g[_k] = None
+            # Signal the client picks exist but are gated (schedule-card gate msg).
+            _g["picks_locked"] = bool(_had_picks)
     _nba_games_store(cache_key, games_list)
     return JSONResponse(content=games_list, headers={"Cache-Control": "public, max-age=30"})
 

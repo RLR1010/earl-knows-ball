@@ -37,6 +37,12 @@ interface Props {
     pick_ats_ev?: number | null;
     pick_ou_ev?: number | null;
     pick_ml_ev?: number | null;
+    // Set by the backend for non-premium users when picks exist but were
+    // redacted, so the card can still render the premium gate message.
+    picks_locked?: boolean | null;
+    // Set by the backend when the game is historical (past day/week): picks are
+    // public and rendered without the premium gate.
+    picks_unlocked?: boolean | null;
     result_spread?: string | null;
     result_over_under?: string | null;
     result_moneyline?: string | null;
@@ -72,15 +78,18 @@ export default function SchedulePicksFooter({ game, spreadLabel = "Spread" }: Pr
         </div>
       )}
 
-      {/* Premium picks (self-gated) */}
-      {hasPicks({
+      {/* Premium picks (self-gated). Render when picks are present, when the
+          backend reports they exist but are redacted for a non-premium user,
+          or when the game is historical (picks public). */}
+      {(game.picks_locked || game.picks_unlocked || hasPicks({
         spread: game.pick_spread,
         ou: game.pick_over_under,
         ml: game.pick_moneyline,
-      }) && (
+      })) && (
         <div className="mt-2" data-testid="schedule-picks">
           <EarlsPicksPanel
             compact
+            ungated={!!game.picks_unlocked}
             items={buildPickItems({
               spreadPick: game.pick_spread,
               spread: game.spread,

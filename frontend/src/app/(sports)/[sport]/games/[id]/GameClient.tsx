@@ -49,6 +49,8 @@ interface GamePrediction {
   expected_value?: { ats?: number | null; ou?: number | null; ml?: number | null };
   confidence?: { overall: number | null; ats: number | null; ou: number | null; ml: number | null };
   line?: { spread: number | null; over_under: number | null };
+  /** Backend flag: historical game, picks are public (skip premium gate). */
+  unlocked?: boolean;
 }
 
 function StatRow({ label, home, away, fmt, better }: {
@@ -795,6 +797,7 @@ function MLBClassicPage({ gameId, backHref, isCurrentSeason = true }: { gameId: 
           {pick_card && (
             <EarlsPicksPanel
               title="Earl's Picks"
+              ungated={!!pick_card?.unlocked}
               predicted={
                 pick_card.predictions?.home_runs != null
                   ? {

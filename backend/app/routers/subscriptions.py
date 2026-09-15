@@ -170,6 +170,11 @@ async def create_checkout_session(
 
         # Create or get Stripe customer
         customer_id = await _get_or_create_stripe_customer(user, stripe)
+        # Persist the customer mapping NOW. _get_or_create_stripe_customer only sets
+        # user.stripe_customer_id in the session; get_db() never commits on teardown,
+        # so without this the mapping is lost and a later invoice.paid (which can be
+        # delivered BEFORE checkout.session.completed) can't resolve the buyer.
+        await db.commit()
 
         success_url = req.success_url or f"{settings.base_url}/subscriptions/success?session_id={{CHECKOUT_SESSION_ID}}"
         cancel_url = req.cancel_url or f"{settings.base_url}/subscriptions/cancel"
@@ -811,6 +816,25 @@ async def _handle_invoice_paid(invoice: dict, db: AsyncSession):
             user = user_res.scalar_one_or_none()
             if user:
                 user_id = user.id
+        # Fallback: Stripe can deliver invoice.paid BEFORE checkout.session.completed,
+        # i.e. before the buyer's stripe_customer_id is persisted, so the lookup above
+        # finds nothing. Recover the buyer/plan from the subscription metadata we set at
+        # checkout so a paid invoice is never silently dropped.
+        if user_id is None or plan_id is None:
+            md = (
+                (((invoice.get("subscription_details") or {}).get("metadata"))
+                 or (((invoice.get("parent") or {}).get("subscription_details") or {}).get("metadata"))
+                 or (invoice.get("metadata") or {}))
+            )
+            if user_id is None and md.get("user_id"):
+                u2 = await db.execute(select(User).where(User.id == md["user_id"]))
+                u_row = u2.scalar_one_or_none()
+                if u_row:
+                    user_id = u_row.id
+                    if not customer_id:
+                        customer_id = u_row.stripe_customer_id
+            if plan_id is None and md.get("plan_id"):
+                plan_id = md["plan_id"]
         # The first line item's price maps to the plan's stripe_price_id.
         lines = (invoice.get("lines") or {}).get("data") or []
         for line in lines:

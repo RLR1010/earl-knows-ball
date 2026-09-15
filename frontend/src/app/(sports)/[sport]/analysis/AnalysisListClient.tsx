@@ -20,6 +20,7 @@ interface GamePreview {
   matchup: string;
   away_abbr: string | null;
   home_abbr: string | null;
+  premium_locked?: boolean; // backend-computed: true when still paywalled (free-feature or historical => false)
 }
 
 const SPORT_NAME: Record<string, string> = { nfl: "NFL", nba: "NBA", mlb: "MLB" };
@@ -111,6 +112,8 @@ function normalizeGamePreviews(data: unknown): GamePreview[] {
         matchup,
         away_abbr: parseTeamAbbrs((w.away_abbr as string) ?? (m?.[1] ?? null)),
         home_abbr: parseTeamAbbrs((w.home_abbr as string) ?? (m?.[2] ?? null)),
+        // Absent => default to locked (preserves old behavior if the API is stale).
+        premium_locked: w.premium_locked !== false,
       };
     })
     .filter((x): x is GamePreview => x !== null && Boolean(x.matchup));
@@ -302,10 +305,15 @@ interface AnalysisItemProps {
 function AnalysisItem({ preview, sport, isPremium, loggedIn, onOpenLogin }: AnalysisItemProps) {
   const href = `/${sport}/analysis/${preview.slug || preview.writeup_id}`;
 
+  // Historical writeups (backend marks premium_locked=false once the game is
+  // yesterday/earlier for MLB/NBA, or a previous schedule week for NFL) are
+  // readable by everyone — treat them like premium access for link/CTA rendering.
+  const unlocked = isPremium || !preview.premium_locked;
+
   // Title replacement based on auth state.
   let title: string;
   let titleStyle = "text-lg font-semibold";
-  if (isPremium) {
+  if (unlocked) {
     title = preview.title;
     titleStyle += " group-hover:text-earl-400 transition";
   } else if (!loggedIn) {
@@ -347,7 +355,7 @@ function AnalysisItem({ preview, sport, isPremium, loggedIn, onOpenLogin }: Anal
   // For non-premium users, clicking must trigger the right CTA instead of loading content.
   const className = "block px-5 py-4 hover:bg-white/[0.04] transition group";
 
-  if (isPremium) {
+  if (unlocked) {
     return (
       <li>
         <Link href={href} className={className}>

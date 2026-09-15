@@ -70,7 +70,8 @@ export default function GameCalendar({
 
   const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
   const firstDayOfWeek = new Date(viewYear, viewMonth, 1).getDay(); // 0=Sun
-  const todayStr = new Date().toISOString().slice(0, 10);
+  const _td = new Date();
+  const todayStr = `${_td.getFullYear()}-${String(_td.getMonth() + 1).padStart(2, "0")}-${String(_td.getDate()).padStart(2, "0")}`;
 
   function prevMonth() {
     if (viewMonth === 0) {

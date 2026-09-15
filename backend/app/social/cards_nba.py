@@ -77,12 +77,12 @@ def _record_thru(conn, team_id: int, before_date, season_id) -> str:
             """SELECT
                  (SELECT count(*) FROM nba.games
                    WHERE season_id = :s AND (:t IN (home_team_id, away_team_id))
-                     AND date::date < :bd AND home_score IS NOT NULL
+                     AND (date AT TIME ZONE 'America/New_York')::date < :bd AND home_score IS NOT NULL
                      AND ((home_team_id = :t AND home_score > away_score)
                        OR (away_team_id = :t AND away_score > home_score))) AS w,
                  (SELECT count(*) FROM nba.games
                    WHERE season_id = :s AND (:t IN (home_team_id, away_team_id))
-                     AND date::date < :bd AND home_score IS NOT NULL
+                     AND (date AT TIME ZONE 'America/New_York')::date < :bd AND home_score IS NOT NULL
                      AND ((home_team_id = :t AND home_score < away_score)
                        OR (away_team_id = :t AND away_score < home_score))) AS l"""
         ),
@@ -126,7 +126,8 @@ def _side_meta(conn, team_id: int, abbr: str, name: str, conf: str, div: str,
 def _resolve(conn, game_id: int) -> dict:
     g = conn.execute(
         text(
-            """SELECT g.id AS game_id, g.date AS as_of, g.date::date AS as_of_day,
+            """SELECT g.id AS game_id, g.date AS as_of,
+                      (g.date AT TIME ZONE 'America/New_York')::date AS as_of_day,
                       g.season_id,
                       at.id AS away_team_id, at.abbreviation AS away_abbr,
                       at.name AS away_name, at.conference AS away_conf,
@@ -145,9 +146,9 @@ def _resolve(conn, game_id: int) -> dict:
         raise RuntimeError(f"nba game {game_id} not found")
 
     away = _side_meta(conn, g["away_team_id"], g["away_abbr"], g["away_name"],
-                      g["away_conf"], g["away_div"], g["as_of"], g["season_id"])
+                      g["away_conf"], g["away_div"], g["as_of_day"], g["season_id"])
     home = _side_meta(conn, g["home_team_id"], g["home_abbr"], g["home_name"],
-                      g["home_conf"], g["home_div"], g["as_of"], g["season_id"])
+                      g["home_conf"], g["home_div"], g["as_of_day"], g["season_id"])
 
     title = dek = ""
     w = conn.execute(

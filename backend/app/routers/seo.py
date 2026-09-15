@@ -271,21 +271,39 @@ async def sitemap_data(db: AsyncSession = Depends(get_db)):
         # so emitting slugs yields stable SEO URLs. Fall back to the writeup id
         # only when no slug exists.
         #
-        # IMPORTANT: only FREE-FEATURE writeups are crawlable. The analysis page
-        # fetches with `?tier=premium`; the backend returns 403 for paywalled
-        # writeups and the page renders a <PremiumGate> with no content. Submitting
-        # those to crawlers (a) wastes crawl budget, (b) produces soft-404 /
-        # "crawled - currently not indexed" signals that suppress discovery of the
-        # rest of the sitemap. So emit ONLY writeups an anonymous crawler can read
-        # (is_free_feature = true). Same principle as the original_articles
-        # `visibility = 'public'` filter below.
+        # IMPORTANT: only writeups an anonymous crawler can READ are emitted.
+        # The analysis page fetches with `?tier=premium`; the backend returns 403
+        # for paywalled writeups and the page renders a <PremiumGate> with no
+        # content. Submitting those (a) wastes crawl budget, (b) produces
+        # soft-404 / "crawled - currently not indexed" signals. As of 2026-09-14
+        # a writeup becomes public once its game is historical (MLB/NBA: yesterday
+        # or earlier; NFL: previous schedule week or earlier), so those are now
+        # crawlable too — emit free-feature OR historical writeups.
+        if sport == "nfl":
+            # Historical = previous schedule week or earlier, compared by date against
+            # the start of the current week (preseason weeks 30+ don't break ordering).
+            # A season with no upcoming games is entirely historical.
+            _hist = (
+                "((SELECT MIN((g2.date AT TIME ZONE 'America/Chicago')::date) FROM nfl.games g2 "
+                "WHERE g2.season_id = g.season_id "
+                "AND (g2.date AT TIME ZONE 'America/Chicago')::date >= (now() AT TIME ZONE 'America/Chicago')::date) IS NULL "
+                "OR (g.date AT TIME ZONE 'America/Chicago')::date < "
+                "(SELECT MIN((g3.date AT TIME ZONE 'America/Chicago')::date) FROM nfl.games g3 "
+                "WHERE g3.season_id = g.season_id "
+                "AND (g3.date AT TIME ZONE 'America/Chicago')::date >= (now() AT TIME ZONE 'America/Chicago')::date))"
+            )
+        else:
+            _hist = ("(g.date AT TIME ZONE 'America/Chicago')::date "
+                     "< (now() AT TIME ZONE 'America/Chicago')::date")
         writeup_slugs = []
         try:
             rows = await db.execute(text(f"""
-                SELECT COALESCE(NULLIF(slug, ''), CAST(id AS text)) AS ident
-                FROM {sport}.game_writeups
-                WHERE status = 'published' AND is_free_feature = true
-                ORDER BY id DESC
+                SELECT COALESCE(NULLIF(w.slug, ''), CAST(w.id AS text)) AS ident
+                FROM {sport}.game_writeups w
+                JOIN {sport}.games g ON g.id = w.game_id
+                WHERE w.status = 'published'
+                  AND (w.is_free_feature = true OR {_hist})
+                ORDER BY w.id DESC
                 LIMIT {GAMES_LIMIT}
             """))
             writeup_slugs = [r[0] for r in rows.all()]

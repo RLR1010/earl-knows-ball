@@ -9,6 +9,7 @@ break a request.
 
 import logging
 from datetime import date, datetime, timezone
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -63,7 +64,7 @@ def client_ip(request: Request) -> str | None:
 
 async def _write_activity(user_id: str, ip: str) -> None:
     """Upsert today's row for (user_id, ip). Runs in its own session/task."""
-    today = datetime.now(timezone.utc).date()
+    today = datetime.now(ZoneInfo("America/Chicago")).date()
     try:
         async with async_session() as db:
             result = await db.execute(

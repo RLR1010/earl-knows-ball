@@ -252,8 +252,9 @@ class MLBWriteupGenerator(BaseWriteupGenerator):
         content = await self._call_deepseek(
             system,
             user_prompt,
-            max_tokens=2000,
+            max_tokens=8192,
             reasoning="minimal",
+            max_attempts=1,
             usage_log=usage_log,
             call="generate_props_article",
         )

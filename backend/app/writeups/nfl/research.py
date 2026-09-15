@@ -4,6 +4,7 @@ Mirrors the MLB research module architecture with NFL-specific data sources.
 """
 import logging
 from datetime import datetime, timezone, timedelta, date
+from zoneinfo import ZoneInfo
 from typing import Optional
 
 from sqlalchemy import text
@@ -11,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger("writeups.nfl.research")
 
-_TZ_EASTERN = timezone(timedelta(hours=-4))
+_TZ_EASTERN = ZoneInfo("America/New_York")  # proper EST/EDT (was a fixed -4 EDT offset)
 
 
 def _to_eastern(dt_tz):
@@ -1054,7 +1055,7 @@ async def _resolve_context_season(
     either. Always REG-only regardless of the season resolved.
     """
     _ = team_abbr  # reserved for future logging/labels
-    gdate = as_of_date if as_of_date is not None else datetime.utcnow().date()
+    gdate = as_of_date if as_of_date is not None else datetime.now(_TZ_EASTERN).date()
     # 1) current season has FINAL REG games for this team by game date -> use it
     has = await db.execute(
         text(

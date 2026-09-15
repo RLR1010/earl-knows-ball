@@ -40,14 +40,23 @@ export default async function AnalysisPage({ params }: Props) {
     writeupContent(sport, identifier),
   ]);
 
-  // Only the free-feature writeup's body is server-rendered for crawlers.
-  const renderServerBody = content.ok && (content.data?.is_free_feature ?? true);
+  // Server-render ANY content an anonymous request can read: the free pick AND
+  // (since 2026-09-14) writeups whose game is now historical (MLB/NBA: yesterday
+  // or earlier; NFL: previous schedule week or earlier), which the backend now
+  // serves with 200. Paywalled/missing (403) still delegate to the client paywall.
+  const renderServerBody = content.ok;
+  const isFreeFeature = content.data?.is_free_feature === true;
 
   return (
     <>
       {jsonLd ? <JsonLd data={jsonLd} /> : null}
       {renderServerBody ? (
-        <ServerWriteupBody sport={sport} identifier={identifier} content={content} />
+        <ServerWriteupBody
+          sport={sport}
+          identifier={identifier}
+          content={content}
+          showFreeBadge={isFreeFeature}
+        />
       ) : (
         <SportAnalysisDetailPage params={params} />
       )}

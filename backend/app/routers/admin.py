@@ -2,7 +2,7 @@ import asyncio
 import logging
 import sys
 from pathlib import Path
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 import zoneinfo
 from fastapi import APIRouter, Depends, HTTPException, Header, Query, Request, status
 
@@ -30,6 +30,35 @@ from psycopg2.extras import RealDictCursor
 from app.db_urls import PSYCOPG2_DATABASE_URL, ASYNC_DATABASE_URL
 
 DATABASE_URL = PSYCOPG2_DATABASE_URL
+
+# App display timezone. Admin date filters ("today", "Sep 11") are the admin's
+# LOCAL calendar day, not UTC.
+APP_TZ = zoneinfo.ZoneInfo("America/Chicago")
+
+
+def _parse_dt_bound(value: str, *, end_of_day: bool) -> "datetime | None":
+    """Parse a date-filter bound into an aware UTC datetime.
+
+    - Full ISO-8601 instants (e.g. 2026-09-11T05:00:00.000Z) are honored as-is.
+    - Bare dates (YYYY-MM-DD) expand to the app-local day boundary (start of day,
+      or end of day when end_of_day=True).
+    - Naive datetimes with no offset are treated as UTC (legacy callers).
+    Returns None for empty/invalid input.
+    """
+    v = (value or "").strip()
+    if not v:
+        return None
+    if v.endswith("Z"):
+        v = v[:-1] + "+00:00"
+    try:
+        d = datetime.fromisoformat(v)
+    except ValueError:
+        return None
+    if len(v) <= 10:  # date only -> local day boundary
+        d = datetime.combine(d.date(), time.max if end_of_day else time.min, tzinfo=APP_TZ)
+    elif d.tzinfo is None:
+        d = d.replace(tzinfo=timezone.utc)
+    return d.astimezone(timezone.utc)
 
 
 def _pg_conn():
@@ -1137,29 +1166,22 @@ async def list_payments(
     if status_filter:
         filters.append(Payment.status == status_filter)
 
-    today = datetime.now(timezone.utc).date()
+    # Date filters are interpreted as the admin's LOCAL calendar day (US/Central),
+    # so "today"/"Sep 11" matches the local day rather than the UTC day.
     if date_from:
-        try:
-            dt_from = datetime.fromisoformat(date_from)
-            if dt_from.tzinfo is None:
-                dt_from = dt_from.replace(tzinfo=timezone.utc)
+        dt_from = _parse_dt_bound(date_from, end_of_day=False)
+        if dt_from is not None:
             filters.append(Payment.created_at >= dt_from)
-        except ValueError:
-            pass
     else:
-        # Default: today's payments (start of today UTC)
-        dt_from = datetime(today.year, today.month, today.day, tzinfo=timezone.utc)
+        # Default: start of TODAY in the app's local timezone.
+        local_today = datetime.now(APP_TZ).date()
+        dt_from = datetime.combine(local_today, time.min, tzinfo=APP_TZ).astimezone(timezone.utc)
         filters.append(Payment.created_at >= dt_from)
 
     if date_to:
-        try:
-            dt_to = datetime.fromisoformat(date_to)
-            if dt_to.tzinfo is None:
-                dt_to = dt_to.replace(tzinfo=timezone.utc)
-            dt_to = dt_to.replace(hour=23, minute=59, second=59, microsecond=999999)
+        dt_to = _parse_dt_bound(date_to, end_of_day=True)
+        if dt_to is not None:
             filters.append(Payment.created_at <= dt_to)
-        except ValueError:
-            pass
 
     # Count total matching records
     count_query = select(func.count(Payment.id)).where(*filters)
@@ -2331,6 +2353,13 @@ async def get_prediction_stats(
 ):
     """Return per-year prediction stats from the database for a sport."""
     sport = sport.lower()
+
+    # Results must never include preseason / exhibition / all-star games.
+    # NFL/NBA use 'PRE'; MLB uses 'S' (spring training), 'E'/'A' (exhibition/all-star).
+    EXCLUDE_PRE_SQL = (
+        "UPPER(COALESCE(g.game_type, '')) NOT IN "
+        "('PRE', 'PRESEASON', 'PRES', 'EXHIBITION', 'EXH', 'S', 'E', 'A', 'AS')"
+    )
     if sport not in ("mlb", "nfl", "nba"):
         raise HTTPException(status_code=404, detail=f"Unknown sport: {sport}")
 
@@ -2371,6 +2400,7 @@ async def get_prediction_stats(
         JOIN {schema}.games g ON g.id = gp.game_id
         JOIN {schema}.seasons s ON s.id = g.season_id
         WHERE s.year >= 2022
+          AND {EXCLUDE_PRE_SQL}
         GROUP BY s.year
         ORDER BY s.year
     """))
@@ -2397,6 +2427,7 @@ async def get_prediction_stats(
         JOIN {schema}.games g ON g.id = gp.game_id
         JOIN {schema}.seasons s ON s.id = g.season_id
         WHERE s.year >= 2022
+          AND {EXCLUDE_PRE_SQL}
     """))
 
     _global_cals = list(all_raw_rows.fetchall())
@@ -2456,6 +2487,7 @@ async def get_prediction_stats(
             JOIN {schema}.seasons s ON s.id = g.season_id
             WHERE s.year = {r.year}
               AND {conf_col} IS NOT NULL
+              AND {EXCLUDE_PRE_SQL}
         """))
 
         _conf_rows = list(raw_rows.fetchall())

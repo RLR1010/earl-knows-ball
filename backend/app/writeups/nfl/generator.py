@@ -65,7 +65,7 @@ Output format (preferred): Return valid JSON with these keys:
 
 If you cannot return JSON, write the article starting with `## Title` on line 1, then the markdown body.
 
-Length: 1000-1400 words. This is a HARD LIMIT — write 1000-1400 words, target ~1200. Do not exceed 1400 words. Be detailed and comprehensive, but every section must earn its length — cut filler rather than padding past 1400.
+Length: 900-1200 words. This is a HARD LIMIT — write 900-1200 words, target ~1050. Do not exceed 1200 words. Be detailed and comprehensive, but every section must earn its length — cut filler rather than padding past 1200.
 {tense_note}"""
 
     def public_system_prompt(self, is_historical: bool = False) -> str:

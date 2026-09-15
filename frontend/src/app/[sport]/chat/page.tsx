@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect, useCallback } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { markdownComponents } from "@/components/markdown";
@@ -52,6 +52,13 @@ export default function ChatPage() {
   const params = useParams();
   const rawSport = params.sport as string;
   const sport: Sport = rawSport === "nba" || rawSport === "mlb" ? rawSport : "nfl";
+
+  // Cross-sport switch (prototype B) plumbing.
+  const router = useRouter();
+  const handledNavRef = useRef<string | null>(null);
+  // Mirror of `conversationId` readable from async/auto flows where the closed-over
+  // state value would be stale (e.g. continuing a just-loaded switched conversation).
+  const conversationIdRef = useRef<string | null>(null);
 
   const sportName = SPORT_NAMES[sport];
   useSeo({
@@ -178,13 +185,10 @@ export default function ChatPage() {
     };
   }, [token]);
 
-  // Reset when navigating between sports
+  // Keep the ref mirror of the active conversation id in sync for async/auto flows.
   useEffect(() => {
-    setMessages([{ role: "assistant", content: SPORT_WELCOME[sport] }]);
-    setConversationId(null);
-    setLoading(false);
-    setStatusText(null);
-  }, [sport]);
+    conversationIdRef.current = conversationId;
+  }, [conversationId]);
 
   const startNewChat = useCallback(() => {
     setMessages([{ role: "assistant", content: SPORT_WELCOME[sport] }]);
@@ -218,6 +222,7 @@ export default function ChatPage() {
           content: m.content,
         })));
         setConversationId(convId);
+        conversationIdRef.current = convId;
       }
     } catch {
       // silently fail
@@ -228,13 +233,50 @@ export default function ChatPage() {
     }
   }, [sport, token, startNewChat, setSidebarOpen]);
 
+  // Cross-sport switch (prototype B): when a question is really about another sport, the
+  // chat that received it navigates here with ?q=<question>&c=<conversationId>. Run once per
+  // (sport, params) signature: load the thread, auto-send the question, then drop the params.
+  // On a plain sport navigation (no params) it resets to the welcome message as before.
+  useEffect(() => {
+    if (!token) return;
+    // Read the query string directly (avoids useSearchParams' Suspense requirement).
+    const sp = new URLSearchParams(window.location.search);
+    const cIn = sp.get("c");
+    const qIn = sp.get("q");
+    const key = `${sport}|${cIn ?? ""}|${qIn ?? ""}`;
+    if (handledNavRef.current === key) return;
+    handledNavRef.current = key;
 
+    (async () => {
+      if (cIn) {
+        await loadConversation(cIn);
+      } else {
+        setMessages([{ role: "assistant", content: SPORT_WELCOME[sport] }]);
+        setConversationId(null);
+        conversationIdRef.current = null;
+        setLoading(false);
+        setStatusText(null);
+      }
+      if (qIn) {
+        // Preserve ?c (so the thread carries over) but clear ?q so a refresh won't resend.
+        handledNavRef.current = `${sport}|${cIn ?? ""}|`;
+        router.replace(cIn ? `/${sport}/chat?c=${cIn}` : `/${sport}/chat`);
+        void sendMessage(qIn, { skipDetect: true });
+      }
+    })();
+  }, [sport, token, loadConversation, router]);
 
-  async function handleSend() {
-    if (!input.trim() || loading || !token) return;
-    const userMsg = input.trim();
-
+  function handleSend() {
+    const m = input.trim();
+    if (!m || loading || !token) return;
     setInput("");
+    void sendMessage(m);
+  }
+
+  async function sendMessage(userMsg: string, opts: { skipDetect?: boolean } = {}) {
+    if (!userMsg || !token) return;
+    if (loading && !opts.skipDetect) return;
+
     // Park the user at the bottom for their new turn so the incoming response
     // starts in view (only relevant for long threads where they may have
     // scrolled back up to re-read earlier messages).
@@ -242,6 +284,37 @@ export default function ChatPage() {
     setMessages((prev) => [...prev, { role: "user", content: userMsg }]);
     setLoading(true);
     setStatusText("Asking Earl...");
+
+    // Cross-sport switch: if this question is really about a different sport, hand off to
+    // that sport's chat rather than let the current engine answer without its data/tools.
+    if (!opts.skipDetect) {
+      try {
+        setStatusText("Routing your question...");
+        const dr = await fetch(`${API_HOST}/chat/detect-sport`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ message: userMsg, sport }),
+        });
+        if (dr.ok) {
+          const dd = await dr.json();
+          if (dd?.sport && dd.sport !== sport) {
+            const qp = new URLSearchParams();
+            if (conversationIdRef.current) qp.set("c", conversationIdRef.current);
+            qp.set("q", userMsg);
+            setStatusText(`Switching to ${String(dd.sport).toUpperCase()} chat...`);
+            router.replace(`/${dd.sport}/chat?${qp.toString()}`);
+            return;
+          }
+        }
+      } catch {
+        // Detection is best-effort; fall through to the normal in-sport send.
+      }
+      setStatusText("Asking Earl...");
+    }
+
     await new Promise((r) => setTimeout(r, 0));
 
     const gotAnswer = { value: false };
@@ -279,7 +352,7 @@ export default function ChatPage() {
         },
         body: JSON.stringify({
           message: userMsg,
-          conversation_id: conversationId,
+          conversation_id: conversationIdRef.current,
           request_id: requestId,
         }),
       });

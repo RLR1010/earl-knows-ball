@@ -15,7 +15,7 @@ from fastapi.responses import JSONResponse
 from sse_starlette.sse import EventSourceResponse
 from openai import AsyncOpenAI
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -150,7 +150,6 @@ async def chat_nfl(
                     .where(
                         ChatHistory.conversation_id == request.conversation_id,
                         ChatHistory.user_id == current_user.id,
-                        ChatHistory.sport == "nfl",
                     )
                     .order_by(ChatHistory.created_at.asc())
                     .limit(20)
@@ -158,6 +157,18 @@ async def chat_nfl(
                 history = result.scalars().all()
                 for h in history:
                     messages.append({"role": h.role, "content": h.message})
+                # Cross-sport continuity (prototype B): if this thread was started in another
+                # sport, adopt it here so continuing it stays one clean conversation/list.
+                if any(h.sport != "nfl" for h in history):
+                    await db.execute(
+                        update(ChatHistory)
+                        .where(
+                            ChatHistory.conversation_id == request.conversation_id,
+                            ChatHistory.user_id == current_user.id,
+                        )
+                        .values(sport="nfl")
+                    )
+                    await db.commit()
                 conv_id = request.conversation_id
             else:
                 conv_id = str(uuid4())

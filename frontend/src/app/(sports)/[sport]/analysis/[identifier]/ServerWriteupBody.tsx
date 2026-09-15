@@ -35,10 +35,12 @@ export default function ServerWriteupBody({
   sport,
   identifier,
   content,
+  showFreeBadge = true,
 }: {
   sport: string;
   identifier: string;
   content: WriteupContent;
+  showFreeBadge?: boolean;
 }) {
   const data = content.data ?? {};
   const title =
@@ -60,9 +62,11 @@ export default function ServerWriteupBody({
 
       <article>
         <GamePickCard sport={sport} gameId={data.game_id} />
-        <span className="mb-4 mt-6 inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-green-500 to-earl-500 px-3 py-1 text-xs font-black uppercase tracking-widest text-white shadow-lg">
-          Free pick of the game — no subscription required
-        </span>
+        {showFreeBadge ? (
+          <span className="mb-4 mt-6 inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-green-500 to-earl-500 px-3 py-1 text-xs font-black uppercase tracking-widest text-white shadow-lg">
+            Free pick of the game — no subscription required
+          </span>
+        ) : null}
         <h1 className="text-3xl md:text-4xl font-bold tracking-tight mb-2">{title}</h1>
         <div className="text-sm text-gray-500 mb-8">
           <span className="text-gray-300">by Earl</span>

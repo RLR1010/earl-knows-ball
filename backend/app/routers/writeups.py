@@ -6,6 +6,7 @@ import html
 import logging
 import re
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -25,6 +26,62 @@ logger = logging.getLogger("writeups")
 router = APIRouter(prefix="/writeups", tags=["writeups"])
 
 _CARDS_DIR = pathlib.Path(__file__).resolve().parents[2] / "var" / "cards"
+
+_CHI_TZ = ZoneInfo("America/Chicago")
+
+
+def _chi_today_iso() -> str:
+    return datetime.now(_CHI_TZ).date().isoformat()
+
+
+def _date_value_is_past(v) -> bool:
+    """True when a game date (str/datetime/date) is before today (America/Chicago).
+
+    Used to make analysis write-ups public once a game is 'yesterday or earlier'.
+    """
+    if v is None:
+        return False
+    if isinstance(v, datetime):
+        d = v.astimezone(_CHI_TZ).date() if v.tzinfo else v.date()
+        return d.isoformat() < _chi_today_iso()
+    if isinstance(v, str):
+        return v[:10] < _chi_today_iso()
+    if hasattr(v, "isoformat"):
+        return v.isoformat()[:10] < _chi_today_iso()
+    return False
+
+
+async def _nfl_current_week_start(db: AsyncSession, season_id):
+    """Earliest game date still in the current schedule week (i.e. today or later)
+    for the season. None when the season has no upcoming games (season fully past)."""
+    if season_id is None:
+        return None
+    today = datetime.now(_CHI_TZ).date()
+    return (await db.execute(
+        text(
+            "SELECT MIN((date AT TIME ZONE 'America/Chicago')::date) FROM nfl.games "
+            "WHERE season_id = :s AND (date AT TIME ZONE 'America/Chicago')::date >= :t"
+        ),
+        {"s": season_id, "t": today},
+    )).scalar()
+
+
+async def _nfl_game_is_historical(db: AsyncSession, game_date, season_id) -> bool:
+    """True when an NFL game belongs to a previous schedule week (or earlier).
+
+    Compared by date against the start of the season's current week so preseason
+    weeks (numbered 30+) don't break ordering. A season with no upcoming games is
+    entirely historical.
+    """
+    if game_date is None or season_id is None:
+        return False
+    week_start = await _nfl_current_week_start(db, season_id)
+    if week_start is None:
+        return True
+    gd = game_date.astimezone(_CHI_TZ).date() if getattr(game_date, "tzinfo", None) else (
+        game_date.date() if hasattr(game_date, "date") else game_date
+    )
+    return gd < week_start
 
 
 async def _resolve_slug_or_alias_id(db: AsyncSession, schema: str, identifier: str):
@@ -552,7 +609,7 @@ async def list_mlb_writeups(
         text(f"""
             SELECT
                 w.id, w.game_id, w.slug, w.title, w.status, w.version,
-                w.is_historical, w.generated_by,
+                w.is_historical, w.generated_by, w.is_free_feature,
                 w.published_at, w.created_at, w.updated_at,
                 w.public_content AS content,
                 g.date AS game_date,
@@ -584,6 +641,8 @@ async def list_mlb_writeups(
             "game_date": r.game_date.isoformat() if r.game_date else None,
             "matchup": f"{r.away_team} @ {r.home_team}",
             "summary": _make_excerpt(r.content),
+            "is_free_feature": bool(r.is_free_feature),
+            "premium_locked": not (bool(r.is_free_feature) or _date_value_is_past(r.game_date)),
         }
         for r in rows.mappings()
     ]
@@ -671,7 +730,9 @@ async def get_mlb_writeup(
     # Free-Pick gates: a writeup flagged as the free feature unlocks its premium content
     # to everyone (homepage + shared social card); everything else stays premium-only.
     is_free_feature = bool(r.get("is_free_feature"))
-    premium_allowed = user_is_premium(current_user) or is_free_feature
+    # Historical (yesterday or earlier) write-ups are public — no longer premium-gated.
+    historical_public = _date_value_is_past(r.get("game_date"))
+    premium_allowed = user_is_premium(current_user) or is_free_feature or historical_public
     if tier == "premium" and not premium_allowed:
         raise HTTPException(status_code=403, detail="Premium subscription required")
 
@@ -1032,9 +1093,9 @@ async def list_nfl_writeups(
     offset = (page - 1) * per_page
     rows = await db.execute(
         text(f"""SELECT w.id, w.game_id, w.slug, w.title, w.status, w.version,
-                 w.is_historical, w.published_at, w.created_at,
+                 w.is_historical, w.is_free_feature, w.published_at, w.created_at,
                  w.public_content AS content,
-                 g.week, g.date,
+                 g.week, g.date, g.season_id,
                  ht.abbreviation AS home, at.abbreviation AS away
           FROM nfl.game_writeups w
           JOIN nfl.games g ON w.game_id = g.id
@@ -1045,6 +1106,27 @@ async def list_nfl_writeups(
           LIMIT :limit OFFSET :offset"""),
         {**params, "limit": per_page, "offset": offset},
     )
+    _rows = rows.mappings().all()
+    _season_week_starts: dict = {}
+    for _r in _rows:
+        _sid = _r["season_id"]
+        if _sid is not None and _sid not in _season_week_starts:
+            _season_week_starts[_sid] = await _nfl_current_week_start(db, _sid)
+
+    def _nfl_hist(_r) -> bool:
+        if _r["is_free_feature"]:
+            return True
+        _ws = _season_week_starts.get(_r["season_id"])
+        _gd = _r["date"]
+        if _gd is None:
+            return False
+        _gd = _gd.astimezone(_CHI_TZ).date() if getattr(_gd, "tzinfo", None) else _gd.date()
+        return _ws is None or _gd < _ws
+
+    def _nfl_locked(_r) -> bool:
+        # Locked when it is NOT free-feature and NOT a previous-week (historical) game.
+        return not _nfl_hist(_r)
+
     items = [
         {
             "writeup_id": r["id"], "game_id": r["game_id"],
@@ -1056,8 +1138,10 @@ async def list_nfl_writeups(
             "week": r["week"], "matchup": f"{r['away']} @ {r['home']}",
             "date": r["date"].isoformat() if r["date"] else None,
             "summary": _make_excerpt(r["content"]),
+            "is_free_feature": bool(r["is_free_feature"]),
+            "premium_locked": _nfl_locked(r),
         }
-        for r in rows.mappings()
+        for r in _rows
     ]
     return {"items": items, "page": page, "per_page": per_page}
 
@@ -1091,7 +1175,7 @@ async def get_nfl_writeup(
                  w.total_tokens, w.accuracy_check, w.accuracy_check_tokens,
                  w.rejection_history,
                  w.published_at, w.created_at,
-                 g.week, g.date,
+                 g.week, g.date, g.season_id,
                  ht.abbreviation AS home, at.abbreviation AS away
           FROM nfl.game_writeups w
           JOIN nfl.games g ON w.game_id = g.id
@@ -1104,7 +1188,7 @@ async def get_nfl_writeup(
                  w.total_tokens, w.accuracy_check, w.accuracy_check_tokens,
                  w.rejection_history,
                  w.published_at, w.created_at,
-                 g.week, g.date,
+                 g.week, g.date, g.season_id,
                  ht.abbreviation AS home, at.abbreviation AS away
           FROM nfl.game_writeups w
           JOIN nfl.games g ON w.game_id = g.id
@@ -1120,7 +1204,9 @@ async def get_nfl_writeup(
     qc = r.get("quality_checks")
     # Free-Pick gates: featured writeup unlocks premium to everyone; others stay premium-only.
     is_free_feature = bool(r.get("is_free_feature"))
-    premium_allowed = user_is_premium(current_user) or is_free_feature
+    # Historical (previous schedule week or earlier) write-ups are public — no longer premium-gated.
+    historical_public = await _nfl_game_is_historical(db, r.get("date"), r.get("season_id"))
+    premium_allowed = user_is_premium(current_user) or is_free_feature or historical_public
     if tier == "premium" and not premium_allowed:
         raise HTTPException(status_code=403, detail="Premium subscription required")
     content = (
@@ -1475,7 +1561,7 @@ async def list_nba_writeups(
                    w.created_at, w.updated_at, w.published_at,
                    g.date, ht.name AS home, ht.abbreviation AS home_abbr,
                    at.name AS away, at.abbreviation AS away_abbr,
-                   w.slug, w.public_content AS content
+                   w.slug, w.public_content AS content, w.is_free_feature
             FROM nba.game_writeups w
             JOIN nba.games g ON w.game_id = g.id
             JOIN nba.teams ht ON g.home_team_id = ht.id
@@ -1504,6 +1590,8 @@ async def list_nba_writeups(
             "away_abbr": r[12],
             "slug": r[13],
             "summary": _make_excerpt(r[14]),
+            "is_free_feature": bool(r[15]),
+            "premium_locked": not (bool(r[15]) or _date_value_is_past(r[8])),
         }
         for r in rows
     ]
@@ -1568,7 +1656,9 @@ async def get_nba_writeup(
 
     # Free-Pick gates: featured writeup unlocks premium to everyone; others stay premium-only.
     is_free_feature = bool(row[24])
-    premium_allowed = user_is_premium(current_user) or is_free_feature
+    # Historical (yesterday or earlier) write-ups are public — no longer premium-gated.
+    historical_public = _date_value_is_past(row[16])
+    premium_allowed = user_is_premium(current_user) or is_free_feature or historical_public
     if tier == "premium" and not premium_allowed:
         raise HTTPException(status_code=403, detail="Premium subscription required")
 

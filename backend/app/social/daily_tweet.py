@@ -43,6 +43,7 @@ import random
 import re
 import sys
 from datetime import date, datetime, time, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import create_engine, text
 
@@ -58,7 +59,7 @@ WRITEUP_TARGET = 3
 ORIGINAL_TARGET = 3
 MAX_DAY = WRITEUP_TARGET + ORIGINAL_TARGET
 MAX_TWEET_LEN = 280
-CENTRAL = timezone(timedelta(hours=-5))  # CDT (America/Chicago, no DST change in our window)
+CENTRAL = ZoneInfo("America/Chicago")  # proper CST/CDT (was a fixed -5 CDT offset — wrong after DST ends)
 
 # Writeup settle guard: a preview created OR updated within the last WRITEUP_SETTLE_MIN
 # minutes is still being generated/regenerated (the pipeline writes previews in several

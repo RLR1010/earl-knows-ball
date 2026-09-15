@@ -261,6 +261,8 @@ async def run(api_key: str, db: AsyncSession):
         import traceback
         results["errors"].append(str(e))
         logger.error(f"Lines+picks refresh failed: {e}\n{traceback.format_exc()}")
+        results["fatal_error"] = str(e)[:500]
+        return {"status": "error", "results": results}
 
     return {"status": "ok", "results": results}
 

@@ -4,6 +4,7 @@ import logging
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy import select, func, delete as sa_delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -11,6 +12,7 @@ from app.core.security import get_current_user
 from app.database import get_db
 from app.models import User
 from app.models.chat_history import ChatHistory
+from app.chat_tools.sport_router import SPORT_LABELS, detect_sport
 
 logger = logging.getLogger(__name__)
 
@@ -113,11 +115,13 @@ async def get_conversation(
     if sport not in ("nfl", "nba", "mlb"):
         raise HTTPException(status_code=400, detail="Invalid sport")
 
+    # NOTE: no sport filter. A conversation can switch sports mid-thread (prototype B);
+    # conversation_id is a user-scoped UUID, so the thread is fetched whole regardless of
+    # which sport route the client is currently on.
     result = await db.execute(
         select(ChatHistory)
         .where(
             ChatHistory.user_id == current_user.id,
-            ChatHistory.sport == sport,
             ChatHistory.conversation_id == conversation_id,
         )
         .order_by(ChatHistory.created_at.asc())
@@ -151,10 +155,10 @@ async def delete_conversation(
     if sport not in ("nfl", "nba", "mlb"):
         raise HTTPException(status_code=400, detail="Invalid sport")
 
+    # Delete the whole thread (any sport), so a conversation that switched sports is fully gone.
     result = await db.execute(
         sa_delete(ChatHistory).where(
             ChatHistory.user_id == current_user.id,
-            ChatHistory.sport == sport,
             ChatHistory.conversation_id == conversation_id,
         )
     )
@@ -164,3 +168,27 @@ async def delete_conversation(
         raise HTTPException(status_code=404, detail="Conversation not found")
 
     return {"deleted": True, "messages_removed": result.rowcount}
+
+
+class DetectSportRequest(BaseModel):
+    message: str
+    #: The sport of the chat page the user is currently on (optional).
+    sport: str | None = None
+
+
+@router.post("/chat/detect-sport")
+async def detect_chat_sport(
+    payload: DetectSportRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """Classify which sport a chat message is about (prototype-B cross-sport switch helper).
+
+    Returns ``{"sport": <nfl|nba|mlb|null>, "label": <...>}``. A non-null sport means the
+    message is about a *different* sport than ``payload.sport``, so the client should switch
+    the conversation to that sport's chat. ``null`` means carry on in the current sport.
+    """
+    target = await detect_sport(payload.message, payload.sport)
+    return {
+        "sport": target,
+        "label": SPORT_LABELS.get(target) if target else None,
+    }
