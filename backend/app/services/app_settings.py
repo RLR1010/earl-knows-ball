@@ -15,7 +15,7 @@ FREE_CHAT_MONTHLY_TOKENS_KEY = "free_chat_monthly_tokens"
 
 # --- defaults (also seeded by the migration) ---
 DEFAULT_FREE_CHAT_ENABLED = True
-DEFAULT_FREE_CHAT_MONTHLY_TOKENS = 100_000
+DEFAULT_FREE_CHAT_MONTHLY_TOKENS = 200_000
 
 
 def _to_bool(value, default: bool) -> bool:

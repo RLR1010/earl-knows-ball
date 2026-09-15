@@ -10,6 +10,11 @@ import asyncio
 import asyncpg
 
 from app.core.config import settings
+from app.services.app_settings import (
+    FREE_CHAT_ENABLED_KEY,
+    FREE_CHAT_MONTHLY_TOKENS_KEY,
+    DEFAULT_FREE_CHAT_MONTHLY_TOKENS,
+)
 
 CREATE_TABLE = """
 CREATE TABLE IF NOT EXISTS public.app_settings (
@@ -20,8 +25,8 @@ CREATE TABLE IF NOT EXISTS public.app_settings (
 """
 
 SEED = [
-    ("***", "true"),
-    ("free_c…kens", "100000"),
+    (FREE_CHAT_ENABLED_KEY, "true"),
+    (FREE_CHAT_MONTHLY_TOKENS_KEY, str(DEFAULT_FREE_CHAT_MONTHLY_TOKENS)),
 ]
 
 

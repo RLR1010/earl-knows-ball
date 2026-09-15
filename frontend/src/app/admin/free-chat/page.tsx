@@ -14,7 +14,7 @@ export default function AdminFreeChat() {
   useSeo({ title: "Free Chat — Admin — Earl Knows Ball" });
   const [cfg, setCfg] = useState<FreeChatConfig | null>(null);
   const [enabled, setEnabled] = useState(true);
-  const [monthlyTokens, setMonthlyTokens] = useState<number>(100000);
+  const [monthlyTokens, setMonthlyTokens] = useState<number>(200000);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
