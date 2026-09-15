@@ -76,6 +76,8 @@ class ToolChatEngine:
         tools: list[dict],
         executor: Callable[[Any, Any], str],
         system_prompt_extra: str = "",
+        system_prompt_prefix: str = "",
+        system_prompt_template: str | None = None,
         model: str | None = None,
         reasoning_effort: str | None = None,
     ):
@@ -93,10 +95,15 @@ class ToolChatEngine:
         # overrides (used by the benchmark).
         self._chat_extra_body = {"thinking": {"type": "enabled"},"reasoning_effort": reasoning_effort or "low"}
 
-        self.system_prompt = SYSTEM_PROMPT_TEMPLATE.format(
+        _template = system_prompt_template or SYSTEM_PROMPT_TEMPLATE
+        self.system_prompt = _template.format(
             sport=sport_display,
             data_description=data_description,
         )
+        if system_prompt_prefix:
+            # Prefix is placed FIRST for primacy (e.g. the free-tier no-picks rule,
+            # which must override the handicapper framing below).
+            self.system_prompt = f"{system_prompt_prefix}\n\n{self.system_prompt}"
         if system_prompt_extra:
             self.system_prompt += f"\n\n{system_prompt_extra}"
 

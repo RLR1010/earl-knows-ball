@@ -25,6 +25,8 @@ from app.models import User
 from app.models.chat_history import ChatHistory
 from app.chat_tools import ToolChatEngine, NFL_TOOL_DEFINITIONS, execute_nfl_tool
 from app.services.token_tracker import check_token_limit, save_token_usage
+from app.services.app_settings import get_free_chat_config
+from app.chat_tools.free_mode import FREE_SYSTEM_PROMPT_TEMPLATE, filter_tools
 from app.chat_status import get_chat_status, clear_chat_status, set_chat_status
 
 logger = logging.getLogger(__name__)
@@ -84,6 +86,21 @@ nfl_chat_engine = ToolChatEngine(
     system_prompt_extra=NFL_SYSTEM_EXTRA,
 )
 
+# Free-tier engine: same brain, but pick/betting tools are stripped and a hard
+# "no picks / no betting advice" addendum is drilled in (see chat_tools/free_mode).
+nfl_free_chat_engine = ToolChatEngine(
+    sport="nfl",
+    sport_display="NFL",
+    data_description=(
+        "team stats, standings, injury reports, depth charts, "
+        "head-to-head results, and player stats"
+    ),
+    tools=filter_tools("nfl", NFL_TOOL_DEFINITIONS),
+    executor=execute_nfl_tool,
+    model=settings.deepseek_model,
+    system_prompt_template=FREE_SYSTEM_PROMPT_TEMPLATE,
+)
+
 # ---------------------------------------------------------------------------
 # Request / Response schemas
 # ---------------------------------------------------------------------------
@@ -122,27 +139,53 @@ async def chat_nfl(
     Yields status events ('status') during research, then the final answer ('answer').
     """
 
-    # Check token limit for premium users
-    if current_user.subscription_tier in ("premium", "premium_yearly"):
-        allowed, _ = await check_token_limit(current_user, db)
-        if not allowed:
-            async def limit_error_stream():
-                yield {"data": json.dumps({
-                    "type": "answer",
-                    "content": "You've reached your chat token limit for this billing period — your monthly allotment is used up and you have no extra tokens left. You can buy more tokens from your profile page (earlknowsball.com/profile), which roll over to future months if unused.",
-                }, ensure_ascii=False)}
-                yield {"data": json.dumps({"type": "done"}, ensure_ascii=False)}
-            return EventSourceResponse(
-                limit_error_stream(),
-                headers={"Cache-Control": "no-cache, no-store, must-revalidate", "Connection": "keep-alive"},
-                ping=5,
-            )
+    # --- Access control: tier-aware (free vs premium) ---
+    is_free = current_user.subscription_tier not in ("premium", "premium_yearly")
+    free_cfg = await get_free_chat_config(db) if is_free else {"enabled": True, "monthly_tokens": 0}
+    _sse_headers = {"Cache-Control": "no-cache, no-store, must-revalidate", "Connection": "keep-alive"}
+
+    if is_free and not free_cfg["enabled"]:
+        async def free_disabled_stream():
+            yield {"data": json.dumps({
+                "type": "answer",
+                "content": "Free chat is currently unavailable. Premium members get Earl's full chat — including picks, predictions, and game writeups.",
+            }, ensure_ascii=False)}
+            yield {"data": json.dumps({"type": "done"}, ensure_ascii=False)}
+        return EventSourceResponse(free_disabled_stream(), headers=_sse_headers, ping=5)
+
+    # Free users are capped by the admin-configured global grant; premium users by
+    # their plan (or purchased extra tokens).
+    default_limit = free_cfg["monthly_tokens"] if is_free else None
+    allowed, _ = await check_token_limit(current_user, db, default_limit=default_limit)
+    if not allowed:
+        limit_msg = (
+            f"You've used all {default_limit:,} free chat tokens for this month. "
+            "Upgrade to premium for a much larger monthly allowance, or buy extra tokens "
+            "from your profile page (earlknowsball.com/profile)."
+            if is_free else
+            "You've reached your chat token limit for this billing period — your monthly "
+            "allotment is used up and you have no extra tokens left. You can buy more tokens "
+            "from your profile page (earlknowsball.com/profile), which roll over to future "
+            "months if unused."
+        )
+
+        async def limit_error_stream():
+            yield {"data": json.dumps({"type": "answer", "content": limit_msg}, ensure_ascii=False)}
+            yield {"data": json.dumps({"type": "done"}, ensure_ascii=False)}
+
+        return EventSourceResponse(limit_error_stream(), headers=_sse_headers, ping=5)
+
+    chat_engine = nfl_free_chat_engine if is_free else nfl_chat_engine
     async def event_stream():
         answer = ""
         total_tokens = 0
         try:
             # --- Build message history ---
-            messages: list[dict] = []
+            # The engine's system prompt MUST be the first message; without it the
+            # model gets no persona/rules at all (and no free-tier restriction).
+            messages: list[dict] = [
+                {"role": "system", "content": chat_engine.system_prompt},
+            ]
 
             if request.conversation_id:
                 result = await db.execute(
@@ -184,7 +227,8 @@ async def chat_nfl(
             # Optional game context (from a game-card chat): inject as a system
             # instruction so Earl knows the matchup/lines/picks — the stored user
             # message stays clean (no [GAME CONTEXT] prefix) in chat history.
-            if getattr(request, "system_context", None):
+            # Skipped for free users because it can carry lines/picks.
+            if getattr(request, "system_context", None) and not is_free:
                 messages.append({
                     "role": "system",
                     "content": request.system_context,
@@ -201,7 +245,7 @@ async def chat_nfl(
             yield {"data": json.dumps({"type": "conv_id", "id": conv_id, "user_id": str(user_id)}, ensure_ascii=False)}
 
             # --- Research phase (streaming status) ---
-            async for event_type, data in nfl_chat_engine.research_and_answer_stream(
+            async for event_type, data in chat_engine.research_and_answer_stream(
                 db, messages, max_turns=6
             ):
                 if event_type == "status":
@@ -241,7 +285,7 @@ async def chat_nfl(
                             "to provide the most up-to-date response."
                         ),
                     })
-                    enriched_answer, enriched_tokens = await nfl_chat_engine.research_and_answer(
+                    enriched_answer, enriched_tokens = await chat_engine.research_and_answer(
                         db, enriched_messages, max_turns=2,
                     )
                     total_tokens += enriched_tokens
@@ -277,7 +321,7 @@ async def chat_nfl(
 
             # --- Send final answer ---
             yield {"data": json.dumps({"type": "answer", "content": answer}, ensure_ascii=False)}
-            await save_token_usage(current_user, db, total_tokens)
+            await save_token_usage(current_user, db, total_tokens, default_limit=default_limit)
 
             yield {"data": json.dumps({"type": "done"}, ensure_ascii=False)}
             if request.request_id:
@@ -305,6 +349,16 @@ async def chat_nfl(
         ping=5,
     )
 
+
+
+@router.get("/chat/free-access")
+async def free_access(db: AsyncSession = Depends(get_db)):
+    """Public: is the free chat tier open, and its monthly token grant?
+
+    The client uses this to choose between the login gate, the free-chat notice,
+    or the upgrade wall. No auth required."""
+    cfg = await get_free_chat_config(db)
+    return {"free_chat_enabled": cfg["enabled"], "free_monthly_tokens": cfg["monthly_tokens"]}
 
 
 @router.get("/chat/status/{request_id}")

@@ -11,6 +11,7 @@ const NAV_GROUPS = [
       { label: "Users", path: "/admin/users" },
       { label: "Subscriptions", path: "/admin/subscriptions" },
       { label: "Plans", path: "/admin/plans" },
+      { label: "Free Chat", path: "/admin/free-chat" },
       { label: "Payments", path: "/admin/payments" },
       { label: "Customer Service", path: "/admin/customer-service" },
     ],

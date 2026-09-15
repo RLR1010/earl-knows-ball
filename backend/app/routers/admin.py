@@ -28,6 +28,7 @@ from psycopg2.extras import RealDictCursor
 
 
 from app.db_urls import PSYCOPG2_DATABASE_URL, ASYNC_DATABASE_URL
+from app.services.app_settings import get_free_chat_config, set_free_chat_config
 
 DATABASE_URL = PSYCOPG2_DATABASE_URL
 
@@ -995,6 +996,32 @@ async def delete_plan(
 
 
 # ── Subscriptions ───────────────────────────────────────────────────
+
+class FreeChatSettingsIn(BaseModel):
+    enabled: bool
+    monthly_tokens: int = Field(ge=0)
+
+
+@router.get("/settings/free-chat")
+async def get_free_chat_settings(
+    admin: User = Depends(get_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Current free-chat toggle + monthly token grant for non-premium members."""
+    return await get_free_chat_config(db)
+
+
+@router.put("/settings/free-chat")
+async def update_free_chat_settings(
+    data: FreeChatSettingsIn,
+    admin: User = Depends(get_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Turn free chat on/off and set the free monthly token allowance."""
+    cfg = await set_free_chat_config(db, data.enabled, data.monthly_tokens)
+    logger.info("admin %s updated free chat settings: %s", admin.email, cfg)
+    return cfg
+
 
 @router.get("/subscriptions", response_model=list[SubscriptionOut])
 async def list_subscriptions(

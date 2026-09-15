@@ -1,6 +1,7 @@
 from .nfl import *
 from .user import User
 from .token_usage import UserTokenUsage
+from .app_setting import AppSetting
 from .user_activity import UserActivity
 from .chat_history import ChatHistory
 from .customer_service import CSMessage, CSKnowledge
@@ -18,6 +19,7 @@ __all__ = [
     # Shared
     "User", "ChatHistory", "TrainingRun", "CSMessage", "CSKnowledge",
     "UserActivity",
+    "AppSetting",
     # NBA
     "NBATeam", "NBAPlayer", "NBAPlayerSeasonStats", "NBAPlayerGameStats",
     "NBASeason", "NBAGame", "NBAGameStatus", "NBAArticle", "NBABettingLine",

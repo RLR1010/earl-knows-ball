@@ -23,14 +23,19 @@ async def _get_token_period_start(user: User, db: AsyncSession) -> date:
     return date.today().replace(day=1)
 
 
-async def check_token_limit(user: User, db: AsyncSession) -> tuple[bool, int]:
+async def check_token_limit(user: User, db: AsyncSession, default_limit: int | None = None) -> tuple[bool, int]:
     """Check if a user has remaining tokens in the current billing period.
+
+    Args:
+        default_limit: fallback monthly limit used when the user has no
+            per-user ``monthly_token_limit`` (e.g. the global free-tier grant).
 
     Returns:
         Tuple of (is_allowed: bool, tokens_used_this_period: int).
-        If user has no limit set (monthly_token_limit is None), always allowed.
+        If both the per-user limit and default_limit are None, always allowed.
     """
-    if user.monthly_token_limit is None:
+    limit = user.monthly_token_limit if user.monthly_token_limit is not None else default_limit
+    if limit is None:
         return True, 0
 
     period_start = await _get_token_period_start(user, db)
@@ -44,7 +49,7 @@ async def check_token_limit(user: User, db: AsyncSession) -> tuple[bool, int]:
     usage = result.scalar_one_or_none()
     tokens_used = usage.tokens_used if usage else 0
 
-    if tokens_used >= user.monthly_token_limit:
+    if tokens_used >= limit:
         # Monthly allotment exhausted for this period. Fall back to the
         # purchased (one-time) extra token bank if the user has any balance.
         extra = user.extra_token_balance or 0
@@ -55,7 +60,7 @@ async def check_token_limit(user: User, db: AsyncSession) -> tuple[bool, int]:
     return True, tokens_used
 
 
-async def save_token_usage(user: User, db: AsyncSession, additional_tokens: int) -> None:
+async def save_token_usage(user: User, db: AsyncSession, additional_tokens: int, default_limit: int | None = None) -> None:
     """Record token usage for a user in the current billing period.
 
     Monthly allotment is consumed first; once the monthly bucket is full for
@@ -78,7 +83,7 @@ async def save_token_usage(user: User, db: AsyncSession, additional_tokens: int)
     tokens_used = usage.tokens_used if usage else 0
 
     # How much room is left in the monthly bucket this period?
-    limit = user.monthly_token_limit
+    limit = user.monthly_token_limit if user.monthly_token_limit is not None else default_limit
     free_room = max(0, (limit or 0) - tokens_used)
     to_monthly = min(additional_tokens, free_room)
     to_extra = additional_tokens - to_monthly

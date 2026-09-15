@@ -79,10 +79,24 @@ export default function ChatPage() {
   const [loginModalOpen, setLoginModalOpen] = useState(false);
   const [sidebarRefresh, setSidebarRefresh] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  // Free-chat availability (public endpoint): whether non-premium members may
+  // chat, and how many monthly tokens they get.
+  const [freeChat, setFreeChat] = useState<{ free_chat_enabled: boolean; free_monthly_tokens: number } | null>(null);
 
   // Default sidebar collapsed on mobile (small screens)
   useEffect(() => {
     setSidebarOpen(window.innerWidth >= 768);
+  }, []);
+
+  // Fetch free-chat config once so we know whether to show the login gate, the
+  // free-chat notice, or the upgrade wall for non-premium users.
+  useEffect(() => {
+    let alive = true;
+    fetch(`${API_HOST}/chat/free-access`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (alive && d) setFreeChat(d); })
+      .catch(() => {});
+    return () => { alive = false; };
   }, []);
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -553,7 +567,11 @@ export default function ChatPage() {
   const contextPremium =
     user?.subscription_tier === "premium" || user?.subscription_tier === "premium_yearly";
   const isPremium = livePremium ?? contextPremium;
-  const showGate = !token || !isPremium;
+  const isLoggedIn = !!token;
+  const freeChatOpen = freeChat?.free_chat_enabled ?? false;
+  // Anonymous visitors always hit the login gate. Logged-in free members get in
+  // only while the admin toggle is on (premium users always get in).
+  const showGate = !isLoggedIn || (!isPremium && !freeChatOpen);
 
   if (showGate) {
     return (
@@ -565,9 +583,9 @@ export default function ChatPage() {
           </h1>
           <div className="w-12 h-0.5 bg-earl-600 mx-auto my-4 rounded-full" />
           <p className="text-gray-300 text-sm mb-6">
-            {user
-              ? "Upgrade to Premium to chat with Earl about spreads, props, and matchups."
-              : "Sign in and upgrade to Premium to chat with Earl about spreads, props, and matchups."}
+            {!user
+              ? "Sign in to chat with Earl about stats, matchups, trends, and analysis."
+              : "Free chat is currently unavailable. Upgrade to Premium for Earl's full chat — including picks, predictions, and game writeups."}
           </p>
 
           {user ? (
