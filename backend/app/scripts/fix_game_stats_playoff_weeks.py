@@ -40,6 +40,14 @@ from app.core.config import settings
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 logger = logging.getLogger("fix_game_stats_playoff_weeks")
 
+# nflverse historically used legacy team abbreviations; the ingest maps these to
+# canonical codes, but older runs (pre-map) left rows under the legacy code, which
+# must be de-duplicated against their canonical twin (or rewritten if unpaired).
+LEGACY_ABBR = {
+    "LA": "LAR", "SL": "LAR", "STL": "LAR",
+    "SD": "LAC", "OAK": "LV", "WSH": "WAS",
+}
+
 
 # Returns every POST game_stats row together with the canonical week of its game.
 CANON_SQL = """
@@ -54,6 +62,40 @@ WHERE gs.season_type = 'POST'
   AND ((ht.abbreviation = gs.team_abbr AND at.abbreviation = gs.opponent_abbr)
     OR (at.abbreviation = gs.team_abbr AND ht.abbreviation = gs.opponent_abbr))
 """
+
+
+async def _fix_legacy_abbrs(conn: asyncpg.Connection) -> None:
+    """Drop legacy-abbr rows that duplicate a canonical twin; rewrite unpaired ones.
+
+    Never deletes a real game: a legacy row is removed only when its canonical
+    counterpart already exists. Otherwise the legacy code is rewritten in place.
+    """
+    legacy = list(LEGACY_ABBR)
+    rows = await conn.fetch(
+        "SELECT id, season, week, season_type, team_abbr, opponent_abbr "
+        "FROM nfl.game_stats WHERE team_abbr = ANY($1) OR opponent_abbr = ANY($1)",
+        legacy,
+    )
+    deleted = 0
+    rewritten = 0
+    for r in rows:
+        t = LEGACY_ABBR.get(r["team_abbr"], r["team_abbr"])
+        o = LEGACY_ABBR.get(r["opponent_abbr"], r["opponent_abbr"])
+        twin = await conn.fetchval(
+            "SELECT 1 FROM nfl.game_stats WHERE season=$1 AND week=$2 "
+            "AND season_type=$3 AND team_abbr=$4 AND opponent_abbr=$5 AND id<>$6",
+            r["season"], r["week"], r["season_type"], t, o, r["id"],
+        )
+        if twin:
+            await conn.execute("DELETE FROM nfl.game_stats WHERE id=$1", r["id"])
+            deleted += 1
+        else:
+            await conn.execute(
+                "UPDATE nfl.game_stats SET team_abbr=$2, opponent_abbr=$3 WHERE id=$1",
+                r["id"], t, o,
+            )
+            rewritten += 1
+    logger.info("legacy abbr: deleted_duplicates=%s rewritten=%s", deleted, rewritten)
 
 
 async def _summary(conn: asyncpg.Connection) -> tuple[int, int, int]:
@@ -75,6 +117,8 @@ async def main() -> None:
     try:
         before = await _summary(conn)
         logger.info("BEFORE total=%s post=%s dup_groups=%s", *before)
+
+        await _fix_legacy_abbrs(conn)
 
         rows = await conn.fetch(CANON_SQL)
         by_key: dict[tuple, list] = collections.defaultdict(list)
