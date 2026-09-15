@@ -225,6 +225,43 @@ async def ingest_nfl_pbp(
         # Prepare for bulk insert
         records = df.to_dict("records")
 
+        # Idempotent append: the table has UNIQUE (old_game_id, play_id), so
+        # re-inserting a season that is already partly loaded raises
+        # UniqueViolationError and aborts the ENTIRE step (this silently froze
+        # 2026 PBP at the first game loaded -- the scheduled job then reported
+        # success on every later run while never adding the remaining games).
+        # When not replacing, skip plays already present (and dupes within the
+        # incoming file) before inserting.
+        if not replace and records:
+            existing: set = set()
+            res = await db.execute(
+                text(
+                    "SELECT old_game_id, play_id FROM nfl.play_by_play "
+                    "WHERE season = :season"
+                ),
+                {"season": year},
+            )
+            for row in res:
+                existing.add((row[0], row[1]))
+
+            before = len(records)
+            seen: set = set()
+            filtered = []
+            for rec in records:
+                key = (
+                    _safe_str(rec.get("old_game_id")),
+                    _safe_int(rec.get("play_id")),
+                )
+                if key in existing or key in seen:
+                    continue
+                seen.add(key)
+                filtered.append(rec)
+            records = filtered
+            logger.info(
+                f"Skipped {before - len(records)} already-present/duplicate "
+                f"plays for {year}; inserting {len(records)} new"
+            )
+
         if replace:
             logger.info(f"Removing existing PBP rows for {year}...")
             await db.execute(
