@@ -495,6 +495,74 @@ TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
+            "name": "query_play_stats",
+            "description": (
+                "GENERAL-PURPOSE allowlisted PLAY-BY-PLAY stats engine. Use for SITUATIONAL "
+                "questions that raw plays answer but pre-aggregated team/player stats cannot: "
+                "3rd/4th-down conversions by down & distance, red-zone and goal-line efficiency, "
+                "explosive plays by down/quarter, pass-vs-run splits over a week range, how an "
+                "offense performs in the 4th quarter, etc. Defaults to the CURRENT season unless a "
+                "season filter is given. Provide: stats (allowed names), filters, optional "
+                "group_by + top + order. Stats: plays, yards, yards_per_play, pass_plays, "
+                "rush_plays, completions, pass_yards, rush_yards, yards_per_pass, yards_per_rush, "
+                "interceptions, fumbles_lost, turnovers, touchdowns, scoring_plays, first_downs, "
+                "third_down_attempts, third_down_conversions, third_down_pct, "
+                "fourth_down_attempts, fourth_down_conversions, fourth_down_pct, explosive_plays "
+                "(ge explosive_threshold, default 20), goal_to_go_plays. Filters: season_year (or "
+                "min_season/max_season), week (or min_week/max_week), game_type "
+                "(REG|POST|PRE), team (offense/possessing team), opponent (defense), down (1-4), "
+                "qtr (quarter 1-5), play_type (pass|run|punt|field_goal|kickoff|extra_point|no_play|"
+                "qb_kneel|qb_spike), home_or_away (home|away), red_zone (bool), goal_line (bool), "
+                "min_yardline/max_yardline (distance to opponent goal line), min_yards/max_yards. "
+                "group_by: team, opponent, week, game_type, play_type, down, qtr, home_or_away "
+                "(use group_by=['team'] + top for a leaderboard). season_year is the season START "
+                "year (e.g. 2025 = the 2025-26 season)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "stats": {"type": "array", "items": {"type": "string"}, "description": "Stat name(s) to compute, e.g. ['third_down_pct'], ['explosive_plays','plays']. See description for the full list."},
+                    "filters": {"type": "object", "description": "Optional filters dict: team(string), opponent(string), season_year(int), min_season(int), max_season(int), week(int), min_week(int), max_week(int), game_type(REG|POST|PRE), down(1-4), qtr(int), play_type(string), home_or_away(home|away), red_zone(bool), goal_line(bool), min_yardline(number), max_yardline(number), min_yards(number), max_yards(number), include_non_plays(bool, default false)"},
+                    "group_by": {"type": "array", "items": {"type": "string", "enum": ["team", "opponent", "week", "game_type", "play_type", "down", "qtr", "home_or_away"]}, "description": "Optional grouping (e.g. ['team'] for a leaderboard, ['down'] for a down-by-down breakdown)"},
+                    "explosive_threshold": {"type": "integer", "description": "Yards-gained threshold for explosive_plays (default 20)"},
+                    "top": {"type": "integer", "description": "Limit rows (leaderboard); omit for a single aggregate row"},
+                    "order": {"type": "string", "enum": ["desc", "asc"], "description": "Sort for leaderboards (default desc)"},
+                },
+                "required": ["stats"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_plays",
+            "description": (
+                "Retrieve INDIVIDUAL plays (bounded to ~100) with their play-by-play "
+                "descriptions. Use for granular research on specific situations, drives, or plays: "
+                "\"every 4th-down attempt in the 4th quarter\", \"explosive runs the Bills allowed\", "
+                "\"plays in the final two minutes\", \"Mahomes' interceptions this season\", "
+                "\"red-zone turnovers\". Same filters as query_play_stats, plus: text (substring "
+                "match on the play description), touchdown (bool), turnover (bool), "
+                "min_yards/max_yards. Defaults to the CURRENT season unless a season filter is "
+                "given. Returns each play's team, opponent, week, game_type, quarter, down, "
+                "distance, yardline_100 (distance to opponent goal), play_type, yards_gained, "
+                "touchdown/interception/fumble_lost flags, and description. order: desc (newest "
+                "first, default), asc (oldest first), yards (biggest gains first)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "filters": {"type": "object", "description": "Filters dict: team, opponent, season_year, min_season, max_season, week, min_week, max_week, game_type(REG|POST|PRE), down(1-4), qtr(int), play_type(string), home_or_away(home|away), red_zone(bool), goal_line(bool), min_yardline(number), max_yardline(number), min_yards(number), max_yards(number), touchdown(bool), turnover(bool), text(string), include_non_plays(bool)"},
+                    "top": {"type": "integer", "description": "Max plays to return (default 25, hard cap 200)"},
+                    "order": {"type": "string", "enum": ["desc", "asc", "yards"], "description": "Sort order (default desc = newest first)"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "get_game_prediction",
             "description": "Get Earl's model prediction for an NFL game: ATS pick, O/U pick, moneyline with confidence.",
             "parameters": {
@@ -2116,6 +2184,19 @@ async def _get_team_query(db: AsyncSession, args: dict) -> dict:
     return await nfl_query._run_query_team_stats(db, args)
 
 
+async def _get_play_stats_query(db: AsyncSession, args: dict) -> dict:
+    """query_play_stats dispatcher — lazily imports the pbp engine (same circular-
+    import avoidance pattern)."""
+    from . import nfl_pbp_query
+    return await nfl_pbp_query._run_query_play_stats(db, args)
+
+
+async def _search_plays(db: AsyncSession, args: dict) -> dict:
+    """search_plays dispatcher — individual play retrieval."""
+    from . import nfl_pbp_query
+    return await nfl_pbp_query._run_search_plays(db, args)
+
+
 _TOOL_HANDLERS = {
     "get_team_info": _get_team_info,
     "get_team_stats": _get_team_stats,
@@ -2133,6 +2214,8 @@ _TOOL_HANDLERS = {
     "get_player_splits": _get_player_splits,
     "query_player_stats": _get_player_query,
     "query_team_stats": _get_team_query,
+    "query_play_stats": _get_play_stats_query,
+    "search_plays": _search_plays,
     "get_game_prediction": _get_game_prediction,
     "search_articles": _search_articles,
     "get_team_schedule": _get_team_schedule,
