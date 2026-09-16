@@ -6,7 +6,7 @@ real-gsis twin (matched exact by lower(name)+position). Fixes remaining double-c
 Usage: venv/bin/python app/scripts/merge_synthetic_players.py [--apply]
 """
 import asyncio, sys, asyncpg
-DSN = "postgresql://earl:goY-4oLs6tGtZlYsX8xx0LSbFbsmX801KSr3O9wcXB2ivmBuPCL12w@localhost:5432/earl_knows_football"
+from app.db_urls import PSYCOPG2_DATABASE_URL as DSN
 
 MAP_SQL = r"""
   select s.id syn_id, t.id real_id

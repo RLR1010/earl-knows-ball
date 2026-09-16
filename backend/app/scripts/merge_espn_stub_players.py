@@ -8,7 +8,7 @@ Usage: venv/bin/python app/scripts/merge_espn_stub_players.py [--apply]
 import asyncio, sys, io
 import httpx, pandas as pd, asyncpg
 
-DSN = "postgresql://earl:goY-4oLs6tGtZlYsX8xx0LSbFbsmX801KSr3O9wcXB2ivmBuPCL12w@localhost:5432/earl_knows_football"
+from app.db_urls import PSYCOPG2_DATABASE_URL as DSN
 URL = "https://github.com/nflverse/nflverse-data/releases/download/players/players.parquet"
 
 

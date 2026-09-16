@@ -16,7 +16,8 @@ try:
 except ImportError:
     print("asyncpg not available"); sys.exit(2)
 
-DSN = os.environ.get("AUDIT_DSN", "postgresql://earl:goY-4oLs6tGtZlYsX8xx0LSbFbsmX801KSr3O9wcXB2ivmBuPCL12w@localhost:5432/earl_knows_football")
+from app.db_urls import PSYCOPG2_DATABASE_URL
+DSN = os.environ.get("AUDIT_DSN") or PSYCOPG2_DATABASE_URL
 
 PWS = "nfl.player_weekly_stats"
 FAILS, WARNS = [], []
