@@ -200,7 +200,9 @@ async def _fetch_json(client: httpx.AsyncClient, url: str, retries: int = 3,
     return {}
 
 
-async def _match_and_save_espn_id(conn, pid: int, display_name: str) -> int | None:
+async def _match_and_save_espn_id(conn, pid: int, display_name: str,
+                                  position: str | None = None,
+                                  team_id: int | None = None) -> int | None:
     """Return the db player_id for an ESPN pid, creating a minimal player if
     unknown (so no athlete is ever dropped). Saves espn_id on match."""
     with conn.cursor() as cur:
@@ -210,6 +212,34 @@ async def _match_and_save_espn_id(conn, pid: int, display_name: str) -> int | No
         row = cur.fetchone()
         if row:
             return row[0]
+        # 1.5) AUTHORITATIVE: espn_id -> gsis_id crosswalk (nflverse release).
+        #      If exactly one canonical player owns that gsis, link exactly.
+        #      This avoids all name-based guessing (homonyms, suffixes, accents).
+        gsis = _espn_to_gsis(pid)
+        if gsis:
+            cur.execute(
+                "SELECT id FROM nfl.players WHERE nflverse_id = %s", (gsis,))
+            grows = cur.fetchall()
+            if len(grows) == 1:
+                cur.execute(
+                    "UPDATE nfl.players SET espn_id = %s WHERE id = %s",
+                    (pid, grows[0][0]))
+                conn.commit()
+                return grows[0][0]
+            if len(grows) == 0:
+                # authoritative gsis known but no canonical row yet -> create it
+                # (self-healing; prevents homonym mislink e.g. NYJ RB Michael Carter)
+                cur.execute(
+                    "INSERT INTO nfl.players (name, position, nflverse_id, espn_id, team_id) "
+                    "VALUES (%s, %s, %s, %s, NULL) ON CONFLICT (espn_id) DO NOTHING RETURNING id",
+                    (display_name or f"ESPN-{pid}", (position or "UNK"), gsis, pid))
+                nrow = cur.fetchone()
+                conn.commit()
+                if nrow:
+                    return nrow[0]
+                cur.execute("SELECT id FROM nfl.players WHERE espn_id = %s", (pid,))
+                r2 = cur.fetchone()
+                return r2[0] if r2 else None
         # 2) match by normalized name (best-effort) — CONSERVATIVE: only when the
         #    name matches EXACTLY ONE espn_id-less (canonical) player. If two
         #    canonical players share the name, do NOT guess (that's the risk Rich
@@ -227,14 +257,29 @@ async def _match_and_save_espn_id(conn, pid: int, display_name: str) -> int | No
                 conn.commit()
                 return rows[0][0]
             if len(rows) > 1:
-                # ambiguous duplicate-name -> do NOT arbitrarily assign; fall through
-                # to placeholder so no wrong espn_id is attached to a same-named player.
+                # ambiguous duplicate-name: prefer the candidate that has actually played
+                # for this game's team, when exactly one of them did. Otherwise fall
+                # through and create a correctly-named row (never guess).
+                if team_id is not None:
+                    cur.execute(
+                        "SELECT DISTINCT pl.id FROM nfl.players pl "
+                        "JOIN nfl.player_weekly_stats p ON p.player_id = pl.id "
+                        "WHERE pl.espn_id IS NULL AND pl.id = ANY(%s) AND p.team_id = %s",
+                        ([r[0] for r in rows], team_id))
+                    trows = cur.fetchall()
+                    if len(trows) == 1:
+                        cur.execute(
+                            "UPDATE nfl.players SET espn_id = %s WHERE id = %s",
+                            (pid, trows[0][0]))
+                        conn.commit()
+                        return trows[0][0]
+                # still ambiguous -> fall through to creating a correctly-named row
                 pass
         # 3) unknown -> create minimal player row (never drop)
         cur.execute(
             "INSERT INTO nfl.players (name, position, espn_id, team_id) "
-            "VALUES (%s, 'UNK', %s, NULL) ON CONFLICT (espn_id) DO NOTHING RETURNING id",
-            (display_name or f"ESPN-{pid}", pid))
+            "VALUES (%s, %s, %s, NULL) ON CONFLICT (espn_id) DO NOTHING RETURNING id",
+            (display_name or f"ESPN-{pid}", (position or "UNK"), pid))
         row = cur.fetchone()
         conn.commit()
         if row:
@@ -243,6 +288,32 @@ async def _match_and_save_espn_id(conn, pid: int, display_name: str) -> int | No
         cur.execute("SELECT id FROM nfl.players WHERE espn_id = %s", (pid,))
         row = cur.fetchone()
         return row[0] if row else None
+
+
+_ESPN_GSIS: dict | None = None
+
+
+def _espn_to_gsis(pid: int) -> str | None:
+    """Authoritative ESPN athlete id -> nflverse gsis_id, loaded once per process
+    from the nflverse players release. Avoids ALL name-based guessing."""
+    global _ESPN_GSIS
+    if _ESPN_GSIS is None:
+        try:
+            import io as _io
+            import pandas as _pd
+            url = ("https://github.com/nflverse/nflverse-data/releases/download/"
+                   "players/players.parquet")
+            with httpx.Client(timeout=180.0, follow_redirects=True) as cl:
+                r = cl.get(url)
+                r.raise_for_status()
+            df = _pd.read_parquet(_io.BytesIO(r.content))[["espn_id", "gsis_id"]]
+            df = df[df["espn_id"].notna() & df["gsis_id"].notna()]
+            _ESPN_GSIS = {int(float(e)): str(g) for e, g in zip(df["espn_id"], df["gsis_id"])}
+            logger.info("loaded espn->gsis crosswalk: %d entries", len(_ESPN_GSIS))
+        except Exception as e:  # never block ingest on crosswalk availability
+            logger.warning("espn->gsis crosswalk unavailable (%s); name match only", e)
+            _ESPN_GSIS = {}
+    return _ESPN_GSIS.get(int(pid)) if _ESPN_GSIS else None
 
 
 async def _fetch_athlete(client: httpx.AsyncClient, ref: str) -> dict:
@@ -345,7 +416,7 @@ async def _process_game(client: httpx.AsyncClient, conn, gid: int, gap_fill: boo
             return 0
 
     # Collect athletes: pid -> (stats_ref, team_id, opponent_id)
-    athlete_refs: dict[int, tuple[str, int, int]] = {}
+    athlete_refs: dict[int, tuple] = {}
     for it in comp_items:
         cid = it.get("id")
         t_id = espid_to_dbid[cid]
@@ -383,18 +454,68 @@ async def _process_game(client: httpx.AsyncClient, conn, gid: int, gap_fill: boo
             # set stats_ref=None and write a plain zero-row WITHOUT an HTTP fetch
             # (a placeholder URL would 404 and needlessly retry).
             disp = entry.get("displayName") or entry.get("athleteDisplayName")
+            epos = (entry.get("position") or {}).get("abbreviation") \
+                if isinstance(entry.get("position"), dict) else None
+            aref = (entry.get("athlete") or {}).get("$ref")
             if pid not in athlete_refs:
-                athlete_refs[pid] = (stats_ref, t_id, o_id, disp)
+                athlete_refs[pid] = (stats_ref, t_id, o_id, disp, epos, aref)
 
-        # category statistics — backup to roster (usually a subset)
+        # category statistics — backup to roster.  ESPN's per-game roster is NOT the full
+        # participation list: it can omit players who actually played (e.g. a starting QB),
+        # while the category blocks (passing/rushing/receiving/...) do list them.  Our copy
+        # of this fallback was dead code until 2026-09-15: the payload nests the categories
+        # under `splits`, and each athlete entry is {"athlete": {"$ref": ...},
+        # "statistics": {"$ref": ...}} — not a bare `$ref`.  Reading cats["categories"] /
+        # a["$ref"] silently matched nothing, so ~244 games were left with an empty passing
+        # block (the starting QB's whole stat line was never written).
         stats_url = f"{CORE_BASE}/events/{gid}/competitions/{gid}/competitors/{cid}/statistics"
         cats = await _fetch_json(client, stats_url)
-        for cat in cats.get("categories", []) or []:
+        cat_list = ((cats.get("splits") or {}).get("categories")
+                    or cats.get("categories") or [])
+        for cat in cat_list:
             for a in cat.get("athletes", []) or []:
-                ref = a.get("$ref") if isinstance(a, dict) else None
-                pid = ref.split("/athletes/")[-1].split("/")[0] if ref else None
-                if pid and pid.isdigit() and int(pid) not in athlete_refs:
-                    athlete_refs[int(pid)] = (ref, t_id, o_id, None)
+                if not isinstance(a, dict):
+                    continue
+                aref = ((a.get("athlete") or {}).get("$ref")) or a.get("$ref")
+                sref2 = (a.get("statistics") or {}).get("$ref") \
+                    if isinstance(a.get("statistics"), dict) else a.get("statistics")
+                pid = _athlete_pid(aref) if aref else a.get("playerId")
+                if pid is None:
+                    continue
+                pid = int(pid)
+                if pid not in athlete_refs:
+                    # name/position resolved below from the athlete doc when needed
+                    athlete_refs[pid] = (sref2, t_id, o_id, None, None, aref)
+
+    # ESPN's stat blocks carry only ids, and the roster often omits real participants.
+    # Resolve name + position for athletes we cannot already map by espn_id, so the row
+    # lands on a real player (and a real position) instead of a nameless "ESPN-<id>"/UNK
+    # placeholder — otherwise a re-ingest can move a QB's passing line onto a player the
+    # box score can never find again.
+    with conn.cursor() as cur:
+        cur.execute("SELECT espn_id FROM nfl.players WHERE espn_id IS NOT NULL")
+        _mapped = {r[0] for r in cur.fetchall() if r[0] is not None}
+    _need = [(pid, t[5]) for pid, t in athlete_refs.items()
+             if t[3] is None and pid not in _mapped and t[5]]
+    if _need:
+        _sem2 = asyncio.Semaphore(16)
+
+        async def _who(pid, aref):
+            async with _sem2:
+                try:
+                    d = await _fetch_json(client, aref)
+                except Exception:
+                    return pid, None, None
+                nm = d.get("displayName") or d.get("fullName")
+                p = (d.get("position") or {}).get("abbreviation") \
+                    if isinstance(d.get("position"), dict) else None
+                return pid, nm, p
+
+        for _i in range(0, len(_need), 64):
+            _res = await asyncio.gather(*(_who(p, a) for p, a in _need[_i:_i + 64]))
+            for _pid, _nm, _p in _res:
+                _t = athlete_refs[_pid]
+                athlete_refs[_pid] = (_t[0], _t[1], _t[2], _nm or _t[3], _p or _t[4], _t[5])
 
     if not athlete_refs:
         logger.warning("No athletes resolved for game %s", gid)
@@ -435,7 +556,7 @@ async def _process_game(client: httpx.AsyncClient, conn, gid: int, gap_fill: boo
 
     # ── serial DB write ──
     inserted = 0
-    for pid, (ref, t_id, o_id, disp) in athlete_refs.items():
+    for pid, (ref, t_id, o_id, disp, epos, _aref) in athlete_refs.items():
         vals = merged_map[pid]
 
         with conn.cursor() as cur:
@@ -445,7 +566,7 @@ async def _process_game(client: httpx.AsyncClient, conn, gid: int, gap_fill: boo
         if prow:
             db_pid, name, pos = prow
         else:
-            db_pid = await _match_and_save_espn_id(conn, pid, disp or ("ESPN-" + str(pid)))
+            db_pid = await _match_and_save_espn_id(conn, pid, disp or ("ESPN-" + str(pid)), epos, t_id)
             name, pos = None, None
 
         if db_pid is None:
@@ -522,6 +643,8 @@ def main() -> None:
     ap.add_argument("--game-type", default="REG", choices=["REG", "POST", "PRE"])
     ap.add_argument("--gap-fill", action="store_true",
                     help="Do not DELETE existing rows before update (safe re-run)")
+    ap.add_argument("--audit", action="store_true",
+                    help="Run the completeness/accuracy audit after ingest; exit non-zero on failure")
     args = ap.parse_args()
 
     with psycopg2.connect(PSYCOPG2_DATABASE_URL) as c:
@@ -531,6 +654,16 @@ def main() -> None:
     seasons = [args.season] if args.season else list(range(2016, max_year + 1))
     print(f"Ingesting NFL player stats: seasons={seasons} game_type={args.game_type} gap_fill={args.gap_fill}")
     asyncio.run(_run(seasons, args.game_type, args.gap_fill))
+
+    if args.audit:
+        import os, subprocess
+        script = os.path.join(os.path.dirname(os.path.dirname(__file__)),
+                              "scripts", "audit_nfl_player_weekly_stats.py")
+        print("\n==== post-ingest audit gate ====")
+        rc = subprocess.call([sys.executable, script])
+        if rc != 0:
+            raise SystemExit(f"AUDIT GATE FAILED (exit {rc})")
+        print("AUDIT GATE PASSED")
 
 
 if __name__ == "__main__":
