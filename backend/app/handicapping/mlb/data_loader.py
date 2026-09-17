@@ -1319,7 +1319,10 @@ def _load_park_history() -> pd.DataFrame:
         return _PARK_HISTORY_CACHE
 
     from app.db_urls import PSYCOPG2_DATABASE_URL as _FALLBACK_URL
-    db_url = os.getenv("DATABASE_URL", _FALLBACK_URL)
+    # NB: must be the SYNC/psycopg2 URL. `DATABASE_URL` env is the `+asyncpg` form (from db_urls),
+    # and create_engine() with that yields an AsyncEngine -> pd.read_sql fails. Use the canonical
+    # sync URL directly (matches app/db_urls.PSYCOPG2_DATABASE_URL; the async form is never right here).
+    db_url = _FALLBACK_URL
 
     engine = create_engine(db_url)
     q = """
