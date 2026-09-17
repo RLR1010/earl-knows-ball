@@ -579,7 +579,7 @@ def insert_batch(engine: Engine, df: pd.DataFrame, batch_size: int = 500):
             ({', '.join(cols)})
         VALUES
             ({', '.join([f':{c}' for c in cols])})
-        ON CONFLICT (season, week, team_abbr, opponent_abbr)
+        ON CONFLICT (season, season_type, week, team_abbr, opponent_abbr)
         DO UPDATE SET
             {update_set},
             data_source = 'nflverse_stats_team',

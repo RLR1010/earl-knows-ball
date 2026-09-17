@@ -579,6 +579,7 @@ class NFLDataLoader:
         include_upcoming: bool = False,
         game_ids: Optional[List[int]] = None,
         game_type: Optional[str] = None,
+        game_types: Optional[List[str]] = None,
         include_preseason: bool = False,
     ) -> str:
         """Construct the SQL query with optional filters.
@@ -612,10 +613,14 @@ class NFLDataLoader:
             ids_str = ", ".join(str(i) for i in game_ids)
             conditions.append(f"g.id IN ({ids_str})")
 
-        if game_type is None:
-            game_type = self.game_type
-        if game_type:
-            conditions.append(f"g.game_type = '{game_type}'")
+        if game_types:
+            # Explicit type set — mirrors the NBA loader's ``game_types`` and is the
+            # single place to state training-vs-inference intent, so it cannot drift:
+            # training passes ('REG',), inference passes ('REG', 'POST').
+            allowed = ", ".join(f"'{g}'" for g in game_types)
+            conditions.append(f"g.game_type IN ({allowed})")
+        elif game_type or self.game_type:
+            conditions.append(f"g.game_type = '{game_type or self.game_type}'")
         elif include_preseason:
             # Live prediction of upcoming games explicitly opts in to preseason
             # (game_type='PRE'). Training/backtest paths NEVER set this flag, so
@@ -656,6 +661,7 @@ class NFLDataLoader:
         include_upcoming: bool = False,
         game_ids: Optional[List[int]] = None,
         game_type: Optional[str] = None,
+        game_types: Optional[List[str]] = None,
         include_preseason: bool = False,
     ) -> pd.DataFrame:
         """Execute the game query and return raw DataFrame."""
@@ -666,6 +672,7 @@ class NFLDataLoader:
             include_upcoming=include_upcoming,
             game_ids=game_ids,
             game_type=game_type,
+            game_types=game_types,
             include_preseason=include_preseason,
         )
         t0 = time.time()
@@ -682,6 +689,7 @@ class NFLDataLoader:
         include_upcoming: bool = False,
         game_ids: Optional[List[int]] = None,
         game_type: Optional[str] = None,
+        game_types: Optional[List[str]] = None,
         include_preseason: bool = False,
     ) -> pd.DataFrame:
         """Load raw NFL game data from the database.
@@ -713,6 +721,7 @@ class NFLDataLoader:
             include_upcoming=include_upcoming,
             game_ids=game_ids,
             game_type=game_type,
+            game_types=game_types,
             include_preseason=include_preseason,
         )
 
@@ -737,6 +746,7 @@ class NFLDataLoader:
         feature_names: Optional[List[str]] = None,
         game_ids: Optional[List[int]] = None,
         game_type: Optional[str] = None,
+        game_types: Optional[List[str]] = None,
         include_preseason: bool = False,
         build_features_fn=None,
         **build_kwargs,
@@ -758,6 +768,11 @@ class NFLDataLoader:
             (ATS or OU filtered by constructor flags).
         game_ids :
             Only these specific game IDs.
+        game_types : list of str, optional
+            Explicit set of ``game_type`` values for the base game filter — the
+            single knob for training-vs-inference intent (e.g. ``("REG",)`` for
+            training, ``("REG", "POST")`` for inference). Mirrors the NBA
+            loader's ``game_types``.
         build_features_fn :
             Custom feature engineering callable.
             Defaults to the module-level ``build_features()``.
@@ -772,6 +787,7 @@ class NFLDataLoader:
             include_upcoming=include_upcoming,
             game_ids=game_ids,
             game_type=game_type,
+            game_types=game_types,
             include_preseason=include_preseason,
         )
 
@@ -920,16 +936,41 @@ class NFLDataLoader:
         qb_stats = None
         try:
             QB_SQL = """
-                WITH actual_starters AS (
-                    -- Actual game starters from player participation data
+                WITH qb_season_attempts AS (
+                    -- Season-to-date pass attempts per (player, season, team).  Used ONLY as a
+                    -- tiebreak when the game's own attempt data is missing/anonymous.
+                    SELECT pws2.player_id,
+                           pws2.season_id,
+                           pws2.team_id,
+                           SUM(pws2.pass_attempts) AS season_attempts
+                    FROM nfl.player_weekly_stats pws2
+                    WHERE pws2.game_type IN ('REG', 'POST')  -- preseason must NEVER inflate the tiebreak
+                    GROUP BY 1, 2, 3
+                ),
+                actual_starters AS (
+                    -- Actual game starters from player participation data.
+                    -- Deterministic pick, in order: (1) most pass attempts in that game,
+                    -- (2) else the team's primary passer that season, (3) else lowest player_id.
+                    -- NEVER leave this to Postgres' arbitrary tie order: doing so silently
+                    -- changed the starting QB (and every *_qb_* feature) between identical
+                    -- runs -- diagnosed 2026-09-15.
                     SELECT DISTINCT ON (pws.game_id, pws.team_id)
                         pws.game_id,
                         pws.team_id,
                         pws.player_id
                     FROM nfl.player_weekly_stats pws
                     JOIN nfl.players pl ON pl.id = pws.player_id
+                    LEFT JOIN qb_season_attempts qsa
+                           ON qsa.player_id = pws.player_id
+                          AND qsa.season_id = pws.season_id
+                          AND qsa.team_id   = pws.team_id
                     WHERE pl.position = 'QB'
-                    ORDER BY pws.game_id, pws.team_id, pws.pass_attempts DESC NULLS LAST
+                      AND pws.game_type IN ('REG', 'POST')  -- regular + post only (exclude preseason)
+                    ORDER BY pws.game_id,
+                             pws.team_id,
+                             pws.pass_attempts DESC NULLS LAST,
+                             qsa.season_attempts DESC NULLS LAST,
+                             pws.player_id
                 ),
                 projected_starter AS (
                     -- Per (game, team): actual starter if available,
@@ -941,10 +982,12 @@ class NFLDataLoader:
                     FROM nfl.games g
                     LEFT JOIN actual_starters as_
                         ON as_.game_id = g.id AND as_.team_id = g.home_team_id
-                    LEFT JOIN nfl.depth_charts dc
-                        ON dc.team_id = g.home_team_id
-                        AND dc.position = 'QB'
-                        AND dc.slot = 1
+                    LEFT JOIN (
+                        SELECT DISTINCT ON (team_id) team_id, player_id
+                        FROM nfl.depth_charts
+                        WHERE position = 'QB' AND slot = 1
+                        ORDER BY team_id, scraped_at DESC NULLS LAST, id DESC
+                    ) dc ON dc.team_id = g.home_team_id
                     UNION ALL
                     SELECT
                         g.id AS game_id,
@@ -953,10 +996,12 @@ class NFLDataLoader:
                     FROM nfl.games g
                     LEFT JOIN actual_starters as_
                         ON as_.game_id = g.id AND as_.team_id = g.away_team_id
-                    LEFT JOIN nfl.depth_charts dc
-                        ON dc.team_id = g.away_team_id
-                        AND dc.position = 'QB'
-                        AND dc.slot = 1
+                    LEFT JOIN (
+                        SELECT DISTINCT ON (team_id) team_id, player_id
+                        FROM nfl.depth_charts
+                        WHERE position = 'QB' AND slot = 1
+                        ORDER BY team_id, scraped_at DESC NULLS LAST, id DESC
+                    ) dc ON dc.team_id = g.away_team_id
                 )
                 SELECT
                     g.id AS game_id,

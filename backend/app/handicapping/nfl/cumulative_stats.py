@@ -313,10 +313,10 @@ WITH team_games AS (
     JOIN nfl.teams at ON at.id = g.away_team_id
     JOIN nfl.game_stats gs
         ON gs.season = s.year AND gs.week = g.week
-        AND gs.team_abbr = at.abbreviation
+        AND gs.team_abbr = ht.abbreviation
     JOIN nfl.game_stats opp
         ON opp.season = s.year AND opp.week = g.week
-        AND opp.team_abbr = ht.abbreviation
+        AND opp.team_abbr = at.abbreviation
     WHERE s.year = :season AND g.week >= 1 AND g.game_type = :game_type
 )
 SELECT * FROM team_games

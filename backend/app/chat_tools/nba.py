@@ -23,6 +23,17 @@ from app.models.nba import (
 logger = logging.getLogger("earl.chat_tools.nba")
 
 
+# nba.games.date is a UTC timestamptz; display game dates in US Central (matches the
+# _CHI convention used elsewhere in this module) so evening games aren't labeled with
+# the next day's UTC date.
+def _local_date(v):
+    if v is None:
+        return None
+    if isinstance(v, datetime):
+        return v.astimezone(_CHI).date().isoformat()
+    return v.isoformat()
+
+
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
 #: User-facing timezone for "today"/"tonight" questions (site visitors are US/Central).
@@ -670,7 +681,7 @@ async def _get_game_info(db: AsyncSession, args: dict) -> dict:
 
     info = {
         "game_id": row.id,
-        "date": str(row.date) if row.date else None,
+        "date": _local_date(row.date),
         "home_team": row.home_name,
         "away_team": row.away_name,
         "home_score": row.home_score,
@@ -727,7 +738,7 @@ async def _get_head_to_head(db: AsyncSession, args: dict) -> dict:
         winner_t1 = p1 is not None and p2 is not None and p1 > p2
         winner = row.home_name if winner_t1 else row.away_name
         meetings.append({
-            "date": str(row.date) if row.date else None,
+            "date": _local_date(row.date),
             "home": row.home_name,
             "away": row.away_name,
             "score": f"{row.home_score}-{row.away_score}",
@@ -925,7 +936,7 @@ async def _get_player_game_logs(db: AsyncSession, args: dict) -> dict:
     games = []
     for row in rows:
         games.append({
-            "date": str(row.date) if row.date else None,
+            "date": _local_date(row.date),
             "opponent": row.opponent_name,
             "venue": row.venue,
             "minutes": row.minutes,
@@ -1517,7 +1528,7 @@ async def _get_team_game_log(db: AsyncSession, args: dict) -> dict:
         opp = row.away_name if row.home_team_id == tid else row.home_name
         games_list.append({
             "game_id": row.id,
-            "date": str(row.date),
+            "date": _local_date(row.date),
             "home": row.home_team_id == tid,
             "opponent": opp,
             "result": result_for(row),
@@ -1573,7 +1584,7 @@ async def _get_team_schedule(db: AsyncSession, args: dict) -> dict:
             "game_id": row.id,
             "opponent": opponent,
             "venue": venue,
-            "date": str(row.date) if row.date else None,
+            "date": _local_date(row.date),
             "result": result_str,
             "score": f"{row.home_score}-{row.away_score}" if row.home_score is not None else None,
             "status": row.status,
@@ -1916,7 +1927,7 @@ async def _get_game_writeup(db: AsyncSession, args: dict) -> dict:
         "game_id": gid,
         "home_team": row.home_team,
         "away_team": row.away_team,
-        "date": str(row.date) if row.date else None,
+        "date": _local_date(row.date),
         "title": row.title,
         "status": row.status,
         "published_at": str(row.published_at) if row.published_at else None,

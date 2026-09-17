@@ -1185,6 +1185,7 @@ async def _compose_research(brief: str, sport: str | None, db, level: str = "liv
         return "", None, ""
     model = settings.deepseek_model
     parts: list[str] = []
+    tool_facts: list[str] = []
 
     # Articles-only always available (RAG needs no sport engine)
     if level in ("articles", "live", "deep"):
@@ -1211,13 +1212,34 @@ async def _compose_research(brief: str, sport: str | None, db, level: str = "liv
                 )
                 if answer and str(answer).strip():
                     parts.append("Live schedule/lines/stats research:\n" + str(answer).strip())
+                try:
+                    from app.chat_tools.base import ToolChatEngine
+                    raw = ToolChatEngine._extract_tool_results(_full or [])
+                    if raw and raw.strip() and raw != "(no tool results)":
+                        tool_facts.append(raw.strip())
+                except Exception:
+                    logger.exception("compose research: tool-fact extraction failed")
             except Exception:
                 logger.exception("compose research: live pass failed")
 
     joined = "\n\n".join(parts)
+    # Fact-check grounding: the digest alone is lossy (an LLM summary), so a true claim the digest
+    # omitted gets dropped as 'unsupported' while a wrong number in the digest passes. Append the
+    # verbatim tool results (authoritative) with an explicit note so stored per-start rest values are
+    # never read as current rest (the 2026-09-17 '22 days rest' bug).
+    fact_block = joined
+    if tool_facts:
+        fact_block = (
+            joined
+            + "\n\n=== AUTHORITATIVE LIVE TOOL FACTS (verbatim; treat as ground truth) ===\n"
+            + "NOTE (pitcher usage): 'days_between_last_two_starts' is the gap between his last two "
+            + "STARTS and is NOT current rest. For any rest/last-outing claim use 'days_since_last_start', "
+            + "'days_since_last_appearance', 'last_start_date' and 'recent_appearances' (start vs relief).\n\n"
+            + "\n\n".join(tool_facts)
+        )
     # NOTE: return the FULL grounding (articles + live research) for the fact-check pass; the drafting
     # step still gets the truncated <=3200 view. Verifier must see article results too.
-    return joined[:3200], (model if (joined or level != "none") else None), joined
+    return joined[:3200], (model if (joined or level != "none") else None), fact_block
 
 
 async def _llm_three_tweet_options(instruction: str, style: str, sport: Optional[str],

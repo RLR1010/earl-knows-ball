@@ -4,6 +4,7 @@ Pulls depth charts + free agent transactions for all 32 teams.
 """
 import logging
 import re
+import unicodedata
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -25,6 +26,7 @@ POSITION_MAP = {
     "LDE": "DE", "RDE": "DE",
     "LDT": "DT", "RDT": "DT", "NT": "DT",
     "WLB": "LB", "MLB": "LB", "SLB": "LB",
+    "LOLB": "LB", "ROLB": "LB", "LILB": "LB", "RILB": "LB", "RUSH": "LB",
     "LCB": "CB", "RCB": "CB", "NB": "CB",
     "SS": "S", "FS": "S",
     "PT": "P", "PK": "K", "LS": "LS", "H": "P", "KO": "K",
@@ -52,6 +54,71 @@ def _parse_acquisition(code: str) -> tuple[str, str]:
     if code == "UDFA":
         return ("udfa", code)
     return ("", code)
+
+
+_SUFFIX_TOKENS = {"jr", "sr", "ii", "iii", "iv", "v", "vi"}
+
+
+def _norm_name(value: str) -> str:
+    """Lowercase, strip accents + punctuation so names match across sources."""
+    if not value:
+        return ""
+    value = unicodedata.normalize("NFKD", value)
+    value = "".join(ch for ch in value if not unicodedata.combining(ch))
+    value = value.lower()
+    value = re.sub(r"[^a-z0-9]+", " ", value)
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def _split_last_first(raw: str) -> tuple[str, str]:
+    """Ourlads names are 'Last, First' (e.g. 'Tracy Jr., Tyrone')."""
+    raw = (raw or "").strip()
+    if "," in raw:
+        last, first = raw.split(",", 1)
+        return first.strip(), last.strip()
+    parts = raw.split()
+    if len(parts) < 2:
+        return "", ""
+    return parts[0], " ".join(parts[1:])
+
+
+def _name_key(raw: str) -> tuple[str, str]:
+    """Normalized (first-token, surname-token); suffixes like Jr./II dropped."""
+    first, last = _split_last_first(raw)
+    last_tokens = [t for t in _norm_name(last).split() if t and t not in _SUFFIX_TOKENS]
+    first_tokens = [t for t in _norm_name(first).split() if t]
+    return (first_tokens[0] if first_tokens else ""), (last_tokens[-1] if last_tokens else "")
+
+
+async def _player_name_index(db: AsyncSession):
+    """Build normalized lookup index of stored players (once per team-scrape)."""
+    rows = (await db.execute(select(Player.id, Player.name))).all()
+    by_full: dict[tuple[str, str], int] = {}
+    by_initial: dict[tuple[str, str], int] = {}
+    by_surname: dict[str, list[int]] = {}
+    for pid, pname in rows:
+        toks = _norm_name(pname).split()
+        if len(toks) < 2:
+            continue
+        first_tok, last_tok = toks[0], toks[-1]
+        by_full.setdefault((first_tok, last_tok), pid)
+        by_initial.setdefault((first_tok[0], last_tok), pid)
+        by_surname.setdefault(last_tok, []).append(pid)
+    return by_full, by_initial, by_surname
+
+
+def _match_player_id(by_full, by_initial, by_surname, raw_name: str):
+    first_tok, last_tok = _name_key(raw_name)
+    if not last_tok:
+        return None
+    if (first_tok, last_tok) in by_full:
+        return by_full[(first_tok, last_tok)]
+    if first_tok and (first_tok[0], last_tok) in by_initial:
+        return by_initial[(first_tok[0], last_tok)]
+    cands = by_surname.get(last_tok)
+    if cands and len(cands) == 1:
+        return cands[0]
+    return None
 
 
 async def _parse_depth_table(table_html: str, team_id: int) -> list[dict]:
@@ -155,6 +222,41 @@ async def _parse_depth_table(table_html: str, team_id: int) -> list[dict]:
     return entries
 
 
+INCLUDE_DEPTH_SECTIONS = ("offense", "defense", "special teams")
+EXCLUDE_DEPTH_SECTIONS = ("practice", "reserve", "suffix", "coaching", "inactive")
+
+
+def _section_key(title: str) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", title)).strip().lower()
+
+
+def _depth_chart_tables(html: str) -> list[str]:
+    """Return only the REAL depth-chart tables (Offense/Defense/Special Teams).
+
+    The Ourlads team page also contains "Practice Squad", "Reserves" and "Suffix
+    Key" tables. Those are NOT starters; parsing the Practice Squad table was
+    writing a practice-squad QB at slot 1 (shown as the starting QB).
+    """
+    tables: list[str] = []
+    section = ""
+    for m in re.finditer(
+        r"<h[1-5][^>]*>(.*?)</h[1-5]>|<table[^>]*>(.*?)</table>", html, re.DOTALL | re.IGNORECASE
+    ):
+        if m.group(1) is not None:
+            section = _section_key(m.group(1))
+            continue
+        if any(k in section for k in EXCLUDE_DEPTH_SECTIONS):
+            continue
+        if not any(k in section for k in INCLUDE_DEPTH_SECTIONS):
+            continue
+        tables.append(m.group(2))
+    # Safety net: if heading detection ever fails, the real sections are the first
+    # three tables in document order (Offense, Defense, Special Teams).
+    if not tables:
+        tables = re.findall(r"<table[^>]*>(.*?)</table>", html, re.DOTALL)[:3]
+    return tables
+
+
 async def scrape_team_depth_chart(db: AsyncSession, team_abbr: str) -> dict:
     """Scrape depth chart for a single team from Ourlads."""
     # Resolve team
@@ -179,12 +281,21 @@ async def scrape_team_depth_chart(db: AsyncSession, team_abbr: str) -> dict:
         logger.error(f"Failed to fetch {url}: {e}")
         return {"error": str(e)}
 
-    # Find all tables
-    tables = re.findall(r"<table[^>]*>(.*?)</table>", html, re.DOTALL)
+    # Only the real depth-chart sections. NOTE: several Ourlads columns collapse to the
+    # same canonical position (LWR/RWR/SWR -> WR, LT/RT -> OT, LG/RG -> OG, LDE/RDE -> DE,
+    # LCB/RCB/NB -> CB, SS/FS -> S), and each column restarts its own slot numbering — so
+    # MULTIPLE rows per (position, slot) are expected (e.g. three starting WRs). Only drop
+    # exact duplicates: same position + slot + player (e.g. the punter also listed as the
+    # holder, or the kicker also listed as the kickoff specialist).
     all_entries = []
-    for table in tables:
-        entries = await _parse_depth_table(table, team.id)
-        all_entries.extend(entries)
+    seen = set()  # (position, slot, player_name)
+    for table in _depth_chart_tables(html):
+        for entry in await _parse_depth_table(table, team.id):
+            key = (entry["position"], entry["slot"], entry["player_name"])
+            if key in seen:
+                continue
+            seen.add(key)
+            all_entries.append(entry)
 
     # Delete old depth chart entries for this team
     await db.execute(
@@ -192,28 +303,17 @@ async def scrape_team_depth_chart(db: AsyncSession, team_abbr: str) -> dict:
     )
 
     # Insert new entries
+    index_full, index_initial, index_surname = await _player_name_index(db)
     for entry in all_entries:
-        # Try to match player by name
-        player = None
-        # Ourlads uses "Last, First" format — normalize to "First Last"
-        if ", " in entry["player_name"]:
-            parts = entry["player_name"].split(", ", 1)
-            search_name = f"{parts[1]} {parts[0]}"
-        else:
-            search_name = entry["player_name"]
-
-        # Look up player in our DB (first match only; names can collide)
-        pr = await db.execute(
-            select(Player).where(Player.name.ilike(f"%{search_name.split()[0]}%"),
-                                  Player.name.ilike(f"%{search_name.split()[-1]}%"))
+        player_id = _match_player_id(
+            index_full, index_initial, index_surname, entry["player_name"]
         )
-        player = pr.scalars().first()
 
         dc = DepthChart(
             team_id=entry["team_id"],
             position=entry["position"],
             slot=entry["slot"],
-            player_id=player.id if player else None,
+            player_id=player_id,
             player_name=entry["player_name"],
             jersey_number=entry["jersey_number"],
             acquisition_info=entry["acquisition_info"],

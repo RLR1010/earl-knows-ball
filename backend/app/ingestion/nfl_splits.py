@@ -238,6 +238,7 @@ async def build_player_splits(db: AsyncSession, season_ids: Optional[Sequence[in
         FROM nfl.player_weekly_stats pws
         JOIN nfl.games g ON g.id = pws.game_id
         WHERE pws.season_id IN ({sq})
+          AND g.game_type IN ('REG','POST')
     """), params)).mappings().all()
 
     logger.info("nfl splits: loaded %d game-line rows", len(rows))

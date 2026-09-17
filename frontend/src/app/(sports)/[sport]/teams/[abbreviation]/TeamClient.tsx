@@ -605,7 +605,7 @@ export default function TeamDetailPage() {
   const teamColor = getTeamColor(abbr);
 
   // Depth chart
-  const positionOrder = ["QB","RB","WR","TE","OT","OG","C","DE","DT","NT","LB","CB","S","K","P","LS"];
+  const positionOrder = ["QB","RB","FB","WR","TE","OT","OG","C","DE","DT","NT","LB","CB","S","K","P","LS"];
   const groupedDepth: Record<string, DepthChartEntry[]> = {};
   for (const entry of depthChart) {
     if (!groupedDepth[entry.position]) groupedDepth[entry.position] = [];
@@ -710,9 +710,11 @@ export default function TeamDetailPage() {
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {positionOrder.filter(pos => groupedDepth[pos]).map(pos => {
+              {[...positionOrder, ...Object.keys(groupedDepth).filter(p => !positionOrder.includes(p))]
+                .filter(pos => groupedDepth[pos])
+                .map(pos => {
                 const entries = groupedDepth[pos];
-                const isOffense = ["QB","RB","WR","TE","OT","OG","C"].includes(pos);
+                const isOffense = ["QB","RB","FB","WR","TE","OT","OG","C"].includes(pos);
                 const isDefense = ["DE","DT","NT","LB","CB","S"].includes(pos);
                 let sectionColor = "border-white/10";
                 let sectionLabel = "text-gray-400";

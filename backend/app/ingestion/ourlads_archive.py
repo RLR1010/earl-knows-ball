@@ -14,6 +14,8 @@ from datetime import datetime, timezone, date
 import httpx
 from sqlalchemy import select, text
 
+from app.ingestion.depth_charts import _match_player_id, _player_name_index
+
 logging.basicConfig(level=logging.INFO, format='%(message)s')
 logger = logging.getLogger('earl.ourlads_archive')
 
@@ -23,14 +25,53 @@ BASE = "https://www.ourlads.com/nfldepthcharts/archive"
 OURLADS_ABBR = {"ARI": "ARZ"}
 
 POSITION_MAP = {
-    "LWR": "WR", "RWR": "WR", "SWR": "WR",
-    "LT": "OT", "RT": "OT", "LG": "OG", "RG": "OG",
-    "LDE": "DE", "RDE": "DE", "LDT": "DT", "RDT": "DT", "NT": "DT",
-    "WLB": "LB", "MLB": "LB", "SLB": "LB",
-    "LCB": "CB", "RCB": "CB", "NB": "CB",
-    "SS": "S", "FS": "S",
+    # Offense
+    "LWR": "WR", "RWR": "WR", "SWR": "WR", "WRX": "WR", "WRZ": "WR", "WRH": "WR",
+    "SE": "WR", "FL": "WR", "WR2": "WR", "SE2": "WR",
+    "LT": "OT", "RT": "OT",
+    "LG": "OG", "RG": "OG", "OC": "C",
+    "LTE": "TE", "RTE": "TE", "TE2": "TE",
+    "QB2": "QB",
+    # Defense
+    "LDE": "DE", "RDE": "DE", "LE": "DE", "RE": "DE", "EDGE": "DE",
+    "LDT": "DT", "RDT": "DT", "NT": "DT", "DL": "DT", "UT": "DT", "CE": "DT",
+    "WLB": "LB", "MLB": "LB", "SLB": "LB", "ILB": "LB", "OLB": "LB",
+    "LOLB": "LB", "ROLB": "LB", "LILB": "LB", "RILB": "LB", "SILB": "LB",
+    "WILB": "LB", "NLB": "LB", "LOB": "LB", "ROB": "LB",
+    "JACK": "LB", "LEO": "LB", "MIKE": "LB", "WILL": "LB", "SAM": "LB", "RUSH": "LB",
+    "RLB": "LB", "LLB": "LB", "WOLB": "LB", "SOLB": "LB", "IILB": "LB",
+    "LCB": "CB", "RCB": "CB", "NB": "CB", "N-B": "CB", "NCB": "CB", "SCB": "CB",
+    "N-CB": "CB",
+    "SS": "S", "FS": "S", "WS": "S",
+    # Special teams
     "PT": "P", "PK": "K", "H": "P", "KO": "K",
 }
+
+# The real depth-chart sections. Everything else on the page (Practice Squad,
+# Reserves/IR/PUP/SUS/...) is NOT a depth-chart slot and must be excluded.
+_DEPTH_SECTIONS = ("offense", "defense", "special")
+
+# Labels that are NOT positions (section/transaction markers). Never emit these.
+_NON_POSITION_LABELS = {
+    "OFF", "DEF", "ST", "PS", "P/SQ", "PRS", "RES", "IR", "PUP", "SUS", "NFI",
+    "FA", "UFA", "FUT", "FACC", "CC", "CF", "RET", "DFR",
+}
+
+
+def _section_of(label: str):
+    """Map a section-header label to a section key (or None)."""
+    l = (label or "").strip().lower()
+    if l in ("offense", "off"):
+        return "offense"
+    if l in ("defense", "def"):
+        return "defense"
+    if l in ("special teams", "special", "st", "kicking"):
+        return "special"
+    if l in ("practice squad", "practice", "ps"):
+        return "practice"
+    if l in ("reserves", "reserve", "res"):
+        return "reserve"
+    return None
 
 # Snapshot IDs with known dates (from earlier discovery)
 SNAPSHOT_IDS = {
@@ -53,6 +94,10 @@ SNAPSHOT_IDS = {
     270: (2023, 4, 27), 275: (2023, 9, 1),
     280: (2024, 2, 1), 285: (2024, 6, 1), 290: (2024, 11, 1),
     295: (2025, 4, 1), 300: (2025, 8, 1),
+    301: (2025, 9, 1), 302: (2025, 10, 1), 303: (2025, 11, 1), 304: (2025, 12, 1),
+    305: (2026, 1, 1), 306: (2026, 2, 1), 307: (2026, 3, 1), 308: (2026, 4, 1),
+    309: (2026, 4, 23), 310: (2026, 5, 5), 311: (2026, 6, 1), 312: (2026, 7, 1),
+    313: (2026, 8, 1), 314: (2026, 9, 1),
 }
 
 
@@ -68,8 +113,25 @@ def _parse_table(table_html: str, snapshot_id: int, snap_date: date) -> list[dic
     current_pos = None
     current_line = 0
 
+    section = None
+    # Older archive pages (pre-2010) have no section headers at all — only filter by
+    # section when the table actually declares sections.
+    has_sections = bool(re.search(r"<t[dh][^>]*dt-sh", table_html, re.IGNORECASE))
+
     for row in rows:
         cells = re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", row, re.DOTALL)
+        if not cells:
+            continue
+
+        # Section-header rows carry a "dt-sh" class on their cells (OFF / DEF / ST / PS / RES).
+        # NOTE: the cell-text regex above strips attributes, so test the raw row.
+        if re.search(r"<t[dh][^>]*dt-sh", row, re.IGNORECASE):
+            label = re.sub(r"<[^>]+>", " ", cells[0]).strip() if cells else ""
+            section = _section_of(label) or _section_of(re.sub(r"<[^>]+>", " ", row))
+            current_pos = None
+            current_line = 0
+            continue
+
         if len(cells) < 3:
             continue
 
@@ -79,15 +141,25 @@ def _parse_table(table_html: str, snapshot_id: int, snap_date: date) -> list[dic
         # Skip header rows
         if first in ("Pos", "No.", "Player", ""):
             continue
-        # Skip section headers like "Offense", "Defense", "Special Teams", "ST"
+        # Skip non-position section/transaction markers (RES/PS/IR/FA/...)
+        if first.upper() in _NON_POSITION_LABELS:
+            current_pos = None
+            current_line = 0
+            continue
+        # Section headers spelled out ("Offense"/"Defense"/"Practice Squad"...)
         if len(first) > 5 and not any(c.isdigit() for c in first):
+            sec = _section_of(first)
+            if sec:
+                section = sec
+                current_pos = None
+                current_line = 0
             continue
         # Skip mobile-only rows (have colspan=11)
         if "colspan" in cells[0].lower() and not first:
             continue
 
         std_pos = current_pos
-        if first and len(first) <= 4:
+        if first and len(first) <= 4 and not any(c.isdigit() for c in first):
             # New position header
             current_pos = POSITION_MAP.get(first, first)
             current_line = 0
@@ -96,6 +168,11 @@ def _parse_table(table_html: str, snapshot_id: int, snap_date: date) -> list[dic
             # Continuation row for same position
             current_line += 1
         else:
+            continue
+
+        # Only the real depth-chart sections are starters; Practice Squad /
+        # Reserves (PS/RES/IR/PUP/SUS/...) are NOT depth-chart slots.
+        if has_sections and section not in _DEPTH_SECTIONS:
             continue
 
         if len(std_pos) > 5:
@@ -155,6 +232,9 @@ async def scrape_snapshot(db, snapshot_id: int, team_abbrs: list[str],
     snap_date = date(*SNAPSHOT_IDS[snapshot_id])
     total = 0
 
+    # Normalized player-name index (for player_id linking); built once per snapshot.
+    idx_full, idx_initial, idx_surname = await _player_name_index(db)
+
     async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
         for abbr in team_abbrs:
             oa = OURLADS_ABBR.get(abbr, abbr)
@@ -174,17 +254,31 @@ async def scrape_snapshot(db, snapshot_id: int, team_abbrs: list[str],
             for table in tables:
                 entries.extend(_parse_table(table, snapshot_id, snap_date))
 
+            # One row per (position, slot, player) — drop exact duplicates.
+            seen = set()
+            deduped = []
+            for e in entries:
+                key = (e["position"], e["slot"], e["player_name"])
+                if key in seen:
+                    continue
+                seen.add(key)
+                deduped.append(e)
+            entries = deduped
+
             for e in entries:
                 e["team_id"] = team_id
+                e["player_id"] = _match_player_id(
+                    idx_full, idx_initial, idx_surname, e["player_name"]
+                )
 
             if entries:
                 await db.execute(
                     text("""
                         INSERT INTO nfl.depth_charts_archive
                         (snapshot_id, snapshot_date, team_id, position, slot,
-                         player_name, jersey_number, acquisition_info)
+                         player_name, jersey_number, acquisition_info, player_id)
                         VALUES (:snapshot_id, :snapshot_date, :team_id, :position, :slot,
-                                :player_name, :jersey_number, :acquisition_info)
+                                :player_name, :jersey_number, :acquisition_info, :player_id)
                     """),
                     entries,
                 )

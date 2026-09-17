@@ -103,7 +103,7 @@ INSERT_SQL = """
 """
 
 
-async def _match_game(db, season_id: int, week: int, home_team_id: int, away_team_id: int) -> int | None:
+async def _match_game(db, season_id: int, week: int, home_team_id: int, away_team_id: int, gameday: str | None = None) -> int | None:
     r = await db.execute(
         sql_text(
             "SELECT id FROM nfl.games "
@@ -114,7 +114,34 @@ async def _match_game(db, season_id: int, week: int, home_team_id: int, away_tea
         {"sid": season_id, "wk": week, "ht": home_team_id, "at": away_team_id},
     )
     row = r.fetchone()
-    return row[0] if row else None
+    if row:
+        return row[0]
+    # Fallback for nflverse playoff rows: nflverse numbers the postseason
+    # WC=18, DIV=19, CON=20, SB=21 while this DB stores them as weeks 19-22,
+    # so the week-based match above fails. Match by team pair + game date.
+    if gameday:
+        import datetime as _dt
+        try:
+            gd = _dt.date.fromisoformat(str(gameday)[:10])
+        except ValueError:
+            gd = None
+        if gd is not None:
+            r = await db.execute(
+                sql_text(
+                    "SELECT id FROM nfl.games "
+                    "WHERE season_id = :sid "
+                    "AND home_team_id = :ht AND away_team_id = :at "
+                    "AND date BETWEEN (CAST(:gd AS date) - INTERVAL '2 day') "
+                    "AND (CAST(:gd AS date) + INTERVAL '2 day') "
+                    "ORDER BY abs(EXTRACT(EPOCH FROM (date - CAST(:gd AS date)))) "
+                    "LIMIT 1"
+                ),
+                {"sid": season_id, "ht": home_team_id, "at": away_team_id, "gd": gd},
+            )
+            row = r.fetchone()
+            if row:
+                return row[0]
+    return None
 
 
 async def _flush_batch(db_maker, batch: list[dict], dry_run: bool, existing_ids: set[int]) -> None:
@@ -195,7 +222,7 @@ async def backfill(start_year: int, end_year: int, dry_run: bool = False):
 
             # Match game
             async with Session() as db:
-                game_id = await _match_game(db, season_id, week, home_team_id, away_team_id)
+                game_id = await _match_game(db, season_id, week, home_team_id, away_team_id, row.get("gameday"))
 
             if not game_id:
                 counts["no_match"] += 1

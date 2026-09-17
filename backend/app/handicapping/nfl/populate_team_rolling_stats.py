@@ -270,7 +270,10 @@ WITH per_game AS (
     JOIN nfl.teams t_away ON t_away.id = g.away_team_id
     LEFT JOIN nfl.betting_lines_consolidated bl ON c.game_id = bl.game_id
     WHERE g.game_type IN ('REG', 'POST')  -- include playoffs so postseason rolls carry
-    WINDOW w AS (PARTITION BY c.season, c.team_abbr ORDER BY c.games_played
+    -- NOTE: cumulative_game_stats restarts games_played for POST (REG 1..18, POST 1..4),
+    -- so (season, team_abbr, games_played) is NOT unique across REG+POST. The LAG diff must be
+    -- scoped per season_type or it interleaves REG/POST rows and corrupts every per-game value.
+    WINDOW w AS (PARTITION BY c.season, c.team_abbr, c.season_type ORDER BY c.games_played
                  ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING)
 ),
 derived AS (
@@ -488,11 +491,11 @@ rolling AS (
     FROM derived
     -- INCLUDING current game's data (data loader processes completed games)
     WINDOW
-        w3  AS (PARTITION BY season, team_abbr ORDER BY games_played
+        w3  AS (PARTITION BY season, team_abbr ORDER BY game_date, game_id
                 ROWS BETWEEN 2 PRECEDING AND CURRENT ROW),
-        w5  AS (PARTITION BY season, team_abbr ORDER BY games_played
+        w5  AS (PARTITION BY season, team_abbr ORDER BY game_date, game_id
                 ROWS BETWEEN 4 PRECEDING AND CURRENT ROW),
-        w10 AS (PARTITION BY season, team_abbr ORDER BY games_played
+        w10 AS (PARTITION BY season, team_abbr ORDER BY game_date, game_id
                 ROWS BETWEEN 9 PRECEDING AND CURRENT ROW)
 ),
 -- Step 3: Season-to-date cumulative stats (including current game)
@@ -506,25 +509,25 @@ season_cumul AS (
         SUM(over_result::int) FILTER (WHERE over_result IS NOT NULL) OVER w_season AS cum_ou_overs,
         SUM(CASE WHEN over_result IS NOT NULL THEN 1 ELSE 0 END) OVER w_season AS cum_ou_games
     FROM derived
-    WINDOW w_season AS (PARTITION BY season, team_abbr ORDER BY games_played
+    WINDOW w_season AS (PARTITION BY season, team_abbr ORDER BY game_date, game_id
                         ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
 ),
 -- Step 4: Streaks via gaps-and-islands (including current game)
 islands AS (
     SELECT *,
-        ROW_NUMBER() OVER (PARTITION BY season, team_abbr ORDER BY games_played)
-            - ROW_NUMBER() OVER (PARTITION BY season, team_abbr, won ORDER BY games_played) AS win_grp,
-        ROW_NUMBER() OVER (PARTITION BY season, team_abbr ORDER BY games_played)
-            - ROW_NUMBER() OVER (PARTITION BY season, team_abbr, covered ORDER BY games_played) AS cover_grp,
-        ROW_NUMBER() OVER (PARTITION BY season, team_abbr ORDER BY games_played)
-            - ROW_NUMBER() OVER (PARTITION BY season, team_abbr, over_result ORDER BY games_played) AS ou_grp
+        ROW_NUMBER() OVER (PARTITION BY season, team_abbr ORDER BY game_date, game_id)
+            - ROW_NUMBER() OVER (PARTITION BY season, team_abbr, won ORDER BY game_date, game_id) AS win_grp,
+        ROW_NUMBER() OVER (PARTITION BY season, team_abbr ORDER BY game_date, game_id)
+            - ROW_NUMBER() OVER (PARTITION BY season, team_abbr, covered ORDER BY game_date, game_id) AS cover_grp,
+        ROW_NUMBER() OVER (PARTITION BY season, team_abbr ORDER BY game_date, game_id)
+            - ROW_NUMBER() OVER (PARTITION BY season, team_abbr, over_result ORDER BY game_date, game_id) AS ou_grp
     FROM derived
 ),
 streak_counts AS (
     SELECT *,
-        ROW_NUMBER() OVER (PARTITION BY season, team_abbr, won, win_grp ORDER BY games_played) AS win_streak_n,
-        ROW_NUMBER() OVER (PARTITION BY season, team_abbr, covered, cover_grp ORDER BY games_played) AS cover_streak_n,
-        ROW_NUMBER() OVER (PARTITION BY season, team_abbr, over_result, ou_grp ORDER BY games_played) AS ou_streak_n
+        ROW_NUMBER() OVER (PARTITION BY season, team_abbr, won, win_grp ORDER BY game_date, game_id) AS win_streak_n,
+        ROW_NUMBER() OVER (PARTITION BY season, team_abbr, covered, cover_grp ORDER BY game_date, game_id) AS cover_streak_n,
+        ROW_NUMBER() OVER (PARTITION BY season, team_abbr, over_result, ou_grp ORDER BY game_date, game_id) AS ou_streak_n
     FROM islands
 ),
 streaks AS (

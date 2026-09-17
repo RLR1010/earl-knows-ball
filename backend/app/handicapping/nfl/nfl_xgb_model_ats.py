@@ -120,6 +120,10 @@ def run_backtest(
     t0 = time.time()
 
     train_df = df[df["season_year"] < test_year].copy()
+    # 🔴 TRAIN ON REGULAR SEASON ONLY. POST/SEC/PRE must never be fit on; the test set
+    # (and production inference) still uses ALL games.
+    if "game_type" in train_df.columns:
+        train_df = train_df[train_df["game_type"] == "REG"].copy()
     test_df = df[df["season_year"] == test_year].copy()
 
     # Drop games without closing spread - needed for ATS evaluation
@@ -271,9 +275,8 @@ async def run_all_years(
     Returns list of result dicts.
     """
     dl = get_data_loader(ats_only=ats_only, ou_only=ou_only)
-
-    # Load all data from train_from onward
-    df = dl.load_data(limit=limit)
+    # Dataset = ALL games (REG + POST); run_backtest filters the TRAIN split to REG.
+    df = dl.load_data(game_types=("REG", "POST"))
     if df.empty:
         logger.error("No data loaded - check DB connection and season IDs")
         return []
@@ -320,7 +323,7 @@ def run_single(
     ``model_path`` (default ``ATS_MODEL_PATH``).
     """
     dl = get_data_loader(ats_only=ats_only, ou_only=ou_only)
-    df = dl.load_data()
+    df = dl.load_data(game_types=("REG", "POST"))
 
     if df.empty:
         return {"error": "no data loaded"}
@@ -486,7 +489,9 @@ async def train_model(
     model_dir.mkdir(parents=True, exist_ok=True)
 
     dl = get_data_loader(ats_only=ats_only, ou_only=ou_only)
-    df = dl.load_data()
+    # Dataset = ALL games (REG + POST): the TRAIN split is filtered to REG below;
+    # the test set and production inference score every game.
+    df = dl.load_data(game_types=("REG", "POST"))
 
     if df.empty:
         return {"error": "no data loaded"}
@@ -550,6 +555,10 @@ async def train_model(
         logger.info("Training ATS model for test_year=%d using train_years=%s", test_year, train_seasons)
 
         df_train = df_all[df_all["season_year"].isin(train_seasons)].copy()
+        # 🔴 TRAIN ON REGULAR SEASON ONLY. POST/SEC/PRE must never be fit on; the test
+        # set (and production inference) still uses ALL games.
+        if "game_type" in df_train.columns:
+            df_train = df_train[df_train["game_type"] == "REG"].copy()
         df_test = df_all[df_all["season_year"] == test_year].copy()
 
         # Drop games without closing spread - needed for ATS evaluation

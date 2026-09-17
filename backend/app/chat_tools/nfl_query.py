@@ -151,9 +151,9 @@ TEAM_STATS = {
     "rush_yards": ("game_stats", "SUM(gs.rush_yards)"),
     "def_yards_allowed": ("game_stats", "SUM(gs.def_yards_allowed)"),
     "avg_def_yards_allowed": ("game_stats", "AVG(gs.def_yards_allowed)"),
-    "turnovers": ("game_stats", "SUM(gs.turnovers)"),
+    "turnovers": ("game_stats", "SUM(gs.pass_interceptions + gs.fumbles_lost_total)"),
     "takeaways": ("game_stats", "SUM(gs.takeaways)"),
-    "turnover_diff": ("game_stats", "SUM(gs.turnover_diff)"),
+    "turnover_diff": ("game_stats", "SUM(gs.takeaways - (gs.pass_interceptions + gs.fumbles_lost_total))"),
     "sacks": ("game_stats", "SUM(gs.def_sacks)"),
     "sacks_suffered": ("game_stats", "SUM(gs.sacks_suffered)"),
     "pass_interceptions": ("game_stats", "SUM(gs.pass_interceptions)"),
@@ -587,6 +587,14 @@ async def _run_query_team_stats(db: AsyncSession, args: dict) -> dict:
             conds.append("gs.team_abbr = :abbr")
         if filt.get("season_year"):
             conds.append("gs.season = :syear"); params["syear"] = int(filt["season_year"])
+        # Week filters + season_type (this table also holds preseason rows, weeks 30-33).
+        if filt.get("min_week") is not None:
+            conds.append("gs.week >= :min_week"); params["min_week"] = int(filt["min_week"])
+        if filt.get("max_week") is not None:
+            conds.append("gs.week <= :max_week"); params["max_week"] = int(filt["max_week"])
+        stype = str(filt.get("season_type") or "REG").upper()
+        if stype in ("REG", "POST", "PRE"):
+            conds.append("gs.season_type = :stype"); params["stype"] = stype
         if filt.get("opponent"):
             oid = await _resolve_team_id(db, filt["opponent"])
             if not oid:

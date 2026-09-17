@@ -306,6 +306,27 @@ async def run(started_at=None, game_type: str = "REG"):
         logger.error(f"  TOP backfill failed: {e}")
         step_failures.append(f"top_backfill: {e}")
 
+    # Step 13: purge stale derived rows whose game_type disagrees with nfl.games.
+    # Legacy builds wrote postseason games as 'REG' in the derived stat tables, and
+    # the upserts (PK includes game_type) never deleted the bogus twins -> two rows
+    # per playoff game, which contaminates game_type-filtered history lookups.
+    # The current builders derive game_type from nfl.games, so this normally removes 0.
+    logger.info("[Step 13] Purging stale game_type rows in derived stat tables...")
+    try:
+        from app.handicapping.nfl.stale_game_type import purge_stale_game_type_rows
+        import asyncpg as _asyncpg_stale
+        from app.db_urls import PSYCOPG2_DATABASE_URL as _STALE_URL
+        _stale_conn = await _asyncpg_stale.connect(_STALE_URL)
+        try:
+            _stale = await purge_stale_game_type_rows(_stale_conn, apply=True)
+        finally:
+            await _stale_conn.close()
+        _stale_removed = {k: v for k, v in _stale.items() if v}
+        logger.info(f"  stale game_type rows removed: {_stale_removed or 'none'}")
+    except Exception as e:
+        logger.error(f"  stale game_type purge failed: {e}")
+        step_failures.append(f"stale_game_type_purge: {e}")
+
     # Report the REAL outcome to task_runs
     if step_failures:
         joined = "; ".join(step_failures)

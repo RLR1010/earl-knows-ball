@@ -32,6 +32,20 @@ from app.models.mlb import (
 
 logger = logging.getLogger(__name__)
 
+# MLB rolling tables store game_date as UTC timestamptz. Display all game dates in US
+# Eastern so evening games don't get labeled with the next day's date (off-by-one).
+_MLB_TZ = ZoneInfo("America/New_York")
+
+
+def _et_date(v):
+    """Format an MLB game date (tz-aware datetime, or date) as an ET 'YYYY-MM-DD' string."""
+    if v is None:
+        return None
+    if isinstance(v, datetime):
+        return v.astimezone(_MLB_TZ).date().isoformat()
+    return v.isoformat()
+
+
 # ---------------------------------------------------------------------------
 # Tool definitions (OpenAI function-calling schema)
 # ---------------------------------------------------------------------------
@@ -554,7 +568,7 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "get_pitcher_form",
-            "description": "Get a starting pitcher's recent form: YTD and last 5/10/15/20-game ERA, WHIP, K/9, BB/9, K/BB, quality start rate, plus home/road and day/night ERA splits and rest days.",
+            "description": "Get a pitcher's recent form plus ACTUAL usage/rest. Form: YTD and last 5/10/15/20-start ERA, WHIP, K/9, BB/9, K/BB, quality start rate, home/road and day/night ERA splits. Usage (use THESE for any rest/last-outing claim; dates are US Eastern): last_start_date, days_since_last_start, days_since_last_appearance, and recent_appearances (last 5 outings, each marked start vs relief). Rest = days since last APPEARANCE (start or relief).",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1262,7 +1276,7 @@ async def _get_head_to_head(db: AsyncSession, args: dict) -> dict:
             winner = r.home_team if r.home_score > r.away_score else r.away_team
         games.append({
             "game_id": r.id,
-            "date": str(r.date) if r.date else None,
+            "date": _et_date(r.date),
             "status": r.status,
             "home_team": r.home_team,
             "away_team": r.away_team,
@@ -1930,7 +1944,7 @@ async def _get_team_game_log(db: AsyncSession, args: dict) -> dict:
     for r in rows[:20]:
         games_list.append({
             "game_id": r.id,
-            "date": str(r.date),
+            "date": _et_date(r.date),
             "home": r.home_team_id == team.id,
             "opponent": r.away_team_id if r.home_team_id == team.id else r.home_team_id,
             "result": _game_result(r, team.id),
@@ -2049,7 +2063,7 @@ async def _get_player_game_log(db: AsyncSession, args: dict) -> dict:
     for r in rows[:25]:
         games_list.append({
             "game_id": r.game_id,
-            "date": str(r.date),
+            "date": _et_date(r.date),
             "home": r.team_side == "home",
             "away": r.team_side == "away",
             "at_bats": r.at_bats,
@@ -2172,7 +2186,7 @@ async def _get_team_trends(db: AsyncSession, args: dict) -> dict:
 
     games = []
     for row in rows[:8]:
-        g = {"date": str(row.game_date)[:10], "side": row.team_side, "runs_for": row.rf, "runs_against": row.ra}
+        g = {"date": _et_date(row.game_date), "side": row.team_side, "runs_for": row.rf, "runs_against": row.ra}
         for col in selected:
             g[col] = f(row[col])
         games.append(g)
@@ -2260,7 +2274,16 @@ async def _get_team_pitching_rankings(db: AsyncSession, args: dict) -> dict:
 
 
 async def _get_pitcher_form(db: AsyncSession, args: dict) -> dict:
-    """Pitcher recent form from mlb.pitcher_rolling_stats."""
+    """Pitcher recent form from mlb.pitcher_rolling_stats (+ real recent appearances).
+
+    NOTE ON 'REST' (2026-09-17): pitcher_rolling_stats.rest_days is the number of days
+    between this pitcher's last two STARTS (stored per-start row) — it is NOT a
+    forward-looking 'rest entering the next game' value. Surfacing it as 'rest_days'
+    caused the research layer to write false claims (e.g. '22 days rest' for a pitcher
+    who had since pitched out of the bullpen). We now emit explicit, timezone-correct,
+    appearance-aware fields. Rolling tables store game_date as UTC, so every date below
+    is converted to US Eastern before display.
+    """
     name = args.get("player_name", "").strip()
     if not name:
         return {"error": "player_name required"}
@@ -2280,6 +2303,39 @@ async def _get_pitcher_form(db: AsyncSession, args: dict) -> dict:
     if not row:
         return {"error": f"No pitching stats found for {player.name}"}
 
+    et = ZoneInfo("America/New_York")
+
+    # 'As of' date = the pitcher's next scheduled game (listed probable) if any, else today (ET).
+    tgt = (await db.execute(text(
+        """SELECT (g.date AT TIME ZONE 'America/New_York')::date AS d
+           FROM mlb.games g
+           WHERE (g.away_pitcher_name = :nm OR g.home_pitcher_name = :nm)
+             AND g.date >= now() - interval '1 day'
+           ORDER BY g.date ASC LIMIT 1"""
+    ), {"nm": player.name})).mappings().first()
+    as_of = tgt["d"] if tgt else datetime.now(et).date()
+
+    last_start_date = row.game_date.astimezone(et).date() if row.game_date else None
+
+    apps = []
+    arows = (await db.execute(text(
+        """SELECT g.date AS gdate, pgs.is_starter, pgs.ip, pgs.er, pgs.k, pgs.decision
+           FROM mlb.pitcher_game_stats pgs
+           JOIN mlb.games g ON g.id = pgs.game_id
+           WHERE pgs.pitcher_mlb_id = :mid
+           ORDER BY g.date DESC LIMIT 5"""
+    ), {"mid": pid})).mappings().all()
+    for a in arows:
+        apps.append({
+            "date": a["gdate"].astimezone(et).date().isoformat() if a["gdate"] else None,
+            "role": "start" if a["is_starter"] else "relief",
+            "ip": float(a["ip"]) if a["ip"] is not None else None,
+            "er": a["er"], "k": a["k"],
+            "decision": (a["decision"] or None),
+        })
+    last_app = apps[0] if apps else None
+    last_app_date = date.fromisoformat(last_app["date"]) if (last_app and last_app["date"]) else None
+
     def f(v):
         return round(float(v), 3) if v is not None else None
 
@@ -2290,8 +2346,13 @@ async def _get_pitcher_form(db: AsyncSession, args: dict) -> dict:
         "player": player.name,
         "team_abbr": row.team_abbr,
         "is_starter": bool(row.is_starter),
-        "rest_days": row.rest_days,
-        "latest_start": str(row.game_date)[:10],
+        # --- usage / rest (timezone-correct, includes relief appearances) ---
+        "as_of_date": as_of.isoformat(),
+        "last_start_date": last_start_date.isoformat() if last_start_date else None,
+        "days_since_last_start": (as_of - last_start_date).days if last_start_date else None,
+        "last_appearance": last_app,
+        "days_since_last_appearance": (as_of - last_app_date).days if last_app_date else None,
+        "recent_appearances": apps,
         "this_start": {"ip": row.ip_outs / 3 if row.ip_outs else None, "er": row.er, "k": row.strikeouts, "era": f(row.era_this_start), "whip": f(row.whip_this_start), "quality_start": bool(row.is_quality_start)},
         "ytd": {"era": f(row.era_ytd), "whip": f(row.whip_ytd), "k9": f(row.k9_ytd), "bb9": f(row.bb9_ytd), "kbb": f(row.kbb_ytd), "fip": f(row.fip_ytd), "qs_rate": f(row.qs_rate_ytd), "starts": row.starts_ytd},
         "last_5": win(5), "last_10": win(10), "last_15": win(15), "last_20": win(20),
@@ -2487,7 +2548,7 @@ async def _get_player_recent_stats(db: AsyncSession, args: dict) -> dict:
                   "slg": _f(latest["slg_30"]), "ops": _f(latest["ops_30"])}
 
     games = [{
-        "date": str(row["game_date"]),
+        "date": _et_date(row["game_date"]),
         "pa": row["pa"], "ab": row["at_bats"], "runs": row["runs"],
         "hits": row["hits"], "doubles": row["doubles"], "triples": row["triples"],
         "hr": row["home_runs"], "rbi": row["runs_batted_in"], "bb": row["walks"],
@@ -2688,7 +2749,7 @@ async def _get_game_writeup(db: AsyncSession, args: dict) -> dict:
         "game_id": gid,
         "home_team": row.home_team,
         "away_team": row.away_team,
-        "date": str(row.date) if row.date else None,
+        "date": _et_date(row.date),
         "title": row.title,
         "status": row.status,
         "published_at": str(row.published_at) if row.published_at else None,

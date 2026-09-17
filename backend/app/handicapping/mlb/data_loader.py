@@ -419,7 +419,7 @@ SELECT
     prs_h.whip_20         AS h_p_whip_20,
     prs_h.k9_20           AS h_p_k9_20,
     prs_h.bb9_20          AS h_p_bb9_20,
-    prs_h.rest_days        AS h_p_rest,
+    pla_h.rest_days        AS h_p_rest,
     prs_h.home_era_ytd     AS h_p_home_era_ytd,
     prs_h.road_era_ytd     AS h_p_road_era_ytd,
     prs_h.day_era_ytd      AS h_p_day_era_ytd,
@@ -451,7 +451,7 @@ SELECT
     prs_a.whip_20         AS a_p_whip_20,
     prs_a.k9_20           AS a_p_k9_20,
     prs_a.bb9_20          AS a_p_bb9_20,
-    prs_a.rest_days        AS a_p_rest,
+    pla_a.rest_days        AS a_p_rest,
     prs_a.home_era_ytd     AS a_p_home_era_ytd,
     prs_a.road_era_ytd     AS a_p_road_era_ytd,
     prs_a.day_era_ytd      AS a_p_day_era_ytd,
@@ -1079,23 +1079,25 @@ LEFT JOIN mlb.prior_team_stats pts_a
 LEFT JOIN LATERAL (
     SELECT pgs.*
     FROM mlb.pitcher_game_stats pgs
+    JOIN mlb.games pgs_g ON pgs_g.id = pgs.game_id
 
     WHERE pgs.pitcher_name = g.home_pitcher_name
       AND pgs.is_starter = TRUE
-      AND pgs.game_timestamp < g.date - INTERVAL '30 minutes'
+      AND pgs_g.date < g.date - INTERVAL '30 minutes'
       
-    ORDER BY pgs.game_timestamp DESC, pgs.game_id DESC
+    ORDER BY pgs_g.date DESC, pgs.game_id DESC
     LIMIT 1
 ) pgs_h ON TRUE
 LEFT JOIN LATERAL (
     SELECT pgs.*
     FROM mlb.pitcher_game_stats pgs
+    JOIN mlb.games pgs_g ON pgs_g.id = pgs.game_id
 
     WHERE pgs.pitcher_name = g.away_pitcher_name
       AND pgs.is_starter = TRUE
-      AND pgs.game_timestamp < g.date - INTERVAL '30 minutes'
+      AND pgs_g.date < g.date - INTERVAL '30 minutes'
       
-    ORDER BY pgs.game_timestamp DESC, pgs.game_id DESC
+    ORDER BY pgs_g.date DESC, pgs.game_id DESC
     LIMIT 1
 ) pgs_a ON TRUE
 
@@ -1111,11 +1113,9 @@ LEFT JOIN LATERAL (
            prs.era_10, prs.whip_10, prs.k9_10, prs.bb9_10, prs.kbb_10,
            prs.era_15, prs.whip_15, prs.k9_15, prs.bb9_15,
            prs.era_20, prs.whip_20, prs.k9_20, prs.bb9_20, prs.kbb_20,
-           prs.home_era_ytd, prs.road_era_ytd, prs.day_era_ytd, prs.night_era_ytd,
-           -- Rest = days from THIS pitcher's most recent completed start to the
-           -- TARGET game date (NOT the stored per-start rest_days, which is the
-           -- gap to the pitcher's PRIOR start and is wrong for a scheduled game).
-           EXTRACT(DAY FROM (g.date - prs.game_date))::int AS rest_days
+           prs.home_era_ytd, prs.road_era_ytd, prs.day_era_ytd, prs.night_era_ytd
+           -- NOTE: rest is NOT derived from PRS here. See pla_h / pla_a below:
+           -- days since the pitcher's last APPEARANCE (start or relief).
     FROM mlb.pitcher_rolling_stats prs
 
     WHERE prs.player_id = pgs_h.pitcher_mlb_id
@@ -1136,8 +1136,8 @@ LEFT JOIN LATERAL (
            prs.era_10, prs.whip_10, prs.k9_10, prs.bb9_10, prs.kbb_10,
            prs.era_15, prs.whip_15, prs.k9_15, prs.bb9_15,
            prs.era_20, prs.whip_20, prs.k9_20, prs.bb9_20, prs.kbb_20,
-           prs.home_era_ytd, prs.road_era_ytd, prs.day_era_ytd, prs.night_era_ytd,
-           EXTRACT(DAY FROM (g.date - prs.game_date))::int AS rest_days
+           prs.home_era_ytd, prs.road_era_ytd, prs.day_era_ytd, prs.night_era_ytd
+           -- NOTE: rest is NOT derived from PRS here. See pla_a below.
     FROM mlb.pitcher_rolling_stats prs
 
     WHERE prs.player_id = pgs_a.pitcher_mlb_id
@@ -1147,6 +1147,33 @@ LEFT JOIN LATERAL (
     ORDER BY prs.game_date DESC, prs.game_id DESC
     LIMIT 1
 ) prs_a ON TRUE
+
+-- Pitcher last APPEARANCE (start OR relief) strictly before this game — REST source.
+-- Rest = calendar days from the pitcher's most recent appearance (any role) to the
+-- target game date, in US Eastern (how rest is conventionally counted). Keyed by
+-- probable-pitcher name (same convention as pgs_h/pgs_a). Uses games.date, NOT
+-- pitcher_game_stats.game_timestamp (NULL for all recent ingest), and includes relief
+-- outings so swingmen / opener-era usage is reflected.
+LEFT JOIN LATERAL (
+    SELECT ((g.date AT TIME ZONE 'America/New_York')::date
+            - (g2.date AT TIME ZONE 'America/New_York')::date) AS rest_days
+    FROM mlb.pitcher_game_stats pgs2
+    JOIN mlb.games g2 ON g2.id = pgs2.game_id
+    WHERE pgs2.pitcher_name = g.home_pitcher_name
+      AND g2.date < g.date - INTERVAL '30 minutes'
+    ORDER BY g2.date DESC, g2.id DESC
+    LIMIT 1
+) pla_h ON TRUE
+LEFT JOIN LATERAL (
+    SELECT ((g.date AT TIME ZONE 'America/New_York')::date
+            - (g2.date AT TIME ZONE 'America/New_York')::date) AS rest_days
+    FROM mlb.pitcher_game_stats pgs2
+    JOIN mlb.games g2 ON g2.id = pgs2.game_id
+    WHERE pgs2.pitcher_name = g.away_pitcher_name
+      AND g2.date < g.date - INTERVAL '30 minutes'
+    ORDER BY g2.date DESC, g2.id DESC
+    LIMIT 1
+) pla_a ON TRUE
 
 -- Pitcher venue ERA (home / away): the CURRENT game's pitcher's cumulative ERA
 -- at THIS exact venue, from all prior starts at this park (prior seasons + earlier
@@ -1181,21 +1208,23 @@ LEFT JOIN LATERAL (
 LEFT JOIN LATERAL (
     SELECT bg.bullpen_er, bg.bullpen_ip_outs, bg.num_pitchers
     FROM mlb.bullpen_game_stats bg
+    JOIN mlb.games bg_g ON bg_g.id = bg.game_id
 
     WHERE bg.team_id = g.home_team_id
-      AND bg.game_timestamp < g.date - INTERVAL '30 minutes'
+      AND bg_g.date < g.date - INTERVAL '30 minutes'
       
-    ORDER BY bg.game_timestamp DESC, bg.game_id DESC
+    ORDER BY bg_g.date DESC, bg.game_id DESC
     LIMIT 1
 ) bg_h ON TRUE
 LEFT JOIN LATERAL (
     SELECT bg.bullpen_er, bg.bullpen_ip_outs, bg.num_pitchers
     FROM mlb.bullpen_game_stats bg
+    JOIN mlb.games bg_g ON bg_g.id = bg.game_id
 
     WHERE bg.team_id = g.away_team_id
-      AND bg.game_timestamp < g.date - INTERVAL '30 minutes'
+      AND bg_g.date < g.date - INTERVAL '30 minutes'
       
-    ORDER BY bg.game_timestamp DESC, bg.game_id DESC
+    ORDER BY bg_g.date DESC, bg.game_id DESC
     LIMIT 1
 ) bg_a ON TRUE
 
@@ -1786,8 +1815,9 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
         else:
             result[dst_kbb10] = np.nan
 
-    # Pitcher rest — from PRS rest_days (days since last start). Preserve RAW
-    # (NULL when unknown): the pick card blanks it; the model path imputes ~4.
+    # Pitcher rest — days since the pitcher's last APPEARANCE (start OR relief),
+    # computed in pla_h/pla_a so bullpen outings between starts count. Preserve
+    # RAW (NULL when unknown): the pick card blanks it; the model path imputes ~4.
     if "h_p_rest" in result.columns:
         result["h_pitcher_rest"] = result["h_p_rest"]
     else:

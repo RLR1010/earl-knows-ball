@@ -134,6 +134,7 @@ def main():
             INNER JOIN (
                 SELECT team_abbr, season, MAX(week) as max_week
                 FROM nfl.cumulative_game_stats
+                WHERE season_type = 'REG'
                 GROUP BY team_abbr, season
             ) last
                 ON cgs.team_abbr = last.team_abbr
@@ -156,6 +157,7 @@ def main():
                 ON cgs.team_abbr = wp.team_abbr
                 AND cgs.season = wp.season
             WHERE cgs.season IN :seasons
+              AND cgs.season_type = 'REG'
             ORDER BY cgs.season, cgs.team_abbr
         """)
 

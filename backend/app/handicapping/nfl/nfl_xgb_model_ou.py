@@ -116,7 +116,9 @@ async def train_model(
     model_dir.mkdir(parents=True, exist_ok=True)
 
     dl = get_data_loader(ou_only=True)
-    df = dl.load_data()
+    # Dataset = ALL games (REG + POST): the TRAIN split is filtered to REG inside
+    # train_model; the test set and production inference score every game.
+    df = dl.load_data(game_types=("REG", "POST"))
 
     if df.empty:
         return {"error": "no data loaded"}
@@ -171,6 +173,10 @@ async def train_model(
         logger.info("Training OU model for test_year=%d using train_years=%s", test_year, train_seasons)
 
         df_train = df_all[df_all["season_year"].isin(train_seasons)].copy()
+        # 🔴 TRAIN ON REGULAR SEASON ONLY. POST/SEC/PRE must never be fit on; the test
+        # set (and production inference) still uses ALL games.
+        if "game_type" in df_train.columns:
+            df_train = df_train[df_train["game_type"] == "REG"].copy()
         df_test = df_all[df_all["season_year"] == test_year].copy()
 
         # Drop games without closing OU - needed for OU evaluation
