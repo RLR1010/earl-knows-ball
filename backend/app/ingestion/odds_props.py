@@ -177,6 +177,7 @@ async def snapshot_player_props(
     """
     import os
     from datetime import date, timedelta as _td
+    from zoneinfo import ZoneInfo
 
     from sqlalchemy import text
 
@@ -210,8 +211,14 @@ async def snapshot_player_props(
     # ------------------------------------------------------------------
     # 2. Load our upcoming games keyed by (home_abbrev, away_abbrev, date).
     # ------------------------------------------------------------------
-    today = date.today()
-    window_end = today + _td(days=days + 1)
+    # Use the NFL's operating timezone (Eastern) so the window is identical
+    # regardless of the host/box local timezone (dev box is CDT, prod boxes UTC).
+    # Mixing date.today()/date bounds with a timestamptz column made the window
+    # edge TZ-dependent, so a game on the boundary could load on one box but not
+    # another (e.g. a 00:15 UTC Monday-night kickoff).
+    _ET = ZoneInfo("America/New_York")
+    today = datetime.now(_ET).date()
+    window_end = today + _td(days=days)  # inclusive upper bound (ET game date)
     rows = (
         await db.execute(
             text(
@@ -222,7 +229,8 @@ async def snapshot_player_props(
                 FROM {cfg.games} g
                 LEFT JOIN {cfg.teams} gh ON gh.id = g.home_team_id
                 LEFT JOIN {cfg.teams} ga ON ga.id = g.away_team_id
-                WHERE g.date >= :today AND g.date < :window_end
+                WHERE (g.date AT TIME ZONE 'America/New_York')::date >= :today
+                  AND (g.date AT TIME ZONE 'America/New_York')::date <= :window_end
                 """
             ),
             {"today": today, "window_end": window_end},
