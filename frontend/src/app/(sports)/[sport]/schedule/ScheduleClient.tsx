@@ -662,7 +662,7 @@ function NFLSchedule({ sport }: { sport: string }) {
   const router = useRouter();
   const weekCarouselRef = useRef<HTMLDivElement>(null);
   const [games, setGames] = useState<Game[]>([]);
-  const [week, setWeek] = useState(() => {
+  const [week, setWeek] = useState<number | null>(() => {
     const wp = searchParams.get('week');
     if (wp) {
       const parsed = parseInt(wp);
@@ -673,7 +673,9 @@ function NFLSchedule({ sport }: { sport: string }) {
       }
       return parsed;
     }
-    return 1;
+    // No explicit ?week= deep link: leave it unresolved so we can open on the
+    // live week (resolved below) instead of hard-defaulting to Week 1.
+    return null;
   });
   const [seasonYear, setSeasonYear] = useState(() => {
     const yp = searchParams.get('year');
@@ -694,7 +696,24 @@ function NFLSchedule({ sport }: { sport: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Resolve the live week when there's no explicit ?week= deep link, so a bare
+  // /nfl/schedule opens on the current week rather than Week 1.
   useEffect(() => {
+    if (week !== null) return;
+    let cancelled = false;
+    api.games
+      .currentWeek(seasonYear)
+      .then(res => {
+        if (!cancelled) setWeek(res.week && res.week > 0 ? res.week : 1);
+      })
+      .catch(() => {
+        if (!cancelled) setWeek(1);
+      });
+    return () => { cancelled = true; };
+  }, [week, seasonYear]);
+
+  useEffect(() => {
+    if (week === null) return;
     const params = new URLSearchParams(searchParams.toString());
     params.set('year', String(seasonYear));
     params.set('week', String(week));
@@ -702,6 +721,7 @@ function NFLSchedule({ sport }: { sport: string }) {
   }, [seasonYear, week, sport]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
+    if (week === null) return;
     setLoading(true);
     api.games
       .list({ season_year: seasonYear, week })
@@ -712,7 +732,7 @@ function NFLSchedule({ sport }: { sport: string }) {
   // Auto-poll schedule + pick results every 30s for the current NFL season year
   // (any week) so completed-game pick color coding updates automatically.
   useEffect(() => {
-    if (seasonYear !== CURRENT_YEAR) return;
+    if (seasonYear !== CURRENT_YEAR || week === null) return;
     const interval = setInterval(() => {
       api.games
         .list({ season_year: seasonYear, week })

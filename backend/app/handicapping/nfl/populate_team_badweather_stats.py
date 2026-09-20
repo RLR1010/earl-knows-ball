@@ -6,8 +6,11 @@ For each team x game target, compute the team's PPG / YPG / win% in PRIOR
   - precip: weather_condition matches rain|snow|drizzle|thunder|shower
 
 Mirrors the structure of nfl.team_rolling_stats (game_id + team_abbr + season +
-week + is_home + feeds_into_game_id) so data_loader joins it identically. Only
-PRIOR games (date < target date) are used -> no lookahead leakage.
+week + is_home + feeds_into_game_id) so data_loader joins it identically. Like
+every stat table in this app, the row for a game INCLUDES that game
+(date <= target date) -- the cardinal rule: a game row includes the stats of the
+game. No lookahead leakage: a game's own row is the newest row, and the loader
+reads the LAST PLAYED game's row.
 
 Source per-game team stats: nfl.cumulative_game_stats (off_pts, off_total_yds)
 joined to nfl.games for weather/date; wins derived from games final score.
@@ -143,14 +146,15 @@ def run(conn=None) -> dict:
         for t in team_games:
             team_games[t].sort(key=lambda g: g["date"] or __import__("datetime").date.min)
 
-        # Per target row, aggregate the team's PRIOR cold/precip games.
+        # Per target row, aggregate the team's cold/precip games THROUGH this game
+        # (INCLUSIVE -- a game row includes the stats of the game).
         insert_rows = []
         for r in rows:
             t = r["team_abbr"]
             target_date = r["game_date"]
             prior = [
                 g for g in team_games.get(t, [])
-                if g["date"] is not None and target_date is not None and g["date"] < target_date
+                if g["date"] is not None and target_date is not None and g["date"] <= target_date
             ]
             cold = [g for g in prior if g["cold"]]
             warm = [g for g in prior if g["warm"]]

@@ -106,6 +106,7 @@ async def train_model(
     model_path: Optional[Path] = None,
     hyperparams: Optional[Dict[str, Any]] = None,
     label: str = "nfl_ou_training",
+    target_mode: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Full OU training pipeline: trains one OU model per test year (2024, 2025),
     saves each model & its training run to the database."""
@@ -125,9 +126,18 @@ async def train_model(
 
     df["total_points"] = df["home_score"] + df["away_score"]
     df = _ensure_ou_features(df)
-    df = df.sort_values(["season_year", "week"]).reset_index(drop=True)
+    df = df.sort_values(["season_year", "week", "game_id"], kind="stable").reset_index(drop=True)
 
     df_all = df.dropna(subset=["total_points"]).copy()
+
+    # target_mode="margin"   -> train on the raw total points (legacy behaviour)
+    # target_mode="residual" -> train on the OVER/UNDER margin (total - closing OU
+    #   line). Predictions are converted back to raw totals (+ line) for every
+    #   reported metric/OU eval so numbers stay in points and comparable.
+    # Env-overridable via NFL_OU_TARGET_MODE; defaults to "margin".
+    mode = (target_mode or os.environ.get("NFL_OU_TARGET_MODE", "margin")).strip().lower()
+    if mode not in ("margin", "residual"):
+        mode = "margin"
 
     hp = hyperparams or {}
     params: Dict[str, Any] = {
@@ -141,7 +151,7 @@ async def train_model(
         "alpha": hp.get("alpha", 0.0),
         "gamma": hp.get("gamma", 0.1),
         "min_child_weight": hp.get("min_child_weight", 3),
-        "seed": 42,
+        "seed": int(hp.get("seed", 42)),
         "verbosity": 0,
     }
     
@@ -162,6 +172,8 @@ async def train_model(
         train_years=_train_years_for_test_year(TEST_YEARS[-1]),
         results_json=[],
         pkl_filename="",
+        seed=int(params.get("seed", 42)),
+        target_mode=mode,
     )
 
     total_results = []
@@ -220,14 +232,22 @@ async def train_model(
 
         X = df_train[available].values
         y = df_train["total_points"].values
+        # residual mode trains on (total - closing OU); keep y as the raw total for
+        # the reported (points-space) train metrics.
+        if mode == "residual":
+            _train_label = y - df_train["closing_ou"].values
+        else:
+            _train_label = y
 
         # Time-decay sample weights - recent seasons weighted more
         decay_weights = _compute_decay_weights(df_train, decay=hp.get("time_decay", DEFAULT_TIME_DECAY))
-        dtrain = xgb.DMatrix(X, label=y, weight=decay_weights, feature_names=available)
+        dtrain = xgb.DMatrix(X, label=_train_label, weight=decay_weights, feature_names=available)
 
         model = xgb.train(params, dtrain, num_boost_round=n_estimators, verbose_eval=False)
 
         y_pred = model.predict(dtrain)
+        if mode == "residual":
+            y_pred = y_pred + df_train["closing_ou"].values
         train_mae = mean_absolute_error(y, y_pred)
         train_r2 = r2_score(y, y_pred)
 
@@ -263,6 +283,9 @@ async def train_model(
                 y_test = df_test_clean["total_points"].values
                 dtest = xgb.DMatrix(X_test, feature_names=available)
                 pred_totals = model.predict(dtest)
+                if mode == "residual":
+                    # model predicts the O/U margin; convert back to a raw total
+                    pred_totals = pred_totals + df_test_clean["closing_ou"].values
 
                 ou_total = len(y_test)
                 if "closing_ou" in df_test_clean.columns:
@@ -306,7 +329,7 @@ async def train_model(
             "r2": round(float(train_r2), 4),
             "input_features": list(available),
             "feature_importance": fi_sorted,
-            "model_params": {**params, "n_estimators": n_estimators},
+            "model_params": {**params, "n_estimators": n_estimators, "target_mode": mode},
             "duration_seconds": round(ty_elapsed, 2),
             "ou": {
                 "total": ou_total,
@@ -371,15 +394,29 @@ if __name__ == "__main__":
     mode = sys.argv[1] if len(sys.argv) > 1 else "train"
 
     if mode == "train":
-        result = asyncio.run(train_model(label="nfl_ou_cli"))
-        print("\n=== NFL OU Model Training ===")
-        for k, v in result.items():
-            if k == "feature_importance":
-                print(f"  {k}: {len(v)} features")
-            elif k == "results_json":
-                print(f"  {k}: (json, {len(v)} chars)")
-            else:
-                print(f"  {k}: {v}")
+        # Optional flags: --seed N / --seeds 42,7,2024 / --target-mode margin|residual
+        import argparse
+        _ap = argparse.ArgumentParser(add_help=False)
+        _ap.add_argument("--seed", type=int, default=None)
+        _ap.add_argument("--seeds", type=str, default=None)
+        _ap.add_argument("--target-mode", dest="target_mode", default=None)
+        _a, _ = _ap.parse_known_args()
+        if _a.seeds:
+            _seed_list = [int(s) for s in _a.seeds.replace(" ", "").split(",") if s]
+        elif _a.seed is not None:
+            _seed_list = [_a.seed]
+        else:
+            _seed_list = [42]
+        for _sd in _seed_list:
+            print(f"\n=== NFL OU Model Training (seed={_sd}, target_mode={_a.target_mode or 'margin'}) ===")
+            result = asyncio.run(train_model(label=f"nfl_ou_cli_s{_sd}", hyperparams={"seed": _sd}, target_mode=_a.target_mode))
+            for k, v in result.items():
+                if k == "feature_importance":
+                    print(f"  {k}: {len(v)} features")
+                elif k == "results_json":
+                    print(f"  {k}: (json, {len(v)} chars)")
+                else:
+                    print(f"  {k}: {v}")
 
     else:
         print(f"Unknown mode: {mode}")

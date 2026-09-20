@@ -8,27 +8,58 @@ from app.database import get_db
 from app.models import User
 from app.core.config import settings
 
-bearer_scheme = HTTPBearer()
+bearer_scheme = HTTPBearer(auto_error=False)
+
+# Session cookie name. MUST match app.routers.auth.COOKIE_NAME ("earl_token").
+# The cookie is the durable session: /auth/me re-issues it on every visit (30-day
+# sliding window), so an active user is never dropped just because the JS-side
+# localStorage token lapsed.
+COOKIE_NAME = "earl_token"
+
+
+async def _user_from_token(token: str, db: AsyncSession) -> User | None:
+    """Decode a JWT and return the matching user, or None if invalid/unknown."""
+    try:
+        payload = jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
+    except JWTError:
+        return None
+    user_id = payload.get("sub")
+    if user_id is None:
+        return None
+    return (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
 
 
 async def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
     db: AsyncSession = Depends(get_db),
 ) -> User:
-    token = credentials.credentials
-    try:
-        payload = jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
-        user_id: str = payload.get("sub")
-        if user_id is None:
-            raise HTTPException(status_code=401, detail="Invalid token")
-    except JWTError:
-        raise HTTPException(status_code=401, detail="Invalid token")
+    """Authenticate from the Authorization header (localStorage token), falling
+    back to the httpOnly `earl_token` cookie.
 
-    result = await db.execute(select(User).where(User.id == user_id))
-    user = result.scalar_one_or_none()
-    if user is None:
-        raise HTTPException(status_code=401, detail="User not found")
-    return user
+    The header is preferred when present AND valid. If the header token is
+    present but invalid/expired we still fall back to the cookie, so a stale
+    JS token can never lock an active user out (the cookie keeps them logged in
+    and /auth/me renews it on each visit).
+    """
+    header_token = credentials.credentials if (credentials and credentials.credentials) else None
+    cookie_token = request.cookies.get(COOKIE_NAME)
+
+    candidates: list[str] = []
+    if header_token:
+        candidates.append(header_token)
+    if cookie_token and cookie_token != header_token:
+        candidates.append(cookie_token)
+
+    for tok in candidates:
+        user = await _user_from_token(tok, db)
+        if user is not None:
+            return user
+
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid token" if candidates else "Not authenticated",
+    )
 
 
 async def get_optional_current_user(

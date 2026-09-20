@@ -115,6 +115,7 @@ async def train_model(
     ou_only: bool = False,
     hyperparams: Optional[Dict[str, Any]] = None,
     label: str = "nba_ats_training",
+    target_mode: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Full training pipeline: trains ATS model for each test year (2024, 2025),
     saves models and a single training run to the database.
@@ -143,7 +144,7 @@ async def train_model(
         return {"error": "no data loaded"}
 
     df = _ensure_ats_features(df)
-    df = df.sort_values(["season_year", "date"]).reset_index(drop=True)
+    df = df.sort_values(["season_year", "date", "game_id"], kind="stable").reset_index(drop=True)
 
     # Regression target: actual margin (home_score - away_score). Compute from db columns.
     if ou_only:
@@ -167,9 +168,12 @@ async def train_model(
         "reg_lambda": hp.get("reg_lambda", DEFAULT_REG_LAMBDA),
         "gamma": hp.get("gamma", DEFAULT_GAMMA),
         "min_child_weight": hp.get("min_child_weight", DEFAULT_MIN_CHILD_WEIGHT),
-        "seed": 42,
+        "seed": int(hp.get("seed", 42)),
         "verbosity": 0,
     }
+    _mode = (target_mode or "margin").strip().lower()
+    if _mode not in ("margin", "residual"):
+        _mode = "margin"
 
     if ats_only:
         feature_cols = get_model_features(target="ats")
@@ -193,6 +197,8 @@ async def train_model(
         pkl_filename="",
         test_year=TEST_YEARS[-1],
         train_years=_train_years_for_test_year(TEST_YEARS[-1]),
+        seed=int(hp.get("seed", 42)),
+        target_mode=_mode,
     )
 
     for test_year in TEST_YEARS:
@@ -250,6 +256,8 @@ async def train_model(
             _tf = df_train.iloc[_sort_idx]
             _X = _tf[available].values
             _y = _tf[target].values
+            _line_s = _tf["spread"].values if _mode == "residual" else None
+            _y_lab = (_y + _line_s) if _mode == "residual" else _y
             if "season_year" in _tf.columns:
                 _w = _compute_decay_weights(_tf, train_seasons[-1])
             else:
@@ -260,13 +268,14 @@ async def train_model(
             # sample-consistent: train on _X/_y up to the eval boundary.
             X_train = _X[:-_n_eval]
             y_train = _y[:-_n_eval]
+            _line_train = _line_s[:-_n_eval] if _mode == "residual" else None
             sample_weights_train = _w[:-_n_eval]
             dtrain = xgb.DMatrix(
-                X_train, label=y_train, weight=sample_weights_train,
+                X_train, label=_y_lab[:-_n_eval], weight=sample_weights_train,
                 feature_names=available,
             )
             dvalid = xgb.DMatrix(
-                _X[-_n_eval:], label=_y[-_n_eval:], weight=_w[-_n_eval:],
+                _X[-_n_eval:], label=_y_lab[-_n_eval:], weight=_w[-_n_eval:],
                 feature_names=available,
             )
             model = xgb.train(
@@ -277,18 +286,22 @@ async def train_model(
         else:
             X_train = df_train[available].values
             y_train = df_train[target].values
+            _line_train = df_train["spread"].values if _mode == "residual" else None
+            _y_lab = (y_train + _line_train) if _mode == "residual" else y_train
             if "season_year" in df_train.columns:
                 sample_weights_train = _compute_decay_weights(df_train, train_seasons[-1])
             else:
                 sample_weights_train = np.ones(len(df_train))
             dtrain = xgb.DMatrix(
-                X_train, label=y_train, weight=sample_weights_train,
+                X_train, label=_y_lab, weight=sample_weights_train,
                 feature_names=available,
             )
             model = xgb.train(params, dtrain, num_boost_round=n_estimators, verbose_eval=False)
 
-        # Training MAE
+        # Training MAE (report in raw margin space)
         y_pred_train = model.predict(dtrain)
+        if _mode == "residual" and _line_train is not None:
+            y_pred_train = y_pred_train - _line_train
         train_mae = float(mean_absolute_error(y_train, y_pred_train))
 
         importance = model.get_score(importance_type="gain")
@@ -331,6 +344,8 @@ async def train_model(
                 y_test = df_test_clean[target].values
                 dtest = xgb.DMatrix(X_test, feature_names=available_test)
                 pred_margins = model.predict(dtest)
+                if _mode == "residual":
+                    pred_margins = pred_margins - df_test_clean["spread"].values
                 test_mae = float(mean_absolute_error(y_test, pred_margins))
 
                 # ATS: model picks home if predicted margin > -(spread), away otherwise
@@ -383,7 +398,7 @@ async def train_model(
             "input_features": len(available),
             "feature_names": list(available),
             "feature_importance": fi_sorted,
-            "model_params": {**params, "n_estimators": n_estimators},
+            "model_params": {**params, "n_estimators": n_estimators, "target_mode": _mode},
             "duration_seconds": round(ty_elapsed, 2),
             "ats": {
                 "total": ats_total,
@@ -452,8 +467,31 @@ if __name__ == "__main__":
 
     mode = sys.argv[1] if len(sys.argv) > 1 else "train"
 
+    # Optional flags: --seed N | --seeds a,b | --target-mode margin|residual
+    _argv = sys.argv[2:]
+    _seeds = None
+    _target_mode = None
+    _i = 0
+    while _i < len(_argv):
+        _a = _argv[_i]
+        if _a == "--seed" and _i + 1 < len(_argv):
+            _seeds = [int(_argv[_i + 1])]; _i += 2
+        elif _a == "--seeds" and _i + 1 < len(_argv):
+            _seeds = [int(x) for x in str(_argv[_i + 1]).replace(" ", ",").split(",") if x.strip() != ""]; _i += 2
+        elif _a == "--target-mode" and _i + 1 < len(_argv):
+            _target_mode = _argv[_i + 1]; _i += 2
+        else:
+            _i += 1
+
     if mode == "train":
-        result = asyncio.run(train_model(label="nba_cli_training"))
+        _sd_list = _seeds or [42]
+        result = None
+        for _sd in _sd_list:
+            result = asyncio.run(train_model(
+                label="nba_cli_training",
+                hyperparams={"seed": _sd},
+                target_mode=_target_mode,
+            ))
         print("\n=== NBA Model Training ===")
         for k, v in result.items():
             if k == "feature_importance":

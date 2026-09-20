@@ -424,6 +424,37 @@ async def list_seasons(db: AsyncSession = Depends(get_db)):
     return years
 
 
+@router.get("/games/current-week")
+async def current_week(
+    season_year: int | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+):
+    """Current NFL week for a season: earliest week that still has a game
+    today or later, clamped to the last week that actually has games (None
+    when the season has no data).
+
+    Used by the week-based NFL schedule page so a bare /nfl/schedule opens on
+    the live week instead of defaulting to Week 1.
+    """
+    if season_year is None:
+        season_year = datetime.now(_CHI_TZ).year
+    season_id = (
+        await db.execute(select(Season.id).where(Season.year == season_year))
+    ).scalar()
+    week = await _nfl_current_week_for_season(db, season_id)
+    if season_id is not None:
+        max_week = (
+            await db.execute(
+                select(func.max(Game.week)).where(Game.season_id == season_id)
+            )
+        ).scalar()
+        # A fully-past season resolves to max+1; clamp to the real last week so
+        # the schedule page never opens on an empty/invalid week.
+        if max_week is not None and (week is None or week > max_week):
+            week = max_week
+    return {"season_year": season_year, "week": week}
+
+
 @router.get("/games")
 async def list_games(
     season_year: int | None = Query(None),
@@ -779,6 +810,157 @@ async def get_game_box_score(game_id: int, db: AsyncSession = Depends(get_db)):
         home_record=home_record,
         away_record=away_record
     )
+
+
+@router.get("/nfl/games/{game_id}/boxscore")
+async def get_nfl_game_boxscore(
+    game_id: int,
+    db: AsyncSession = Depends(get_db),
+    user: User | None = Depends(get_optional_user),
+):
+    """MLB-`boxscore`-shaped payload so the shared <GamePickCard> renders on NFL
+    analysis pages exactly like it does for MLB.
+
+    GamePickCard fetches `/api/{sport}/games/{id}/boxscore`; MLB has
+    `/mlb/games/{id}/boxscore` but NFL only had `/games/{id}/box-score` (which
+    carries no pick_card), so NFL pick cards silently rendered nothing. This
+    route mirrors the MLB pick_card contract (picks / expected_value / lines /
+    results / predictions) and applies the same premium gate.
+    """
+    result = await db.execute(
+        select(Game)
+        .options(joinedload(Game.home_team), joinedload(Game.away_team))
+        .where(Game.id == game_id)
+    )
+    game = result.unique().scalar_one_or_none()
+    if not game:
+        raise HTTPException(status_code=404, detail="Game not found")
+
+    row = (await db.execute(text("""
+        SELECT blc.closing_spread   AS closing_spread,
+               blc.closing_ou       AS closing_ou,
+               blc.closing_home_ml  AS closing_home_ml,
+               blc.closing_away_ml  AS closing_away_ml,
+               gp.spread_pick       AS spread_pick,
+               gp.ou_pick           AS ou_pick,
+               gp.ml_pick           AS ml_pick,
+               gp.ats_ev            AS ats_ev,
+               gp.ou_ev             AS ou_ev,
+               gp.ml_ev             AS ml_ev,
+               gp.ats_conf_cal      AS ats_conf_cal,
+               gp.ou_conf_cal       AS ou_conf_cal,
+               gp.ml_conf_cal       AS ml_conf_cal,
+               gp.predicted_home_score AS predicted_home_score,
+               gp.predicted_away_score AS predicted_away_score,
+               gp.predicted_total   AS predicted_total,
+               gp.predicted_margin  AS predicted_margin,
+               gp.ats_result        AS ats_result,
+               gp.ou_result         AS ou_result,
+               gp.ml_result         AS ml_result
+        FROM nfl.betting_lines_consolidated blc
+        LEFT JOIN nfl.game_predictions gp
+               ON gp.game_id = blc.game_id AND gp.source = 'api'
+        WHERE blc.game_id = :gid
+        LIMIT 1
+    """), {"gid": game_id})).fetchone()
+
+    spread = float(row.closing_spread) if row and row.closing_spread is not None else None
+    over_under = float(row.closing_ou) if row and row.closing_ou is not None else None
+    home_ml = int(row.closing_home_ml) if row and row.closing_home_ml is not None else None
+    away_ml = int(row.closing_away_ml) if row and row.closing_away_ml is not None else None
+
+    game_out = await _game_to_out(game, spread, over_under, home_ml, away_ml)
+
+    # Same reveal rule as the NFL prediction endpoint (past weeks public, else
+    # premium), plus: the Free Pick of the Day always reveals its card.
+    unlocked = await _nfl_game_is_past(db, game)
+    free_pick = (await db.execute(text(
+        "SELECT 1 FROM nfl.game_writeups "
+        "WHERE game_id = :gid AND is_free_feature IS TRUE AND status = 'published' LIMIT 1"
+    ), {"gid": game_id})).fetchone() is not None
+    reveal = bool(unlocked or free_pick or user_is_premium(user))
+
+    def _r(v, nd=1):
+        return round(float(v), nd) if v is not None else None
+
+    # Derive the projected score from the signed home margin + total so the card
+    # can never contradict the pick (stored predicted_*_score columns carried a
+    # home/away swap on away-favored games; see nfl/engine.py).
+    _m = row.predicted_margin if row else None
+    _t = row.predicted_total if row else None
+    if _m is not None and _t is not None:
+        proj_home = round((float(_t) + float(_m)) / 2)
+        proj_away = round((float(_t) - float(_m)) / 2)
+    else:
+        proj_home = _r(row.predicted_home_score) if row else None
+        proj_away = _r(row.predicted_away_score) if row else None
+
+    pick_card = {
+        "game_id": game_id,
+        "home_team": game_out.home_team,
+        "away_team": game_out.away_team,
+        "predictions": {
+            "home_runs": proj_home,
+            "away_runs": proj_away,
+            "total": _r(row.predicted_total) if row else None,
+            "margin": _r(row.predicted_margin) if row else None,
+        },
+        "lines": {
+            "run_line": spread,
+            "home_run_line": spread,
+            "away_run_line": (-spread if spread is not None else None),
+            "over_under": over_under,
+            "home_moneyline": home_ml,
+            "away_moneyline": away_ml,
+        },
+        "picks": None,
+        "expected_value": None,
+        "confidence": None,
+        "results": None,
+        "unlocked": bool(reveal),
+    }
+    if reveal:
+        pick_card["picks"] = {
+            "run_line": row.spread_pick if row else None,
+            "over_under": row.ou_pick if row else None,
+            "moneyline": row.ml_pick if row else None,
+        }
+        pick_card["expected_value"] = {
+            "rl": _r(row.ats_ev, 2) if row else None,
+            "ou": _r(row.ou_ev, 2) if row else None,
+            "ml": _r(row.ml_ev, 2) if row else None,
+        }
+        pick_card["confidence"] = {
+            "rl": row.ats_conf_cal if row else None,
+            "ou": row.ou_conf_cal if row else None,
+            "ml": row.ml_conf_cal if row else None,
+        }
+        pick_card["results"] = {
+            "run_line": row.ats_result if row else None,
+            "over_under": row.ou_result if row else None,
+            "moneyline": row.ml_result if row else None,
+        }
+
+    betting_lines = []
+    if spread is not None or over_under is not None:
+        betting_lines.append({
+            "spread": spread,
+            "spread_home_odds": -110,
+            "spread_away_odds": -110,
+            "over_under": over_under,
+            "over_odds": -110,
+            "under_odds": -110,
+            "home_moneyline": home_ml,
+            "away_moneyline": away_ml,
+            "home_team": game_out.home_team,
+            "away_team": game_out.away_team,
+        })
+
+    return {
+        "game": jsonable_encoder(game_out),
+        "betting_lines": betting_lines or None,
+        "pick_card": pick_card,
+    }
 
 
 @router.get("/games/{game_id}")

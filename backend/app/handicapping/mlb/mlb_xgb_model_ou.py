@@ -77,6 +77,8 @@ async def run_backtest(
     feature_set: list,
     train_years: list,
     training_id: str = None,
+    target_mode: str | None = None,
+    seed: int | None = None,
 ) -> dict | None:
     """Train on train_years, test on test_year, return result dict.
 
@@ -86,6 +88,10 @@ async def run_backtest(
     """
     if training_id is None:
         training_id = uuid.uuid4().hex[:8]
+
+    _mode = (target_mode or "margin").strip().lower()
+    if _mode not in ("margin", "residual"):
+        _mode = "margin"
 
     # Split by season_year
     train_feats = feats[feats["season_year"].isin(train_years)].copy()
@@ -110,6 +116,8 @@ async def run_backtest(
 
     X_train_full = train_feats[available].fillna(0).values
     y_train_full = train_feats["actual_total"].values
+    if _mode == "residual":
+        y_train_full = y_train_full - np.nan_to_num(train_feats["over_under"].values, nan=0.0)
     ew_full = _compute_decay_weights(train_feats, max(train_years))
 
     # Train XGBoost with early stopping (same approach as ATS): hold out the
@@ -131,7 +139,7 @@ async def run_backtest(
         gamma=0.1,
         min_child_weight=3,
         eval_metric="rmse",
-        random_state=42,
+        random_state=int(seed or 42),
         verbosity=0,
         early_stopping_rounds=30,
     )
@@ -141,6 +149,8 @@ async def run_backtest(
         tf = train_feats.iloc[idx]
         X_f = tf[available].fillna(0).values
         y_f = tf["actual_total"].values
+        if _mode == "residual":
+            y_f = y_f - np.nan_to_num(tf["over_under"].values, nan=0.0)
         ew_f = _compute_decay_weights(tf, max(train_years))
         n_eval = max(int(len(X_f) * 0.15), 50)
         model.fit(
@@ -161,6 +171,8 @@ async def run_backtest(
     n_test = len(test_feats)
 
     y_pred = model.predict(X_test)
+    if _mode == "residual":
+        y_pred = y_pred + np.nan_to_num(ous, nan=0.0)
     mae = float(np.mean(np.abs(y_pred - y_test)))
     rmse = float(np.sqrt(np.mean((y_pred - y_test) ** 2)))
 
@@ -215,6 +227,7 @@ async def run_backtest(
         "ou": {"total": int(n_with_data), "non_push": n_non_push, "correct": ou_count, "incorrect": int(n_non_push - ou_count), "push": n_pushes, "pct": round(ou_acc * 100, 1)},
         "model_file": pkl_path.name,
         "feature_importance": feature_importance,
+        "model_params": {**model.get_params(), "target_mode": _mode},
     }
 
 
@@ -223,6 +236,8 @@ async def run_all_years(
     feature_sets: list[list[str]] = None,
     skip_db: bool = False,
     do_save_training_run: bool = True,
+    target_mode: str | None = None,
+    seed: int | None = None,
 ) -> list[dict]:
     """Run OU backtest for 2025 and 2026 using walk-forward training.
 
@@ -254,7 +269,7 @@ async def run_all_years(
             train_years = list(range(train_from, year))
             log(f"\n--- Testing {year} | Train {train_years[0]}-{train_years[-1]} "
                 f"| {len(feature_set)} features ---")
-            result = await run_backtest(raw, feats, year, feature_set, train_years)
+            result = await run_backtest(raw, feats, year, feature_set, train_years, target_mode=target_mode, seed=seed)
             if result:
                 total_results.append(result)
                 ou = result["ou"]
@@ -291,6 +306,8 @@ async def run_all_years(
                 pkl_filename="",  # placeholder, updated below
                 algorithm="xgboost",
                 description=f"OU backtest {test_years[0]}-{test_years[-1]}",
+                seed=int(seed) if seed is not None else None,
+                target_mode=(target_mode or "margin"),
             )
 
             # Rename temp pkls using DB id for stable naming.
@@ -330,15 +347,27 @@ if __name__ == "__main__":
                         help="First training year (default 2016)")
     parser.add_argument("--skip-db", action="store_true",
                         help="Skip saving to database")
+    parser.add_argument("--seed", type=int, default=None, help="Random seed")
+    parser.add_argument("--seeds", type=str, default=None, help="Comma-separated seeds (one run each)")
+    parser.add_argument("--target-mode", type=str, default="margin", choices=["margin", "residual"])
 
 
     args = parser.parse_args()
 
     if args.mode == "all":
-        results = asyncio.run(run_all_years(
-            train_from=args.train_from,
-            skip_db=args.skip_db,
-        ))
+        _seeds = None
+        if args.seeds:
+            _seeds = [int(x) for x in str(args.seeds).replace(" ", ",").split(",") if x.strip() != ""]
+        elif args.seed is not None:
+            _seeds = [int(args.seed)]
+        results = []
+        for _sd in (_seeds or [None]):
+            results = asyncio.run(run_all_years(
+                train_from=args.train_from,
+                skip_db=args.skip_db,
+                target_mode=args.target_mode,
+                seed=_sd,
+            ))
         if results:
             log("\n=== FINAL RESULTS ===")
             for r in results:

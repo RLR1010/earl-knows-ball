@@ -162,6 +162,8 @@ interface TrainingRunInfo {
   training_id: string | null;
   is_current: boolean;
   is_live?: boolean;
+  seed?: number | null;
+  target_mode?: string | null;
   results_json?: any;
 }
 
@@ -242,7 +244,7 @@ function ModelVariantSection({ variant: _variant, loadedRunInfo, trainingRuns, o
               ].filter(Boolean).join(" | ");
               return (
                 <option key={run.id} value={run.id}>
-                  Run #{run.id} — {new Date(run.trained_at ?? run.created_at ?? Date.now()).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })} — {stats}
+                  Run #{run.id} — {new Date(run.trained_at ?? run.created_at ?? Date.now()).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })} — {stats}{run.seed != null ? ` — seed ${run.seed}` : ""}{run.target_mode ? ` — ${run.target_mode}` : ""}
                 </option>
               );
             })}
@@ -1006,6 +1008,8 @@ function TrainFeatureModal({ sport, modelType, onClose, onRefresh }: {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
+  const [seedsInput, setSeedsInput] = useState<string>("42");
+  const [targetMode, setTargetMode] = useState<"margin" | "residual">("residual");
 
   const loadFeatures = async () => {
     setLoading(true);
@@ -1035,28 +1039,44 @@ function TrainFeatureModal({ sport, modelType, onClose, onRefresh }: {
   const submit = async () => {
     const arr = Array.from(selected);
     if (arr.length === 0) { setStatus("Please select at least one feature."); return; }
+    // Seeds: comma/space separated non-negative integers.
+    //   - blank input -> a single RANDOM seed
+    //   - "42" (default) or e.g. "42, 7, 2024" -> exactly those seeds
+    let seedList = seedsInput.split(/[\s,]+/).map(s => s.trim()).filter(Boolean).map(Number);
+    if (seedsInput.trim() !== "" && (seedList.length === 0 || seedList.some(n => !Number.isInteger(n) || n < 0))) {
+      setStatus("Seeds must be comma-separated non-negative integers, e.g. 42, 7, 2024.");
+      return;
+    }
+    const isRandomSeed = seedsInput.trim() === "";
+    if (isRandomSeed) seedList = [Math.floor(Math.random() * 1_000_000)];
+    const wantCount = seedList.length;
     setSubmitting(true);
-    setStatus("⏳ Starting training...");
+    setStatus(`⏳ Starting training${wantCount > 1 ? ` (${wantCount} seeds)` : ""}...`);
     const startedAt = new Date().toISOString();
     try {
-      const res = await api.admin.training.trigger(sport, modelType, arr);
-      setStatus(`⏳ Training in progress (PID ${res.training_pid})...`);
+      const res = await api.admin.training.trigger(sport, modelType, arr, {
+        seeds: seedList,
+        target_mode: targetMode,
+      });
+      setStatus(`⏳ Training in progress (PID ${res.training_pid}${isRandomSeed ? `, random seed ${seedList[0]}` : ""})...`);
 
       // Poll for completion every 3 seconds
       let attempts = 0;
-      const maxAttempts = 120; // 6 minutes max
+      const maxAttempts = Math.max(120, 120 * wantCount); // ~6 min per seed
       const poll = async (): Promise<void> => {
         attempts++;
         const runs: any[] = await api.admin.training.getRuns(sport, modelType);
-        const completed = runs.find(
-          (r: any) => r.is_current && r.trained_at > startedAt && (
+        const done = runs.filter(
+          (r: any) => r.trained_at > startedAt && (
             // Populated results: non-empty array or non-array object (has keys)
             (Array.isArray(r.results_json) && r.results_json.length > 0) ||
             (typeof r.results_json === 'object' && r.results_json !== null && !Array.isArray(r.results_json) && Object.keys(r.results_json).length > 0)
           )
         );
+        const completed = done.length >= wantCount ? done[done.length - 1] : null;
         if (completed) {
-          setStatus(`✅ Training complete — ${completed.pkl_filename}`);
+          const seedsMade = done.map((r: any) => r.seed).filter((s: any) => s !== null && s !== undefined);
+          setStatus(`✅ Training complete — ${done.length} run${done.length > 1 ? "s" : ""}${seedsMade.length ? ` (seeds: ${seedsMade.join(", ")})` : ""}`);
           setTimeout(() => { onClose(); onRefresh(); }, 500);
           return;
         }
@@ -1125,6 +1145,36 @@ function TrainFeatureModal({ sport, modelType, onClose, onRefresh }: {
               </div>
             </>
           )}
+        </div>
+
+        {/* Training options: seeds + target mode */}
+        <div className="px-6 py-4 border-t border-white/10 bg-white/[0.03] flex flex-wrap items-center gap-x-5 gap-y-3">
+          <label className="flex items-center gap-2 text-xs text-gray-300">
+            <span className="text-gray-400">Seeds</span>
+            <input
+              type="text"
+              value={seedsInput}
+              onChange={(e) => setSeedsInput(e.target.value)}
+              disabled={submitting}
+              placeholder="blank → random"
+              className="w-44 bg-gray-800 border border-white/10 rounded-md px-2 py-1 text-xs text-gray-100 placeholder-gray-500 focus:outline-none focus:border-earl-600 disabled:opacity-50"
+            />
+          </label>
+          <label className="flex items-center gap-2 text-xs text-gray-300">
+            <span className="text-gray-400">Target</span>
+            <select
+              value={targetMode}
+              onChange={(e) => setTargetMode(e.target.value as "margin" | "residual")}
+              disabled={submitting}
+              className="bg-gray-800 border border-white/10 rounded-md px-2 py-1 text-xs text-gray-100 focus:outline-none focus:border-earl-600 disabled:opacity-50"
+            >
+              <option value="margin">Margin (raw)</option>
+              <option value="residual">Residual (vs line)</option>
+            </select>
+          </label>
+          <span className="text-[10px] text-gray-500">
+            Blank seeds → a random seed. Multiple (e.g. 42, 7, 2024) = one run each. Residual = line-relative target (vs the market line).
+          </span>
         </div>
 
         {/* Footer */}

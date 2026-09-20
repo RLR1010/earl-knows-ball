@@ -213,12 +213,20 @@ async def get_current_user(request: Request, db: AsyncSession = Depends(get_db))
     """
     # Preferred: Authorization header (localStorage token)
     auth_header = request.headers.get("authorization", "")
-    if auth_header.startswith("Bearer "):
-        token = auth_header.replace("Bearer ", "", 1).strip()
-        if token:
-            user = await get_user_from_token(token, db)
+    header_token = (
+        auth_header.replace("Bearer ", "", 1).strip()
+        if auth_header.startswith("Bearer ")
+        else ""
+    )
+    if header_token:
+        try:
+            user = await get_user_from_token(header_token, db)
             record_activity(request, user.id)
             return user
+        except HTTPException:
+            # Stale/invalid JS token: fall through to the durable cookie session
+            # instead of locking the user out.
+            pass
 
     # Fall back to cookie (persistent login)
     token = request.cookies.get(COOKIE_NAME)

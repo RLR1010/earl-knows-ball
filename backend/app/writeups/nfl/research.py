@@ -118,6 +118,8 @@ async def get_betting_lines(db: AsyncSession, game_id: int) -> dict:
             bl.opening_home_ml, bl.opening_away_ml,
             gp.predicted_home_score,
             gp.predicted_away_score,
+            gp.predicted_total,
+            gp.predicted_margin,
             gp.margin_conf AS confidence,
             gp.spread_pick AS ats_pick,
             gp.ml_pick
@@ -153,10 +155,21 @@ async def get_betting_lines(db: AsyncSession, game_id: int) -> dict:
 
     # Model predictions
     if r["predicted_home_score"] is not None:
+        # Derive the projected score from the signed home margin + total so the
+        # prose can never contradict the pick. (The stored predicted_*_score
+        # columns once carried a home/away swap that flipped the projected
+        # winner on away-favored games -- see nfl/engine.py.)
+        home_score = r["predicted_home_score"]
+        away_score = r["predicted_away_score"]
+        _total = r["predicted_total"]
+        _margin = r["predicted_margin"]
+        if _total is not None and _margin is not None:
+            home_score = round((_total + _margin) / 2)
+            away_score = round((_total - _margin) / 2)
         result["model_predictions"] = {
             "predicted_score": {
-                "home": r["predicted_home_score"],
-                "away": r["predicted_away_score"],
+                "home": home_score,
+                "away": away_score,
             },
             "ats_pick": r["ats_pick"],
             "confidence": r["confidence"],

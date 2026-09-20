@@ -98,30 +98,44 @@ async def get_admin_user(
     request: Request = None,
 ) -> User:
     """Dependency that verifies JWT and checks is_admin=True.
-    Checks the Authorization header first, then falls back to the earl_token cookie."""
-    token = None
-    # Try Authorization header first
+    Checks the Authorization header first, then falls back to the earl_token cookie.
+    If the header token is present but invalid we STILL fall back to the cookie, so a
+    stale JS token never locks an active admin out."""
+    header_token = None
     if authorization:
         try:
-            token = get_token_from_header(authorization)
+            header_token = get_token_from_header(authorization)
         except HTTPException:
-            token = None
-    # Fall back to cookie
-    if not token and request:
-        token = request.cookies.get(COOKIE_NAME)
-    if not token:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    try:
-        payload = jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
+            header_token = None
+
+    cookie_token = request.cookies.get(COOKIE_NAME) if request else None
+
+    candidates: list[str] = []
+    if header_token:
+        candidates.append(header_token)
+    if cookie_token and cookie_token != header_token:
+        candidates.append(cookie_token)
+
+    user: User | None = None
+    for tok in candidates:
+        try:
+            payload = jwt.decode(tok, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
+        except JWTError:
+            continue
         user_id = payload.get("sub")
         if not user_id:
-            raise HTTPException(status_code=401, detail="Invalid token")
-    except JWTError:
-        raise HTTPException(status_code=401, detail="Invalid token")
+            continue
+        result = await db.execute(select(User).where(User.id == user_id))
+        user = result.scalar_one_or_none()
+        if user is not None:
+            break
 
-    result = await db.execute(select(User).where(User.id == user_id))
-    user = result.scalar_one_or_none()
-    if not user or not user.is_admin:
+    if user is None:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid token" if candidates else "Not authenticated",
+        )
+    if not user.is_admin:
         raise HTTPException(status_code=403, detail="Admin access required")
     if not user.is_active:
         raise HTTPException(status_code=403, detail="Account disabled")
@@ -2257,6 +2271,23 @@ async def trigger_training(
         },
     }
     script = _scripts[sport][model_type]
+
+    # Optional multi-seed / target-mode flags. The NFL, NBA and MLB CLIs all accept
+    # them. This lets the admin UI kick off several seeds at once and/or a
+    # line-relative (residual) run; each seed becomes its own training_run row you
+    # can promote to live.
+    if sport in ("nfl", "nba", "mlb"):
+        _extra = ""
+        _seeds = body.get("seeds")
+        if isinstance(_seeds, (list, tuple)) and _seeds:
+            _extra += " --seeds " + ",".join(str(int(s)) for s in _seeds)
+        elif _seeds is not None and str(_seeds).strip():
+            _extra += " --seeds " + ",".join(str(int(s)) for s in str(_seeds).replace(" ", "").split(",") if s)
+        if body.get("seed") is not None:
+            _extra += f" --seed {int(body['seed'])}"
+        if body.get("target_mode") in ("margin", "residual"):
+            _extra += f" --target-mode {body['target_mode']}"
+        script = script + _extra
 
     # Run as a subprocess — fire and forget
     stderr_log = f"/tmp/train_{sport}_{model_type}.log"

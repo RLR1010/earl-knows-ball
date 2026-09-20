@@ -81,7 +81,7 @@ export default function GamePickCard({
           <div className="mb-3 text-xs uppercase tracking-wider text-gray-500">Betting Lines</div>
           <div className="grid grid-cols-1 divide-y divide-white/10 md:grid-cols-3 md:divide-x md:divide-y-0">
             <div className="py-3 text-center md:px-3">
-              <div className="text-[10px] uppercase text-gray-500">Run Line</div>
+              <div className="text-[10px] uppercase text-gray-500">{sport === "nfl" ? "Spread" : "Run Line"}</div>
               <div className="mt-1 text-sm">
                 {bl[0]?.spread != null ? (
                   <>
@@ -144,10 +144,10 @@ export default function GamePickCard({
           }
           items={[
             {
-              label: "Run Line",
+              label: sport === "nfl" ? "Spread" : "Run Line",
               pick: pc.picks?.run_line && pc.picks.run_line !== "-" ? pc.picks.run_line.toUpperCase() : "—",
               ev: pc.expected_value?.rl ?? null,
-              line: pc.lines?.run_line != null ? `Run Line ${pc.lines.run_line}` : null,
+              line: pc.lines?.run_line != null ? `${sport === "nfl" ? "Spread" : "Run Line"} ${pc.lines.run_line}` : null,
               result: pc.results?.run_line || null,
               pickColor: "text-amber-400",
             },

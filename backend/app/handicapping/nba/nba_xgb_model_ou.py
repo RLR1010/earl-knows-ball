@@ -107,6 +107,7 @@ async def train_model(
     model_path: Optional[Path] = None,
     hyperparams: Optional[Dict[str, Any]] = None,
     label: str = "nba_ou_training",
+    target_mode: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Full OU training pipeline: trains one OU model per test year (2024, 2025),
     saves each model & its training run to the database."""
@@ -130,7 +131,7 @@ async def train_model(
 
     df["total_points"] = df["home_score"] + df["away_score"]
     df = _ensure_ou_features(df)
-    df = df.sort_values(["season_year", "date"]).reset_index(drop=True)
+    df = df.sort_values(["season_year", "date", "game_id"], kind="stable").reset_index(drop=True)
 
     df_all = df.dropna(subset=["total_points"]).copy()
 
@@ -145,9 +146,13 @@ async def train_model(
         "reg_lambda": hp.get("reg_lambda", DEFAULT_REG_LAMBDA),
         "gamma": hp.get("gamma", DEFAULT_GAMMA),
         "min_child_weight": hp.get("min_child_weight", DEFAULT_MIN_CHILD_WEIGHT),
-        "seed": 42,
+        "seed": int(hp.get("seed", 42)),
         "verbosity": 0,
     }
+
+    _mode = (target_mode or "margin").strip().lower()
+    if _mode not in ("margin", "residual"):
+        _mode = "margin"
 
     feature_cols = get_model_features(target="ou")
 
@@ -161,6 +166,8 @@ async def train_model(
         train_years=_train_years_for_test_year(TEST_YEARS[-1]),
         results_json=[],
         pkl_filename="",
+        seed=int(hp.get("seed", 42)),
+        target_mode=_mode,
     )
 
     total_results = []
@@ -217,6 +224,8 @@ async def train_model(
             _tf = df_train.iloc[_sort_idx]
             _X = _tf[available].values
             _y = _tf["total_points"].values
+            _line_s = _tf["closing_ou"].values if _mode == "residual" else None
+            _y_lab = (_y - _line_s) if _mode == "residual" else _y
             if "season_year" in _tf.columns:
                 _w = _compute_decay_weights(_tf, train_seasons[-1])
             else:
@@ -227,12 +236,13 @@ async def train_model(
             # sample-consistent: train on _X/_y up to the eval boundary.
             X = _X[:-_n_eval]
             y = _y[:-_n_eval]
+            _line_train = _line_s[:-_n_eval] if _mode == "residual" else None
             sample_weights = _w[:-_n_eval]
             dtrain = xgb.DMatrix(
-                X, label=y, weight=sample_weights, feature_names=available,
+                X, label=_y_lab[:-_n_eval], weight=sample_weights, feature_names=available,
             )
             dvalid = xgb.DMatrix(
-                _X[-_n_eval:], label=_y[-_n_eval:], weight=_w[-_n_eval:],
+                _X[-_n_eval:], label=_y_lab[-_n_eval:], weight=_w[-_n_eval:],
                 feature_names=available,
             )
             model = xgb.train(
@@ -243,16 +253,20 @@ async def train_model(
         else:
             X = df_train[available].values
             y = df_train["total_points"].values
+            _line_train = df_train["closing_ou"].values if _mode == "residual" else None
+            _y_lab = (y - _line_train) if _mode == "residual" else y
             if "season_year" in df_train.columns:
                 sample_weights = _compute_decay_weights(df_train, train_seasons[-1])
             else:
                 sample_weights = np.ones(len(df_train))
             dtrain = xgb.DMatrix(
-                X, label=y, weight=sample_weights, feature_names=available
+                X, label=_y_lab, weight=sample_weights, feature_names=available
             )
             model = xgb.train(params, dtrain, num_boost_round=n_estimators, verbose_eval=False)
 
         y_pred = model.predict(dtrain)
+        if _mode == "residual" and _line_train is not None:
+            y_pred = y_pred + _line_train
         train_mae = mean_absolute_error(y, y_pred)
         train_r2 = r2_score(y, y_pred)
 
@@ -293,6 +307,8 @@ async def train_model(
                 y_test = df_test_clean["total_points"].values
                 dtest = xgb.DMatrix(X_test, feature_names=available_test)
                 pred_totals = model.predict(dtest)
+                if _mode == "residual":
+                    pred_totals = pred_totals + df_test_clean["closing_ou"].values
 
                 ou_total = len(y_test)
                 if "closing_ou" in df_test_clean.columns:
@@ -334,7 +350,7 @@ async def train_model(
             "input_features": len(available),
             "feature_names": list(available),
             "feature_importance": fi_sorted,
-            "model_params": {**params, "n_estimators": n_estimators},
+            "model_params": {**params, "n_estimators": n_estimators, "target_mode": _mode},
             "duration_seconds": round(ty_elapsed, 2),
             "ou": {
                 "total": ou_total,
@@ -398,8 +414,31 @@ if __name__ == "__main__":
 
     mode = sys.argv[1] if len(sys.argv) > 1 else "train"
 
+    # Optional flags: --seed N | --seeds a,b | --target-mode margin|residual
+    _argv = sys.argv[2:]
+    _seeds = None
+    _target_mode = None
+    _i = 0
+    while _i < len(_argv):
+        _a = _argv[_i]
+        if _a == "--seed" and _i + 1 < len(_argv):
+            _seeds = [int(_argv[_i + 1])]; _i += 2
+        elif _a == "--seeds" and _i + 1 < len(_argv):
+            _seeds = [int(x) for x in str(_argv[_i + 1]).replace(" ", ",").split(",") if x.strip() != ""]; _i += 2
+        elif _a == "--target-mode" and _i + 1 < len(_argv):
+            _target_mode = _argv[_i + 1]; _i += 2
+        else:
+            _i += 1
+
     if mode == "train":
-        result = asyncio.run(train_model(label="nba_ou_cli"))
+        _sd_list = _seeds or [42]
+        result = None
+        for _sd in _sd_list:
+            result = asyncio.run(train_model(
+                label="nba_ou_cli",
+                hyperparams={"seed": _sd},
+                target_mode=_target_mode,
+            ))
         print("\n=== NBA OU Model Training ===")
         for k, v in result.items():
             if k == "feature_importance":

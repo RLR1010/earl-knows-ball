@@ -90,34 +90,75 @@ def _name_key(raw: str) -> tuple[str, str]:
     return (first_tokens[0] if first_tokens else ""), (last_tokens[-1] if last_tokens else "")
 
 
+# Canonical player position -> coarse position group. Used to disambiguate
+# same-name players (e.g. QB "Lamar Jackson" vs CB "Lamar Jackson",
+# QB "Daniel Jones" vs OT "Daniel Jones") during name matching.
+_POS_GROUPS = {
+    "QB": "QB",
+    "RB": "RB", "FB": "RB", "HB": "RB",
+    "WR": "WR",
+    "TE": "TE",
+    "OT": "OL", "OG": "OL", "C": "OL", "G": "OL", "T": "OL", "OL": "OL",
+    "DE": "DL", "DT": "DL", "NT": "DL", "DL": "DL",
+    "LB": "LB", "ILB": "LB", "OLB": "LB", "MLB": "LB",
+    "CB": "DB", "S": "DB", "SS": "DB", "FS": "DB", "DB": "DB",
+    "K": "ST", "P": "ST", "LS": "ST",
+}
+
+
+def _pos_group(pos: Optional[str]) -> Optional[str]:
+    """Map a canonical position code to its coarse group (QB/OL/DL/LB/DB/ST/...)."""
+    if not pos:
+        return None
+    return _POS_GROUPS.get(pos.strip().upper())
+
+
 async def _player_name_index(db: AsyncSession):
-    """Build normalized lookup index of stored players (once per team-scrape)."""
-    rows = (await db.execute(select(Player.id, Player.name))).all()
-    by_full: dict[tuple[str, str], int] = {}
-    by_initial: dict[tuple[str, str], int] = {}
-    by_surname: dict[str, list[int]] = {}
-    for pid, pname in rows:
+    """Build normalized lookup index of stored players (once per team-scrape).
+
+    Each candidate stores (player_id, position_group) so callers can disambiguate
+    same-name players by position instead of blindly taking the first match.
+    """
+    rows = (await db.execute(select(Player.id, Player.name, Player.position))).all()
+    by_full: dict[tuple[str, str], list[tuple[int, Optional[str]]]] = {}
+    by_initial: dict[tuple[str, str], list[tuple[int, Optional[str]]]] = {}
+    by_surname: dict[str, list[tuple[int, Optional[str]]]] = {}
+    for pid, pname, ppos in rows:
         toks = _norm_name(pname).split()
         if len(toks) < 2:
             continue
         first_tok, last_tok = toks[0], toks[-1]
-        by_full.setdefault((first_tok, last_tok), pid)
-        by_initial.setdefault((first_tok[0], last_tok), pid)
-        by_surname.setdefault(last_tok, []).append(pid)
+        grp = _pos_group(ppos)
+        by_full.setdefault((first_tok, last_tok), []).append((pid, grp))
+        by_initial.setdefault((first_tok[0], last_tok), []).append((pid, grp))
+        by_surname.setdefault(last_tok, []).append((pid, grp))
     return by_full, by_initial, by_surname
 
 
-def _match_player_id(by_full, by_initial, by_surname, raw_name: str):
+def _pick_candidate(cands: list[tuple[int, Optional[str]]], pos_group: Optional[str]):
+    """Pick a candidate player id, preferring one whose position group matches the slot."""
+    if not cands:
+        return None
+    if pos_group:
+        matched = [pid for pid, grp in cands if grp == pos_group]
+        if matched:
+            return matched[0]
+    # No positional match (or slot has no known group): fall back to the first
+    # indexed candidate, preserving the previous name-only behavior.
+    return cands[0][0]
+
+
+def _match_player_id(by_full, by_initial, by_surname, raw_name: str, pos_group: Optional[str] = None):
     first_tok, last_tok = _name_key(raw_name)
     if not last_tok:
         return None
     if (first_tok, last_tok) in by_full:
-        return by_full[(first_tok, last_tok)]
+        return _pick_candidate(by_full[(first_tok, last_tok)], pos_group)
     if first_tok and (first_tok[0], last_tok) in by_initial:
-        return by_initial[(first_tok[0], last_tok)]
+        return _pick_candidate(by_initial[(first_tok[0], last_tok)], pos_group)
     cands = by_surname.get(last_tok)
     if cands and len(cands) == 1:
-        return cands[0]
+        return cands[0][0]
     return None
 
 
@@ -306,7 +347,8 @@ async def scrape_team_depth_chart(db: AsyncSession, team_abbr: str) -> dict:
     index_full, index_initial, index_surname = await _player_name_index(db)
     for entry in all_entries:
         player_id = _match_player_id(
-            index_full, index_initial, index_surname, entry["player_name"]
+            index_full, index_initial, index_surname, entry["player_name"],
+            _pos_group(entry["position"]),
         )
 
         dc = DepthChart(

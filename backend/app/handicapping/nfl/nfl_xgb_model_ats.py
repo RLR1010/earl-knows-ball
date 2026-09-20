@@ -283,7 +283,7 @@ async def run_all_years(
 
     # Filter to train_from+ and sort
     df = df[df["season_year"] >= train_from].copy()
-    df = df.sort_values(["season_year", "week"]).reset_index(drop=True)
+    df = df.sort_values(["season_year", "week", "game_id"], kind="stable").reset_index(drop=True)
 
     df = _ensure_ats_features(df)
 
@@ -329,7 +329,7 @@ def run_single(
         return {"error": "no data loaded"}
 
     df = _ensure_ats_features(df)
-    df = df.sort_values(["season_year", "week"]).reset_index(drop=True)
+    df = df.sort_values(["season_year", "week", "game_id"], kind="stable").reset_index(drop=True)
 
     # Train: all years < current; test: current year
     result = run_backtest(
@@ -475,6 +475,7 @@ async def train_model(
     ou_only: bool = False,
     hyperparams: Optional[Dict[str, Any]] = None,
     label: str = "nfl_ats_training",
+    target_mode: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Full training pipeline: trains ATS model for each test year (2024, 2025),
     saves models and a single training run to the database.
@@ -497,10 +498,20 @@ async def train_model(
         return {"error": "no data loaded"}
 
     df = _ensure_ats_features(df)
-    df = df.sort_values(["season_year", "week"]).reset_index(drop=True)
+    df = df.sort_values(["season_year", "week", "game_id"], kind="stable").reset_index(drop=True)
 
     target = "home_score_margin"
     spread_col = "closing_spread"
+    # target_mode="margin"   -> train on the raw final margin (legacy behaviour)
+    # target_mode="residual" -> train on the ATS margin (raw margin + closing line,
+    #   i.e. the residual vs the market line). Predictions are converted back to a
+    #   margin (subtract the line) for every metric/ATS eval below, so all reported
+    #   numbers stay in points and remain comparable across modes.
+    # Default is env-overridable (NFL_ATS_TARGET_MODE) so the trainer can be flipped
+    # without a code change; defaults to "margin" (preserves existing behaviour).
+    mode = (target_mode or os.environ.get("NFL_ATS_TARGET_MODE", "margin")).strip().lower()
+    if mode not in ("margin", "residual"):
+        mode = "margin"
     df_all = df.dropna(subset=[target]).copy()
 
     hp = hyperparams or {}
@@ -515,7 +526,7 @@ async def train_model(
         "alpha": hp.get("alpha", 0.0),
         "gamma": hp.get("gamma", 0.1),
         "min_child_weight": hp.get("min_child_weight", 3),
-        "seed": 42,
+        "seed": int(hp.get("seed", 42)),
         "verbosity": 0,
     }
 
@@ -546,6 +557,8 @@ async def train_model(
         pkl_filename="",
         test_year=TEST_YEARS[-1],
         train_years=_train_years_for_test_year(TEST_YEARS[-1]),
+        seed=int(params.get("seed", 42)),
+        target_mode=mode,
     )
 
     for test_year in TEST_YEARS:
@@ -604,15 +617,23 @@ async def train_model(
 
         X_train = df_train[available].values
         y_train = df_train[target].values
+        # residual mode trains on (margin + line); label kept separate so y_train
+        # remains the raw margin for the reported (points-space) train metrics.
+        if mode == "residual":
+            _train_label = y_train + df_train[spread_col].values
+        else:
+            _train_label = y_train
 
         # Time-decay sample weights - recent seasons weighted more
         decay_weights = _compute_decay_weights(df_train, decay=hp.get("time_decay", DEFAULT_TIME_DECAY))
-        dtrain = xgb.DMatrix(X_train, label=y_train, weight=decay_weights, feature_names=available)
+        dtrain = xgb.DMatrix(X_train, label=_train_label, weight=decay_weights, feature_names=available)
 
         model = xgb.train(params, dtrain, num_boost_round=n_estimators, verbose_eval=False)
 
-        # Training metrics
+        # Training metrics (always in raw-margin space)
         train_preds = model.predict(dtrain)
+        if mode == "residual":
+            train_preds = train_preds - df_train[spread_col].values
         train_rmse = float(np.sqrt(mean_squared_error(y_train, train_preds)))
         train_mae = float(mean_absolute_error(y_train, train_preds))
 
@@ -643,6 +664,9 @@ async def train_model(
             y_test = df_test[target].values
             dtest = xgb.DMatrix(X_test, feature_names=test_features)
             pred_margins = model.predict(dtest)
+            if mode == "residual":
+                # model predicts the ATS margin; convert back to a raw margin
+                pred_margins = pred_margins - df_test[spread_col].values
             rmse_val = float(np.sqrt(mean_squared_error(y_test, pred_margins)))
             mae_val = float(mean_absolute_error(y_test, pred_margins))
 
@@ -696,7 +720,7 @@ async def train_model(
             "train_mae": round(train_mae, 4),
             "input_features": list(available),
             "feature_importance": fi_sorted,
-            "model_params": {**params, "n_estimators": n_estimators},
+            "model_params": {**params, "n_estimators": n_estimators, "target_mode": mode},
             "duration_seconds": round(ty_elapsed, 2),
             "ats": {
                 "total": ats_total,
@@ -775,15 +799,32 @@ if __name__ == "__main__":
                 print(f"  {r['year']}: rmse={r['rmse']:.4f} mae={r['mae']:.4f}  n={r['n_train']}+{r['n_test']}")
 
     elif mode == "train":
-        result = asyncio.run(train_model(label="nfl_cli_training"))
-        print("\n=== NFL Model Training ===")
-        for k, v in result.items():
-            if k == "feature_importance":
-                print(f"  {k}: {len(v)} features")
-            elif k == "results_json":
-                print(f"  {k}: (json, {len(v)} chars)")
-            else:
-                print(f"  {k}: {v}")
+        # Optional flags (parsed leniently so the historical bare `train` call still works):
+        #   --seed N            single seed
+        #   --seeds 42,7,2024   multiple seeds (one training run each)
+        #   --target-mode margin|residual
+        import argparse
+        _ap = argparse.ArgumentParser(add_help=False)
+        _ap.add_argument("--seed", type=int, default=None)
+        _ap.add_argument("--seeds", type=str, default=None)
+        _ap.add_argument("--target-mode", dest="target_mode", default=None)
+        _a, _ = _ap.parse_known_args()
+        if _a.seeds:
+            _seed_list = [int(s) for s in _a.seeds.replace(" ", "").split(",") if s]
+        elif _a.seed is not None:
+            _seed_list = [_a.seed]
+        else:
+            _seed_list = [42]
+        for _sd in _seed_list:
+            print(f"\n=== NFL Model Training (seed={_sd}, target_mode={_a.target_mode or 'margin'}) ===")
+            result = asyncio.run(train_model(label=f"nfl_cli_training_s{_sd}", hyperparams={"seed": _sd}, target_mode=_a.target_mode))
+            for k, v in result.items():
+                if k == "feature_importance":
+                    print(f"  {k}: {len(v)} features")
+                elif k == "results_json":
+                    print(f"  {k}: (json, {len(v)} chars)")
+                else:
+                    print(f"  {k}: {v}")
 
     elif mode == "single":
         result = run_single()

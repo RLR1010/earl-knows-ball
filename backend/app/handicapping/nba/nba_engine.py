@@ -38,6 +38,40 @@ from app.handicapping.nba.data_loader import NBADataLoader, get_data_loader, get
 
 logger = logging.getLogger(__name__)
 
+# ── Live-model target mode (margin vs line-relative) ────────────────────────
+# A run trained with target_mode="residual" predicts the residual against the
+# market line, so its raw output must be converted back before use:
+#   ATS: margin = pred - spread ;  OU: total = pred + over_under
+_TM_CACHE: Dict[str, Tuple[float, str]] = {}
+_TM_TTL_SECONDS = 60.0
+
+
+def _live_target_mode(model_type: str) -> str:
+    """Return 'margin' or 'residual' for the currently-live NBA model."""
+    now = time.time()
+    cached = _TM_CACHE.get(model_type)
+    if cached and now - cached[0] < _TM_TTL_SECONDS:
+        return cached[1]
+    mode = "margin"
+    try:
+        from app.handicapping.db_training import get_live_training_run
+        run = get_live_training_run("nba", model_type) or {}
+        tm = run.get("target_mode")
+        if tm in ("margin", "residual"):
+            mode = tm
+        else:
+            rj = run.get("results_json")
+            if isinstance(rj, str):
+                rj = json.loads(rj)
+            if isinstance(rj, list) and rj and isinstance(rj[0], dict):
+                tm = (rj[0].get("model_params") or {}).get("target_mode")
+                if tm in ("margin", "residual"):
+                    mode = tm
+    except Exception as exc:
+        logger.debug("live target-mode lookup failed for %s: %s", model_type, exc)
+    _TM_CACHE[model_type] = (now, mode)
+    return mode
+
 
 def _profit_per_100(odds: float) -> float:
     """Profit on a $100 bet at American odds."""
@@ -353,6 +387,11 @@ def _evaluate_year_model(year_df: pd.DataFrame, model: xgb.Booster, model_type: 
         feat_vals, feat_names = _extract_feature_vector(row, model_type, model_feats)
         dmat = xgb.DMatrix(feat_vals, feature_names=feat_names)
         prob = float(model.predict(dmat)[0])
+        if _live_target_mode(model_type) == "residual":
+            if model_type == "ats":
+                prob = prob - (row.get("spread", 0) or 0)
+            else:
+                prob = prob + (row.get("over_under", 0) or 0)
 
         if model_type == "ats":
             spread = row.get("spread", 0) or 0
@@ -641,11 +680,15 @@ async def _build_pick_card(
     ats_vals, ats_names = _extract_feature_vector(row, "ats", _model_feature_names(ats_model))
     ats_dmat = xgb.DMatrix(ats_vals, feature_names=ats_names)
     pred_margin = float(ats_model.predict(ats_dmat)[0])
+    if _live_target_mode("ats") == "residual":
+        pred_margin = pred_margin - (spread or 0)
 
     # OU prediction (regression model outputs TOTAL: home_score + away_score)
     ou_vals, ou_names = _extract_feature_vector(row, "ou", _model_feature_names(ou_model))
     ou_dmat = xgb.DMatrix(ou_vals, feature_names=ou_names)
     pred_total = float(ou_model.predict(ou_dmat)[0])
+    if _live_target_mode("ou") == "residual":
+        pred_total = pred_total + (ou_line or 0)
 
     # ATS confidence: how far is predicted margin from the spread line
     ats_conf_val = min(0.5 + abs(pred_margin + (spread or 0)) * 0.03, 0.90) if spread else 0.5
@@ -1335,6 +1378,8 @@ async def _save_backtest_prediction(
             if feats is not None:
                 dmat = xgb.DMatrix(feats, feature_names=names)
                 ats_proba = float(ats_model.predict(dmat)[0])
+                if _live_target_mode("ats") == "residual":
+                    ats_proba = ats_proba - (row.get("closing_spread", row.get("spread", 0)) or 0)
 
         # ── OU prediction ─────────────────────────────────────────────
         ou_total = None
@@ -1343,6 +1388,8 @@ async def _save_backtest_prediction(
             if feats is not None:
                 dmat = xgb.DMatrix(feats, feature_names=names)
                 ou_total = float(ou_model.predict(dmat)[0])
+                if _live_target_mode("ou") == "residual":
+                    ou_total = ou_total + (row.get("closing_ou", row.get("over_under", 0)) or 0)
 
         # ── Actuals ────────────────────────────────────
         home_score = _float_safe(row.get("home_score"))

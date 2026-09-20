@@ -133,10 +133,11 @@ def run(conn=None, min_starts: int = 1) -> dict:
         for r in rows:
             pid = r["player_id"]
             target_date = r["game_date"]
+            # INCLUSIVE: the row for a game includes that game's own stats.
             prior = [
                 g for g in qb_games.get(pid, [])
                 if g["starter"] and g["date"] is not None and target_date is not None
-                and g["date"] < target_date
+                and g["date"] <= target_date
             ]
             cold = [g for g in prior if g["cold"]]
             warm = [g for g in prior if g["warm"]]

@@ -500,6 +500,10 @@ export const api = {
     },
     get: (id: number) => fetchAPI<Game>(`/api/games/${id}`),
     boxScore: (id: number) => fetchAPI<BoxScore | null>(`/api/games/${id}/box-score`),
+    currentWeek: (season_year?: number) =>
+      fetchAPI<{ season_year: number; week: number | null }>(
+        `/api/games/current-week${season_year ? `?season_year=${season_year}` : ""}`
+      ),
   },
 
   // Best Bets (Earl's single best value pick per upcoming game)
@@ -651,13 +655,18 @@ export const api = {
         ),
     },
     training: {
-      trigger: (sport: string, modelType: string, features: string[]) =>
+      trigger: (sport: string, modelType: string, features: string[], opts?: { seeds?: number[] | string; seed?: number; target_mode?: "margin" | "residual" }) =>
         fetchAPI<{ status: string; features_updated: number; training_pid: number; message: string }>(
           `/api/admin/train-new/${sport}/${modelType}`,
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ features }),
+            body: JSON.stringify({
+              features,
+              ...(opts?.seeds !== undefined ? { seeds: opts.seeds } : {}),
+              ...(opts?.seed !== undefined ? { seed: opts.seed } : {}),
+              ...(opts?.target_mode ? { target_mode: opts.target_mode } : {}),
+            }),
           }
         ),
       getRuns: (sport: string, modelType: string) =>

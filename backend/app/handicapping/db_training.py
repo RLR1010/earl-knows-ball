@@ -59,6 +59,8 @@ def save_training_run(
     test_year: Optional[int] = None,
     train_years: Optional[list[int]] = None,
     description: Optional[str] = None,
+    seed: Optional[int] = None,
+    target_mode: Optional[str] = None,
 ) -> str:
     """Save a training run to the database and return the training_id (UUID string).
 
@@ -87,8 +89,8 @@ def save_training_run(
             cur.execute(
                 f'INSERT INTO {sport}.training_runs '
                 f'(training_id, model_type, trained_at, results_json, is_current, '
-                f' pkl_filename, algorithm, test_year, train_years, description) '
-                f'VALUES (%s, %s, %s, %s, TRUE, %s, %s, %s, %s, %s)',
+                f' pkl_filename, algorithm, test_year, train_years, description, seed, target_mode) '
+                f'VALUES (%s, %s, %s, %s, TRUE, %s, %s, %s, %s, %s, %s, %s)',
                 (
                     training_id,
                     model_type,
@@ -99,6 +101,8 @@ def save_training_run(
                     test_year,
                     train_years_str,
                     description,
+                    seed,
+                    target_mode,
                 )
             )
         conn.commit()

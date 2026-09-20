@@ -19,6 +19,7 @@ import logging
 import math
 import os
 import pickle
+import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -140,6 +141,40 @@ def _enrich_dict_with_metadata(
 from app.models.mlb.game_prediction import MLBGamePrediction
 
 logger = logging.getLogger("earl.mlb_handicapping")
+
+# ── Live-model target mode (margin vs line-relative) ────────────────────────
+# A run trained with target_mode="residual" predicts the residual against the
+# market line, so its raw output must be converted back before use:
+#   ATS: margin = pred - spread ;  OU: total = pred + over_under
+_TM_CACHE: Dict[str, Tuple[float, str]] = {}
+_TM_TTL_SECONDS = 60.0
+
+
+def _live_target_mode(model_type: str) -> str:
+    """Return 'margin' or 'residual' for the currently-live MLB model."""
+    now = time.time()
+    cached = _TM_CACHE.get(model_type)
+    if cached and now - cached[0] < _TM_TTL_SECONDS:
+        return cached[1]
+    mode = "margin"
+    try:
+        from app.handicapping.db_training import get_live_training_run
+        run = get_live_training_run("mlb", model_type) or {}
+        tm = run.get("target_mode")
+        if tm in ("margin", "residual"):
+            mode = tm
+        else:
+            rj = run.get("results_json")
+            if isinstance(rj, str):
+                rj = json.loads(rj)
+            if isinstance(rj, list) and rj and isinstance(rj[0], dict):
+                tm = (rj[0].get("model_params") or {}).get("target_mode")
+                if tm in ("margin", "residual"):
+                    mode = tm
+    except Exception as exc:
+        logger.debug("live target-mode lookup failed for %s: %s", model_type, exc)
+    _TM_CACHE[model_type] = (now, mode)
+    return mode
 
 # MLB is a calendar-year sport (the 2026 season runs spring-fall 2026), so the
 # "current" model year is simply the current calendar year. Deriving it from
@@ -727,11 +762,15 @@ async def batch_predict_upcoming_games(
 
             if ats_feats is not None and ats_model:
                 pred_margin = float(ats_model.predict(ats_feats[np.newaxis, :])[0])
+                if _live_target_mode("ats") == "residual":
+                    pred_margin = pred_margin - (spread or 0)
             else:
                 pred_margin = 0.0
 
             if ou_feats is not None and ou_model:
                 pred_total = float(ou_model.predict(ou_feats[np.newaxis, :])[0])
+                if _live_target_mode("ou") == "residual":
+                    pred_total = pred_total + (total or 0)
             else:
                 pred_total = total or 8.5
 
@@ -1060,6 +1099,10 @@ async def _backtest_single_season(
 
         pred_margin = float(ats_model.predict(feats_ats[np.newaxis, :])[0]) if feats_ats is not None else 0.0
         pred_total = float(ou_model.predict(feats_ou[np.newaxis, :])[0]) if feats_ou is not None else 0.0
+        if _live_target_mode("ats") == "residual":
+            pred_margin = pred_margin - (spread or 0)
+        if _live_target_mode("ou") == "residual":
+            pred_total = pred_total + (total or 0)
 
         pred_home_covers = (pred_margin + spread) > 0
         pred_over = pred_total > total

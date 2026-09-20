@@ -52,6 +52,50 @@ from math import asin, cos, radians, sin, sqrt
 
 logger = logging.getLogger(__name__)
 
+# ── Early-season prior-season blend (2026-09-18, DEV experiment) ───────────────
+# For the first few weeks a season has little current-season signal, so we blend
+# the current stat with the prior season's value instead of the old behaviour
+# ("replace any missing OR ZERO stat with last year's number"), which wrongly
+# overwrote genuine in-season values.
+#
+#   keys  = NFL week number (regular season)
+#   value = weight placed on the PRIOR-season value
+#   blend = (1 - w) * current + w * prior
+#
+# Weeks not listed use the pure current-season value; Weeks 4+ are never touched.
+# A real 0 is never replaced. Tune the weights here; set to {} to disable the
+# blend (genuine NaN is then still backfilled from the prior season).
+# Full revert of the experiment:  git checkout -- app/handicapping/nfl/data_loader.py
+EARLY_SEASON_PRIOR_WEIGHTS: dict[int, float] = {1: 1.0, 2: 0.5, 3: 0.25}
+
+
+def _early_season_blend(cur, prior, week, weights: dict | None = None):
+    """Weighted early-season blend of a current-season stat with its prior-season
+    value. Returns ``cur`` when neither the blend nor a missing-backfill applies.
+
+    * weeks present in ``weights``: ``(1-w)*cur + w*prior`` (NaN ``cur`` -> prior)
+    * other weeks: ``cur`` unchanged, except a genuine NaN may be backfilled with
+      ``prior`` -- never a real 0, which is kept as 0.
+    """
+    if weights is None:
+        weights = EARLY_SEASON_PRIOR_WEIGHTS
+    cur_missing = cur is None or pd.isna(cur)
+    prior_ok = prior is not None and not pd.isna(prior)
+    try:
+        wk = int(week)
+    except (TypeError, ValueError):
+        wk = -1
+    w = weights.get(wk)
+    if w is not None:
+        if cur_missing:
+            return prior if prior_ok else cur
+        if not prior_ok:
+            return cur
+        return (1.0 - w) * float(cur) + w * float(prior)
+    if cur_missing and prior_ok:
+        return prior
+    return cur
+
 # ── Database connection ────────────────────────────────────────────────────────
 # Single source of truth via db_urls — avoids hardcoded passwords and +asyncpg issues.
 from app.db_urls import PSYCOPG2_DATABASE_URL
@@ -258,7 +302,22 @@ SELECT
     CASE WHEN g.weather_condition ~* 'rain|snow|drizzle|thunder|shower'
          THEN a_tbw.precip_ypg ELSE a_tbw.dry_ypg END       AS away_team_precip_dry_ypg,
     CASE WHEN g.weather_condition ~* 'rain|snow|drizzle|thunder|shower'
-         THEN a_tbw.precip_win_pct ELSE a_tbw.dry_win_pct END AS away_team_precip_dry_win_pct
+         THEN a_tbw.precip_win_pct ELSE a_tbw.dry_win_pct END AS away_team_precip_dry_win_pct,
+    -- Raw cold/warm + precip/dry components (the CASE above just selects one side
+    -- based on THIS game's forecast). Exposed directly so the catalog features
+    -- {home,away}_{cold,precip}_{ppg,ypg,win_pct} are populated, not blank.
+    h_tbw.cold_ppg                                       AS home_cold_ppg,
+    h_tbw.cold_ypg                                       AS home_cold_ypg,
+    h_tbw.cold_win_pct                                   AS home_cold_win_pct,
+    h_tbw.precip_ppg                                     AS home_precip_ppg,
+    h_tbw.precip_ypg                                     AS home_precip_ypg,
+    h_tbw.precip_win_pct                                 AS home_precip_win_pct,
+    a_tbw.cold_ppg                                       AS away_cold_ppg,
+    a_tbw.cold_ypg                                       AS away_cold_ypg,
+    a_tbw.cold_win_pct                                   AS away_cold_win_pct,
+    a_tbw.precip_ppg                                     AS away_precip_ppg,
+    a_tbw.precip_ypg                                     AS away_precip_ypg,
+    a_tbw.precip_win_pct                                 AS away_precip_win_pct
 FROM nfl.games g
 JOIN nfl.teams ht ON ht.id = g.home_team_id
 JOIN nfl.teams at ON at.id = g.away_team_id
@@ -269,14 +328,26 @@ LEFT JOIN nfl.venues v_game ON v_game.id = g.venue_id
 LEFT JOIN team_primary_venue tpv ON tpv.team_id = g.away_team_id
 LEFT JOIN nfl.venues v_away ON v_away.id = tpv.venue_id
 
--- Team bad-weather situational stats (leak-free, prior games; this game's row
--- holds each team's cold/warm/precip/dry stats from prior games)
-LEFT JOIN nfl.team_badweather_stats h_tbw
-    ON h_tbw.team_abbr = ht.abbreviation
-   AND h_tbw.feeds_into_game_id = g.id
-LEFT JOIN nfl.team_badweather_stats a_tbw
-    ON a_tbw.team_abbr = at.abbreviation
-   AND a_tbw.feeds_into_game_id = g.id
+-- Team bad-weather situational stats. Rows exist ONLY for played games
+-- (feeds_into_game_id = that game) — we never write rows for unplayed games.
+-- For any target game we take the team's most recent PLAYED row ("the last game
+-- played"): leak-free, and it works for upcoming games with no row of their own.
+LEFT JOIN LATERAL (
+    SELECT b.* FROM nfl.team_badweather_stats b
+    JOIN nfl.games bg ON bg.id = b.feeds_into_game_id
+    WHERE b.team_abbr = ht.abbreviation
+      AND bg.date < g.date
+    ORDER BY bg.date DESC
+    LIMIT 1
+) h_tbw ON true
+LEFT JOIN LATERAL (
+    SELECT b.* FROM nfl.team_badweather_stats b
+    JOIN nfl.games bg ON bg.id = b.feeds_into_game_id
+    WHERE b.team_abbr = at.abbreviation
+      AND bg.date < g.date
+    ORDER BY bg.date DESC
+    LIMIT 1
+) a_tbw ON true
 WHERE g.season_id IS NOT NULL
   AND g.week IS NOT NULL
 ORDER BY g.season_id, g.week, g.date;
@@ -804,10 +875,31 @@ class NFLDataLoader:
         team_stats = None
         try:
             CUM_SQL = """
+                WITH sides AS (
+                    SELECT g.id AS target_game_id, s.year AS season, g.week, g.date AS gdate,
+                           ht.abbreviation AS team_abbr, at.abbreviation AS opp_abbr
+                    FROM nfl.games g
+                    JOIN nfl.seasons s ON s.id = g.season_id
+                    JOIN nfl.teams ht ON g.home_team_id = ht.id
+                    JOIN nfl.teams at ON g.away_team_id = at.id
+                    WHERE g.game_type IN ('REG', 'POST')
+                    UNION ALL
+                    SELECT g.id AS target_game_id, s.year AS season, g.week, g.date AS gdate,
+                           at.abbreviation AS team_abbr, ht.abbreviation AS opp_abbr
+                    FROM nfl.games g
+                    JOIN nfl.seasons s ON s.id = g.season_id
+                    JOIN nfl.teams ht ON g.home_team_id = ht.id
+                    JOIN nfl.teams at ON g.away_team_id = at.id
+                    WHERE g.game_type IN ('REG', 'POST')
+                )
                 SELECT
-                    t.season, t.week, t.game_id, t.team_abbr,
-                    CASE WHEN t.is_home THEN at.abbreviation ELSE ht.abbreviation END AS opp_abbr,
-                    t.off_yds_r5                             AS off_ypg,
+                    sd.season, sd.week, sd.target_game_id AS feeds_into_game_id,
+                    sd.team_abbr, sd.opp_abbr,
+                    lat.*
+                FROM sides sd
+                LEFT JOIN LATERAL (
+                    SELECT
+                        t.off_yds_r5                             AS off_ypg,
                     t.ypp_r5                                 AS ypp,
                     t.pass_yds_r5                            AS pass_ypg,
                     t.rush_yds_r5                            AS rush_ypg,
@@ -859,14 +951,16 @@ class NFLDataLoader:
                     t.off_rushing_rank,
                     t.def_rushing_rank,
                     t.off_passing_rank,
-                    t.def_passing_rating_rank,
-                    t.feeds_into_game_id
-                FROM nfl.team_rolling_stats t
-                LEFT JOIN nfl.games g ON t.game_id = g.id
-                LEFT JOIN nfl.teams ht ON g.home_team_id = ht.id
-                LEFT JOIN nfl.teams at ON g.away_team_id = at.id
-                WHERE t.game_type IN ('REG', 'POST')  -- all lined seasons; POST rows feed playoff games with full-season history
-                ORDER BY t.season, t.week, t.team_abbr
+                    t.def_passing_rating_rank
+                    FROM nfl.team_rolling_stats t
+                    JOIN nfl.games bg ON bg.id = t.game_id
+                    WHERE t.team_abbr = sd.team_abbr
+                      AND bg.date < sd.gdate
+                      AND t.game_type IN ('REG', 'POST')
+                    ORDER BY bg.date DESC
+                    LIMIT 1
+                ) lat ON true
+                ORDER BY sd.season, sd.week, sd.team_abbr
             """
             ts_df = pd.read_sql(CUM_SQL, self.engine)
             if not ts_df.empty:
@@ -1175,10 +1269,15 @@ class NFLDataLoader:
                     ORDER BY qr.game_date DESC
                     LIMIT 1
                 ) h_roll_prev ON true
-                -- Home QB bad-weather passer rating (this game's row holds prior-starts rating)
-                LEFT JOIN nfl.qb_badweather_stats h_qbw
-                    ON h_qbw.player_id = h_st.player_id
-                   AND h_qbw.feeds_into_game_id = g.id
+                -- Home QB bad-weather passer rating (last played game's row)
+                LEFT JOIN LATERAL (
+                    SELECT b.* FROM nfl.qb_badweather_stats b
+                    JOIN nfl.games bg ON bg.id = b.feeds_into_game_id
+                    WHERE b.player_id = h_st.player_id
+                      AND bg.date < g.date
+                    ORDER BY bg.date DESC
+                    LIMIT 1
+                ) h_qbw ON true
                 -- Away starter + their pre-game stats
                 LEFT JOIN projected_starter a_st
                     ON a_st.game_id = g.id AND a_st.team_id = g.away_team_id
@@ -1217,10 +1316,15 @@ class NFLDataLoader:
                     ORDER BY qr.game_date DESC
                     LIMIT 1
                 ) a_roll_prev ON true
-                -- Away QB bad-weather passer rating
-                LEFT JOIN nfl.qb_badweather_stats a_qbw
-                    ON a_qbw.player_id = a_st.player_id
-                   AND a_qbw.feeds_into_game_id = g.id
+                -- Away QB bad-weather passer rating (last played game's row)
+                LEFT JOIN LATERAL (
+                    SELECT b.* FROM nfl.qb_badweather_stats b
+                    JOIN nfl.games bg ON bg.id = b.feeds_into_game_id
+                    WHERE b.player_id = a_st.player_id
+                      AND bg.date < g.date
+                    ORDER BY bg.date DESC
+                    LIMIT 1
+                ) a_qbw ON true
                 ORDER BY g.date
             """
             with self.engine.connect() as conn:
@@ -1269,7 +1373,12 @@ class NFLDataLoader:
             if c in df.columns and c not in feature_names:
                 feature_names.append(c)
 
-        # 5. Select only what was asked for
+        # 5. Select only what was asked for (+ RAW pre-blend mirrors so the pick
+        # card shows unblended values; the blend is a model-input transform only).
+        for _f in list(feature_names):
+            _rk = f"raw_{_f}"
+            if _rk in df.columns and _rk not in feature_names:
+                feature_names.append(_rk)
         existing = [c for c in feature_names if c in df.columns]
         missing = [c for c in feature_names if c not in df.columns]
         if missing:
@@ -1429,9 +1538,9 @@ class NFLDataLoader:
         """
         df = build_features(df, **kwargs)
 
-        # Keep only known columns
+        # Keep only known columns (+ RAW pre-blend mirrors for the pick card)
         known = set(self.get_feature_names())
-        keep = [c for c in df.columns if c in known]
+        keep = [c for c in df.columns if c in known or c.startswith("raw_")]
         return df[keep].copy()
 
 
@@ -1525,7 +1634,7 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
         df["ou_margin"] = (df["home_score"] + df["away_score"]) - df["closing_ou"]
 
     # Build team-game pairs: each game appears twice (once per team)
-    _base = ["game_id", "game_date", "week", "season_id", "season_year",
+    _base = ["game_id", "game_date", "week", "season_id", "season_year", "game_type",
              "home_ats_cover", "ou_margin", "over_result",
              "closing_spread", "closing_ou"]
     for side, id_col, abbr_col, score_col, opp_col in [
@@ -1663,47 +1772,82 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
     except Exception as _proll_exc:
         logger.warning("Failed to load prior-season rolling stats for week-1 backfill: %s", _proll_exc)
 
+    # ── Prior-season aggregates for features missing from nfl.prior_team_stats ──
+    # cover%, over%, blown-out%, win total, ATS streak. Derived from already-loaded
+    # games, keyed by (team, season); only ever read for season-1 => no leakage.
+    try:
+        def _streak_to_end(seq):
+            k = 0
+            for v in list(seq)[::-1]:
+                if v is not None and v > 0:
+                    k += 1
+                else:
+                    break
+            return float(k)
+
+        _reg = tg[tg["game_type"] == "REG"].sort_values(["team_abbr", "season_year", "date", "game_id"])
+        for (_tm, _sy), _g in _reg.groupby(["team_abbr", "season_year"]):
+            _d = prior_map.setdefault((_tm, int(_sy)), {})
+            _d.setdefault("cover_pct", float((_g["cover"] > 0.5).mean()) if len(_g) else 0.5)
+            _d.setdefault("ou_over_pct", float((_g["ou_margin"] > 0).mean()) if len(_g) else 0.5)
+            _d.setdefault("ou_margin", float(_g["ou_margin"].mean()) if len(_g) else 0.0)
+            _d.setdefault("embarrassed_pct", float((_g["margin"] <= -14).mean()) if len(_g) else 0.0)
+            _d.setdefault("season_wins", float((_g["won"] == 1).sum()) if len(_g) else 0.0)
+            _d.setdefault("ats_streak", _streak_to_end(_g["cover"].values))
+    except Exception as _pe_exc:
+        logger.warning("prior extras (cover/ou/embarrassed/wins) failed: %s", _pe_exc)
+
     # ── Compute team-overall rolling stats on the long frame ────────────
     def _first_fill(series: pd.Series, prior_key: str,
-                    default_val: float = 0.5) -> pd.Series:
-        """Rolling mean; first-game NaN gets prior-season value."""
+                    default_val: float = 0.5,
+                    name: str | None = None) -> pd.Series:
+        """Early-season prior blend of the rolling mean.
+
+        Weeks in EARLY_SEASON_PRIOR_WEIGHTS blend the current-season rolling mean
+        with the prior-season value (a week-1 NaN has no current games yet, so it
+        resolves to the prior season). Other weeks keep the pure current-season
+        mean; only a genuine NaN is backfilled from the prior season."""
         r = series.copy()
-        m = r.isna()
-        if m.any():
-            for i in r[m].index:
+        # Keep the RAW (pre-blend) series for pick-card display; the
+        # early-season blend is a model-input transform only.
+        if name is not None:
+            tg[f"raw__{name}"] = series.copy()
+        _wk = tg["week"].reindex(series.index)
+        _mask = _wk.isin(EARLY_SEASON_PRIOR_WEIGHTS.keys())
+        if _mask.any():
+            for i in _wk.index[_mask]:
                 tm = tg.loc[i, "team_abbr"]
                 sy = tg.loc[i, "season_year"]
-                pv = prior_map.get((tm, sy - 1), {}).get(prior_key, default_val)
-                r.loc[i] = pv
-            r = r.fillna(default_val)
-        return r
+                pv = prior_map.get((tm, sy - 1), {}).get(prior_key)
+                r.loc[i] = _early_season_blend(r.loc[i], pv, _wk.loc[i])
+        return r.fillna(default_val)
 
     for window in [3, 5, 10]:
         tg[f"win_pct_r{window}"] = _first_fill(
             tg.groupby(["team_id", "season_year"])["won"]
             .transform(lambda s: s.shift(1).rolling(window, min_periods=1).mean()),
-            "win_pct", 0.5
+            "win_pct", 0.5, name=f"win_pct_r{window}"
         )
         tg[f"margin_r{window}"] = _first_fill(
             tg.groupby(["team_id", "season_year"])["margin"]
             .transform(lambda s: s.shift(1).rolling(window, min_periods=1).mean()),
-            "margin", 0.0
+            "margin", 0.0, name=f"margin_r{window}"
         )
         tg[f"cover_pct_r{window}"] = _first_fill(
             tg.groupby(["team_id", "season_year"])["cover"]
             .transform(lambda s: s.shift(1).rolling(window, min_periods=1).mean()),
-            "win_pct", 0.5
+            "cover_pct", 0.5, name=f"cover_pct_r{window}"
         )
         if window == 10:
             tg["pf"] = _first_fill(
                 tg.groupby(["team_id", "season_year"])["score"]
                 .transform(lambda s: s.shift(1).rolling(10, min_periods=1).mean()),
-                "off_ppg", 0.0
+                "off_ppg", 0.0, name="pf"
             )
             tg["pa"] = _first_fill(
                 tg.groupby(["team_id", "season_year"])["opp_score"]
                 .transform(lambda s: s.shift(1).rolling(10, min_periods=1).mean()),
-                "def_ppg", 0.0
+                "def_ppg", 0.0, name="pa"
             )
 
     # OU features
@@ -1713,24 +1857,24 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
             tg[f"ou_over_pct_r{window}"] = _first_fill(
                 tg.groupby(["team_id", "season_year"])["cover_as_over"]
                 .transform(lambda s: s.shift(1).rolling(window, min_periods=1).mean()),
-                "win_pct", 0.5
+                "ou_over_pct", 0.5, name=f"ou_over_pct_r{window}"
             )
             tg[f"ou_margin_r{window}"] = _first_fill(
-                tg.groupby("team_id")["ou_margin"]
+                tg.groupby(["team_id", "season_year"])["ou_margin"]
                 .transform(lambda s: s.shift(1).rolling(window, min_periods=1).mean()),
-                "margin", 0.0
+                "ou_margin", 0.0, name=f"ou_margin_r{window}"
             )
         tg["ou_as_over_pct_r10"] = tg["ou_over_pct_r10"]
 
-    # Embarrassed (lost by 14+)
-    tg["embarrassed"] = tg.groupby("team_id")["margin"].transform(
+    # Embarrassed (lost by 14+); per-season + prior blend (matches win_pct/margin)
+    tg["embarrassed"] = tg.groupby(["team_id", "season_year"])["margin"].transform(
         lambda s: (s.shift(1) <= -14).astype(float)
-    ).fillna(0)  # 0 = false if no prior game
+    )
     for window in [3, 5, 10]:
-        tg[f"embarrassed_pct_r{window}"] = (
-            tg.groupby("team_id")["embarrassed"]
-            .transform(lambda s: s.shift(1).rolling(window, min_periods=1).mean())
-            .fillna(0.0)
+        tg[f"embarrassed_pct_r{window}"] = _first_fill(
+            tg.groupby(["team_id", "season_year"])["embarrassed"]
+            .transform(lambda s: s.shift(1).rolling(window, min_periods=1).mean()),
+            "embarrassed_pct", 0.0, name=f"embarrassed_pct_r{window}"
         )
 
     # Season-long ATS (expanding within each team+season). Leave NaN when a team
@@ -1752,29 +1896,41 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
         .last()
         .to_dict()
     )
+    # raw (unblended) values kept for the pick card
+    tg["raw__season_ats_pct"] = tg["season_ats_pct"].copy()
     def _carry_prior_ats(row):
-        if pd.notna(row["season_ats_pct"]):
-            return row["season_ats_pct"]
-        return _last.get((row["team_abbr"], row["season_year"] - 1))
+        pv = _last.get((row["team_abbr"], row["season_year"] - 1))
+        return _early_season_blend(row["season_ats_pct"], pv, row.get("week"))
     tg["season_ats_pct"] = tg.apply(_carry_prior_ats, axis=1)
-    # Season wins
+    # Season wins (per-season expanding; week 1 seeds from the prior-season win total)
     tg["season_wins"] = (
         tg.groupby(["team_id", "season_id"])["won"]
         .transform(lambda s: s.shift(1).expanding().sum())
         .fillna(0)
     )
+    tg["raw__season_wins"] = tg["season_wins"].copy()
+    def _carry_prior_wins(row):
+        pv = prior_map.get((row["team_abbr"], row["season_year"] - 1), {}).get("season_wins")
+        return _early_season_blend(row["season_wins"], pv, row.get("week"))
+    tg["season_wins"] = tg.apply(_carry_prior_wins, axis=1)
 
     # Home/away ATS splits — position-specific (kept for situational data).
     # Same principle: leave NaN (blank on card) when no graded games, model gets 0.5.
     homes = tg[tg.position == "home"].copy()
-    homes["ats_cover_pct_r5"] = (
-        homes.groupby("team_id")["cover"]
-        .transform(lambda s: s.shift(1).rolling(5, min_periods=1).mean())
+    _homes_raw = homes.groupby(["team_id", "season_year"])["cover"].transform(
+        lambda s: s.shift(1).rolling(5, min_periods=1).mean()
+    )
+    homes["raw__ats_cover_pct_r5"] = _homes_raw.copy()
+    homes["ats_cover_pct_r5"] = _first_fill(
+        _homes_raw, "cover_pct", 0.5, name=None
     )
     aways = tg[tg.position == "away"].copy()
-    aways["ats_cover_pct_r5"] = (
-        aways.groupby("team_id")["cover"]
-        .transform(lambda s: s.shift(1).rolling(5, min_periods=1).mean())
+    _aways_raw = aways.groupby(["team_id", "season_year"])["cover"].transform(
+        lambda s: s.shift(1).rolling(5, min_periods=1).mean()
+    )
+    aways["raw__ats_cover_pct_r5"] = _aways_raw.copy()
+    aways["ats_cover_pct_r5"] = _first_fill(
+        _aways_raw, "cover_pct", 0.5, name=None
     )
 
     # Streaks
@@ -1827,7 +1983,7 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
             .rolling(5, min_periods=1)
             .apply(_weighted_avg)
         ),
-        "margin", 0.0
+        "margin", 0.0, name="weighted_margin_r5"
     )
 
     # ── Join team-overall stats back into wide DataFrame ──────────────────
@@ -1845,13 +2001,21 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
         "season_ats_pct", "season_wins",
         "ou_as_over_pct_r10",
         "weighted_margin_r5",
-        "ats_cover_pct_r5",
+        "ats_cover_pct_r5", "ats_streak",
     }
     existing = {c for c in tg_cols if c in home_stats.columns}
 
     for col in existing:
         df[f"home_{col}"] = df["game_id"].map(home_stats[col])
         df[f"away_{col}"] = df["game_id"].map(away_stats[col])
+
+    # RAW (pre early-season-blend) mirrors for the pick card: the blend is a
+    # model-input transform only and must never reach displayed/persisted features.
+    for col in existing:
+        _rk = f"raw__{col}"
+        if _rk in home_stats.columns:
+            df[f"raw_home_{col}"] = df["game_id"].map(home_stats[_rk])
+            df[f"raw_away_{col}"] = df["game_id"].map(away_stats[_rk])
 
     # Populate PF/PA with legacy names for backward compat
     if "pf" in existing:
@@ -1860,6 +2024,13 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
     if "pa" in existing:
         df["hpa"] = df["home_pa"]
         df["apa"] = df["away_pa"]
+    # raw mirrors for the legacy PF/PA aliases (pick-card display)
+    if "raw_home_pf" in df.columns:
+        df["raw_hpf"] = df["raw_home_pf"]
+        df["raw_apf"] = df["raw_away_pf"]
+    if "raw_home_pa" in df.columns:
+        df["raw_hpa"] = df["raw_home_pa"]
+        df["raw_apa"] = df["raw_away_pa"]
 
     # Implied scoring features
     if "hpf" in df.columns and "apf" in df.columns:
@@ -1875,6 +2046,13 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
     # _impute_feature. Do not fillna(0.5) — that fabricates a cover % for display.
     df["home_ats_home_pct_r5"] = df["game_id"].map(_homes_ats)
     df["away_ats_away_pct_r5"] = df["game_id"].map(_aways_ats)
+    # raw (unblended) mirrors for the pick card
+    df["raw_home_ats_home_pct_r5"] = df["game_id"].map(
+        homes.set_index("game_id")["raw__ats_cover_pct_r5"]
+    )
+    df["raw_away_ats_away_pct_r5"] = df["game_id"].map(
+        aways.set_index("game_id")["raw__ats_cover_pct_r5"]
+    )
     # ── 16. Division & primetime flags ───────────────────────────────────
     # NFL division names (North/East/South/West) repeat across conferences, so a
     # same-division game REQUIRES matching conference too (e.g. GB NFC North vs
@@ -2260,38 +2438,30 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
                 col = f"{prefix}_{suffix}"
                 if col not in df.columns:
                     continue
-                # week 1 games: fill from prior_team_stats (cumulative data is empty)
+                # Keep the RAW (pre-blend) team stat for pick-card display.
+                df[f"raw_{col}"] = df[col].copy()
+                # Early-season prior BLEND (weeks in EARLY_SEASON_PRIOR_WEIGHTS):
+                # pull the current value toward the prior-season value. Later
+                # weeks keep the current value as-is; a genuine 0 is NEVER replaced
+                # with last season's number.
                 prior_key = _suffix_to_prior.get(suffix)
+                abbr_col = f"{prefix}_abbr"
+                if abbr_col not in df.columns:
+                    continue
                 if prior_key is not None:
-                    abbr_col = f"{prefix}_abbr"
-                    if abbr_col in df.columns:
-                        # MLB-style COALESCE across the whole season: fill any
-                        # missing/zero pre-game stat with previous-season value.
-                        # This seeds early-season games (Week 1+ before rolling
-                        # windows fill) instead of leaving 0s that distort the model.
-                        def _prior_fill(r):
-                            cur = r.get(col)
-                            if cur is not None and not pd.isna(cur) and cur != 0:
-                                return cur
-                            return prior_map.get((r[abbr_col], r["season_year"] - 1), {}).get(prior_key, 0.0)
-                        df[col] = df.apply(_prior_fill, axis=1)
+                    def _prior_fill(r, _pk=prior_key, _col=col, _abbr=abbr_col):
+                        pv = prior_map.get((r[_abbr], r["season_year"] - 1), {}).get(_pk)
+                        return _early_season_blend(r.get(_col), pv, r.get("week"))
+                    df[col] = df.apply(_prior_fill, axis=1)
                 else:
-                    # No prior_team_stats key (e.g. rush_ypa) — fall back to the
-                    # prior-season team_rolling_stats (last REG row) so week-1
-                    # games get a real prior value instead of NaN.
+                    # No prior_team_stats key (e.g. rush_ypa) — use the prior-season
+                    # team_rolling_stats (last REG row) as the blend partner.
                     rolling_col = _suffix_to_rolling_src.get(suffix)
                     if rolling_col:
-                        def _prior_fill(r, _s=rolling_col, _p=prefix):
-                            cur = r.get(col)
-                            if cur is not None and not pd.isna(cur) and cur != 0:
-                                return cur
-                            rec = prior_rolling_map.get((r[abbr_col], r["season_year"] - 1))
-                            if not rec:
-                                return cur
-                            pv = rec.get(_s)
-                            if pv is None or (isinstance(pv, float) and pv != pv):
-                                return cur
-                            return float(pv)
+                        def _prior_fill(r, _s=rolling_col, _col=col, _abbr=abbr_col):
+                            rec = prior_rolling_map.get((r[_abbr], r["season_year"] - 1))
+                            pv = rec.get(_s) if rec else None
+                            return _early_season_blend(r.get(_col), pv, r.get("week"))
                         df[col] = df.apply(_prior_fill, axis=1)
                 # NOTE: leave any column still missing here as NaN instead of
                 # blind-0 filling. A team stat with NO prior-season and NO current
@@ -2384,14 +2554,24 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
             ("away_qb_rush_att_5", "away_qb_rush_att_5_prev"),
         }
         _qb_prev_cols = set()
+        _wser = df["week"].map(EARLY_SEASON_PRIOR_WEIGHTS).astype(float)
         for _cur, _prev in _qb_prev_pairs:
             if _cur in df.columns and _prev in df.columns:
-                # Only backfill a genuinely MISSING current-season value. Do NOT
-                # treat a legitimate 0.0 (e.g. 0 INTs / 0 sacks in a 5-game
-                # window) as if it were absent — overwriting it with the
-                # prior-season figure destroys a real, meaningful signal.
-                mask = df[_cur].isna()
-                df.loc[mask, _cur] = df.loc[mask, _prev]
+                # RAW (unblended, current-season) value for the pick card.
+                df[f"raw_{_cur}"] = df[_cur].copy()
+                cur = df[_cur]
+                pv = df[_prev]
+                blend = cur.copy()
+                # Early-season weighted blend (weeks in EARLY_SEASON_PRIOR_WEIGHTS):
+                # pull the current value toward the QB's prior-season figure.
+                both = cur.notna() & pv.notna() & _wser.notna()
+                blend.loc[both] = (1 - _wser[both]) * cur[both] + _wser[both] * pv[both]
+                # Genuinely missing current value (rookie/backup or week 1):
+                # backfill from the prior season (as before). Do NOT overwrite a
+                # legitimate 0.0 — only genuine NaN.
+                fillmask = cur.isna() & pv.notna()
+                blend.loc[fillmask] = pv[fillmask]
+                df[_cur] = blend
                 _qb_prev_cols.add(_prev)
         if _qb_prev_cols:
             df = df.drop(columns=list(_qb_prev_cols), errors="ignore")
@@ -2424,6 +2604,29 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
             ),
         })
         df = pd.concat([df, computed_qb], axis=1)
+
+        # RAW mirrors of the QB differential/trend features for the pick card.
+        _qb_raw_pairs = {
+            "raw_qb_passer_rating_5_diff": ("raw_home_qb_passer_rating_5", "raw_away_qb_passer_rating_5"),
+            "raw_qb_any_a_5_diff": ("raw_home_qb_any_a_5", "raw_away_qb_any_a_5"),
+            "raw_qb_passer_rating_season_diff": ("raw_home_qb_passer_rating_season", "raw_away_qb_passer_rating_season"),
+            "raw_qb_any_a_season_diff": ("raw_home_qb_any_a_season", "raw_away_qb_any_a_season"),
+        }
+        _raw_qb = {}
+        for _out, (_h, _a) in _qb_raw_pairs.items():
+            if _h in df.columns and _a in df.columns:
+                _raw_qb[_out] = df[_h] - df[_a]
+        for _side in ("home", "away"):
+            if f"raw_{_side}_qb_passer_rating_5" in df.columns and f"raw_{_side}_qb_passer_rating_season" in df.columns:
+                _raw_qb[f"raw_{_side}_qb_passer_rating_trend"] = (
+                    df[f"raw_{_side}_qb_passer_rating_5"] - df[f"raw_{_side}_qb_passer_rating_season"]
+                )
+            if f"raw_{_side}_qb_ypa_5" in df.columns and f"raw_{_side}_qb_ypa_season" in df.columns:
+                _raw_qb[f"raw_{_side}_qb_ypa_trend"] = (
+                    df[f"raw_{_side}_qb_ypa_5"] - df[f"raw_{_side}_qb_ypa_season"]
+                )
+        if _raw_qb:
+            df = pd.concat([df, pd.DataFrame(_raw_qb, index=df.index)], axis=1)
 
         # Fill NaN (Week 1 or no prior QB data)
         qb_feat_cols = [

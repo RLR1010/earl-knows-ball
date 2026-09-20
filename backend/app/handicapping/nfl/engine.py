@@ -77,8 +77,13 @@ def _extract_pick_card_features(row, feature_metadata: Dict[str, Dict[str, str]]
 
     features = {}
     for name, meta in feature_metadata.items():
-        if name in row.index or name in row:
-            value = _sanitize(row.get(name))
+        # Prefer the RAW (pre early-season-blend) value when the loader provides
+        # one: the blend is a model-input transform and must never be displayed/
+        # persisted on the pick card.
+        _rk = f"raw_{name}"
+        _has_raw = _rk in row.index
+        if _has_raw or name in row.index or name in row:
+            value = _sanitize(row.get(_rk) if _has_raw else row.get(name))
             if value is not None:
                 features[name] = {
                     "value": value,
@@ -160,6 +165,48 @@ def _resolve_live_nfl_year() -> int:
 
 
 CURRENT_NFL_YEAR = _resolve_live_nfl_year()
+
+
+# ── Live-model target mode (margin vs line-relative) ────────────────────────
+# A run trained with target_mode="residual" predicts the residual against the
+# market line, so its raw output must be converted back to points before use:
+#   ATS: margin = pred - closing_spread ;  OU: total = pred + closing_ou
+# The active behaviour is taken from whichever run is currently *live*, so
+# promoting a residual run in the admin UI automatically switches inference.
+_TM_CACHE: Dict[str, Tuple[float, str]] = {}
+_TM_TTL_SECONDS = 60.0
+
+
+def _live_target_mode(model_type: str) -> str:
+    """Return 'margin' or 'residual' for the currently-live model of *model_type*.
+
+    Reads the live training_run (explicit ``target_mode`` column first, then the
+    stored ``results_json → model_params.target_mode``). Defaults to 'margin' on
+    any error so inference never breaks. Cached briefly to avoid a DB hit per game.
+    """
+    now = time.time()
+    cached = _TM_CACHE.get(model_type)
+    if cached and now - cached[0] < _TM_TTL_SECONDS:
+        return cached[1]
+    mode = "margin"
+    try:
+        from app.handicapping.db_training import get_live_training_run
+        run = get_live_training_run("nfl", model_type) or {}
+        tm = run.get("target_mode")
+        if tm in ("margin", "residual"):
+            mode = tm
+        else:
+            rj = run.get("results_json")
+            if isinstance(rj, str):
+                rj = json.loads(rj)
+            if isinstance(rj, list) and rj and isinstance(rj[0], dict):
+                tm = (rj[0].get("model_params") or {}).get("target_mode")
+                if tm in ("margin", "residual"):
+                    mode = tm
+    except Exception as exc:  # never let this break prediction
+        logger.debug("live target-mode lookup failed for %s: %s", model_type, exc)
+    _TM_CACHE[model_type] = (now, mode)
+    return mode
 
 
 def _load_model_for_year(model_type: str, year: int) -> Optional[xgb.Booster]:
@@ -686,6 +733,8 @@ async def batch_predict_upcoming_games(
                         names = model_feats
                     dmat = xgb.DMatrix(feats, feature_names=names)
                     ats_margin = float(ats_model.predict(dmat)[0])
+                    if _live_target_mode("ats") == "residual" and spread is not None:
+                        ats_margin = ats_margin - spread   # line-relative model
                     ats_feats, ats_names = feats, names
 
             # OU prediction (regression: predicts total_points directly)
@@ -702,6 +751,8 @@ async def batch_predict_upcoming_games(
                         names = model_feats
                     dmat = xgb.DMatrix(feats, feature_names=names)
                     predicted_total = float(ou_model.predict(dmat)[0])
+                    if _live_target_mode("ou") == "residual" and over_under is not None:
+                        predicted_total = predicted_total + over_under   # line-relative model
                     ou_feats, ou_names = feats, names
 
             # Build pick card
@@ -724,10 +775,13 @@ async def batch_predict_upcoming_games(
 
             predicted_home, predicted_away = None, None
             if predicted_total is not None and spread is not None:
+                # pred_margin is the signed HOME margin (home_score - away_score):
+                # home = (total + margin)/2, away = (total - margin)/2 already yields
+                # the correct (matching ml_pick) orientation. Do NOT swap when the
+                # away team is favored -- that would force home >= away and make the
+                # projected score contradict the moneyline pick.
                 predicted_home = round((predicted_total + pred_margin) / 2)
                 predicted_away = round((predicted_total - pred_margin) / 2)
-                if pred_margin < 0:
-                    predicted_home, predicted_away = predicted_away, predicted_home
 
             result: Dict[str, Any] = {
                 "game_id": gid,
@@ -827,6 +881,11 @@ def _evaluate_year_model(year_df: pd.DataFrame, model: xgb.Booster, model_type: 
             feat_names = model_feats
         dmat = xgb.DMatrix(feat_vals, feature_names=feat_names)
         prob = float(model.predict(dmat)[0])
+        if _live_target_mode(model_type) == "residual":
+            if model_type == "ats":
+                prob = prob - (row.get("closing_spread", row.get("spread", 0)) or 0)
+            else:
+                prob = prob + (row.get("closing_ou", row.get("over_under", 0)) or 0)
         probs.append(prob)
 
         if model_type == "ats":
@@ -897,10 +956,11 @@ async def _save_api_prediction(result: Dict[str, Any]) -> None:
         pred_home_score = None
         pred_away_score = None
         if predicted_total is not None:
+            # pred_margin is the signed HOME margin: the formula below already
+            # matches the moneyline pick, so no home/away swap (a swap would force
+            # home >= away and contradict the pick when the away team is favored).
             pred_home_score = max(0, round((predicted_total + pred_margin) / 2.0))
             pred_away_score = max(0, round((predicted_total - pred_margin) / 2.0))
-            if pred_margin < 0:
-                pred_home_score, pred_away_score = pred_away_score, pred_home_score
 
         ou_pick = result.get("ou_pick")
         spread_pick = result.get("spread_pick")
@@ -1047,6 +1107,8 @@ async def _save_backtest_prediction(
                     names = model_feats
                 dmat = xgb.DMatrix(feats, feature_names=names)
                 ats_margin = float(ats_model.predict(dmat)[0])
+                if _live_target_mode("ats") == "residual" and spread is not None:
+                    ats_margin = ats_margin - spread   # line-relative model
                 ats_feats, ats_names = feats, names
 
         # ── OU prediction (regression: predicts total_points directly) ────────
@@ -1063,6 +1125,8 @@ async def _save_backtest_prediction(
                     names = model_feats
                 dmat = xgb.DMatrix(feats, feature_names=names)
                 predicted_total = float(ou_model.predict(dmat)[0])
+                if _live_target_mode("ou") == "residual" and over_under is not None:
+                    predicted_total = predicted_total + over_under   # line-relative model
                 ou_feats, ou_names = feats, names
 
         # ── Actuals ─────────────────────────────────────────────────────────────
@@ -1236,12 +1300,11 @@ async def _save_backtest_prediction(
                     NFLGamePrediction.source == "backtest",
                 )
             )
-            # Compute predicted scores from model total + margin (not actual scores)
+            # Compute predicted scores from model total + margin (not actual scores).
+            # pred_margin is the signed HOME margin; no swap (see live path above).
             if predicted_total is not None:
                 _pred_h = int(round((predicted_total + pred_margin) / 2))
                 _pred_a = int(round((predicted_total - pred_margin) / 2))
-                if pred_margin < 0:
-                    _pred_h, _pred_a = _pred_a, _pred_h
                 _pred_home_score = max(0, _pred_h)
                 _pred_away_score = max(0, _pred_a)
             else:
@@ -1300,12 +1363,11 @@ async def _save_backtest_prediction(
                     NFLGamePrediction.source == "backtest",
                 )
             )
-            # Compute predicted scores from model total + margin (not actual scores)
+            # Compute predicted scores from model total + margin (not actual scores).
+            # pred_margin is the signed HOME margin; no swap (see live path above).
             if predicted_total is not None:
                 _pred_h = int(round((predicted_total + pred_margin) / 2))
                 _pred_a = int(round((predicted_total - pred_margin) / 2))
-                if pred_margin < 0:
-                    _pred_h, _pred_a = _pred_a, _pred_h
                 _pred_home_score = max(0, _pred_h)
                 _pred_away_score = max(0, _pred_a)
             else:

@@ -114,9 +114,15 @@ async def run_backtest(
     feature_set: list[str] | None = None,
     train_years: list[int] | None = None,
     training_id: str | None = None,
+    target_mode: str | None = None,
+    seed: int | None = None,
 ) -> dict:
     """Run a single backtest year."""
     import time
+
+    _mode = (target_mode or "margin").strip().lower()
+    if _mode not in ("margin", "residual"):
+        _mode = "margin"
 
     t0 = time.time()
 
@@ -172,6 +178,8 @@ async def run_backtest(
     # best_iteration.
     X_train_full = train_feats[present].values
     y_train_full = train_feats["actual_margin"].values
+    if _mode == "residual":
+        y_train_full = y_train_full + np.nan_to_num(train_feats["spread"].values, nan=0.0)
     ew_full = _compute_decay_weights(train_feats, max(train_years))
 
     model = xgb.XGBRegressor(
@@ -183,7 +191,7 @@ async def run_backtest(
         reg_lambda=1.0,
         gamma=0.1,
         min_child_weight=3,
-        random_state=42,
+        random_state=int(seed or 42),
         verbosity=0,
         eval_metric="rmse",
         # XGB 3.x: early_stopping_rounds is a CONSTRUCTOR arg (removed from
@@ -197,6 +205,8 @@ async def run_backtest(
         train_feats_sorted = train_feats.iloc[idx]
         X_f = train_feats_sorted[present].values
         y_f = train_feats_sorted["actual_margin"].values
+        if _mode == "residual":
+            y_f = y_f + np.nan_to_num(train_feats_sorted["spread"].values, nan=0.0)
         ew_f = _compute_decay_weights(train_feats_sorted, max(train_years))
         n_eval = max(int(len(X_f) * 0.15), 50)
         X_eval = X_f[-n_eval:]
@@ -219,6 +229,8 @@ async def run_backtest(
     X_test = test_feats[present].values
     y_test = test_feats["actual_margin"].values
     y_pred = model.predict(X_test)
+    if _mode == "residual":
+        y_pred = y_pred - np.nan_to_num(test_feats["spread"].values, nan=0.0)
 
     # Evaluation
     mae = mean_absolute_error(y_test, y_pred)
@@ -277,7 +289,7 @@ async def run_backtest(
             {"feature": f, "importance": round(float(imp), 6)}
             for f, imp in zip(present, model.feature_importances_)
         ],
-        "model_params": model.get_params(),
+        "model_params": {**model.get_params(), "target_mode": _mode},
         "duration_seconds": round(time.time() - t0, 1),
     }
 
@@ -306,6 +318,8 @@ async def run_all_years(
     train_from: int = 2016,
     test_until: int | None = None,
     skip_db: bool = False,
+    target_mode: str | None = None,
+    seed: int | None = None,
 ) -> list[dict]:
     """Run backtests for all available years."""
     from sqlalchemy.ext.asyncio import create_async_engine
@@ -345,7 +359,7 @@ async def run_all_years(
     for feature_set in feature_sets:
         for year in test_years:
             train_years = list(range(train_from, year))
-            result = await run_backtest(raw, feats, year, feature_set, train_years)
+            result = await run_backtest(raw, feats, year, feature_set, train_years, target_mode=target_mode, seed=seed)
             if result:
                 total_results.append(result)
 
@@ -384,6 +398,8 @@ async def run_all_years(
                 pkl_filename="",  # placeholder, updated below
                 algorithm="xgboost",
                 description=f"ATS backtest {test_years[0]}-{test_years[-1]}",
+                seed=int(seed) if seed is not None else None,
+                target_mode=(target_mode or "margin"),
             )
 
             # Save PKL files for each test year — only 2025 and 2026.
@@ -432,6 +448,9 @@ if __name__ == "__main__":
     parser.add_argument("--train-from", type=int, default=2016, help="First training year")
     parser.add_argument("--test-until", type=int, default=None, help="Last test year (default: CURRENT_YEAR)")
     parser.add_argument("--skip-db", action="store_true", help="Skip saving to database")
+    parser.add_argument("--seed", type=int, default=None, help="Random seed")
+    parser.add_argument("--seeds", type=str, default=None, help="Comma-separated seeds (one run each)")
+    parser.add_argument("--target-mode", type=str, default="margin", choices=["margin", "residual"])
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -443,12 +462,21 @@ if __name__ == "__main__":
     test_year = args.test_year or test_until
 
     if args.mode == "all":
-        results = asyncio.run(run_all_years(
-            feature_sets=[args.features],
-            train_from=args.train_from,
-            test_until=test_until,
-            skip_db=args.skip_db,
-        ))
+        _seeds = None
+        if args.seeds:
+            _seeds = [int(x) for x in str(args.seeds).replace(" ", ",").split(",") if x.strip() != ""]
+        elif args.seed is not None:
+            _seeds = [int(args.seed)]
+        results = []
+        for _sd in (_seeds or [None]):
+            results = asyncio.run(run_all_years(
+                feature_sets=[args.features],
+                train_from=args.train_from,
+                test_until=test_until,
+                skip_db=args.skip_db,
+                target_mode=args.target_mode,
+                seed=_sd,
+            ))
         print(f"\n{'='*60}")
         print(f"Summary: {len(results)} backtests")
         for r in results:
