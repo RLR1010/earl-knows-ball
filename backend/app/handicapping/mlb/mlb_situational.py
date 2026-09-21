@@ -12,6 +12,7 @@ MLB-specific factors:
 import logging
 from datetime import datetime, timezone, timedelta
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,6 +20,60 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.mlb import MLBGames, MLBTeam, MLBSeason
 
 logger = logging.getLogger("earl.mlb_situational")
+
+# All time-of-day / weekday classification is done in the game's LOCAL time.
+# `game.date` is a timestamptz returned by asyncpg as a UTC-aware datetime, so it
+# MUST be converted to a real timezone before reading .hour; otherwise evening
+# starts roll past midnight UTC and bucket wrong (the old code added a hardcoded
+# standard-time offset to the UTC hour, which also ignored DST and went negative
+# for West Coast night games).
+_TZ_UTC = ZoneInfo("UTC")
+_TZ_ET = ZoneInfo("America/New_York")
+
+# Ballpark IANA timezones (DST-aware), keyed by home team abbreviation.
+MLB_VENUE_TZ = {
+    "ARI": "America/Phoenix", "ATL": "America/New_York", "BAL": "America/New_York",
+    "BOS": "America/New_York", "CHC": "America/Chicago", "CIN": "America/New_York",
+    "CLE": "America/New_York", "COL": "America/Denver", "CWS": "America/Chicago",
+    "DET": "America/New_York", "HOU": "America/Chicago", "KC": "America/Chicago",
+    "LAA": "America/Los_Angeles", "LAD": "America/Los_Angeles", "MIA": "America/New_York",
+    "MIL": "America/Chicago", "MIN": "America/Chicago", "NYM": "America/New_York",
+    "NYY": "America/New_York", "OAK": "America/Los_Angeles", "ATH": "America/Los_Angeles",
+    "PHI": "America/New_York", "PIT": "America/New_York", "SD": "America/Los_Angeles",
+    "SEA": "America/Los_Angeles", "SF": "America/Los_Angeles", "STL": "America/Chicago",
+    "TB": "America/New_York", "TEX": "America/Chicago", "TOR": "America/New_York",
+    "WSH": "America/New_York",
+}
+
+
+def _venue_local_hour(dt, home_abbr):
+    """Hour of a game timestamp in the HOME ballpark's local time (None-safe)."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=_TZ_UTC)
+    tz = ZoneInfo(MLB_VENUE_TZ.get(home_abbr, "America/New_York"))
+    return dt.astimezone(tz).hour
+
+
+def _venue_tz_offset_hours(dt, abbr):
+    """DST-aware UTC offset (in hours) for a team's timezone at the game instant."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=_TZ_UTC)
+    tz = ZoneInfo(MLB_VENUE_TZ.get(abbr, "America/New_York"))
+    off = dt.astimezone(tz).utcoffset()
+    return off.total_seconds() / 3600.0 if off is not None else None
+
+
+def _et_day(dt):
+    """US Eastern calendar date of a game timestamp (None-safe)."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=_TZ_UTC)
+    return dt.astimezone(_TZ_ET).date()
 
 # Timezone offsets (hours from UTC) for MLB ballparks
 MLB_TIMEZONES = {
@@ -132,16 +187,27 @@ class MLBSituationalAnalyzer:
             ctx.travel_miles = round(_haversine_miles(a_coords[0], a_coords[1], h_coords[0], h_coords[1]))
 
         # Timezone difference
-        h_tz = MLB_TIMEZONES.get(home_abbr, -5)
-        a_tz = MLB_TIMEZONES.get(away_abbr, -5)
-        ctx.timezone_diff = h_tz - a_tz
+        # DST-aware offset difference (hardcoded standard-time offsets ignored DST
+        # and Arizona, so this could be off by an hour).
+        h_off = _venue_tz_offset_hours(game.date, home_abbr)
+        a_off = _venue_tz_offset_hours(game.date, away_abbr)
+        if h_off is not None and a_off is not None:
+            ctx.timezone_diff = round(h_off - a_off)
 
-        # Day/night game
-        if game.date:
-            hour = game.date.hour
-            # Rough: day games start before 6pm local
-            local_hour = hour + h_tz
-            ctx.is_day_game = local_hour < 17
+        # Day/night game — use the authoritative scheduled-day flag ingested into
+        # `game.day_night` (venue-local; SAME source the model's data_loader and
+        # populate_rolling use). Only fall back to the venue-local clock if that
+        # column is missing -- NEVER a UTC hour, and NOT US-Eastern time, which
+        # would relabel West Coast afternoon games (1pm/4pm PT) as night games.
+        dn = (game.day_night or "").strip().lower()
+        if dn in ("day", "d"):
+            ctx.is_day_game = True
+        elif dn in ("night", "n"):
+            ctx.is_day_game = False
+        else:
+            _hr = _venue_local_hour(game.date, home_abbr)
+            if _hr is not None:
+                ctx.is_day_game = _hr < 17
 
         # Division game
         if home_team_obj.division and away_team_obj.division:
@@ -196,17 +262,25 @@ class MLBSituationalAnalyzer:
         return results
 
     async def _rest_days_since(self, game: MLBGames, team_id: int) -> int:
-        """Count days since this team's last game."""
+        """Calendar days between this game and the team's previous game (1 = back-to-back).
+
+        Matches the site-wide convention (MLB `handicapping/mlb/data_loader.py`
+        `rest_days` = ET local-date gap). Uses ET calendar dates and the same season,
+        so an evening game can't be misread as back-to-back (raw UTC arithmetic
+        collapsed a sub-48h gap to `.days == 1`) and a season opener doesn't pick up
+        last season's finale.
+        """
         if not game.date:
-            return 1
+            return 3
         r = await self.db.execute(
             select(MLBGames.date).where(
+                MLBGames.season_id == game.season_id,
                 MLBGames.date < game.date,
                 ((MLBGames.home_team_id == team_id) | (MLBGames.away_team_id == team_id)),
             ).order_by(MLBGames.date.desc()).limit(1)
         )
         last_date = r.scalar_one_or_none()
         if not last_date:
-            return 3  # No recent game (season opener or first game available)
-        diff = (game.date - last_date).days
-        return max(1, diff)
+            return 3  # Season opener / first game available
+        gap = (_et_day(game.date) - _et_day(last_date)).days
+        return max(gap, 1)

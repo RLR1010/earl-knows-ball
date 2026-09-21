@@ -15,6 +15,7 @@ import logging
 import math
 from datetime import datetime, timezone, timedelta
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -33,6 +34,53 @@ NBA_TIMEZONES = {
     "POR": -8, "SAC": -8, "SAS": -6, "SEA": -8, "TOR": -5,
     "UTA": -7, "WAS": -5,
 }
+
+# Team IANA timezones (DST-aware). All time-of-day / weekday classification and
+# timezone math is done in the proper zone -- never off raw UTC. `game.date` is a
+# timestamptz returned by asyncpg as a UTC-aware datetime.
+_TZ_ET = ZoneInfo("America/New_York")
+_TZ_UTC = ZoneInfo("UTC")
+
+NBA_TEAM_TZ = {
+    "ATL": "America/New_York", "BKN": "America/New_York", "BOS": "America/New_York",
+    "CHA": "America/New_York", "CHI": "America/Chicago", "CLE": "America/New_York",
+    "DAL": "America/Chicago", "DEN": "America/Denver", "DET": "America/New_York",
+    "GSW": "America/Los_Angeles", "HOU": "America/Chicago", "IND": "America/New_York",
+    "LAC": "America/Los_Angeles", "LAL": "America/Los_Angeles", "MEM": "America/Chicago",
+    "MIA": "America/New_York", "MIL": "America/Chicago", "MIN": "America/Chicago",
+    "NJ": "America/New_York", "NOP": "America/Chicago", "NYK": "America/New_York",
+    "OKC": "America/Chicago", "ORL": "America/New_York", "PHI": "America/New_York",
+    "PHX": "America/Phoenix", "POR": "America/Los_Angeles", "SAC": "America/Los_Angeles",
+    "SAS": "America/Chicago", "SEA": "America/Los_Angeles", "TOR": "America/New_York",
+    "UTA": "America/Denver", "WAS": "America/New_York",
+}
+
+
+def _tz_offset_hours(dt, abbr):
+    """DST-aware UTC offset (hours) for a team's timezone at the game instant."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=_TZ_UTC)
+    tz = ZoneInfo(NBA_TEAM_TZ.get(abbr, "America/New_York"))
+    off = dt.astimezone(tz).utcoffset()
+    return off.total_seconds() / 3600.0 if off is not None else None
+
+
+def _et_dt(dt):
+    """Convert a game timestamp to an aware datetime in US Eastern time."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=_TZ_UTC)
+    return dt.astimezone(_TZ_ET)
+
+
+def _et_day(dt):
+    """US Eastern calendar date of a game timestamp (None-safe)."""
+    d = _et_dt(dt)
+    return d.date() if d is not None else None
+
 
 # Approximate coordinates for travel distance
 NBA_COORDS = {
@@ -156,8 +204,8 @@ class NBASituationalAnalyzer:
         ctx.home_rest_days = await self._rest_days_since(game, game.home_team_id)
         ctx.away_rest_days = await self._rest_days_since(game, game.away_team_id)
         ctx.rest_advantage = ctx.home_rest_days - ctx.away_rest_days
-        ctx.home_is_back_to_back = ctx.home_rest_days == 0
-        ctx.away_is_back_to_back = ctx.away_rest_days == 0
+        ctx.home_is_back_to_back = ctx.home_rest_days == 1
+        ctx.away_is_back_to_back = ctx.away_rest_days == 1
 
         # Schedule congestion: games in last 4 days
         ctx.home_games_in_days = 1 + await self._games_since(game, game.home_team_id, days_back=4)
@@ -175,10 +223,12 @@ class NBASituationalAnalyzer:
         if h_coords and a_coords:
             ctx.travel_miles = round(_haversine_miles(a_coords[0], a_coords[1], h_coords[0], h_coords[1]))
 
-        # Timezone difference
-        h_tz = NBA_TIMEZONES.get(home_abbr, -5)
-        a_tz = NBA_TIMEZONES.get(away_abbr, -5)
-        ctx.timezone_diff = h_tz - a_tz
+        # Timezone difference (DST-aware; the old hardcoded standard-time offsets
+        # were off by an hour for most of the season and ignored Arizona/Phoenix).
+        h_off = _tz_offset_hours(game.date, home_abbr)
+        a_off = _tz_offset_hours(game.date, away_abbr)
+        if h_off is not None and a_off is not None:
+            ctx.timezone_diff = round(h_off - a_off)
 
         # Division game
         if home_team_obj.division and away_team_obj.division:
@@ -193,10 +243,11 @@ class NBASituationalAnalyzer:
         ctx.away_altitude = NBA_ALTITUDE.get(away_abbr, 0)
         ctx.altitude_diff = ctx.home_altitude - ctx.away_altitude
 
-        # Season phase
+        # Season phase — month/day in US Eastern time (not UTC).
         if game.date:
-            month = game.date.month
-            day = game.date.day
+            _gdt = _et_dt(game.date)
+            month = _gdt.month
+            day = _gdt.day
             if month <= 1:
                 ctx.season_phase = "early"
             elif month <= 3:
@@ -216,8 +267,8 @@ class NBASituationalAnalyzer:
         return ctx
 
     async def analyze_date(self, game_date: str) -> list[NBABetContext]:
-        """Analyze situations for all games on a given date."""
-        dt = datetime.strptime(game_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        """Analyze situations for all games on a given date (US Eastern day)."""
+        dt = datetime.strptime(game_date, "%Y-%m-%d").replace(tzinfo=_TZ_ET)
         dstart = dt
         dend = dt + timedelta(days=1)
         r = await self.db.execute(
@@ -235,26 +286,37 @@ class NBASituationalAnalyzer:
         return results
 
     async def _rest_days_since(self, game: NBAGame, team_id: int) -> int:
-        """Count days since this team's last game."""
+        """Calendar days between this game and the team's previous game (1 = back-to-back).
+
+        Matches the site-wide convention (NBA `handicapping/nba/data_loader.py`:
+        `rest_days` = LOCAL-calendar-date gap, `b2b = (rest_days == 1)`; MLB/NFL use
+        the same days-between notion). Uses ET calendar dates and the same season's
+        REG/PLAYIN/POST games, so (a) an evening game can't be misread as a back-to-back
+        -- raw UTC arithmetic collapsed a 1d22h gap to `.days == 1` -- and (b) a season
+        opener does not pick up last season's finale (~150 "rest days").
+        """
         if not game.date:
-            return 1
+            return 3
         r = await self.db.execute(
             select(NBAGame.date).where(
+                NBAGame.season_id == game.season_id,
+                NBAGame.game_type.in_(("REG", "PLAYIN", "POST")),
                 NBAGame.date < game.date,
                 ((NBAGame.home_team_id == team_id) | (NBAGame.away_team_id == team_id)),
             ).order_by(NBAGame.date.desc()).limit(1)
         )
         last_date = r.scalar_one_or_none()
         if not last_date:
-            return 3  # Season opener or first game available
-        diff = (game.date - last_date).days
-        return max(1, diff)
+            return 3  # Season opener / first game available
+        gap = (_et_day(game.date) - _et_day(last_date)).days
+        return max(gap, 1)
 
     async def _games_since(self, game: NBAGame, team_id: int, days_back: int) -> int:
-        """Count games this team has played in the last N days (excluding this game)."""
+        """Count games this team has played in the last N ET calendar days (excluding this game)."""
         if not game.date:
             return 0
-        cutoff = game.date - timedelta(days=days_back)
+        d0 = _et_day(game.date) - timedelta(days=days_back)
+        cutoff = datetime(d0.year, d0.month, d0.day, tzinfo=_TZ_ET)
         r = await self.db.execute(
             select(NBAGame).where(
                 NBAGame.date >= cutoff,
@@ -279,8 +341,9 @@ class NBASituationalAnalyzer:
             ).order_by(NBAGame.date.desc()).limit(5)
         )
         road_games = r.scalars().all()
+        cutoff_day = _et_day(game.date) - timedelta(days=10)
         for rg in road_games:
-            if rg.date and rg.date >= game.date - timedelta(days=10):
+            if _et_day(rg.date) is not None and _et_day(rg.date) >= cutoff_day:
                 count += 1
             else:
                 break

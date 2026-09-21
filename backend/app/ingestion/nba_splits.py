@@ -11,7 +11,7 @@ Split types (SPLIT_TYPES keys):
   away                        away games
   vs_east | vs_west           vs opponent conference (respecting intra-division)
   starter | bench             started or came off bench
-  rest0 | rest_ge1            back-to-back (0 days rest) vs >=1 day rest
+  rest1 | rest_ge2            back-to-back (1 day between games) vs 2+ days
   month_<oct..apr>            calendar month (per-season only; not emitted as career)
 
 Rates below are per-GAME (totals/G), except FG%/3P%/FT%/TS% which are
@@ -23,11 +23,26 @@ from __future__ import annotations
 import logging
 from collections import defaultdict
 from typing import Dict, List, Optional, Sequence, Tuple
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger("earl.nba_splits")
+
+# All rest/day math is done on US-Eastern calendar dates (never raw UTC). `g.date` is a
+# timestamptz returned by asyncpg as a UTC-aware datetime.
+_TZ_ET = ZoneInfo("America/New_York")
+_TZ_UTC = ZoneInfo("UTC")
+
+
+def _et_day(dt):
+    """US Eastern calendar date of a timestamp (None-safe)."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=_TZ_UTC)
+    return dt.astimezone(_TZ_ET).date()
 
 # ---------------------------------------------------------------------------
 # Split type definitions
@@ -39,8 +54,8 @@ SPLIT_TYPES = {
     "vs_west": "vs Western Conf",
     "starter": "Starter",
     "bench": "Bench",
-    "rest0": "Back-to-Back (0 rest)",
-    "rest_ge1": "1+ Days Rest",
+    "rest1": "Back-to-Back",
+    "rest_ge2": "2+ Days Rest",
     # months (per-season only)
     "month_oct": "October", "month_nov": "November", "month_dec": "December",
     "month_jan": "January", "month_feb": "February", "month_mar": "March",
@@ -48,8 +63,8 @@ SPLIT_TYPES = {
     "month_jul": "July",
 }
 
-# Rest split handling: how to bucket
-_REST_KEYS = {0: "rest0"}  # exact 0 -> back-to-back
+# Rest split handling: days-between convention (matches nba/data_loader: b2b = rest_days == 1)
+_REST_KEYS = {1: "rest1"}  # exactly 1 day between games -> back-to-back
 
 
 def _is_month_split(sp: str) -> bool:
@@ -84,10 +99,10 @@ def _game_split_types(
     else:
         splits.append("bench")
 
-    # rest bucket
-    rest = g.get("rest_days")  # integer days since previous game (None if unknown)
+    # rest bucket (site convention: rest_days = calendar days between games; 1 = back-to-back)
+    rest = g.get("rest_days")  # integer days between games (None if unknown)
     if rest is not None:
-        splits.append(_REST_KEYS.get(rest, "rest_ge1"))
+        splits.append(_REST_KEYS.get(rest, "rest_ge2"))
 
     # calendar month (per-season only; career rows filtered out later)
     date = g.get("date")
@@ -204,10 +219,11 @@ WHERE g.season_id IN ({sq})
 
 
 def _game_rest_map(db_rows: List[dict]) -> Dict[Tuple[Optional[int], int], int]:
-    """Map (team_id, game_id) -> days rest (days since that team's previous game).
+    """Map (team_id, game_id) -> days between that team's consecutive games.
 
-    NBA season typically has 1-2 days between games; back-to-backs are rest=0.
-    Computed from the games' dates grouped by team (chronological).
+    Site convention (same as nba/data_loader): ``rest_days`` = LOCAL-calendar-date gap,
+    so a back-to-back is rest_days == 1. Dates are converted to US-Eastern first:
+    raw-UTC instants let a 1d22h gap collapse to `.days == 1` (a false back-to-back).
     """
     # collect each team's (date, game_id); dedupe by game_id because
     # player_game_stats has one row per player-line per game (12+ dupes/game).
@@ -231,8 +247,8 @@ def _game_rest_map(db_rows: List[dict]) -> Dict[Tuple[Optional[int], int], int]:
                 out[(team_id, game_id)] = None  # first game, unknown rest
             else:
                 prev_date = entries[i - 1][0]
-                gap = (date - prev_date).days
-                out[(team_id, game_id)] = max(gap - 1, 0)  # rest days between games
+                gap = (_et_day(date) - _et_day(prev_date)).days
+                out[(team_id, game_id)] = max(gap, 1)  # days between games
     return out
 
 

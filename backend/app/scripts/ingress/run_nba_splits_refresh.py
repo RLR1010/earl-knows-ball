@@ -8,7 +8,7 @@ Runs via the Earl task scheduler as a `subprocess` task. Populates
   - home / away
   - vs_east / vs_west (opponent conference)
   - starter / bench
-  - rest0 (back-to-back) / rest_ge1 (1+ days rest)
+  - rest1 (back-to-back) / rest_ge2 (2+ days rest)
   - month_<abbr> (per-season only)
 
 ... plus a career aggregate row per split (season_id NULL) computed from the

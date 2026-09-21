@@ -189,7 +189,7 @@ async def fetch_player_split_stats(
     """NBA split lines for a prop player, keyed '<split>.<scope>'.
 
     Scopes: career / season (current). Split types: home, away, vs_east,
-    vs_west, starter, bench, rest0, rest_ge1. Returns per-game rates.
+    vs_west, starter, bench, rest1, rest_ge2. Returns per-game rates.
     """
     pid = await resolve_player_id(db, player_name, team_id)
     if not pid:

@@ -28,11 +28,30 @@ import asyncio
 import logging
 from collections import defaultdict
 from typing import Dict, List, Optional, Sequence
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger("earl.nfl_splits")
+
+# NFL games are scheduled in US Eastern time; `nfl.games.date` is a timestamptz
+# returned by asyncpg as a UTC-aware datetime, so weekday/hour MUST be extracted
+# in ET (not UTC) or evening kickoffs shift to the next UTC day and bucket wrong
+# (e.g. Sun 4:25pm ET -> 20:25 UTC reads as "primetime", Sun 8:20pm ET -> Mon
+# 00:20 UTC reads as "day", Mon 8:15pm ET -> Tue 00:15 UTC reads as "day").
+_TZ_ET = ZoneInfo("America/New_York")
+_TZ_UTC = ZoneInfo("UTC")
+
+
+def _et_weekday_hour(dt):
+    """Return (weekday 0=Mon..6=Sun, hour) of a game timestamp in America/New_York."""
+    if dt is None:
+        return None, None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=_TZ_UTC)
+    local = dt.astimezone(_TZ_ET)
+    return local.weekday(), local.hour
 
 # ---- Split type definitions ------------------------------------------------
 # name -> (label). 'career' always computed per season + as NULL=career.
@@ -254,8 +273,7 @@ async def build_player_splits(db: AsyncSession, season_ids: Optional[Sequence[in
         away = row["away_team_id"]
         div = TEAM_DIVISIONS.get(team_id)
         g = dict(row)
-        g["weekday"] = row["date"].weekday() if row["date"] is not None else None
-        g["hour"] = row["date"].hour if row["date"] is not None else None
+        g["weekday"], g["hour"] = _et_weekday_hour(row["date"])
         split_types = _game_split_types(g, home, away, team_id, div)
         season_key = row["season_id"]
         for sp in split_types:

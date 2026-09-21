@@ -44,7 +44,7 @@ def _format_nba_splits(splits: dict) -> list[str]:
     labels = {
         "home": "Home", "away": "Away", "vs_east": "vs East",
         "vs_west": "vs West", "starter": "as Starter", "bench": "off Bench",
-        "rest0": "Back-to-back", "rest_ge1": "1+ rest",
+        "rest1": "Back-to-back", "rest_ge2": "2+ days rest",
     }
     lines = []
     for key in sorted(splits):

@@ -7,6 +7,7 @@ edges that pro handicappers bake into their models.
 import logging
 from datetime import datetime, timezone, timedelta
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,6 +15,49 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import Game, Team, Season
 
 logger = logging.getLogger("earl.situational")
+
+# All time-of-day / weekday classification is done in US Eastern time.
+# `game.date` is a timestamptz returned by asyncpg as a UTC-aware datetime, so it
+# MUST be converted to ET before reading .weekday()/.hour(); otherwise evening
+# kickoffs roll to the next UTC day (e.g. Sat 8pm ET would read as Sunday).
+_TZ_ET = ZoneInfo("America/New_York")
+_TZ_UTC = ZoneInfo("UTC")
+
+# Home-team IANA timezones (DST-aware), keyed by team abbreviation. Used for the
+# travel time-zone-difference so it is correct across DST (Arizona never shifts).
+TEAM_TZ = {
+    "ARI": "America/Phoenix", "ATL": "America/New_York", "BAL": "America/New_York",
+    "BUF": "America/New_York", "CAR": "America/New_York", "CHI": "America/Chicago",
+    "CIN": "America/New_York", "CLE": "America/New_York", "DAL": "America/Chicago",
+    "DEN": "America/Denver", "DET": "America/New_York", "GB": "America/Chicago",
+    "HOU": "America/Chicago", "IND": "America/New_York", "JAX": "America/New_York",
+    "KC": "America/Chicago", "LAC": "America/Los_Angeles", "LAR": "America/Los_Angeles",
+    "LV": "America/Los_Angeles", "MIA": "America/New_York", "MIN": "America/Chicago",
+    "NE": "America/New_York", "NO": "America/Chicago", "NYG": "America/New_York",
+    "NYJ": "America/New_York", "PHI": "America/New_York", "PIT": "America/New_York",
+    "SEA": "America/Los_Angeles", "SF": "America/Los_Angeles", "TB": "America/New_York",
+    "TEN": "America/Chicago", "WAS": "America/New_York",
+}
+
+
+def _et_weekday(dt):
+    """Weekday (0=Mon..6=Sun) of a game timestamp in America/New_York (None-safe)."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=_TZ_UTC)
+    return dt.astimezone(_TZ_ET).weekday()
+
+
+def _tz_offset_hours(dt, abbr):
+    """DST-aware UTC offset (hours) for a team's timezone at the game instant."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=_TZ_UTC)
+    tz = ZoneInfo(TEAM_TZ.get(abbr, "America/New_York"))
+    off = dt.astimezone(tz).utcoffset()
+    return off.total_seconds() / 3600.0 if off is not None else None
 
 # ── Travel helpers ─────────────────────────────────────────────────────
 
@@ -170,9 +214,9 @@ class SituationalAnalyzer:
         if ctx.home_rest_days is not None and ctx.away_rest_days is not None:
             ctx.rest_differential = round(ctx.home_rest_days - ctx.away_rest_days, 1)
 
-        # Short week
-        if game.date:
-            dow = game.date.weekday()  # 0=Mon ... 6=Sun
+        # Short week — weekday computed in US Eastern time (see module note).
+        dow = _et_weekday(game.date)  # 0=Mon ... 6=Sun
+        if dow is not None:
             ctx.is_short_week = dow in (3, 4, 5)  # Thu=3, Fri=4, Sat=5
 
         # Bye week detection (rest >= 13 days)
@@ -188,10 +232,11 @@ class SituationalAnalyzer:
         if ctx.travel_distance_miles < 50:
             ctx.travel_distance_miles = 0  # same city teams
 
-        # Time zone difference
-        home_tz = TEAM_TIMEZONES.get(home_abbr, -5)
-        away_tz = TEAM_TIMEZONES.get(away_abbr, -5)
-        ctx.tz_diff_hours = home_tz - away_tz
+        # Time zone difference (DST-aware; hardcoded standard-time offsets ignored DST).
+        h_off = _tz_offset_hours(game.date, home_abbr)
+        a_off = _tz_offset_hours(game.date, away_abbr)
+        if h_off is not None and a_off is not None:
+            ctx.tz_diff_hours = round(h_off - a_off)
 
         # Travel advantage
         if ctx.travel_distance_miles > 200:

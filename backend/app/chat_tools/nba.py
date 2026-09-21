@@ -1219,14 +1219,14 @@ async def _get_player_split_stats(db: AsyncSession, args: dict) -> dict:
             "home": career.get("home"), "away": career.get("away"),
             "vs_east": career.get("vs_east"), "vs_west": career.get("vs_west"),
             "starter": career.get("starter"), "bench": career.get("bench"),
-            "rest0": career.get("rest0"), "rest_ge1": career.get("rest_ge1"),
+            "rest1": career.get("rest1"), "rest_ge2": career.get("rest_ge2"),
         }
     if season_id is not None and season:
         result["season"] = {
             "home": season.get("home"), "away": season.get("away"),
             "vs_east": season.get("vs_east"), "vs_west": season.get("vs_west"),
             "starter": season.get("starter"), "bench": season.get("bench"),
-            "rest0": season.get("rest0"), "rest_ge1": season.get("rest_ge1"),
+            "rest1": season.get("rest1"), "rest_ge2": season.get("rest_ge2"),
             "months": {k: v for k, v in season.items() if k.startswith("month_")},
         }
     return result
