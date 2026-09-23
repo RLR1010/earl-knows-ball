@@ -183,18 +183,23 @@ async def ingest_nba_games(seasons: list[int] | None = None):
                             neutral = comp.get("neutralSite", False)
 
                             # Status: ESPN uses freeform strings ("STATUS_SCHEDULED",
-                            # "STATUS_IN_PROGRESS", "STATUS_FINAL", ...) → map to enum.
-                            _raw_status = (comp.get("status", {})
-                                            .get("type", {})
-                                            .get("name", "STATUS_SCHEDULED") or "STATUS_SCHEDULED")
-                            _st = _raw_status.upper()
-                            if "FINAL" in _st:
-                                game_status = NBAGameStatus.FINAL
-                            elif "POSTPON" in _st:
+                            # "STATUS_IN_PROGRESS", "STATUS_HALFTIME", "STATUS_FINAL", ...).
+                            # Prefer the robust type "state" (pre/in/post); any
+                            # unrecognized in-game status must map to IN_PROGRESS,
+                            # never SCHEDULED (halftime used to flip live games back
+                            # to "scheduled" — same fix as NFL _map_espn_status).
+                            _type = comp.get("status", {}).get("type", {}) or {}
+                            _st = (_type.get("name") or "STATUS_SCHEDULED").upper()
+                            _state = (_type.get("state") or "").lower()
+                            if "POSTPON" in _st:
                                 game_status = NBAGameStatus.POSTPONED
                             elif "CANCEL" in _st:
                                 game_status = NBAGameStatus.CANCELLED
-                            elif "IN_PROGRESS" in _st or "LIVE" in _st:
+                            elif "FINAL" in _st or _state == "post":
+                                game_status = NBAGameStatus.FINAL
+                            elif (_state == "in" or "IN_PROGRESS" in _st or "LIVE" in _st
+                                  or "HALFTIME" in _st or "END_PERIOD" in _st
+                                  or "END_OF_PERIOD" in _st or "OVERTIME" in _st):
                                 game_status = NBAGameStatus.IN_PROGRESS
                             else:
                                 game_status = NBAGameStatus.SCHEDULED

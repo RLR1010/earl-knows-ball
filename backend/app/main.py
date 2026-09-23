@@ -117,6 +117,7 @@ from app.routers import (
     social_x,
     v1,
     parlay,
+    power_rankings,
 )
 
 # Routers grouped by role.
@@ -142,6 +143,7 @@ _LEGACY_USER_FACING = [
     seo,
     matchup,
     parlay,
+    power_rankings,
 ]
 
 _COMPUTE_FACING = [
@@ -163,6 +165,8 @@ if EARL_ROLE in ("all", "compute"):
         _include(r.router)
     # original articles has a separate admin router under /api/admin.
     _include(original_articles.admin_router)
+    # power-rankings card generation (Playwright) is admin-only -> compute.
+    _include(power_rankings.admin_router)
     # article ideas (brainstorm + prompt builder + CRUD) is admin-only -> compute.
     _include(article_ideas.admin_router)
     # auto-generation continuous article template configs are admin-only -> compute.

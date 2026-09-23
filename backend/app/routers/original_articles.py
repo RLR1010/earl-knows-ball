@@ -1819,7 +1819,7 @@ async def recheck_original_article_accuracy(
     result = await db.execute(
         text(
             """
-            SELECT id, sport, title, content, summary, research_json, visibility, status
+            SELECT id, sport, title, content, summary, research_json, visibility, status, section
             FROM public.original_articles
             WHERE id = :id AND sport = :sport
             """
@@ -1850,6 +1850,68 @@ async def recheck_original_article_accuracy(
         raise HTTPException(status_code=400, detail="This article has no content to verify.")
     summary = (row["summary"] or "").strip()
     visibility = row["visibility"] or "public"
+
+    # Recaps discuss past picks on purpose, so the editorial "no betting advice
+    # in a public article" verifier does not apply. Re-verify with the recap's own
+    # facts-grounded checker instead.
+    if (row.get("section") or "").strip().lower() == "recap":
+        from app.writeups import recaps as _recaps
+
+        facts = _recaps.facts_from_trace(research_trace)
+        if not facts:
+            raise HTTPException(
+                status_code=400,
+                detail="Recap is missing its stored facts; cannot re-verify.",
+            )
+        acc = await _recaps._verify_recap(title, content, facts)
+        recap_retries = 0
+        while acc.get("findings") and recap_retries < 3:
+            corrected = await _recaps._correct_recap(
+                title, content, acc["findings"], facts
+            )
+            recap_retries += 1
+            if corrected and corrected.get("body"):
+                title = (corrected.get("title") or title).strip()
+                content = corrected["body"].strip()
+            acc = await _recaps._verify_recap(title, content, facts)
+        acc["retries_used"] = recap_retries
+        acc["has_inaccuracy"] = bool(acc.get("findings"))
+        recap_passed = bool(acc.get("accuracy_pass"))
+        recap_status = (
+            "published" if recap_passed and row["status"] == "draft" else row["status"]
+        )
+        await db.execute(
+            text(
+                """
+                UPDATE public.original_articles
+                SET accuracy_check = :acc, accuracy_check_tokens = :tokens,
+                    title = :title, content = :content, status = :status, updated_at = NOW()
+                WHERE id = :id AND sport = :sport
+                """
+            ),
+            {
+                "acc": json.dumps(acc),
+                "tokens": int(acc.get("tokens") or 0),
+                "title": title,
+                "content": content,
+                "status": recap_status,
+                "id": article_id,
+                "sport": sport,
+            },
+        )
+        await db.commit()
+        return {
+            "article_id": article_id,
+            "sport": sport,
+            "status": recap_status,
+            "passed": recap_passed,
+            "has_inaccuracy": bool(acc.get("findings")),
+            "verification_error": bool(acc.get("verification_error")),
+            "retries_used": recap_retries,
+            "corrected": bool(recap_retries > 0),
+            "findings": [f.get("claim") for f in (acc.get("findings") or [])][:20],
+            "accuracy_check": acc,
+        }
 
     try:
         accuracy_check, accuracy_tokens = await _verify_original_accuracy(

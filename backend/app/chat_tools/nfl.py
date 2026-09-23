@@ -763,6 +763,28 @@ TOOL_DEFINITIONS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_power_ranking",
+            "description": (
+                "Earl's NFL Power Rankings — every team rated in POINTS on a neutral field "
+                "(a rating gap approximates the spread), updated weekly. OMIT team_name for the "
+                "full 1-32 board (rank, rating, weekly movement, SOS and Earl's take per team). "
+                "Provide team_name for that team's current rank/rating/movement and Earl's take, "
+                "plus its rating by week this season. Use for 'power rankings', 'where do you rank X', "
+                "'who's the best team', 'best/worst team right now'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "team_name": {"type": "string", "description": "Team name or abbreviation (optional). Omit for the full board."},
+                    "week": {"type": "integer", "description": "Week number (optional; defaults to the latest published week)."},
+                    "season_year": {"type": "integer", "description": "Season year (defaults to current)."},
+                },
+            },
+        },
+    },
 ]
 
 
@@ -2208,6 +2230,91 @@ async def _search_plays(db: AsyncSession, args: dict) -> dict:
     return await nfl_pbp_query._run_search_plays(db, args)
 
 
+def _inj_names(comps, limit: int = 3) -> list[str]:
+    if not comps:
+        return []
+    if isinstance(comps, str):
+        try:
+            comps = json.loads(comps)
+        except Exception:
+            return []
+    return [p.get("name") for p in (comps.get("injuries") or [])[:limit] if p.get("name")]
+
+
+async def _get_power_ranking(db: AsyncSession, args: dict) -> dict:
+    """Earl's weekly points-denominated NFL power rankings (board or single team)."""
+    year = args.get("season_year") or await _resolve_season_year(db)
+    week = args.get("week")
+    if not week:
+        week = (await db.execute(
+            text("SELECT MAX(week) FROM nfl.power_ratings WHERE season = :y"), {"y": year}
+        )).scalar()
+    if not week:
+        return {"error": f"No power rankings published for {year} yet."}
+
+    base_sql = """
+        SELECT p.rank, p.prev_rank, p.rank_delta, p.rating, p.rating_delta, p.sos,
+               p.games_played, p.wins, p.losses, p.ties, p.injury_adj, p.market_delta,
+               p.components, p.team_abbr, t.name AS team_name, b.blurb
+        FROM nfl.power_ratings p
+        LEFT JOIN nfl.teams t ON t.id = p.team_id
+        LEFT JOIN nfl.power_ranking_blurbs b
+               ON b.season = p.season AND b.week = p.week AND b.team_id = p.team_id
+        WHERE p.season = :y AND p.week = :w
+    """
+
+    team = args.get("team_name")
+    if team:
+        abbr = await _resolve_team_abbr(db, team)
+        if not abbr:
+            return {"error": f"Team not found: {team}"}
+        row = (await db.execute(text(base_sql + " AND UPPER(p.team_abbr) = :a"),
+                                {"y": year, "w": week, "a": abbr.upper()})).mappings().first()
+        if not row:
+            return {"error": f"No power ranking for {abbr} in {year} week {week}."}
+        hist = (await db.execute(text("""
+            SELECT week, rank, rating FROM nfl.power_ratings
+            WHERE season = :y AND UPPER(team_abbr) = :a ORDER BY week
+        """), {"y": year, "a": abbr.upper()})).mappings().all()
+        return {
+            "season": year, "week": week, "team": row.team_name,
+            "rank": row.rank, "rating": round(row.rating, 1),
+            "record": (f"{row.wins}-{row.losses}" + (f"-{row.ties}" if row.ties else "")) if row.wins is not None else None,
+            "rating_vs_last_week": round(row.rating_delta, 1) if row.rating_delta is not None else None,
+            # positive = climbed the board
+            "rank_movement": (None if row.rank_delta is None else -row.rank_delta),
+            "strength_of_schedule": round(row.sos, 1) if row.sos is not None else None,
+            "games_played": row.games_played,
+            "injury_adj": round(row.injury_adj, 1) if row.injury_adj else 0,
+            "vs_market": round(row.market_delta, 1) if row.market_delta is not None else None,
+            "notable_injuries": _inj_names(row.components),
+            "earls_take": row.blurb,
+            "rating_by_week": [{"week": h.week, "rank": h.rank, "rating": round(h.rating, 1)} for h in hist],
+        }
+
+    rows = (await db.execute(text(base_sql + " ORDER BY p.rank"),
+                             {"y": year, "w": week})).mappings().all()
+    board = [
+        {
+            "rank": row.rank, "team": row.team_name, "abbr": row.team_abbr,
+            "rating": round(row.rating, 1),
+            "record": (f"{row.wins}-{row.losses}" + (f"-{row.ties}" if row.ties else "")) if row.wins is not None else None,
+            "rating_vs_last_week": round(row.rating_delta, 1) if row.rating_delta is not None else None,
+            "rank_movement": (None if row.rank_delta is None else -row.rank_delta),
+            "sos": round(row.sos, 1) if row.sos is not None else None,
+            "injury_adj": round(row.injury_adj, 1) if row.injury_adj else 0,
+            "vs_market": round(row.market_delta, 1) if row.market_delta is not None else None,
+            "earls_take": row.blurb,
+        }
+        for row in rows
+    ]
+    return {
+        "season": year, "week": week, "teams_ranked": len(board),
+        "note": "Rating is in points on a neutral field: rating gap ~= spread.",
+        "power_rankings": board,
+    }
+
+
 _TOOL_HANDLERS = {
     "get_team_info": _get_team_info,
     "get_team_stats": _get_team_stats,
@@ -2216,6 +2323,7 @@ _TOOL_HANDLERS = {
     "get_week_games": _get_week_games,
     "get_game_info": _get_game_info,
     "get_game_writeup": _get_game_writeup,
+    "get_power_ranking": _get_power_ranking,
     "get_head_to_head": _get_head_to_head,
     "get_injuries": _get_injuries,
     "get_depth_chart": _get_depth_chart,

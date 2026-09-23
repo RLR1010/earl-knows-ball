@@ -1094,7 +1094,7 @@ async def mlb_games(
         try:
             async with httpx.AsyncClient(timeout=10) as client:
                 resp = await client.get(
-                    f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={date}"
+                    f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={date}&hydrate=linescore"
                 )
                 if resp.status_code == 200:
                     live_data = resp.json()
@@ -1122,10 +1122,18 @@ async def mlb_games(
                             away_score = away.get("score")
                             home_score = home.get("score")
 
+                            # Current inning (live): linescore gives the inning
+                            # number + half ("Top"/"Middle"/"Bottom"/"End").
+                            _ls = game.get("linescore", {}) or {}
+                            _inning = _ls.get("currentInning")
+                            _inning_state = _ls.get("inningState")
+
                             live_by_id[pk] = {
                                 "status": status,
                                 "away_score": away_score if away_score is not None else 0,
                                 "home_score": home_score if home_score is not None else 0,
+                                "inning": _inning,
+                                "inning_half": _inning_state,
                             }
 
                     # Overlay live data onto our DB games
@@ -1135,6 +1143,12 @@ async def mlb_games(
                             g["status"] = live["status"]
                             g["away_score"] = live["away_score"]
                             g["home_score"] = live["home_score"]
+                            # Expose the live inning only while the game is in
+                            # progress; final games already show "N inn" via
+                            # actual_innings.
+                            if live["status"] == "IN_PROGRESS" and live.get("inning") is not None:
+                                g["inning"] = live["inning"]
+                                g["inning_half"] = live.get("inning_half")
         except Exception:
             pass
 

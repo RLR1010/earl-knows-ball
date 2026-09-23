@@ -183,6 +183,19 @@ CREATE TABLE IF NOT EXISTS nfl.team_rolling_stats (
     cover_streak      INTEGER,
     ou_streak         INTEGER,
 
+    -- Home/away ATS splits: cover pct over the team's last 5 HOME / AWAY games (as of each game)
+    ats_home_pct_r5   REAL,
+    ats_away_pct_r5   REAL,
+
+    -- Embarrassed (lost the PREVIOUS game by 14+) and its rolling shares
+    embarrassed        INTEGER,
+    embarrassed_pct_r3  REAL,
+    embarrassed_pct_r5  REAL,
+    embarrassed_pct_r10 REAL,
+
+    -- Recency-weighted margin over the last 5 games (halving weights: 16,8,4,2,1 / 31)
+    weighted_margin_r5 REAL,
+
     PRIMARY KEY (game_id, team_abbr)
 );
 
@@ -498,6 +511,70 @@ rolling AS (
         w10 AS (PARTITION BY season, team_abbr ORDER BY game_date, game_id
                 ROWS BETWEEN 9 PRECEDING AND CURRENT ROW)
 ),
+-- Step 2b: Home/away ATS splits. `ats_home_pct_r5` is the cover pct over the team's
+-- last 5 HOME games (value present on home rows only); `ats_away_pct_r5` over the
+-- last 5 AWAY games (present on away rows only). Single-pass window; the loader
+-- reads the team's most recent same-side completed game row for each.
+ats_splits AS (
+    SELECT
+        d.game_id, d.team_abbr,
+        CASE WHEN d.is_home THEN
+            AVG(d.covered::REAL) FILTER (WHERE d.covered IS NOT NULL)
+              OVER (PARTITION BY d.season, d.team_abbr, d.is_home
+                    ORDER BY d.game_date, d.game_id ROWS BETWEEN 4 PRECEDING AND CURRENT ROW)
+        END AS ats_home_pct_r5,
+        CASE WHEN NOT d.is_home THEN
+            AVG(d.covered::REAL) FILTER (WHERE d.covered IS NOT NULL)
+              OVER (PARTITION BY d.season, d.team_abbr, d.is_home
+                    ORDER BY d.game_date, d.game_id ROWS BETWEEN 4 PRECEDING AND CURRENT ROW)
+        END AS ats_away_pct_r5
+    FROM derived d
+),
+-- Step 2c: embarrassed (previous game lost by 14+) and its rolling shares; and the
+-- recency-weighted margin over the last 5 games. Stored INCLUSIVE of each row's own
+-- game so a loader reads the previous completed game's row (same convention as all
+-- other rolling columns).
+emb_base AS (
+    SELECT d.game_id, d.team_abbr, d.season, d.game_date,
+           CASE WHEN d.margin <= -14 THEN 1 ELSE 0 END AS emb
+    FROM derived d
+),
+emb_roll AS (
+    SELECT game_id, team_abbr,
+           emb AS embarrassed,
+           AVG(emb_prev) OVER (PARTITION BY season, team_abbr ORDER BY game_date, game_id
+                               ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) AS embarrassed_pct_r3,
+           AVG(emb_prev) OVER (PARTITION BY season, team_abbr ORDER BY game_date, game_id
+                               ROWS BETWEEN 4 PRECEDING AND CURRENT ROW) AS embarrassed_pct_r5,
+           AVG(emb_prev) OVER (PARTITION BY season, team_abbr ORDER BY game_date, game_id
+                               ROWS BETWEEN 9 PRECEDING AND CURRENT ROW) AS embarrassed_pct_r10
+    FROM (
+        SELECT game_id, team_abbr, season, game_date, emb,
+               COALESCE(LAG(emb, 1) OVER (PARTITION BY season, team_abbr
+                                          ORDER BY game_date, game_id), 0) AS emb_prev
+        FROM emb_base
+    ) s
+),
+weighted_margin AS (
+    SELECT game_id, team_abbr,
+           ( margin
+             + CASE WHEN rn >= 2 THEN LAG(margin, 1) OVER w / 2.0   ELSE 0 END
+             + CASE WHEN rn >= 3 THEN LAG(margin, 2) OVER w / 4.0   ELSE 0 END
+             + CASE WHEN rn >= 4 THEN LAG(margin, 3) OVER w / 8.0   ELSE 0 END
+             + CASE WHEN rn >= 5 THEN LAG(margin, 4) OVER w / 16.0  ELSE 0 END
+           ) / ( 1.0
+             + CASE WHEN rn >= 2 THEN 0.5    ELSE 0 END
+             + CASE WHEN rn >= 3 THEN 0.25   ELSE 0 END
+             + CASE WHEN rn >= 4 THEN 0.125  ELSE 0 END
+             + CASE WHEN rn >= 5 THEN 0.0625 ELSE 0 END
+           ) AS weighted_margin_r5
+    FROM (
+        SELECT d.*, ROW_NUMBER() OVER (PARTITION BY d.team_abbr
+                                       ORDER BY d.game_date, d.game_id) AS rn
+        FROM derived d
+    ) d
+    WINDOW w AS (PARTITION BY team_abbr ORDER BY game_date, game_id)
+),
 -- Step 3: Season-to-date cumulative stats (including current game)
 season_cumul AS (
     SELECT
@@ -607,7 +684,10 @@ INSERT INTO nfl.team_rolling_stats (
     off_yardage_rank, def_yardage_rank,
     off_scoring_rank, def_scoring_rank,
     off_rushing_rank, def_rushing_rank,
-    off_passing_rank, def_passing_rating_rank
+    off_passing_rank, def_passing_rating_rank,
+    ats_home_pct_r5, ats_away_pct_r5,
+    embarrassed, embarrassed_pct_r3, embarrassed_pct_r5, embarrassed_pct_r10,
+    weighted_margin_r5
 )
 SELECT
     r.game_id, r.team_abbr, r.season, r.game_type, r.week, r.game_date, r.is_home, r.games_played,
@@ -682,8 +762,18 @@ SELECT
     sr.off_rushing_rank,
     sr.def_rushing_rank,
     sr.off_passing_rank,
-    sr.def_passing_rating_rank
+    sr.def_passing_rating_rank,
+    asp.ats_home_pct_r5,
+    asp.ats_away_pct_r5,
+    em.embarrassed,
+    em.embarrassed_pct_r3,
+    em.embarrassed_pct_r5,
+    em.embarrassed_pct_r10,
+    wm.weighted_margin_r5
 FROM rolling r
+LEFT JOIN ats_splits asp  ON r.game_id = asp.game_id  AND r.team_abbr = asp.team_abbr
+LEFT JOIN emb_roll em     ON r.game_id = em.game_id   AND r.team_abbr = em.team_abbr
+LEFT JOIN weighted_margin wm ON r.game_id = wm.game_id AND r.team_abbr = wm.team_abbr
 LEFT JOIN season_cumul sc ON r.game_id = sc.game_id AND r.team_abbr = sc.team_abbr
 LEFT JOIN streaks st     ON r.game_id = st.game_id   AND r.team_abbr = st.team_abbr
 LEFT JOIN season_ranks sr ON r.game_id = sr.game_id AND r.team_abbr = sr.team_abbr

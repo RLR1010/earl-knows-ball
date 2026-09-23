@@ -809,6 +809,28 @@ class NFLDataLoader:
             include_upcoming=True,
         )
 
+    def _seasons_for_game_ids(self, game_ids: List[int]) -> Optional[List[int]]:
+        """Return the season years covering ``game_ids`` plus the prior season.
+
+        Used to give the feature frame enough history that rolling / frame-derived
+        features see each team's LAST COMPLETED games (and the prior season for the
+        early-season prior blend) instead of only the requested game.
+        """
+        ids = ", ".join(str(int(i)) for i in game_ids)
+        sql = (
+            "SELECT DISTINCT s.year FROM nfl.games g "
+            "JOIN nfl.seasons s ON s.id = g.season_id "
+            f"WHERE g.id IN ({ids})"
+        )
+        try:
+            yrs = [int(y) for y in pd.read_sql(sql, self.engine)["year"].tolist()]
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("Could not resolve seasons for game_ids %s: %s", game_ids, exc)
+            return None
+        if not yrs:
+            return None
+        return list(range(min(yrs) - 1, max(yrs) + 1))
+
     def load_data(
         self,
         seasons: Optional[List[int]] = None,
@@ -851,16 +873,64 @@ class NFLDataLoader:
             Forwarded to the feature engineering callable.
         """
         # 1. Load raw game data
-        df = self.load_games(
-            seasons=seasons,
-            status=None if include_upcoming else "FINAL",
-            limit=limit,
-            include_upcoming=include_upcoming,
-            game_ids=game_ids,
-            game_type=game_type,
-            game_types=game_types,
-            include_preseason=include_preseason,
-        )
+        #
+        # Context fix (2026-09-21): when specific ``game_ids`` are requested we must
+        # still build the features from a frame that contains each team's LAST
+        # COMPLETED games. Loading only the requested game starves every frame-derived
+        # rolling feature (margin / cover / win / ou / points-for-against, ...) so they
+        # degrade to prior-season / 0.0 / 0.5 placeholders — i.e. inference was fed
+        # DIFFERENT numbers than training (which loads the full frame). Resolve the
+        # enclosing season(s) (+ the prior season for the early-season prior blend),
+        # load that context, and filter the OUTPUT back to the requested ids.
+        _requested_ids = [int(i) for i in game_ids] if game_ids else None
+        if _requested_ids is not None:
+            # Requested games exactly as asked (may include PRE for live prediction).
+            target_df = self.load_games(
+                seasons=seasons,
+                status=None if include_upcoming else "FINAL",
+                limit=limit,
+                include_upcoming=include_upcoming,
+                game_ids=_requested_ids,
+                game_type=game_type,
+                game_types=game_types,
+                include_preseason=include_preseason,
+            )
+            # Context: the enclosing season(s), FINAL REG+POST only (+ the prior
+            # season for the early-season prior blend). We deliberately load the
+            # SAME scope training uses so the frame-derived rolling features see
+            # each team's last completed games with identical numbers — PRE games
+            # are excluded from the context because training never loads them.
+            ctx_seasons = seasons or self._seasons_for_game_ids(_requested_ids)
+            ctx_df = pd.DataFrame()
+            if ctx_seasons:
+                ctx_df = self.load_games(
+                    seasons=ctx_seasons,
+                    status="FINAL",
+                    limit=None,
+                    include_upcoming=False,
+                    game_ids=None,
+                    game_type=None,
+                    game_types=("REG", "POST"),
+                    include_preseason=False,
+                )
+                if not ctx_df.empty:
+                    ctx_df = ctx_df[~ctx_df["game_id"].isin(_requested_ids)]
+            df = (
+                pd.concat([target_df, ctx_df], ignore_index=True)
+                if not ctx_df.empty
+                else target_df
+            )
+        else:
+            df = self.load_games(
+                seasons=seasons,
+                status=None if include_upcoming else "FINAL",
+                limit=limit,
+                include_upcoming=include_upcoming,
+                game_ids=game_ids,
+                game_type=game_type,
+                game_types=game_types,
+                include_preseason=include_preseason,
+            )
 
         if df.empty:
             logger.warning("No games returned — returning empty DataFrame")
@@ -1392,6 +1462,11 @@ class NFLDataLoader:
             )
             df = pd.concat([df, missing_df], axis=1)
 
+        # Context fix (2026-09-21): the frame was loaded with the enclosing season(s)
+        # for rolling context — return ONLY the rows the caller actually requested.
+        if _requested_ids is not None and "game_id" in df.columns:
+            df = df[df["game_id"].isin(_requested_ids)].copy()
+
         return df[feature_names].copy()
 
     def load_inference_data(
@@ -1670,6 +1745,15 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
     tg = pd.concat([home_long, away_long], ignore_index=True)
     tg = tg.sort_values(["team_id", "date", "game_id"]).reset_index(drop=True)
 
+    # ── Preseason partition (2026-09-21) ───────────────────────────
+    # Rich: NO preseason stats may enter a regular-season window — training,
+    # inference OR display. Preseason is a different game and must never mix with
+    # REG/POST. We add a PRE flag and include it in every rolling/expanding group
+    # key, so a PRE row can only ever see other PRE rows. REG+POST deliberately
+    # stay in the SAME partition (that is exactly what training loads), so frames
+    # that contain no preseason are completely unchanged.
+    tg["_is_pre"] = tg["game_type"].eq("PRE")
+
     # ── Load prior-season team stats for first-game NaN seeding ─────
     # Replaces hardcoded fillna(0.5) / fillna(0.0) with prior-season averages
     # for the first game of each team each season.
@@ -1824,28 +1908,28 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
 
     for window in [3, 5, 10]:
         tg[f"win_pct_r{window}"] = _first_fill(
-            tg.groupby(["team_id", "season_year"])["won"]
+            tg.groupby(["team_id", "season_year", "_is_pre"])["won"]
             .transform(lambda s: s.shift(1).rolling(window, min_periods=1).mean()),
             "win_pct", 0.5, name=f"win_pct_r{window}"
         )
         tg[f"margin_r{window}"] = _first_fill(
-            tg.groupby(["team_id", "season_year"])["margin"]
+            tg.groupby(["team_id", "season_year", "_is_pre"])["margin"]
             .transform(lambda s: s.shift(1).rolling(window, min_periods=1).mean()),
             "margin", 0.0, name=f"margin_r{window}"
         )
         tg[f"cover_pct_r{window}"] = _first_fill(
-            tg.groupby(["team_id", "season_year"])["cover"]
+            tg.groupby(["team_id", "season_year", "_is_pre"])["cover"]
             .transform(lambda s: s.shift(1).rolling(window, min_periods=1).mean()),
             "cover_pct", 0.5, name=f"cover_pct_r{window}"
         )
         if window == 10:
             tg["pf"] = _first_fill(
-                tg.groupby(["team_id", "season_year"])["score"]
+                tg.groupby(["team_id", "season_year", "_is_pre"])["score"]
                 .transform(lambda s: s.shift(1).rolling(10, min_periods=1).mean()),
                 "off_ppg", 0.0, name="pf"
             )
             tg["pa"] = _first_fill(
-                tg.groupby(["team_id", "season_year"])["opp_score"]
+                tg.groupby(["team_id", "season_year", "_is_pre"])["opp_score"]
                 .transform(lambda s: s.shift(1).rolling(10, min_periods=1).mean()),
                 "def_ppg", 0.0, name="pa"
             )
@@ -1855,24 +1939,24 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
         tg["cover_as_over"] = (tg["ou_margin"] > 0).astype(float)
         for window in [3, 5, 10]:
             tg[f"ou_over_pct_r{window}"] = _first_fill(
-                tg.groupby(["team_id", "season_year"])["cover_as_over"]
+                tg.groupby(["team_id", "season_year", "_is_pre"])["cover_as_over"]
                 .transform(lambda s: s.shift(1).rolling(window, min_periods=1).mean()),
                 "ou_over_pct", 0.5, name=f"ou_over_pct_r{window}"
             )
             tg[f"ou_margin_r{window}"] = _first_fill(
-                tg.groupby(["team_id", "season_year"])["ou_margin"]
+                tg.groupby(["team_id", "season_year", "_is_pre"])["ou_margin"]
                 .transform(lambda s: s.shift(1).rolling(window, min_periods=1).mean()),
                 "ou_margin", 0.0, name=f"ou_margin_r{window}"
             )
         tg["ou_as_over_pct_r10"] = tg["ou_over_pct_r10"]
 
     # Embarrassed (lost by 14+); per-season + prior blend (matches win_pct/margin)
-    tg["embarrassed"] = tg.groupby(["team_id", "season_year"])["margin"].transform(
+    tg["embarrassed"] = tg.groupby(["team_id", "season_year", "_is_pre"])["margin"].transform(
         lambda s: (s.shift(1) <= -14).astype(float)
     )
     for window in [3, 5, 10]:
         tg[f"embarrassed_pct_r{window}"] = _first_fill(
-            tg.groupby(["team_id", "season_year"])["embarrassed"]
+            tg.groupby(["team_id", "season_year", "_is_pre"])["embarrassed"]
             .transform(lambda s: s.shift(1).rolling(window, min_periods=1).mean()),
             "embarrassed_pct", 0.0, name=f"embarrassed_pct_r{window}"
         )
@@ -1882,7 +1966,7 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
     # blanks it; _impute_feature gives the model a neutral 0.5. Do not fillna(0.5)
     # in-place (that fabricates a cover rate for display).
     tg["season_ats_pct"] = (
-        tg.groupby(["team_id", "season_id"])["cover"]
+        tg.groupby(["team_id", "season_id", "_is_pre"])["cover"]
         .transform(lambda s: s.shift(1).expanding().mean())
     )
     # Carry prior-season final ATS cover% into a team's first game of a new
@@ -1904,7 +1988,7 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
     tg["season_ats_pct"] = tg.apply(_carry_prior_ats, axis=1)
     # Season wins (per-season expanding; week 1 seeds from the prior-season win total)
     tg["season_wins"] = (
-        tg.groupby(["team_id", "season_id"])["won"]
+        tg.groupby(["team_id", "season_id", "_is_pre"])["won"]
         .transform(lambda s: s.shift(1).expanding().sum())
         .fillna(0)
     )
@@ -1917,7 +2001,7 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
     # Home/away ATS splits — position-specific (kept for situational data).
     # Same principle: leave NaN (blank on card) when no graded games, model gets 0.5.
     homes = tg[tg.position == "home"].copy()
-    _homes_raw = homes.groupby(["team_id", "season_year"])["cover"].transform(
+    _homes_raw = homes.groupby(["team_id", "season_year", "_is_pre"])["cover"].transform(
         lambda s: s.shift(1).rolling(5, min_periods=1).mean()
     )
     homes["raw__ats_cover_pct_r5"] = _homes_raw.copy()
@@ -1925,7 +2009,7 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
         _homes_raw, "cover_pct", 0.5, name=None
     )
     aways = tg[tg.position == "away"].copy()
-    _aways_raw = aways.groupby(["team_id", "season_year"])["cover"].transform(
+    _aways_raw = aways.groupby(["team_id", "season_year", "_is_pre"])["cover"].transform(
         lambda s: s.shift(1).rolling(5, min_periods=1).mean()
     )
     aways["raw__ats_cover_pct_r5"] = _aways_raw.copy()
@@ -1947,7 +2031,7 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
 
     # Win streak resets per season (week 1 = 0)
     tg["win_streak"] = (
-        tg.groupby(["team_id", "season_year"])["won"]
+        tg.groupby(["team_id", "season_year", "_is_pre"])["won"]
         .transform(
             lambda s: s.shift(1)
             .rolling(5, min_periods=1)
@@ -1957,7 +2041,7 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
 
     # ATS streak carries across seasons (no season_year partition)
     tg["ats_streak"] = (
-        tg.groupby("team_id")["cover"]
+        tg.groupby(["team_id", "_is_pre"])["cover"]
         .transform(
             lambda s: s.shift(1)
             .rolling(5, min_periods=1)
@@ -1977,7 +2061,7 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
         return float(np.average(vals, weights=w))
 
     tg["weighted_margin_r5"] = _first_fill(
-        tg.groupby("team_id")["margin"]
+        tg.groupby(["team_id", "_is_pre"])["margin"]
         .transform(
             lambda s: s.shift(1)
             .rolling(5, min_periods=1)
@@ -2053,6 +2137,98 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
     df["raw_away_ats_away_pct_r5"] = df["game_id"].map(
         aways.set_index("game_id")["raw__ats_cover_pct_r5"]
     )
+
+    # ══ TABLE-BACKED ROLLING FEATURES — single source of truth ══════════════
+    # nfl.team_rolling_stats game rows are INCLUSIVE of their own game. For any
+    # target game we read the team's PREVIOUS COMPLETED game row (direct join on
+    # feeds_into_game_id = g.id — that row's stats feed into this game). This
+    # replaces the in-memory frame recomputation above with the SAME numbers, read
+    # from the table exactly like MLB/NBA do. The block above remains only as a
+    # fallback where the table has no feeding row (e.g. a team's season opener,
+    # which the off_ppg/_first_fill path already handles).
+    try:
+        _want = [
+            "off_pts_r10", "def_pts_r10",
+            "win_pct_r3", "win_pct_r5", "win_pct_r10",
+            "margin_r3", "margin_r5", "margin_r10",
+            "cover_pct_r3", "cover_pct_r5", "cover_pct_r10",
+            "ou_over_pct_r3", "ou_over_pct_r5", "ou_over_pct_r10",
+            "ou_margin_r3", "ou_margin_r5", "ou_margin_r10",
+            "season_ats_pct", "season_win_pct",
+            "embarrassed", "embarrassed_pct_r3", "embarrassed_pct_r5", "embarrassed_pct_r10",
+            "weighted_margin_r5",
+        ]
+        _ids = [int(x) for x in df["game_id"].tolist()]
+        if _ids:
+            with psycopg2.connect(PSYCOPG2_DATABASE_URL) as _conn:
+                with _conn.cursor() as _cur:
+                    _cur.execute(
+                        "select column_name from information_schema.columns "
+                        "where table_schema='nfl' and table_name='team_rolling_stats'")
+                    _tcols = {r[0] for r in _cur.fetchall()}
+                    _want = [c for c in _want if c in _tcols]
+                    _names = ["game_id"] + [f"h__{c}" for c in _want] + [f"a__{c}" for c in _want]
+                    _extra = ""
+                    if _want:
+                        _hcols = ", ".join(f"b.{c} as h__{c}" for c in _want)
+                        _acols = ", ".join(f"b.{c} as a__{c}" for c in _want)
+                        if "ats_home_pct_r5" in _tcols:
+                            _extra = (
+                                ", (select b.ats_home_pct_r5 from nfl.team_rolling_stats b "
+                                "   join nfl.games bg on bg.id = b.game_id "
+                                "   where b.team_abbr = ht.abbreviation and b.is_home and bg.date < g.date "
+                                "   order by bg.date desc limit 1) as h__ats_home_pct_r5"
+                                ", (select b.ats_away_pct_r5 from nfl.team_rolling_stats b "
+                                "   join nfl.games bg on bg.id = b.game_id "
+                                "   where b.team_abbr = at.abbreviation and not b.is_home and bg.date < g.date "
+                                "   order by bg.date desc limit 1) as a__ats_away_pct_r5"
+                            )
+                            _names += ["h__ats_home_pct_r5", "a__ats_away_pct_r5"]
+                        _cur.execute(
+                            "select g.id, h.*, a.*" + _extra + " "
+                            "from nfl.games g "
+                            "join nfl.teams ht on ht.id = g.home_team_id "
+                            "join nfl.teams at on at.id = g.away_team_id "
+                            "left join lateral (select " + _hcols + " from nfl.team_rolling_stats b "
+                            "  join nfl.games bg on bg.id = b.game_id "
+                            "  where b.team_abbr = ht.abbreviation and bg.date < g.date "
+                            "  order by bg.date desc limit 1) h on true "
+                            "left join lateral (select " + _acols + " from nfl.team_rolling_stats b "
+                            "  join nfl.games bg on bg.id = b.game_id "
+                            "  where b.team_abbr = at.abbreviation and bg.date < g.date "
+                            "  order by bg.date desc limit 1) a on true "
+                            "where g.id = any(%s)", (_ids,))
+                        _tdf = pd.DataFrame(_cur.fetchall(), columns=_names).set_index("game_id")
+                    else:
+                        _tdf = pd.DataFrame(columns=_names).set_index("game_id")
+            _gid = df["game_id"]
+            for c in _want:
+                for _side, _pre in (("home", "h__"), ("away", "a__")):
+                    _tgt = f"{_side}_{c}"
+                    if _tgt in df.columns:
+                        _v = _gid.map(_tdf[f"{_pre}{c}"])
+                        df[_tgt] = _v.where(_v.notna(), df[_tgt])
+            if "home_pf" in df.columns and "h__off_pts_r10" in _tdf.columns:
+                df["home_pf"] = _gid.map(_tdf["h__off_pts_r10"]).where(
+                    _gid.map(_tdf["h__off_pts_r10"]).notna(), df["home_pf"])
+                df["away_pf"] = _gid.map(_tdf["a__off_pts_r10"]).where(
+                    _gid.map(_tdf["a__off_pts_r10"]).notna(), df["away_pf"])
+                df["hpf"], df["apf"] = df["home_pf"], df["away_pf"]
+            if "home_pa" in df.columns and "h__def_pts_r10" in _tdf.columns:
+                df["home_pa"] = _gid.map(_tdf["h__def_pts_r10"]).where(
+                    _gid.map(_tdf["h__def_pts_r10"]).notna(), df["home_pa"])
+                df["away_pa"] = _gid.map(_tdf["a__def_pts_r10"]).where(
+                    _gid.map(_tdf["a__def_pts_r10"]).notna(), df["away_pa"])
+                df["hpa"], df["apa"] = df["home_pa"], df["away_pa"]
+            if "h__ats_home_pct_r5" in _tdf.columns:
+                _hv = _gid.map(_tdf["h__ats_home_pct_r5"])
+                _av = _gid.map(_tdf["a__ats_away_pct_r5"])
+                if "home_ats_home_pct_r5" in df.columns:
+                    df["home_ats_home_pct_r5"] = _hv.where(_hv.notna(), df["home_ats_home_pct_r5"])
+                if "away_ats_away_pct_r5" in df.columns:
+                    df["away_ats_away_pct_r5"] = _av.where(_av.notna(), df["away_ats_away_pct_r5"])
+    except Exception as _exc:  # never break the build on a table read
+        logger.warning("team_rolling_stats table read skipped (%s); frame values retained", _exc)
     # ── 16. Division & primetime flags ───────────────────────────────────
     # NFL division names (North/East/South/West) repeat across conferences, so a
     # same-division game REQUIRES matching conference too (e.g. GB NFC North vs

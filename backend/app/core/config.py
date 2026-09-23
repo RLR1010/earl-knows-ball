@@ -59,6 +59,16 @@ class Settings(BaseSettings):
     # App
     base_url: str = "http://localhost:3000"
     admin_email: str = "admin@earlknowsball.com"
+    # Canonical public origin — used to build feed item URLs + the IndexNow
+    # keyLocation. Override per environment (e.g. SITE_URL=https://dev.earlknowsball.com).
+    site_url: str = "https://earlknowsball.com"
+    # IndexNow (Bing/Yandex instant indexing). Key file is served at
+    # {site_url}/{indexnow_key}.txt (frontend public/). Empty disables pinging.
+    indexnow_key: str = ""
+    # Master switch. FALSE by default so non-production environments never ping
+    # search engines; only prod sets INDEXNOW_ENABLED=true. There is also a
+    # hard host allowlist (see app/services/indexnow.py) as defense in depth.
+    indexnow_enabled: bool = False
 
     # X (@earl_knows_ball) social — OAuth1 "acting as ourselves". Optional: if unset,
     # the X admin pages show a "connect" prompt instead of failing import.

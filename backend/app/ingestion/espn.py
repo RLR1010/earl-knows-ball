@@ -232,8 +232,7 @@ async def ingest_espn_schedule(
         except (ValueError, TypeError):
             game_date = datetime.now()
 
-        status_type = comp.get("status", {}).get("type", {}).get("name", "STATUS_SCHEDULED")
-        game_status = _map_espn_status(status_type)
+        game_status = _map_espn_status(comp.get("status", {}).get("type", {}))
         venue = comp.get("venue", {})
 
         game_id = int(event["id"])
@@ -301,15 +300,46 @@ def _get_roof_type(venue: dict | None) -> str | None:
     return "outdoor"
 
 
-def _map_espn_status(status: str) -> GameStatus:
-    mapping = {
-        "STATUS_SCHEDULED": GameStatus.SCHEDULED,
-        "STATUS_IN_PROGRESS": GameStatus.IN_PROGRESS,
-        "STATUS_FINAL": GameStatus.FINAL,
-        "STATUS_POSTPONED": GameStatus.POSTPONED,
-        "STATUS_CANCELLED": GameStatus.CANCELLED,
-    }
-    return mapping.get(status, GameStatus.SCHEDULED)
+def _map_espn_status(status_type) -> GameStatus:
+    """Map ESPN's game status to our GameStatus enum.
+
+    Accepts either ESPN's ``status.type`` dict (preferred — it carries the
+    robust ``state`` of "pre"/"in"/"post") or a legacy raw status-name string.
+
+    IMPORTANT: any unrecognized *in-game* status must map to IN_PROGRESS, never
+    SCHEDULED. ESPN reports ``STATUS_HALFTIME`` at halftime (and
+    ``STATUS_END_PERIOD`` / ``STATUS_END_OF_PERIOD`` / ``STATUS_OVERTIME`` at
+    other breaks); the old ``mapping.get(name, SCHEDULED)`` fallback flipped
+    live games back to "scheduled" at halftime, which then skipped the
+    score/quarter write gate and froze them mid-game (2026-09-20).
+    """
+    if isinstance(status_type, dict):
+        name = (status_type.get("name") or "").upper()
+        state = (status_type.get("state") or "").lower()
+    else:
+        name = (status_type or "").upper()
+        state = ""
+
+    # Terminal / exceptional states first — the name is authoritative for these.
+    if "POSTPON" in name:
+        return GameStatus.POSTPONED
+    if "CANCEL" in name:
+        return GameStatus.CANCELLED
+
+    # ESPN's state is the most reliable signal when present.
+    if state == "post" or "FINAL" in name:
+        return GameStatus.FINAL
+    if state == "in":
+        return GameStatus.IN_PROGRESS
+    if state == "pre":
+        return GameStatus.SCHEDULED
+
+    # No state available: infer from the status name.
+    if ("IN_PROGRESS" in name or "HALFTIME" in name or "LIVE" in name
+            or "END_PERIOD" in name or "END_OF_PERIOD" in name
+            or "OVERTIME" in name):
+        return GameStatus.IN_PROGRESS
+    return GameStatus.SCHEDULED
 
 
 # How many hours before/after a scheduled game's start we still consider it
@@ -429,10 +459,9 @@ async def update_live_nfl_games(session: AsyncSession) -> dict:
         competitors = comp.get("competitors", [])
         home_raw = next((c for c in competitors if c.get("homeAway") == "home"), None)
         away_raw = next((c for c in competitors if c.get("homeAway") == "away"), None)
-        status_type = comp.get("status", {}).get("type", {}).get("name", "STATUS_SCHEDULED")
         stblock = comp.get("status", {})
         event_scores[gid] = {
-            "status": _map_espn_status(status_type),
+            "status": _map_espn_status(stblock.get("type", {})),
             "home_score": _safe_int(home_raw.get("score")) if home_raw else None,
             "away_score": _safe_int(away_raw.get("score")) if away_raw else None,
             "date": event_date,
@@ -531,11 +560,37 @@ async def update_live_nfl_games(session: AsyncSession) -> dict:
                     # A single game's boxscore failure shouldn't abort the rest.
                     continue
 
+    # --- Step 5: settle picks for games that are now FINAL. ---
+    # A game's ats/ou/ml results stay NULL until settled, and until then the
+    # schedule/chat surfaces show no pick result. Grade here (cheap, NULL-guarded,
+    # idempotent) so results appear within ~1 min of a game ending — mirroring MLB
+    # (boxscore_ingest.update_prediction_results runs inside its live ingest). The
+    # 30-min nfl-stats-refresh settle remains a backstop for missed transitions.
+    settled = 0
+    finals = [g for g in candidates
+              if (event_scores.get(g.id) or {}).get("status") == GameStatus.FINAL]
+    if finals or live_games:
+        try:
+            import asyncpg  # local import: only needed on the live path
+            import logging
+            from app.db_urls import PSYCOPG2_DATABASE_URL
+            from app.handicapping.nfl.settle_predictions import settle_nfl_predictions
+            _settle_conn = await asyncpg.connect(PSYCOPG2_DATABASE_URL)
+            try:
+                settled = await settle_nfl_predictions(_settle_conn)
+            finally:
+                await _settle_conn.close()
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "NFL live-refresh: settle pass failed (non-fatal)"
+            )
+
     return {
         "checked_games": len(candidates),
         "updated_games": updated,
         "live_games": bool(live_games),
         "boxscore": boxscore_counts,
+        "settled": settled,
     }
 
 

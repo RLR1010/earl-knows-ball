@@ -28,7 +28,7 @@ STATIC_PAGES = [
 
 # Sport hubs (per sport). Note: /players is intentionally NOT listed —
 # player-stat pages are thin, client-rendered and blocked at robots.txt.
-SPORT_STATIC_ROUTES = ["", "schedule", "stats", "teams", "props", "results", "analysis", "articles"]
+SPORT_STATIC_ROUTES = ["", "schedule", "stats", "teams", "props", "results", "analysis", "articles", "power-rankings"]
 
 SPORTS = ["nfl", "nba", "mlb"]
 
@@ -320,12 +320,145 @@ async def sitemap_data(db: AsyncSession = Depends(get_db)):
         """), {"sport": sport})
         article_slugs = [r[0] for r in articles.all()]
 
+        # Power rankings: weekly archives + per-team pages (only if published).
+        # A missing table (sport not built yet) aborts the tx, so probe in a
+        # try/except and roll back to keep the session usable for the next sport.
+        pr_weeks = []
+        try:
+            pr_rows = await db.execute(text(f"""
+                SELECT DISTINCT season, week FROM {sport}.power_ratings
+                WHERE season >= 2022
+                ORDER BY season DESC, week DESC
+            """))
+            pr_weeks = [{"season": r[0], "week": r[1]} for r in pr_rows.all()]
+        except Exception:
+            await db.rollback()
+            pr_weeks = []
+
         result["sports"][sport] = {
             "static_routes": SPORT_STATIC_ROUTES,
             "teams": team_abbrs,
             "game_slugs": game_slugs,
             "writeup_slugs": writeup_slugs,
             "article_slugs": article_slugs,
+            "power_ranking_weeks": pr_weeks,
+            "power_ranking_teams": team_abbrs if pr_weeks else [],
         }
 
     return result
+
+
+def _strip_repeat_of_title(title: str, text: str) -> str:
+    """Trim a leading repetition of ``title`` from ``text`` (editorial summaries
+    are frequently stored with the headline embedded in front, which would show
+    the title twice in a feed item). Port of the same helper in original_articles."""
+    text = re.sub(r"\s+", " ", (text or "").strip())
+    t = re.sub(r"\s+", " ", (title or "").strip()).rstrip(".!? ,;")
+    if not t:
+        return text
+    head = text[: len(t) + 4]
+    tw = [w.lower().strip(".!?,;:—\"'") for w in t.split() if w]
+    if not tw:
+        return text
+    text_words = head.split()
+    keep = len(tw)
+    if len(text_words) >= keep and [
+        w.lower().strip(".!?,;:—\"'") for w in text_words[:keep]
+    ] == tw:
+        return text[len(" ".join(text_words[:keep])) :].strip().lstrip(".!?,;:— ")
+    return text
+
+
+def _excerpt(md: str | None, limit: int = 300) -> str | None:
+    """Plain-text excerpt from markdown-ish content, for feed descriptions."""
+    if not md:
+        return None
+    txt = re.sub(r"```.*?```", " ", md, flags=re.S)
+    txt = re.sub(r"!\[[^\]]*\]\([^)]*\)", " ", txt)
+    txt = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", txt)
+    txt = re.sub(r"[#*_>`~\-]+", " ", txt)
+    txt = re.sub(r"\s+", " ", txt).strip()
+    if len(txt) > limit:
+        txt = txt[:limit].rsplit(" ", 1)[0] + "…"
+    return txt or None
+
+
+@router.get("/feed-data")
+async def feed_data(
+    sport: str = "all",
+    kind: str = "articles",
+    limit: int = 50,
+    db: AsyncSession = Depends(get_db),
+):
+    """Item data for the RSS feeds (original articles+recaps and/or previews).
+
+    Returns site-relative `path` values; the frontend prefixes the origin.
+    kind: "articles" | "previews" | "both".  sport: a sport code or "all".
+    """
+    try:
+        lim = max(1, min(int(limit), 200))
+    except (TypeError, ValueError):
+        lim = 50
+    kinds = ["articles", "previews"] if kind == "both" else [kind]
+    sports = SPORTS if sport == "all" else [sport]
+    items: list[dict] = []
+
+    for sp in sports:
+        if sp not in VALID_SPORTS:
+            continue
+        if "articles" in kinds:
+            rows = await db.execute(text("""
+                SELECT slug, title, summary, published_at, section,
+                       preview_image, author
+                FROM public.original_articles
+                WHERE status = 'published' AND visibility = 'public'
+                  AND sport = :sp AND slug IS NOT NULL AND slug <> ''
+                ORDER BY published_at DESC NULLS LAST, id DESC
+                LIMIT :lim
+            """), {"sp": sp, "lim": lim})
+            for r in rows.mappings().all():
+                section = (r["section"] or "article").replace("_", " ").title()
+                items.append({
+                    "sport": sp,
+                    "kind": "articles",
+                    "title": r["title"],
+                    "path": f"/{sp}/articles/{r['slug']}",
+                    "summary": (
+                        _strip_repeat_of_title(r["title"], r["summary"])
+                        if r["summary"]
+                        else None
+                    ),
+                    "published_at": r["published_at"].isoformat() if r["published_at"] else None,
+                    "image": r["preview_image"],
+                    "categories": [sp.upper(), section],
+                    "author": r["author"] or "Earl",
+                })
+        if "previews" in kinds:
+            try:
+                rows = await db.execute(text(f"""
+                    SELECT COALESCE(NULLIF(w.slug, ''), CAST(w.id AS text)) AS ident,
+                           w.title, w.public_content, w.published_at, w.preview_image
+                    FROM {sp}.game_writeups w
+                    WHERE w.status = 'published'
+                    ORDER BY w.published_at DESC NULLS LAST, w.id DESC
+                    LIMIT :lim
+                """), {"lim": lim})
+                for r in rows.mappings().all():
+                    items.append({
+                        "sport": sp,
+                        "kind": "previews",
+                        "title": r["title"],
+                        "path": f"/{sp}/articles/previews/{r['ident']}",
+                        "summary": _excerpt(r["public_content"]),
+                        "published_at": r["published_at"].isoformat() if r["published_at"] else None,
+                        "image": r["preview_image"],
+                        "categories": [sp.upper(), "Preview"],
+                        "author": "Earl",
+                    })
+            except Exception:
+                # game_writeups may be absent on some schemas; skip quietly.
+                pass
+
+    # ISO-8601 sorts lexicographically; newest first.
+    items.sort(key=lambda x: x["published_at"] or "", reverse=True)
+    return {"sport": sport, "kind": kind, "items": items[:lim]}

@@ -6,14 +6,18 @@ Endpoints (mounted under /writeups in main.py):
   POST   /writeups/admin/free-pick/{sport}/{game_id}   -> set THE free pick (keeps recent picks free), (re)generate card
   DELETE /writeups/admin/free-pick/{sport}/{game_id}   -> unset the free pick
 
-CURRENT vs HISTORICAL (2026-09-10):
-  `is_free_feature` marks a writeup as PERMANENTLY unlocked (public + indexable).
-  The *current* free pick is whichever flagged writeup has the newest
-  `free_featured_at` (see _ACTIVE_SQL). Publishing a new pick NO LONGER clears the
-  flag on older picks: past picks stay unlocked so Google can keep crawling and
-  indexing them (they remain in the sitemap + returned by the public writeup
-  endpoint). We only PRUNE beyond `FREE_PICK_RETENTION` so the free set doesn't
-  grow without bound — picks older than that are re-gated.
+CURRENT vs HISTORICAL (2026-09-10; refined 2026-09-21):
+  `is_free_feature` marks a writeup as UNLOCKED (public + indexable). Publishing a new
+  pick does NOT clear that flag on older picks: past picks stay unlocked so Google can
+  keep crawling/indexing them (sitemap + public writeup endpoint). We only PRUNE beyond
+  `FREE_PICK_RETENTION` on a recency basis (see the set handler).
+  The *current* free pick is the SINGLE flagged writeup with a non-NULL
+  `free_featured_at` (see _ACTIVE_SQL). INVARIANT: at most one row *globally* has a
+  featured timestamp. Setting a pick stamps the target and clears every other featured
+  timestamp; UNSETTING clears ALL featured timestamps so the homepage section hides
+  completely — it must NOT fall back to a previously-featured pick. Retention prune
+  orders by `published_at` (never `free_featured_at`), so a pick stays unlocked for
+  indexing even after it is no longer the current pick.
 Only writeups with premium_content (a real paid analysis) are eligible.
 """
 from __future__ import annotations
@@ -269,8 +273,8 @@ async def set_free_pick(
     # Set this one FIRST (so it is always kept), then prune older picks beyond the
     # retention window. Publishing a new pick does NOT re-gate recent/ past picks:
     # they stay unlocked so Google keeps crawling + indexing them (they remain in
-    # the sitemap and are still readable anonymously). The CURRENT pick is derived
-    # from free_featured_at recency (_ACTIVE_SQL), not from being the only flag.
+    # the sitemap and are still readable anonymously). But `free_featured_at` marks
+    # only THE current pick (see _ACTIVE_SQL), so we clear it everywhere else below.
     await db.execute(
         text(
             f"UPDATE {sport}.game_writeups "
@@ -279,8 +283,32 @@ async def set_free_pick(
         {"now": now, "gid": int(game_id)},
     )
 
-    # Prune: across all sports, keep only the FREE_PICK_RETENTION newest featured
-    # picks unlocked; re-gate anything older (drop its flag + featured timestamp).
+    # Enforce the single-current-pick invariant: only the writeup we just featured
+    # keeps its free_featured_at. Every other retained (still-flagged) pick has its
+    # featured timestamp cleared so it is no longer THE current pick — it keeps
+    # is_free_feature=TRUE for indexing/retention only.
+    for s in SPORTS:
+        if s == sport:
+            await db.execute(
+                text(
+                    f"UPDATE {s}.game_writeups SET free_featured_at = NULL "
+                    "WHERE is_free_feature = TRUE AND free_featured_at IS NOT NULL "
+                    "AND game_id <> :gid"
+                ),
+                {"gid": int(game_id)},
+            )
+        else:
+            await db.execute(
+                text(
+                    f"UPDATE {s}.game_writeups SET free_featured_at = NULL "
+                    "WHERE is_free_feature = TRUE AND free_featured_at IS NOT NULL"
+                )
+            )
+
+    # Prune: across all sports, keep only the FREE_PICK_RETENTION most-recent picks
+    # unlocked; re-gate anything older. Order by published_at (NOT free_featured_at,
+    # which now marks only the single current pick). The `(free_featured_at IS NOT
+    # NULL)` tiebreak guarantees the current pick is kept even if its writeup is old.
     for s in SPORTS:
         await db.execute(
             text(
@@ -290,8 +318,8 @@ async def set_free_pick(
                 WHERE is_free_feature = TRUE
                   AND game_id NOT IN (
                     SELECT game_id FROM {s}.game_writeups
-                    WHERE is_free_feature = TRUE AND free_featured_at IS NOT NULL
-                    ORDER BY free_featured_at DESC
+                    WHERE is_free_feature = TRUE
+                    ORDER BY (free_featured_at IS NOT NULL) DESC, published_at DESC NULLS LAST
                     LIMIT :keep
                   )
                 """
@@ -322,11 +350,12 @@ async def unset_free_pick(
     db: AsyncSession = Depends(get_db),
     _admin=Depends(require_admin),
 ):
-    """Retract the free pick for {sport}/{game_id}.
+    """Retract the current free pick.
 
-    Note: rotating to a new pick no longer re-gates older picks (they stay free
-    for indexing). This manual unset un-flags the named pick only — use it to
-    deliberately retire a specific pick.
+    Re-gates the named pick AND clears the featured timestamp on every other
+    retained pick, so NO pick is current afterwards — the homepage section hides
+    completely rather than falling back to a previously-featured pick. Older picks
+    keep is_free_feature=TRUE for indexing/retention.
     """
     sport = _check_sport(sport)
     await db.execute(
@@ -337,6 +366,17 @@ async def unset_free_pick(
         ),
         {"gid": int(game_id)},
     )
+    # Turning the current pick OFF must leave NO active pick. Older picks stay
+    # flagged (for indexing), so without this their free_featured_at would make
+    # _ACTIVE_SQL fall back to a previous pick (the revert bug). Clear every
+    # remaining featured timestamp across all sports.
+    for s in SPORTS:
+        await db.execute(
+            text(
+                f"UPDATE {s}.game_writeups SET free_featured_at = NULL "
+                "WHERE is_free_feature = TRUE AND free_featured_at IS NOT NULL"
+            )
+        )
     await db.commit()
     try:
         active = await _active_count(db)
@@ -365,8 +405,15 @@ async def _get_active(db: AsyncSession) -> dict:
 
 
 async def _active_count(db: AsyncSession) -> int:
+    # Count the CURRENT pick(s): rows with a featured timestamp. With the single-current
+    # invariant this is 0 or 1 (unlocked-but-not-current retained picks don't count).
     total = 0
     for sport in SPORTS:
-        c = await db.execute(text(f"SELECT count(*) FROM {sport}.game_writeups WHERE is_free_feature = TRUE"))
+        c = await db.execute(
+            text(
+                f"SELECT count(*) FROM {sport}.game_writeups "
+                "WHERE is_free_feature = TRUE AND free_featured_at IS NOT NULL"
+            )
+        )
         total += int(c.scalar())
     return total

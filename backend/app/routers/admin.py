@@ -4404,12 +4404,21 @@ async def data_loader_load_game(
         if df is None or df.empty:
             raise HTTPException(status_code=404, detail=f"No feature data for game {game_id}")
         row = df.iloc[0]
-        # NBA keeps pristine raw values in "<feat>_raw" twins (blended path). When a
-        # twin exists, show the RAW display value (in-season, else prior season); the
-        # blended "value" below is still exactly what the model consumes.
-        raw_key = None
-        if sport == "nba":
-            raw_key = lambda feat: (feat + "_raw") if (feat + "_raw") in row.index else feat
+        # Raw (pre early-season-blend) twins are named differently per sport:
+        #   NBA: "<feat>_raw" (suffix)
+        #   NFL: "raw_<feat>" (prefix) — the exact twins the pick card reads via the
+        #        engine's _extract_pick_card_features() (raw_<feat> preferred).
+        # When a twin exists, surface it as raw_value; the blended "value" below is
+        # still exactly what the model consumes. If a twin exists but is NaN for this
+        # row (e.g. an upcoming game where the current-season sample is empty), the
+        # raw shows blank rather than silently echoing the blended value.
+        # (MLB has no raw twins → raw_value == value.)
+        def _raw_key(feat: str) -> str:
+            for cand in (feat + "_raw", "raw_" + feat):
+                if cand in row.index:
+                    return cand
+            return feat
+        raw_key = _raw_key
         feat_meta = {r[0]: r for r in _feat_rows}
 
         # ── Game summary (games/teams catalog read, NOT feature SQL) ──
