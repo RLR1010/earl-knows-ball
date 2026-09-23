@@ -1096,6 +1096,69 @@ class NFLDataLoader:
             except Exception as exc2:
                 logger.warning("Failed to load team stats: %s", exc2)
 
+        # 2b. Load team power-rating + injury-adjustment (PRE-GAME, leak-free)
+        #     power rating: last week STRICTLY before this game's week (a week-W
+        #     rating includes week-W games); week-1 falls back to the season prior.
+        #     injury adj: the same week's pre-game report (fallback: last prior week).
+        pr_stats = None
+        try:
+            PR_SQL = """
+                WITH sides AS (
+                    SELECT g.id AS target_game_id, s.year AS season, g.week AS week,
+                           ht.abbreviation AS team_abbr
+                    FROM nfl.games g
+                    JOIN nfl.seasons s ON s.id = g.season_id
+                    JOIN nfl.teams ht ON ht.id = g.home_team_id
+                    UNION ALL
+                    SELECT g.id, s.year, g.week, at.abbreviation
+                    FROM nfl.games g
+                    JOIN nfl.seasons s ON s.id = g.season_id
+                    JOIN nfl.teams at ON at.id = g.away_team_id
+                )
+                SELECT sd.season, sd.week, sd.target_game_id AS feeds_into_game_id,
+                       sd.team_abbr,
+                       COALESCE(pr.rating, pr1.prior_rating) AS power_rating,
+                       pr.sos AS power_sos,
+                       COALESCE(ia.adj, ia_prev.adj, 0.0) AS injury_adj
+                FROM sides sd
+                LEFT JOIN LATERAL (
+                    SELECT r.rating, r.sos
+                    FROM nfl.power_ratings r
+                    WHERE r.season = sd.season AND r.team_abbr = sd.team_abbr
+                      AND r.week < sd.week
+                    ORDER BY r.week DESC LIMIT 1
+                ) pr ON true
+                LEFT JOIN LATERAL (
+                    SELECT r.prior_rating
+                    FROM nfl.power_ratings r
+                    WHERE r.season = sd.season AND r.team_abbr = sd.team_abbr
+                    ORDER BY r.week ASC LIMIT 1
+                ) pr1 ON true
+                LEFT JOIN nfl.injury_adjustments ia
+                    ON ia.season = sd.season AND ia.week = sd.week
+                   AND ia.team_abbr = sd.team_abbr
+                LEFT JOIN LATERAL (
+                    SELECT r.adj
+                    FROM nfl.injury_adjustments r
+                    WHERE r.season = sd.season AND r.team_abbr = sd.team_abbr
+                      AND r.week < sd.week
+                    ORDER BY r.week DESC LIMIT 1
+                ) ia_prev ON true
+            """
+            pr_df = pd.read_sql(PR_SQL, self.engine)
+            if not pr_df.empty:
+                pr_stats = pr_df.dropna(subset=["feeds_into_game_id"])
+                pr_stats["feeds_into_game_id"] = pr_stats["feeds_into_game_id"].astype(int)
+                logger.info(
+                    "Loaded %d power-rating/injury rows (%d-%d)",
+                    len(pr_stats),
+                    int(pr_stats["season"].min()),
+                    int(pr_stats["season"].max()),
+                )
+        except Exception as exc:
+            logger.warning("Failed to load power-rating/injury features: %s", exc)
+            pr_stats = None
+
         # 3. Load QB pre-game stats
         qb_stats = None
         try:
@@ -1411,7 +1474,7 @@ class NFLDataLoader:
 
         # 4. Run feature engineering
         fn = build_features_fn if build_features_fn is not None else build_features
-        df = fn(df, team_stats=team_stats, qb_stats=qb_stats, **build_kwargs)
+        df = fn(df, team_stats=team_stats, qb_stats=qb_stats, pr_stats=pr_stats, **build_kwargs)
 
         # 3. Determine output columns
         if feature_names is None:
@@ -2678,6 +2741,60 @@ def build_features(df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
             if c in df.columns and "_x" not in str(c):
                 # season/week might exist from GAME_QUERY — don't drop
                 pass
+
+    # ── 19b. Power-rating + injury-adjustment features (pre-game, leak-free) ──
+    #     Pulls nfl.power_ratings (last week < game week, else season prior) and
+    #     nfl.injury_adjustments (same-week pre-game report) per side, then derives
+    #     home/away + differential columns the model can select.
+    pr_stats = kwargs.get("pr_stats")
+    if pr_stats is not None and not pr_stats.empty:
+        _pr = pr_stats.copy()
+        season_col = "season_year" if "season_year" in df.columns else "season"
+        if season_col != "season" and "season" in _pr.columns:
+            _pr = _pr.rename(columns={"season": season_col})
+
+        _pr_cols = ["power_rating", "power_sos", "injury_adj"]
+        _pr_cols = [c for c in _pr_cols if c in _pr.columns]
+
+        home_pr = _pr.rename(columns={
+            "team_abbr": "home_abbr",
+            **{c: f"home_{c}" for c in _pr_cols},
+        })[[season_col, "feeds_into_game_id", "home_abbr"]
+           + [f"home_{c}" for c in _pr_cols]]
+        df = df.merge(
+            home_pr,
+            left_on=[season_col, "game_id", "home_abbr"],
+            right_on=[season_col, "feeds_into_game_id", "home_abbr"],
+            how="left",
+        ).drop(columns=["feeds_into_game_id"], errors="ignore")
+
+        away_pr = _pr.rename(columns={
+            "team_abbr": "away_abbr",
+            **{c: f"away_{c}" for c in _pr_cols},
+        })[[season_col, "feeds_into_game_id", "away_abbr"]
+           + [f"away_{c}" for c in _pr_cols]]
+        df = df.merge(
+            away_pr,
+            left_on=[season_col, "game_id", "away_abbr"],
+            right_on=[season_col, "feeds_into_game_id", "away_abbr"],
+            how="left",
+        ).drop(columns=["feeds_into_game_id"], errors="ignore")
+
+        # Fill missing (pre-2016 games / seasons with no injuries) so the frame is dense.
+        for c in _pr_cols:
+            df[f"home_{c}"] = df[f"home_{c}"].fillna(0.0)
+            df[f"away_{c}"] = df[f"away_{c}"].fillna(0.0)
+
+        # Derived differentials.
+        df["power_rating_diff"] = df["home_power_rating"] - df["away_power_rating"]
+        df["injury_adj_diff"] = df["home_injury_adj"] - df["away_injury_adj"]
+        if "home_power_sos" in df.columns:
+            df["power_sos_diff"] = df["home_power_sos"] - df["away_power_sos"]
+        logger.info(
+            "Merged power-rating/injury features: %d rows, power_rating_diff mean %.3f, "
+            "injury_adj_diff mean %.3f",
+            len(df), df["power_rating_diff"].mean(), df["injury_adj_diff"].mean(),
+        )
 
     # ── 20. QB pre-game stats (cumulative + rolling) ──
     qb_stats = kwargs.get("qb_stats")
