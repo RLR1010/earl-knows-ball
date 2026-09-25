@@ -1429,7 +1429,7 @@ async def publish_original_article(
     # writeup `_post_store` hook). Never blocks/breaks the publish response: a
     # caption/card failure is logged and leaves the article published normally.
     try:
-        asyncio.create_task(_auto_original_social_card(int(row["id"]), sport))
+        asyncio.create_task(_auto_original_social_card(sport, int(row["id"])))
     except RuntimeError:
         pass
     return {"article": dict(row)}
@@ -2241,6 +2241,27 @@ async def update_original_article(
     )
     updated = result.mappings().first()
     await db.commit()
+
+    # A freshly-published original article must be tweet-ready (social caption +
+    # card) so the admin "Post Today" planner can recommend it as an
+    # original-article pick. The automated daily editorial generator publishes
+    # drafts via THIS PATCH (not POST /publish), so the same auto-card hook has to
+    # run on the draft -> published transition here too. Best-effort: never blocks
+    # or breaks the publish response.
+    if (
+        updated
+        and updated.get("status") == "published"
+        and row.get("status") != "published"
+        and (
+            not (updated.get("social_caption") or "").strip()
+            or not (updated.get("preview_image") or "").strip()
+        )
+    ):
+        try:
+            asyncio.create_task(_auto_original_social_card(sport, int(article_id)))
+        except RuntimeError:
+            pass
+
     return {"article": dict(updated)}
 
 

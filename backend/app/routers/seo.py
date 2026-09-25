@@ -28,7 +28,7 @@ STATIC_PAGES = [
 
 # Sport hubs (per sport). Note: /players is intentionally NOT listed —
 # player-stat pages are thin, client-rendered and blocked at robots.txt.
-SPORT_STATIC_ROUTES = ["", "schedule", "stats", "teams", "props", "results", "analysis", "articles", "power-rankings"]
+SPORT_STATIC_ROUTES = ["", "schedule", "stats", "teams", "props", "results", "analysis", "articles", "power-rankings", "power-rankings/methodology"]
 
 SPORTS = ["nfl", "nba", "mlb"]
 
@@ -324,6 +324,7 @@ async def sitemap_data(db: AsyncSession = Depends(get_db)):
         # A missing table (sport not built yet) aborts the tx, so probe in a
         # try/except and roll back to keep the session usable for the next sport.
         pr_weeks = []
+        pr_teams = []
         try:
             pr_rows = await db.execute(text(f"""
                 SELECT DISTINCT season, week FROM {sport}.power_ratings
@@ -331,9 +332,23 @@ async def sitemap_data(db: AsyncSession = Depends(get_db)):
                 ORDER BY season DESC, week DESC
             """))
             pr_weeks = [{"season": r[0], "week": r[1]} for r in pr_rows.all()]
+
+            # Only teams that actually appear in the ratings board get a
+            # /power-rankings/team/{abbr} page (avoids emitting stale/placeholder
+            # rows from {sport}.teams that have no rating).
+            pr_team_rows = await db.execute(text(f"""
+                SELECT DISTINCT t.abbreviation
+                FROM {sport}.power_ratings p
+                JOIN {sport}.teams t ON t.id = p.team_id
+                WHERE p.season >= 2022
+                  AND t.abbreviation IS NOT NULL AND t.abbreviation <> ''
+                ORDER BY 1
+            """))
+            pr_teams = [r[0] for r in pr_team_rows.all()]
         except Exception:
             await db.rollback()
             pr_weeks = []
+            pr_teams = []
 
         result["sports"][sport] = {
             "static_routes": SPORT_STATIC_ROUTES,
@@ -342,7 +357,7 @@ async def sitemap_data(db: AsyncSession = Depends(get_db)):
             "writeup_slugs": writeup_slugs,
             "article_slugs": article_slugs,
             "power_ranking_weeks": pr_weeks,
-            "power_ranking_teams": team_abbrs if pr_weeks else [],
+            "power_ranking_teams": pr_teams,
         }
 
     return result

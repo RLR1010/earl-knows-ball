@@ -5,8 +5,8 @@
 PICKCARD_LABELS = {
     # ================= AWAY STATS =================
     "aimp": ("Away Implied Score", "Away team's implied point total based on the betting line (how many points the market/model expects the away team to score)."),
-    "apa": ("Away Points Allowed (PPG)", "Average points the away team's defense gives up per game over the last 5 games."),
-    "apf": ("Away Points Scored (PPG)", "Average points the away team's offense scores per game over the last 5 games."),
+    "apa": ("Away Points Allowed (PPG)", "Average points the away team's defense gives up per game over the last 10 games."),
+    "apf": ("Away Points Scored (PPG)", "Average points the away team's offense scores per game over the last 10 games."),
     "away_ats_away_pct_r5": ("Away ATS% (Road) L5", "Percentage of the away team's last 5 road games that covered the point spread."),
     "away_cold_ppg": ("Away PPG in Cold Games", "Away team's average points scored in prior games played in cold conditions (under 40°F)."),
     "away_cold_win_pct": ("Away Win% in Cold Games", "Away team's win rate in prior games played in cold conditions (under 40°F)."),
@@ -93,8 +93,8 @@ PICKCARD_LABELS = {
 
     # ================= HOME STATS =================
     "himp": ("Home Implied Score", "Home team's implied point total based on the betting line (how many points the market/model expects the home team to score)."),
-    "hpa": ("Home Points Allowed (PPG)", "Average points the home team's defense gives up per game over the last 5 games."),
-    "hpf": ("Home Points Scored (PPG)", "Average points the home team's offense scores per game over the last 5 games."),
+    "hpa": ("Home Points Allowed (PPG)", "Average points the home team's defense gives up per game over the last 10 games."),
+    "hpf": ("Home Points Scored (PPG)", "Average points the home team's offense scores per game over the last 10 games."),
     "home_ats_home_pct_r5": ("Home ATS% (Home) L5", "Percentage of the home team's last 5 home games that covered the point spread."),
     "home_cold_ppg": ("Home PPG in Cold Games", "Home team's average points scored in prior games played in cold conditions (under 40°F)."),
     "home_cold_win_pct": ("Home Win% in Cold Games", "Home team's win rate in prior games played in cold conditions (under 40°F)."),

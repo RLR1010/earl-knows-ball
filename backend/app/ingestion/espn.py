@@ -245,7 +245,25 @@ async def ingest_espn_schedule(
 
         # Get week from the event data
         event_week = event.get("week", {}).get("number", 0)
-        game_type = "REG" if seasontype == 2 else ("PRE" if seasontype == 1 else "POST")
+        # Derive the game type from the EVENT's OWN season type (authoritative),
+        # NOT from the seasontype we queried with. The ESPN date-range scoreboard is
+        # not reliably filtered by seasontype, so requesting a boundary window can
+        # return games of another type; labelling those with the requested type is
+        # exactly how a PRESEASON game gets filed as REG (and vice-versa).
+        ev_season_type = None
+        try:
+            ev_season_type = event.get("season", {}).get("type")
+        except AttributeError:
+            ev_season_type = None
+        if ev_season_type is None:
+            ev_season_type = event.get("seasonType")
+        try:
+            ev_season_type = int(ev_season_type) if ev_season_type is not None else None
+        except (TypeError, ValueError):
+            ev_season_type = None
+        if ev_season_type not in (1, 2, 3):
+            ev_season_type = seasontype
+        game_type = "REG" if ev_season_type == 2 else ("PRE" if ev_season_type == 1 else "POST")
 
         # ESPN reuses week numbers across preseason (1-4) and regular season (1-18),
         # which would collide in our schedule. Renumber preseason weeks into a
@@ -706,11 +724,27 @@ async def _upsert_game_stats(session, payload):
     one. Legacy rows may have an empty opponent_abbr; we match on team_abbr alone
     (update first, insert only if nothing matched) to collapse onto them instead of
     creating a second row.
+
+    IMPORTANT: a row's identity includes season_type. A PRESEASON row and a
+    REGULAR-season row must NEVER be filed under the same game, so we key the match
+    on season_type AND delete any stale row for the same (season, week, team_abbr)
+    that carries a DIFFERENT season_type. Without this, this writer (which is not
+    season_type-aware) could UPDATE a REG row with preseason numbers while leaving
+    season_type='REG'.
     """
     from sqlalchemy import text
-    key_where = "season = :season AND week = :week AND team_abbr = :team_abbr"
+    key_where = ("season = :season AND week = :week AND team_abbr = :team_abbr "
+                 "AND season_type = :season_type")
     upd_cols = [c for c in payload.keys() if c not in ("season", "week", "team_abbr", "opponent_abbr", "season_type")]
     up_sets = ", ".join(f"{c}=:{c}" for c in upd_cols)
+
+    # Collapse any stale row for the same game carrying another season_type
+    # (e.g. a mis-tagged PRE row that occupies a REG week, or vice-versa).
+    if payload.get("season_type") is not None:
+        await session.execute(text(
+            "DELETE FROM nfl.game_stats WHERE season = :season AND week = :week "
+            "AND team_abbr = :team_abbr AND season_type <> :season_type"
+        ), payload)
 
     update_sql = f"UPDATE nfl.game_stats SET {up_sets}, opponent_abbr=:opponent_abbr WHERE {key_where}"
     res = await session.execute(text(update_sql), payload)

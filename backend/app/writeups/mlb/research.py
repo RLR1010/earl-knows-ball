@@ -309,7 +309,7 @@ async def _pitcher_profile(
     # Try to find the player record by name + team
     player = await db.execute(
         text("""
-            SELECT id, name, throws, position
+            SELECT id, mlb_id, name, throws, position
             FROM mlb.players
             WHERE name ILIKE :name AND team_id = :tid
             LIMIT 1
@@ -345,6 +345,38 @@ async def _pitcher_profile(
     )
     ps = ps_row.mappings().one_or_none()
     profile["season_stats"] = dict(ps) if ps else None
+
+    # Advanced Statcast/Savant + WAR (expected stats, quality of contact allowed,
+    # percentile ranks, pitch arsenal, bWAR) — shared layer with the chat tools.
+    profile["advanced"] = None
+    mlb_id = pl.get("mlb_id")
+    if mlb_id:
+        try:
+            from app.analytics import mlb_savant as _S
+            season_year = (await db.execute(
+                text("SELECT year FROM mlb.seasons WHERE id = :sid"), {"sid": season_id}
+            )).scalar_one_or_none()
+            if season_year:
+                arsenal = await _S.pitcher_arsenal(db, int(mlb_id), int(season_year))
+                profile["advanced"] = {
+                    "expected": await _S.pitcher_expected(db, int(mlb_id), int(season_year)),
+                    "quality_allowed": await _S.pitcher_quality_allowed(db, int(mlb_id), int(season_year)),
+                    "percentiles": await _S.pitcher_percentiles(db, int(mlb_id), int(season_year)),
+                    "war": await _S.war_pitching(db, int(mlb_id), int(season_year)),
+                    "arsenal": (
+                        [
+                            {k: v for k, v in a.items() if v is not None}
+                            for a in arsenal
+                            if a.get("pitch_usage") is not None
+                        ] or None
+                    ),
+                }
+                # Drop an all-empty advanced block
+                if not any(profile["advanced"].get(k) for k in ("expected", "quality_allowed", "percentiles", "war", "arsenal")):
+                    profile["advanced"] = None
+        except Exception as exc:  # never let advanced stats break the writeup
+            logger.warning("pitcher advanced stats failed for %s: %s", name, exc)
+            profile["advanced"] = None
 
     # Last 5 starts — games where this pitcher started (by name match)
     dt_f = _dt_filter(as_of_date)
@@ -980,14 +1012,33 @@ async def get_team_hitting_stats(
     from sqlalchemy import text
     result = await db.execute(
         text("""
-            SELECT p.name, p.position,
+            SELECT p.name, p.position, p.mlb_id,
                    bs.games_played, bs.plate_appearances, bs.at_bats,
                    bs.runs, bs.hits, bs.doubles, bs.triples,
                    bs.home_runs, bs.runs_batted_in, bs.stolen_bases,
                    bs.base_on_balls, bs.strikeouts,
-                   bs.avg, bs.obp, bs.slg, bs.ops
+                   bs.avg, bs.obp, bs.slg, bs.ops,
+                   ex.est_ba AS xba, ex.est_slg AS xslg, ex.est_woba AS xwoba,
+                   q.avg_hit_speed AS avg_ev, q.max_hit_speed AS max_ev,
+                   q.brl_percent AS barrel_pct, q.ev95percent AS hard_hit_pct,
+                   w.war AS bwar, sp.sprint_speed
             FROM mlb.batting_stats bs
             JOIN mlb.players p ON p.id = bs.player_id
+            LEFT JOIN mlb.savant_bat_expected ex
+                   ON ex.player_id = p.mlb_id
+                  AND ex.year = (SELECT year FROM mlb.seasons WHERE id = :season_id)
+            LEFT JOIN mlb.savant_bat_exitvelo q
+                   ON q.player_id = p.mlb_id
+                  AND q.year = (SELECT year FROM mlb.seasons WHERE id = :season_id)
+            LEFT JOIN LATERAL (
+                   SELECT war FROM mlb.bref_war_bat
+                   WHERE mlb_id = p.mlb_id
+                     AND year_id = (SELECT year FROM mlb.seasons WHERE id = :season_id)
+                   ORDER BY war DESC NULLS LAST LIMIT 1
+            ) w ON true
+            LEFT JOIN mlb.savant_sprint_speed sp
+                   ON sp.player_id = p.mlb_id
+                  AND sp.year = (SELECT year FROM mlb.seasons WHERE id = :season_id)
             WHERE bs.team_id = :team_id AND bs.season_id = :season_id
             ORDER BY bs.plate_appearances DESC
             LIMIT :limit
@@ -996,6 +1047,36 @@ async def get_team_hitting_stats(
     )
     rows = result.mappings().fetchall()
     return [dict(r) for r in rows]
+
+
+async def get_team_advanced_stats(
+    db: AsyncSession,
+    team_id: int,
+    season_id: int,
+    min_pa: int = 100,
+) -> dict:
+    """Under-the-hood Statcast/Savant view for a team in a season.
+
+    Per-hitter: expected stats (xBA/xSLG/xwOBA), quality of contact (avg/max EV,
+    barrel %, hard-hit %) and bWAR. Per-pitcher: xERA, expected line, barrels/hard-hit
+    allowed, and bWAR. Reads the shared app.analytics.mlb_savant layer (same numbers the
+    chat tools return).
+    """
+    from sqlalchemy import text
+    from app.analytics import mlb_savant as _S
+
+    abbr = (await db.execute(
+        text("SELECT abbreviation FROM mlb.teams WHERE id = :t"), {"t": team_id}
+    )).scalar_one_or_none()
+    year = (await db.execute(
+        text("SELECT year FROM mlb.seasons WHERE id = :s"), {"s": season_id}
+    )).scalar_one_or_none()
+    if not abbr or not year:
+        return {"team": abbr, "season": year, "hitters": [], "pitchers": []}
+
+    hitters = await _S.team_hitter_advanced(db, abbr, int(year), min_pa=min_pa)
+    pitchers = await _S.team_pitcher_advanced(db, abbr, int(year), min_pa=50)
+    return {"team": abbr, "season": int(year), "hitters": hitters, "pitchers": pitchers}
 
 
 # ──────────────────────────────────────────────
@@ -1201,6 +1282,8 @@ async def get_research_brief(
         "away_form": get_recent_form(db, away_id, season_id, 10, as_of_date),
         "home_roster": get_team_hitting_stats(db, home_id, season_id),
         "away_roster": get_team_hitting_stats(db, away_id, season_id),
+        "home_advanced": get_team_advanced_stats(db, home_id, season_id),
+        "away_advanced": get_team_advanced_stats(db, away_id, season_id),
         "series_results": get_series_results(db, home_id, away_id, game_dt),
         "home_splits": get_team_splits(db, home_id, season_id),
         "away_splits": get_team_splits(db, away_id, season_id),

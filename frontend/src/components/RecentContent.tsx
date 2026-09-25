@@ -183,10 +183,12 @@ export default function RecentContent({ sport }: { sport: string }) {
                 href={`/${sport}/articles/${a.slug || a.id}`}
                 className="block border border-white/10 rounded-xl p-4 bg-white/5 hover:bg-white/10 transition group"
               >
-                {/* Team logos — horizontal row above the article, left to right */}
-                {Array.isArray(a.teams) && a.teams.length > 0 && (
+                {/* Team logos — horizontal row above the article, left to right.
+                    Defensive: only render string abbrs (a malformed teams array
+                    must never take the page down). */}
+                {Array.isArray(a.teams) && a.teams.some((t) => typeof t === "string") && (
                   <div className="flex items-center gap-1.5 mb-2">
-                    {a.teams.slice(0, 4).map((abbr) => (
+                    {a.teams.filter((t) => typeof t === "string").slice(0, 4).map((abbr) => (
                       <TeamLogo key={abbr} abbr={abbr} sport={sport} size={26} />
                     ))}
                   </div>

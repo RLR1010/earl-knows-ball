@@ -208,7 +208,7 @@ CREATE INDEX IF NOT EXISTS idx_trs_game       ON nfl.team_rolling_stats (game_id
 POPULATE_SQL = """
 -- Clean REG+POST rows so the combined (full-season, playoffs-roll-in) insert coexists
 -- cleanly. PRE rows are never built here (cumulative_game_stats has no PRE rows).
-DELETE FROM nfl.team_rolling_stats WHERE game_type IN ('REG', 'POST');
+DELETE FROM nfl.team_rolling_stats WHERE game_type IN ('REG', 'POST')/*SEASON_DEL*/;
 
 -- Step 1: Per-game values by diffing cumulative totals from cumulative_game_stats.
 WITH per_game AS (
@@ -282,7 +282,7 @@ WITH per_game AS (
     JOIN nfl.teams t_home ON t_home.id = g.home_team_id
     JOIN nfl.teams t_away ON t_away.id = g.away_team_id
     LEFT JOIN nfl.betting_lines_consolidated bl ON c.game_id = bl.game_id
-    WHERE g.game_type IN ('REG', 'POST')  -- include playoffs so postseason rolls carry
+    WHERE g.game_type IN ('REG', 'POST')/*SEASON_SRC*/  -- include playoffs so postseason rolls carry
     -- NOTE: cumulative_game_stats restarts games_played for POST (REG 1..18, POST 1..4),
     -- so (season, team_abbr, games_played) is NOT unique across REG+POST. The LAG diff must be
     -- scoped per season_type or it interleaves REG/POST rows and corrupts every per-game value.
@@ -789,16 +789,38 @@ def create_table() -> None:
     logger.info("nfl.team_rolling_stats table created/verified")
 
 
-def populate(game_type: str = "REG") -> None:
+def populate(game_type: str = "REG", seasons=None) -> None:
     """Populate nfl.team_rolling_stats (REG+POST, playoffs roll into postseason).
 
     `game_type` kept for backward-compat; ignored. Rows are always built over
     REG+POST so playoff games carry the season's regular-season history. Preseason
     (PRE) rows are never built (source has none).
+
+    `seasons`: when provided (and settings.rebuild_historical_stats is False) only
+    rows for those seasons are rebuilt, and all OTHER (historical) rows are left
+    untouched. That keeps historical features immutable so models stay reproducible.
     """
+    from app.core.config import settings
+
+    scope_seasons = None
+    if seasons and not getattr(settings, "rebuild_historical_stats", False):
+        scope_seasons = sorted({int(s) for s in seasons})
+
+    if scope_seasons:
+        sql = (POPULATE_SQL
+               .replace("/*SEASON_DEL*/", " AND season = ANY(:seasons)")
+               .replace("/*SEASON_SRC*/", " AND c.season = ANY(:seasons)"))
+        params = {"seasons": scope_seasons}
+    else:
+        sql = POPULATE_SQL.replace("/*SEASON_DEL*/", "").replace("/*SEASON_SRC*/", "")
+        params = None
+
     with SessionLocal() as session:
-        logger.info("Populating nfl.team_rolling_stats (REG+POST, playoffs roll in)...")
-        result = session.execute(text(POPULATE_SQL))
+        logger.info(
+            "Populating nfl.team_rolling_stats (REG+POST, playoffs roll in)%s...",
+            f" [seasons={scope_seasons}]" if scope_seasons else " [ALL seasons]",
+        )
+        result = session.execute(text(sql), params) if params else session.execute(text(sql))
         session.commit()
         if result.rowcount >= 0:
             logger.info("Populated %d rows", result.rowcount)
@@ -806,10 +828,10 @@ def populate(game_type: str = "REG") -> None:
             logger.info("Populate complete (rowcount unavailable)")
 
 
-def run(game_type: str = "REG") -> None:
+def run(game_type: str = "REG", seasons=None) -> None:
     """Create table and populate in one call."""
     create_table()
-    populate(game_type)
+    populate(game_type, seasons=seasons)
 
 
 if __name__ == "__main__":

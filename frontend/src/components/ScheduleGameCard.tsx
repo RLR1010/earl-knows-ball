@@ -18,6 +18,9 @@ export interface ScheduleGameLike {
   home_record?: string | null;
   away_score?: number | null;
   home_score?: number | null;
+  // Live period/clock (NFL/NBA): quarter 1-4, 5+ = OT; clock is mm:ss remaining.
+  quarter?: number | null;
+  clock?: string | null;
   status?: string | null;
   date?: string | null;
   spread?: number | null;
@@ -37,6 +40,9 @@ export interface ScheduleGameLike {
   // MLB extras
   actual_innings?: number | null;
   duration_minutes?: number | null;
+  // Live MLB inning (only set while the game is in progress).
+  inning?: number | null;
+  inning_half?: string | null;
 }
 
 // ── Time / status helpers (kept identical to schedule page) ─────────
@@ -49,6 +55,33 @@ function formatTime(iso: string) {
       timeZone: "America/New_York",
     }) + " ET"
   );
+}
+
+/** Live period + time left for NFL/NBA cards, e.g. "Q3 · 12:34" (or "OT · 2:10"). */
+function livePeriodClock(
+  quarter?: number | null,
+  clock?: string | null,
+): string {
+  const parts: string[] = [];
+  if (quarter != null) parts.push(quarter >= 5 ? "OT" : `Q${quarter}`);
+  if (clock) parts.push(clock);
+  return parts.join(" · ");
+}
+
+/** Live inning for MLB cards, e.g. "Top 7" / "Bot 7" (falls back to "Inn 7"). */
+function liveInning(half?: string | null, inning?: number | null): string {
+  if (inning == null) return "";
+  const h = (half || "").toLowerCase();
+  const word = h.startsWith("top")
+    ? "Top"
+    : h.startsWith("bot")
+      ? "Bot"
+      : h.startsWith("mid")
+        ? "Mid"
+        : h.startsWith("end")
+          ? "End"
+          : "";
+  return word ? `${word} ${inning}` : `Inn ${inning}`;
 }
 
 /** Short date, e.g. \"Wed, Aug 13\" (not year — upcoming games are current season). */
@@ -309,6 +342,16 @@ export default function ScheduleGameCard({
         <span className={`text-[10px] font-bold uppercase tracking-wider ${badge.cls}`}>
           {badge.label}
         </span>
+        {isLive && !isMlb && livePeriodClock(game.quarter, game.clock) && (
+          <span className="ml-2 text-[10px] font-semibold text-red-300">
+            {livePeriodClock(game.quarter, game.clock)}
+          </span>
+        )}
+        {isLive && isMlb && liveInning(game.inning_half, game.inning) && (
+          <span className="ml-2 text-[10px] font-semibold text-blue-300">
+            {liveInning(game.inning_half, game.inning)}
+          </span>
+        )}
         {isMlb && isFinal && game.actual_innings != null && game.actual_innings > 9 && (
           <span className="ml-2 text-[10px] text-gray-500">{game.actual_innings} inn</span>
         )}

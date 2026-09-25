@@ -33,10 +33,12 @@ function buildMeta(opts: {
   image?: string;
   /** When false, emit `robots: noindex,follow` (paywalled / missing content). */
   indexable?: boolean;
+  /** Optional RSS feed path for `<link rel="alternate">` autodiscovery. */
+  feed?: string;
 }): {
   title: string;
   description: string;
-  alternates: { canonical: string };
+  alternates: { canonical: string; types?: Record<string, string> };
   robots?: { index: boolean; follow: boolean };
   openGraph: { title: string; description: string; url: string; images?: string[]; siteName?: string; type?: string };
   twitter: { title: string; description: string; card?: string; image?: string };
@@ -46,7 +48,10 @@ function buildMeta(opts: {
   return {
     title: opts.title,
     description: opts.description,
-    alternates: { canonical: opts.url },
+    alternates: {
+      canonical: opts.url,
+      ...(opts.feed ? { types: { "application/rss+xml": opts.feed } } : {}),
+    },
     // Default to indexable; only explicit false triggers noindex.
     robots: opts.indexable === false ? { index: false, follow: true } : undefined,
     openGraph: {
@@ -228,7 +233,7 @@ const SPORT_LABEL: Record<string, string> = {
   mlb: "MLB",
 };
 
-function sportLabel(sport: string): string {
+export function sportLabel(sport: string): string {
   return SPORT_LABEL[sport?.toLowerCase()] ?? sport?.toUpperCase() ?? "";
 }
 
@@ -557,11 +562,12 @@ export function hubMetadata(
   sport: string,
   noun: string,
   descriptionTemplate: string,
-  path = "/" + sport.toLowerCase()
+  path = "/" + sport.toLowerCase(),
+  feed?: string
 ): {
   title: string;
   description: string;
-  alternates: { canonical: string };
+  alternates: { canonical: string; types?: Record<string, string> };
   openGraph: { title: string; description: string; url: string; images?: string[]; siteName?: string; type?: string };
   twitter: { title: string; description: string; card?: string };
 } {
@@ -570,5 +576,6 @@ export function hubMetadata(
     title: `${label} ${noun}`,
     description: descriptionTemplate.replace("{label}", label),
     url: url(path),
+    feed,
   });
 }

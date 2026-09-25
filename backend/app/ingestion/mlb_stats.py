@@ -373,6 +373,11 @@ async def load_batting_season(
                 if stat_entry.get("group", {}).get("displayName", "").lower() != "hitting":
                     continue
                 for split in stat_entry.get("splits", []):
+                    # Only the combined season split (team is None). statsapi also returns
+                    # one split per team stint for traded players; using those would store a
+                    # single stint and under-count the season (traded-player gap).
+                    if split.get("team"):
+                        continue
                     stat = split.get("stat", {})
                     if not stat.get("gamesPlayed"):
                         continue
@@ -505,6 +510,9 @@ async def load_pitching_season(
                 if stat_entry.get("group", {}).get("displayName", "").lower() != "pitching":
                     continue
                 for split in stat_entry.get("splits", []):
+                    # Only the combined season split (team is None) — see batting note.
+                    if split.get("team"):
+                        continue
                     stat = split.get("stat", {})
                     if not stat.get("gamesPlayed"):
                         continue
@@ -736,6 +744,9 @@ async def load_games_for_season(
 
 async def _upsert_batting_row(db: AsyncSession, split: dict, year: int, season_id: int, team_db_id: int):
     """Upsert a single batting stats row from an API split."""
+    # Only the combined season split (team is None); skip per-team stints (traded-player gap).
+    if split.get("team"):
+        return
     stat = split.get("stat", {})
     if not stat.get("gamesPlayed"):
         return
@@ -790,6 +801,9 @@ async def _upsert_batting_row(db: AsyncSession, split: dict, year: int, season_i
 
 async def _upsert_pitching_row(db: AsyncSession, split: dict, year: int, season_id: int, team_db_id: int):
     """Upsert a single pitching stats row from an API split."""
+    # Only the combined season split (team is None); skip per-team stints (traded-player gap).
+    if split.get("team"):
+        return
     stat = split.get("stat", {})
     if not stat.get("gamesPlayed"):
         return

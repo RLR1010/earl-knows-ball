@@ -102,7 +102,10 @@ export async function generateMetadata({
   return {
     title,
     description: `${preview.title?.trim() || preview.matchup || sport.toUpperCase()} game preview and AI handicapping analysis from Earl Knows Ball.`,
-    alternates: { canonical: url },
+    alternates: {
+      canonical: url,
+      types: { "application/rss+xml": `/${sport}/articles/previews/feed.xml` },
+    },
     openGraph: {
       title,
       description: `${preview.matchup || sport.toUpperCase()} game preview and AI handicapping from Earl Knows Ball.`,

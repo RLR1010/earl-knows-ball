@@ -785,6 +785,107 @@ TOOL_DEFINITIONS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_team_situational_splits",
+            "description": (
+                "Canonical NFL team situational splits, 1999-present (from nfl.team_splits). "
+                "Returns W-L, points, EPA/play, success rate, yards/play, explosive/game, "
+                "3rd-down %, red-zone TD %, ATS and over/under for a team in a season OR "
+                "career (omit season_year for career). Splits: all, home, away, division, "
+                "non_division, vs_afc, vs_nfc, primetime, non_primetime, dome, outdoor, "
+                "grass, turf, cold, mild, warm, windy, calm, rest_short, rest_normal, "
+                "rest_long, favorite, underdog. Use for 'how does KC do in cold weather', "
+                "'Ravens ATS as underdogs', 'Bills home vs away', situational angles."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "team_name": {"type": "string", "description": "Team name or abbreviation (e.g. 'Chiefs', 'KC')}"},
+                    "season_year": {"type": "integer", "description": "Season year; omit for career splits"},
+                    "splits": {"type": "array", "items": {"type": "string"}, "description": "Optional subset of split types (default: all)"},
+                },
+                "required": ["team_name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_player_situational_splits",
+            "description": (
+                "Canonical NFL player situational splits, 1999-present (from nfl.player_splits_v2). "
+                "Passing/rushing/receiving/defence + EPA/CPOE + fantasy points, per split, for a "
+                "season or career (omit season_year for career). Same split names as "
+                "get_team_situational_splits plus vs_winning / vs_losing. Use for 'is Mahomes "
+                "worse in cold', 'Jefferson at home vs away', 'RB production as heavy underdogs'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "player_name": {"type": "string", "description": "Player full name (e.g. 'Patrick Mahomes')}"},
+                    "position": {"type": "string", "description": "Optional position filter (QB/RB/WR/TE) when the name is ambiguous"},
+                    "season_year": {"type": "integer", "description": "Season year; omit for career splits"},
+                    "splits": {"type": "array", "items": {"type": "string"}, "description": "Optional subset of split types (default: all)"},
+                },
+                "required": ["player_name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_defense_vs_position",
+            "description": (
+                "Defence-vs-position (DvP): the production a defense ALLOWED to each opposing "
+                "position group (QB/RB/WR/TE) — fantasy points, passing/rushing/receiving "
+                "yards, TD, EPA — for a season or career, with a per-season generosity rank "
+                "(fp_rank_ppr: 1 = most generous). Use for 'how bad is Dallas against the run', "
+                "'best defense vs WR', 'defense that gives up most to TEs'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "team_name": {"type": "string", "description": "Defensive team name or abbreviation (e.g. 'Ravens', 'BAL')}"},
+                    "position_group": {"type": "string", "description": "Optional: QB, RB, WR or TE (default: all four)"},
+                    "season_year": {"type": "integer", "description": "Season year; omit for career"},
+                },
+                "required": ["team_name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_situational_leaders",
+            "description": (
+                "League leaders in a situational split (TEAM or PLAYER level). "
+                "level=team: teams ranked by a metric within a split (e.g. best EPA/play outdoors, "
+                "best ATS as underdogs). level=player: players ranked by a metric within a split "
+                "(e.g. most receiving yards in primetime; filter by position). "
+                "metrics (team): win_pct, points_for, points_against, point_diff, epa_per_play, "
+                "success_rate, yards_per_play, explosive_per_game, third_down_pct, red_zone_td_pct, "
+                "ats_pct, ou_over_pct. metrics (player): passing_yards, passing_tds, passing_epa, "
+                "rushing_yards, rushing_tds, rushing_epa, receiving_yards, receiving_tds, "
+                "receiving_epa, receiving_air_yards, receiving_yards_after_catch, targets, "
+                "receptions, fantasy_points, fantasy_points_ppr."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "split_type": {"type": "string", "description": "Split to rank within (e.g. cold, primetime, underdog, dome, home, rest_long)"},
+                    "metric": {"type": "string", "description": "Metric to rank by (see list; default epa_per_play for teams, receiving_yards for players)"},
+                    "level": {"type": "string", "enum": ["team", "player"], "description": "team (default) or player"},
+                    "position": {"type": "string", "description": "Player level only: QB/RB/WR/TE filter"},
+                    "season_year": {"type": "integer", "description": "Season year; omit for career"},
+                    "order": {"type": "string", "enum": ["desc", "asc"], "description": "desc (best/highest, default) or asc (lowest)"},
+                    "limit": {"type": "integer", "description": "How many leaders (default 10)"},
+                },
+                "required": ["split_type"],
+            },
+        },
+    },
 ]
 
 
@@ -2315,6 +2416,53 @@ async def _get_power_ranking(db: AsyncSession, args: dict) -> dict:
     }
 
 
+async def _get_team_situational_splits(db: AsyncSession, args: dict) -> dict:
+    from app.analytics import nfl_situational as S
+    name = args.get("team_name") or args.get("team") or ""
+    abbr = await _resolve_team_abbr(db, name)
+    if not abbr:
+        return {"error": f"Team not found: {name}"}
+    season = args.get("season_year")
+    rows = await S.team_situational_splits(db, abbr, season, args.get("splits") or None)
+    return {"team": abbr, "season": season, "count": len(rows), "splits": rows}
+
+
+async def _get_player_situational_splits(db: AsyncSession, args: dict) -> dict:
+    from app.analytics import nfl_situational as S
+    return await S.player_situational_splits(
+        db, args.get("player_name") or "", args.get("position"),
+        args.get("season_year"), args.get("splits") or None)
+
+
+async def _get_defense_vs_position(db: AsyncSession, args: dict) -> dict:
+    from app.analytics import nfl_situational as S
+    name = args.get("team_name") or args.get("team") or ""
+    abbr = await _resolve_team_abbr(db, name)
+    if not abbr:
+        return {"error": f"Team not found: {name}"}
+    season = args.get("season_year")
+    rows = await S.defense_vs_position(db, abbr, args.get("position_group"), season)
+    return {"team": abbr, "season": season, "rows": rows}
+
+
+async def _get_situational_leaders(db: AsyncSession, args: dict) -> dict:
+    from app.analytics import nfl_situational as S
+    st = args.get("split_type")
+    season = args.get("season_year")
+    order = args.get("order", "desc")
+    limit = args.get("limit", 10)
+    level = (args.get("level") or "team").lower()
+    if level == "player":
+        rows = await S.player_situational_leaders(
+            db, st, args.get("metric") or "receiving_yards", args.get("position"),
+            season, order, limit)
+    else:
+        rows = await S.situational_leaders(
+            db, st, args.get("metric") or "epa_per_play", season, order, limit)
+    return {"level": level, "split_type": st, "metric": args.get("metric"),
+            "season": season, "leaders": rows}
+
+
 _TOOL_HANDLERS = {
     "get_team_info": _get_team_info,
     "get_team_stats": _get_team_stats,
@@ -2331,6 +2479,10 @@ _TOOL_HANDLERS = {
     "get_player_weekly_log": _get_player_weekly_log,
     "get_player_trends": _get_player_trends,
     "get_player_splits": _get_player_splits,
+    "get_team_situational_splits": _get_team_situational_splits,
+    "get_player_situational_splits": _get_player_situational_splits,
+    "get_defense_vs_position": _get_defense_vs_position,
+    "get_situational_leaders": _get_situational_leaders,
     "query_player_stats": _get_player_query,
     "query_team_stats": _get_team_query,
     "query_play_stats": _get_play_stats_query,

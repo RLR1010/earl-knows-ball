@@ -24,6 +24,7 @@ const SUB_NAV_ITEMS = [
   { label: "Parlay", path: "/parlay" },
   { label: "Articles", path: "/articles" },
   { label: "Standings", path: "/standings" },
+  { label: "Power Rankings", path: "/power-rankings" },
   { label: "Results", path: "/results" },
   { label: "Chat With Earl", path: "/chat" },
 ];

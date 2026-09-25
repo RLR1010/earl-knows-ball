@@ -1530,6 +1530,16 @@ class NFLDataLoader:
         if _requested_ids is not None and "game_id" in df.columns:
             df = df[df["game_id"].isin(_requested_ids)].copy()
 
+        # Deterministic row order (2026-09-22). The frame is assembled from many
+        # merges, several of whose right-hand frames come from SQL with no outer
+        # ORDER BY (e.g. PR_SQL) or from tables the 30-min stats-refresh rewrites.
+        # The trained XGBoost model DEPENDS on row order (subsample/colsample are
+        # drawn by position), so an unstable row order made identical features
+        # reproduce different models run-to-run. Pin the order once, here.
+        _sort_cols = [c for c in ("season_year", "week", "game_date", "game_id") if c in df.columns]
+        if _sort_cols:
+            df = df.sort_values(_sort_cols, kind="stable").reset_index(drop=True)
+
         return df[feature_names].copy()
 
     def load_inference_data(

@@ -38,6 +38,10 @@ router = APIRouter()
 
 NBA_SYSTEM_EXTRA = """You cover all 30 NBA teams. The current NBA season is in progress.
 
+SEASONS & TIME: The user message begins with the current Central US date/time AND an explicit
+season line (current season label, e.g. 2025-26). Always refer to seasons by their exact label;
+NEVER use relative phrases like "last season" or "this season" — name the exact season instead.
+
 Key NBA handicapping angles:
 - Star player availability is the single most important factor — who's playing and who's out changes everything
 - Back-to-back games create rest disparity that affects scoring and pace
@@ -205,9 +209,16 @@ async def chat_nba(
             # Add time-contextualized question
             central_now = datetime.now(ZoneInfo("America/Chicago"))
             time_context = central_now.strftime("%A, %B %d, %Y at %I:%M %p %Z").replace(" 0", " ")
+            # NBA season label Y-Y+1 starts in October; Jul-Sep is the upcoming season.
+            nba_start = central_now.year - 1 if central_now.month <= 6 else central_now.year
+            nba_label = f"{nba_start}-{str(nba_start + 1)[2:]}"
+            nba_prev = f"{nba_start - 1}-{str(nba_start)[2:]}"
             messages.append({
                 "role": "user",
-                "content": f"[Central US time: {time_context}]\n\n{request.message}",
+                "content": (
+                    f"[Central US time: {time_context} | Current NBA season: {nba_label} "
+                    f"· Previous season: {nba_prev}]\n\n{request.message}"
+                ),
             })
 
             # Optional game context (from a game-card chat): inject as a system

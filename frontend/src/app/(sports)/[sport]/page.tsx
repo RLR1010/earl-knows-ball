@@ -5,6 +5,7 @@ import DailyPicksSection from "@/components/DailyPicksSection";
 import BestBetsPanel from "@/components/BestBetsPanel";
 import WinnersPanel from "@/components/WinnersPanel";
 import StandingsWidget from "@/components/StandingsWidget";
+import PowerRankingsFeature from "@/components/PowerRankingsFeature";
 import type { CardSport } from "@/components/ScheduleGameCard";
 
 const SPORT_INFO: Record<string, { name: string }> = {
@@ -79,6 +80,9 @@ export default async function SportHomePage({ params }: { params: Promise<{ spor
         title="Earl's Winners"
         hideIfEmpty
       />
+
+      {/* Power Rankings — this sport's top five + the week's column */}
+      <PowerRankingsFeature sport={sport} />
 
       {/* Upcoming Games */}
       <SportUpcomingGames sport={sport as CardSport} />

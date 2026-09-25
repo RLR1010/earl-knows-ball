@@ -671,6 +671,12 @@ Manage it under Admin → Auto Generation.`);
           ☀️ Daily Picks
         </span>
       );
+    if (s === "recap")
+      return (
+        <span title="Post-game recap" className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+          📊 Recap
+        </span>
+      );
     return (
       <span title="Article" className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-gray-600/30 text-gray-300 border border-gray-600/40">
         Article

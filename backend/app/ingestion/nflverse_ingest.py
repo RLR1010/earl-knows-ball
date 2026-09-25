@@ -327,7 +327,7 @@ def process_stats_team(df: pd.DataFrame) -> pd.DataFrame:
     for _, row in df.iterrows():
         team = TEAM_ABBR_MAP.get(str(row.get("team", "")).strip(), str(row.get("team", "")).strip())
         opp = TEAM_ABBR_MAP.get(str(row.get("opponent_team", "")).strip(), str(row.get("opponent_team", "")).strip())
-        season_type = str(row.get("season_type", "REG"))
+        season_type = str(row.get("season_type") or "REG").strip().upper() or "REG"
         week = int(row.get("week", 0))
         if season_type.upper().startswith("POST"):
             week += post_shift

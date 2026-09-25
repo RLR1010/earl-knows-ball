@@ -45,6 +45,7 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
     { path: "privacy", priority: 0.3, changeFrequency: "yearly" },
     { path: "terms", priority: 0.3, changeFrequency: "yearly" },
     { path: "support", priority: 0.4, changeFrequency: "monthly" },
+    { path: "power-rankings", priority: 0.8, changeFrequency: "weekly" },
   ];
   for (const p of staticPages) {
     entries.push({
@@ -72,6 +73,8 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
       game_slugs?: string[];
       writeup_slugs?: string[];
       article_slugs?: string[];
+      power_ranking_weeks?: Array<{ season: number; week: number }>;
+      power_ranking_teams?: string[];
     };
     const prefix = `/${sport}`;
 
@@ -117,6 +120,22 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
         url: `${SITE_URL}${prefix}/articles/${slug}`,
         changeFrequency: "weekly",
         priority: 0.8,
+      });
+    }
+
+    // Power rankings — weekly archives (season-scoped) + per-team pages.
+    for (const wk of d.power_ranking_weeks ?? []) {
+      sportEntries.push({
+        url: `${SITE_URL}${prefix}/power-rankings/week/${wk.week}?season=${wk.season}`,
+        changeFrequency: "weekly",
+        priority: 0.7,
+      });
+    }
+    for (const abbr of d.power_ranking_teams ?? []) {
+      sportEntries.push({
+        url: `${SITE_URL}${prefix}/power-rankings/team/${abbr}`,
+        changeFrequency: "weekly",
+        priority: 0.6,
       });
     }
   }

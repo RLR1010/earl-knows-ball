@@ -635,7 +635,16 @@ TOOL_DEFINITIONS = [
                 "hits_allowed, walks_allowed, home_runs_allowed, era, whip, strikeouts_per_9, "
                 "strikeout_walk_ratio, games_finished, save_opportunities, doubles_allowed, "
                 "triples_allowed, at_bats_against, stolen_bases_allowed, caught_stealing_allowed, "
-                "ground_outs, air_outs, caught_stealing_pct_allowed. filters: season_year/home_or_away/opponent (venue/opp "
+                "ground_outs, air_outs, caught_stealing_pct_allowed. "
+                "SAVANT/STATCAST + WAR season stats (season-level, NOT per-game; for ONE "
+                "player pass player_name, or use for league leaderboards — do not mix them "
+                "with per-game stats in one call): batting: xba, xslg, xwoba, "
+                "avg_exit_velocity, max_exit_velocity, barrel_rate, hard_hit_rate, "
+                "sprint_speed, outs_above_average, war; pitching: xera, xwoba_allowed, "
+                "xba_allowed, xslg_allowed, barrel_rate_allowed, hard_hit_rate_allowed, "
+                "avg_exit_velocity_allowed, k_percentile, whiff_percentile, "
+                "pitching_war. "
+                "filters: season_year/home_or_away/opponent (venue/opp "
                 "only for batting)/min_innings (pitching leaderboard qualification, e.g. 162), "
                 "min_at_bats (batting leaderboard qualification, e.g. 400). "
                 "group_by=['player']+top+order for leaderboards. To look up ONE specific\n"\
@@ -686,6 +695,128 @@ TOOL_DEFINITIONS = [
                     "aggregate": {"type": "string", "enum": ["sum", "avg", "max", "count"]},
                 },
                 "required": ["stats"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_power_ranking",
+            "description": (
+                "Get Earl's MLB power rankings for a season/week (ranked 1..N by a "
+                "points/SRS-style rating that accounts for strength of schedule), "
+                "optionally filtered to ONE team. Each entry has rank, rating, rating "
+                "change, rank change, strength of schedule, record, and Earl's written "
+                "blurb. Use this whenever the user asks about power rankings, who is the "
+                "best team, how teams are rated, or a team's ranking. If no week is "
+                "given, returns the latest published week."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "team_name": {"type": "string", "description": "Optional: one team (name or abbreviation), e.g. 'Yankees' or 'NYY'. Omit for the full 30-team ranking."},
+                    "season_year": {"type": "integer", "description": "Optional: season YEAR (e.g. 2026). Defaults to the latest season with published rankings."},
+                    "week": {"type": "integer", "description": "Optional: week number. Defaults to the latest published week."},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_player_advanced_stats",
+            "description": (
+                "Get a player's ADVANCED Statcast/Savant metrics and WAR for a season: "
+                "expected stats (xBA/xSLG/xwOBA, xERA for pitchers), quality of contact "
+                "(exit velocity, max EV, barrel %, hard-hit %), Baseball-Savant percentile "
+                "rankings, and bWAR (Baseball-Reference WAR). Works for hitters AND pitchers "
+                "(two-way players return both). Also includes sprint speed for hitters and "
+                "the pitch-mix run values. Use this for anything beyond box-score stats: "
+                "'is he actually hitting well under the hood', 'xwOBA', 'barrels', 'WAR', "
+                "'exit velocity', 'is he unlucky', 'expected stats', 'percentile'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "player_name": {"type": "string", "description": "Player full name (e.g., 'Shohei Ohtani', 'Paul Skenes')."},
+                    "season": {"type": "integer", "description": "Optional MLB season year (e.g. 2025). Omit for the current season."},
+                    "role": {
+                        "type": "string",
+                        "enum": ["auto", "batter", "pitcher"],
+                        "description": "Which side to return: 'auto' (default) returns whichever side(s) have data; 'batter' or 'pitcher' to force one side.",
+                    },
+                },
+                "required": ["player_name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_pitch_arsenal",
+            "description": (
+                "Get a pitcher's per-pitch-type arsenal: usage %, run value (and run value "
+                "per 100 pitches), wOBA/xwOBA allowed, whiff %, strikeout % and put-away %, "
+                "plus movement (induced vertical break / horizontal tail vs league) and "
+                "average velocity for each pitch. Use for questions like 'what pitches does "
+                "he throw', 'how good is his slider', 'his pitch mix / arsenal'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "player_name": {"type": "string", "description": "Pitcher full name (e.g., 'Zack Wheeler')."},
+                    "season": {"type": "integer", "description": "Optional MLB season year. Omit for the current season."},
+                    "include_movement": {"type": "boolean", "description": "Include per-pitch movement (IVB/tail vs league) and velocities. Default true."},
+                },
+                "required": ["player_name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_fielding_stats",
+            "description": (
+                "Get a player's advanced FIELDING and baserunning metrics for a season: "
+                "Outs Above Average (OAA) with directional splits, Catch Probability "
+                "star breakdown (outfielders), Outfielder Jump, catcher framing runs and "
+                "pop time (catchers), and sprint speed. Use for 'how good a defender is he', "
+                "'his defense / range / arm', 'framing', 'sprint speed'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "player_name": {"type": "string", "description": "Player full name (e.g., 'Bobby Witt Jr.', 'Patrick Bailey')."},
+                    "season": {"type": "integer", "description": "Optional MLB season year. Omit for the current season."},
+                },
+                "required": ["player_name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_advanced_stat_leaders",
+            "description": (
+                "Get the league LEADERS for an advanced Statcast/Savant or WAR metric in a "
+                "season. Batting metrics: xwoba, xba, xslg, barrel_pct, hard_hit, avg_ev, "
+                "max_ev, sprint_speed, oaa, war. Pitching metrics: xera, xwoba, xba, "
+                "barrel_pct, hard_hit, k_percent, whiff, fb_velocity, war. "
+                "NOTE: k_percent/whiff/fb_velocity are SAVANT PERCENTILE RANKS (0-100). "
+                "Lower-is-better "
+                "metrics (xERA, xwOBA/xBA/barrel%/hard-hit allowed) are sorted ascending. "
+                "Use for 'who leads the league in xwOBA', 'best barrel rate', 'top WAR'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "metric": {"type": "string", "description": "Metric key, e.g. 'xwoba', 'barrel_pct', 'hard_hit', 'avg_ev', 'max_ev', 'sprint_speed', 'oaa', 'war', 'xera', 'k_percent', 'whiff', 'fb_velocity'."},
+                    "side": {"type": "string", "enum": ["bat", "pitch"], "description": "'bat' (default) for batting metrics, 'pitch' for pitching metrics."},
+                    "season": {"type": "integer", "description": "Optional MLB season year. Omit for the current season."},
+                    "limit": {"type": "integer", "description": "How many leaders to return (default 10)."},
+                },
+                "required": ["metric"],
             },
         },
     },
@@ -2769,8 +2900,320 @@ async def _get_team_query(db: AsyncSession, args: dict) -> dict:
     return await mlb_query._run_query_team_stats(db, args)
 
 
+async def _get_power_ranking(db: AsyncSession, args: dict) -> dict:
+    """Earl's MLB power rankings (points/SRS-style rating + written blurbs)."""
+    team = (args.get("team_name") or "").strip()
+    week = args.get("week")
+    year = args.get("season_year")
+
+    if not year:
+        year = (await db.execute(text("SELECT MAX(season) FROM mlb.power_ratings"))).scalar_one_or_none()
+    if not year:
+        return {"error": "No MLB power rankings have been published yet"}
+
+    if not week:
+        week = (await db.execute(
+            text("SELECT MAX(week) FROM mlb.power_ratings WHERE season = :y"), {"y": year}
+        )).scalar_one_or_none()
+    if week is None:
+        return {"error": f"No MLB power rankings published for season {year}"}
+
+    team_id = None
+    if team:
+        t = await _resolve_team(db, team)
+        team_id = t.id if t else None
+        if not team_id:
+            return {"error": f"Could not resolve MLB team '{team}'"}
+
+    team_clause = "AND p.team_id = :tid" if team_id else ""
+    params = {"y": year, "w": week}
+    if team_id:
+        params["tid"] = team_id
+
+    rows = (await db.execute(text(f"""
+        SELECT p.rank, p.prev_rank, p.rank_delta, p.rating, p.rating_delta,
+               p.sos, p.games_played, p.wins, p.losses, p.ties,
+               p.injury_adj, p.market_delta, p.components,
+               t.abbreviation AS team_abbr, b.blurb
+        FROM mlb.power_ratings p
+        LEFT JOIN mlb.power_ranking_blurbs b
+               ON b.season = p.season AND b.week = p.week AND b.team_id = p.team_id
+        LEFT JOIN mlb.teams t ON t.id = p.team_id
+        WHERE p.season = :y AND p.week = :w {team_clause}
+        ORDER BY p.rank
+    """), params)).mappings().all()
+
+    if not rows:
+        return {"error": f"No MLB power rankings for season {year}, week {week}"}
+
+    def _inj_names(comp):
+        if not isinstance(comp, dict):
+            return []
+        return [i.get("player") or i.get("name")
+                for i in (comp.get("injuries") or []) if isinstance(i, dict)]
+
+    rankings = []
+    for r in rows:
+        rankings.append({
+            "rank": r["rank"],
+            "team": r["team_abbr"],
+            "rating": round(r["rating"], 2) if r["rating"] is not None else None,
+            "rating_change": round(r["rating_delta"], 2) if r["rating_delta"] is not None else None,
+            "prev_rank": r["prev_rank"],
+            "rank_change": r["rank_delta"],
+            "strength_of_schedule": round(r["sos"], 2) if r["sos"] is not None else None,
+            "record": f"{r['wins']}-{r['losses']}" + (f"-{r['ties']}" if r["ties"] else ""),
+            "games_played": r["games_played"],
+            "injury_adj": round(r["injury_adj"], 2) if r["injury_adj"] is not None else None,
+            "market_vs_model": round(r["market_delta"], 2) if r["market_delta"] is not None else None,
+            "key_injuries": _inj_names(r["components"]) or None,
+            "blurb": r["blurb"],
+        })
+
+    return {
+        "sport": "mlb",
+        "season_year": year,
+        "week": week,
+        "note": "Power rating is a points-based (SRS-style) score including strength of schedule.",
+        "count": len(rankings),
+        "rankings": rankings,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Advanced Statcast/Savant + WAR tools
+# (read the shared app.analytics.mlb_savant layer so chat == writeup research)
+# ---------------------------------------------------------------------------
+
+def _savant_clean(d: dict) -> dict:
+    """Drop keys whose values are None/empty (recursively) so tool output stays compact."""
+    out = {}
+    for k, v in d.items():
+        if v is None:
+            continue
+        if isinstance(v, dict):
+            v = _savant_clean(v)
+            if not v:
+                continue
+        if isinstance(v, (list, tuple)) and len(v) == 0:
+            continue
+        out[k] = v
+    return out
+
+
+def _savant_confident(player_name: str, hit: dict) -> bool:
+    """Guard against fuzzy false positives (e.g. a generic query token fuzzily
+    matching an unrelated surname). Require an exact/core match, a token hit on
+    the surname, or a strong aggregate score."""
+    if hit.get("exact"):
+        return True
+    try:
+        core = _norm_name(_strip_suffix(player_name)) or _norm_name(player_name)
+        q_last = core.split()[-1] if core.split() else ""
+    except Exception:
+        q_last = ""
+    toks = set(_norm_name(hit.get("name") or "").split())
+    if q_last and q_last in toks:
+        return True
+    return float(hit.get("score") or 0) >= 2.2
+
+
+async def _savant_resolve(db: AsyncSession, player_name: str, team_abbr: str = ""):
+    """Resolve a player name -> (candidate, mlb_id) using the shared fuzzy search.
+    Returns (None, None) when there is no confident match."""
+    from app.analytics import mlb_savant as S
+
+    hits = await _search_players(db, player_name, team_abbr=team_abbr, limit=3)
+    if not hits:
+        return None, None
+    cand = hits[0]
+    if not _savant_confident(player_name, cand):
+        return None, None
+    mlb_id = await S.mlb_id_for_player_id(db, cand["player_id"])
+    return cand, mlb_id
+
+
+def _savant_suggestions(db_hits) -> list:
+    out = []
+    for s in db_hits:
+        if float(s.get("score") or 0) >= 1.5:
+            out.append({"name": s["name"], "team": s["team"], "position": s["position"], "player_id": s["player_id"]})
+    return out
+
+
+async def _get_player_advanced_stats(db: AsyncSession, args: dict) -> dict:
+    """Advanced savant + WAR profile for a batter and/or pitcher."""
+    from app.analytics import mlb_savant as S
+
+    player_name = (args.get("player_name") or "").strip()
+    if not player_name:
+        return {"error": "player_name is required"}
+    role = (args.get("role") or "auto").strip().lower()
+    if role not in ("auto", "batter", "pitcher"):
+        role = "auto"
+
+    cand, mlb_id = await _savant_resolve(db, player_name)
+    if not cand:
+        return {
+            "error": f"No confident player match for: {player_name}",
+            "suggestions": _savant_suggestions(await _search_players(db, player_name, limit=5)),
+            "help": "Ambiguous or unknown name. Use search_players to find the right player, then retry with the full name.",
+        }
+    if not mlb_id:
+        return {"player": cand["name"], "error": "No MLBAM id on file for this player; advanced stats unavailable."}
+
+    season, season_label = await _resolve_season(db, args)
+    year = season.year if season else None
+    if not year:
+        return {"player": cand["name"], "error": "Could not resolve a season."}
+
+    prof = await S.player_advanced_profile(db, int(mlb_id), int(year), role)
+    out = {
+        "player": cand["name"],
+        "team": cand.get("team"),
+        "position": cand.get("position"),
+        "season": year,
+        "role": prof.get("role"),
+    }
+    if "batting" in prof:
+        bat = dict(prof["batting"])
+        out["batting"] = _savant_clean({
+            "expected": bat.get("expected"),
+            "quality_of_contact": bat.get("quality_of_contact"),
+            "percentiles": bat.get("percentiles"),
+            "war": bat.get("war"),
+            "sprint_speed": bat.get("sprint_speed"),
+            "fielding_oaa": bat.get("fielding"),
+            "vs_pitch_types": bat.get("vs_pitch_types"),
+        })
+    if "pitching" in prof:
+        pit = dict(prof["pitching"])
+        out["pitching"] = _savant_clean({
+            "expected": pit.get("expected"),
+            "quality_allowed": pit.get("quality_allowed"),
+            "percentiles": pit.get("percentiles"),
+            "war": pit.get("war"),
+            "arsenal": pit.get("arsenal"),
+            "movement": pit.get("movement"),
+            "velocities": pit.get("velocities"),
+        })
+    if not out.get("batting") and not out.get("pitching"):
+        out["note"] = f"No advanced Statcast/Savant data on file for {cand['name']} in {year}."
+    return _savant_clean(out)
+
+
+async def _get_pitch_arsenal(db: AsyncSession, args: dict) -> dict:
+    """Pitcher per-pitch arsenal (usage/run value/whiff/xwOBA) + movement/velo."""
+    from app.analytics import mlb_savant as S
+
+    player_name = (args.get("player_name") or "").strip()
+    if not player_name:
+        return {"error": "player_name is required"}
+    include_movement = args.get("include_movement", True)
+
+    cand, mlb_id = await _savant_resolve(db, player_name)
+    if not cand:
+        return {
+            "error": f"No confident player match for: {player_name}",
+            "suggestions": _savant_suggestions(await _search_players(db, player_name, limit=5)),
+        }
+    if not mlb_id:
+        return {"player": cand["name"], "error": "No MLBAM id on file for this player."}
+
+    season, _ = await _resolve_season(db, args)
+    year = season.year if season else None
+    if not year:
+        return {"player": cand["name"], "error": "Could not resolve a season."}
+
+    arsenal = await S.pitcher_arsenal(db, int(mlb_id), int(year))
+    out = {
+        "player": cand["name"],
+        "team": cand.get("team"),
+        "position": cand.get("position"),
+        "season": year,
+        "arsenal": arsenal,
+    }
+    if include_movement:
+        out["movement"] = await S.pitcher_movement(db, int(mlb_id), int(year))
+        out["velocities"] = await S.pitcher_velocities(db, int(mlb_id), int(year))
+        out["active_spin"] = await S.pitcher_active_spin(db, int(mlb_id), int(year))
+    if not arsenal:
+        # Maybe a batter: return their production vs each pitch type instead.
+        vs = await S.batter_vs_pitch_types(db, int(mlb_id), int(year))
+        if vs:
+            out["note"] = "No pitching arsenal on file; returning this BATTER's production by pitch type instead."
+            out["vs_pitch_types"] = vs
+        else:
+            out["note"] = f"No pitch-arsenal data on file for {cand['name']} in {year}."
+    return _savant_clean(out)
+
+
+async def _get_fielding_stats(db: AsyncSession, args: dict) -> dict:
+    """OAA / catch probability / jump / catcher framing+pop time / sprint speed."""
+    from app.analytics import mlb_savant as S
+
+    player_name = (args.get("player_name") or "").strip()
+    if not player_name:
+        return {"error": "player_name is required"}
+
+    cand, mlb_id = await _savant_resolve(db, player_name)
+    if not cand:
+        return {
+            "error": f"No confident player match for: {player_name}",
+            "suggestions": _savant_suggestions(await _search_players(db, player_name, limit=5)),
+        }
+    if not mlb_id:
+        return {"player": cand["name"], "error": "No MLBAM id on file for this player."}
+
+    season, _ = await _resolve_season(db, args)
+    year = season.year if season else None
+    if not year:
+        return {"player": cand["name"], "error": "Could not resolve a season."}
+
+    out = {
+        "player": cand["name"],
+        "team": cand.get("team"),
+        "position": cand.get("position"),
+        "season": year,
+        "oaa": await S.fielding_oaa(db, int(mlb_id), int(year)),
+        "catch_probability": await S.fielding_catch_prob(db, int(mlb_id), int(year)),
+        "jump": await S.fielding_jump(db, int(mlb_id), int(year)),
+        "catcher_framing": await S.catcher_framing(db, int(mlb_id), int(year)),
+        "catcher_pop_time": await S.catcher_poptime(db, int(mlb_id), int(year)),
+        "sprint_speed": await S.sprint_speed(db, int(mlb_id), int(year)),
+    }
+    out = _savant_clean(out)
+    if not any(k in out for k in ("oaa", "catch_probability", "jump", "catcher_framing", "catcher_pop_time", "sprint_speed")):
+        out["note"] = f"No advanced fielding/baserunning data on file for {cand['name']} in {year}."
+    return out
+
+
+async def _get_advanced_stat_leaders(db: AsyncSession, args: dict) -> dict:
+    """League leaders for a savant/WAR metric."""
+    from app.analytics import mlb_savant as S
+
+    metric = (args.get("metric") or "").strip()
+    if not metric:
+        return {"error": "metric is required"}
+    side = (args.get("side") or "bat").strip().lower()
+    try:
+        limit = int(args.get("limit") or 10)
+    except (TypeError, ValueError):
+        limit = 10
+    limit = max(1, min(limit, 50))
+
+    season, _ = await _resolve_season(db, args)
+    year = season.year if season else None
+    if not year:
+        return {"error": "Could not resolve a season."}
+
+    res = await S.league_leaders(db, metric, int(year), side, limit)
+    return res
+
+
 _TOOL_MAP = {
     "search_teams": _search_teams,
+    "get_power_ranking": _get_power_ranking,
     "get_team_stats": _get_team_stats,
     "get_team_batting_stats": _get_team_batting_stats,
     "get_team_pitching_stats": _get_team_pitching_stats,
@@ -2800,6 +3243,10 @@ _TOOL_MAP = {
     "get_game_weather": _get_game_weather,
     "query_player_stats": _get_player_query,
     "query_team_stats": _get_team_query,
+    "get_player_advanced_stats": _get_player_advanced_stats,
+    "get_pitch_arsenal": _get_pitch_arsenal,
+    "get_fielding_stats": _get_fielding_stats,
+    "get_advanced_stat_leaders": _get_advanced_stat_leaders,
 }
 
 

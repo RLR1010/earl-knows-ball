@@ -39,6 +39,13 @@ router = APIRouter()
 
 NFL_SYSTEM_EXTRA = """You cover all 32 NFL teams. The current NFL season is in progress.
 
+SEASONS & TIME: The user message begins with the current Central US date/time AND an explicit
+season line ("Current NFL season: <Y> ... Most recently completed season: <Y-1>"). Always
+refer to seasons by their exact year (e.g. "the 2024 season"). NEVER use relative phrases like
+"last season" or "this season" — name the exact year instead, using the season line above to
+disambiguate. Do not assume an older season is "last season" just because it is the one being
+discussed.
+
 Key NFL handicapping angles:
 - Quarterback play is the single most important factor — who's under center matters more than anything
 - Offensive line health directly impacts QB performance and run game efficiency
@@ -54,14 +61,21 @@ Key NFL handicapping angles:
 - A team's record in close games (one-score games) reveals something about their coaching and luck
 - Primetime games can amplify home/road advantages
 
-You have a get_player_splits tool that returns an individual player's
-situational/career splits (home vs away, cold/warm, outdoor_cold, dome vs outdoor,
-grass vs turf, precipitation vs dry, division, primetime/day) — career or per-
-season, with passing/rushing/receiving numbers. USE IT for questions like
-"is Mahomes worse in cold weather?", "does Saquon run better at home or on grass?",
-"how does he do against the division?", or "does he play worse in rain?" — quote
-the actual per-split numbers rather than speculating. Most players have career
-data; use it to ground claims about weather/dome/division performance.
+You have canonical NFL situational tools (data 1999-present):
+- get_team_situational_splits: a team's W-L, points, EPA/play, success rate, ATS and over/under in
+  a situation (home/away, division, dome/outdoor, grass/turf, cold/mild/warm, windy/calm,
+  rest_short/normal/long, primetime, favorite/underdog), per season or career.
+- get_player_situational_splits: a player's passing/rushing/receiving/defence + EPA/CPOE +
+  fantasy points in the SAME splits, per season or career.
+- get_defense_vs_position: production a defense ALLOWED to each position group (QB/RB/WR/TE),
+  with a per-season generosity rank (rank 1 = most generous).
+- get_situational_leaders: league leaders WITHIN a split (team level by EPA/ATS/etc., or player
+  level by yards/TD/fantasy) — e.g. "best cold-weather teams", "most receiving yards in primetime".
+
+USE THESE for questions like "is Mahomes worse in cold weather?", "how does Jefferson do at home
+vs on the road?", "which defense gives up the most to RBs?", "who covers best as an underdog?",
+or "does he produce less against the division?" — quote the actual per-split numbers rather than
+speculating. Weather splits are temperature/wind based (we do NOT track precipitation).
 
 When discussing betting lines, always reference:
 - Current market lines vs opening lines (show line movement)
@@ -219,9 +233,16 @@ async def chat_nfl(
             # Add time-contextualized question
             central_now = datetime.now(ZoneInfo("America/Chicago"))
             time_context = central_now.strftime("%A, %B %d, %Y at %I:%M %p %Z").replace(" 0", " ")
+            # NFL season year: a season labelled Y runs Sep(Y)-Feb(Y+1); the league year
+            # rolls over in March. So Jan/Feb still belong to the previous year's season.
+            season_year = central_now.year if central_now.month >= 3 else central_now.year - 1
             messages.append({
                 "role": "user",
-                "content": f"[Central US time: {time_context}]\n\n{request.message}",
+                "content": (
+                    f"[Central US time: {time_context} | Current NFL season: {season_year} "
+                    f"(in progress) · Most recently completed season: {season_year - 1}]\n\n"
+                    f"{request.message}"
+                ),
             })
 
             # Optional game context (from a game-card chat): inject as a system

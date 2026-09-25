@@ -74,6 +74,8 @@ export interface Game {
   away_record?: string | null;
   home_score?: number;
   away_score?: number;
+  quarter?: number | null; // live: 1-4, 5+ = OT
+  clock?: string | null;   // live: mm:ss remaining
   spread?: number | null;       // from home team perspective (+ = home underdog, - = home favorite)
   over_under?: number | null;
   home_moneyline?: number | null;

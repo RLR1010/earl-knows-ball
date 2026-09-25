@@ -44,6 +44,83 @@ logging.basicConfig(
 logger = logging.getLogger("earl.nfl_stats_refresh")
 
 
+async def _qc_historical_tags(db) -> None:
+    """QC guard: historical game tags must be immutable.
+
+    The rolling/cumulative builders partition by (season, season_type) and are
+    rebuilt from source on every refresh. If a historical game's season/week/
+    season_type silently changes, the affected seasons' features are rewritten and
+    every model trained on them changes (this is the 2021-drift bug). We freeze a
+    snapshot of (season, week, team_abbr, season_type) for every completed season
+    and refuse to continue if a frozen season changes.
+    """
+    from sqlalchemy import text
+
+    await db.execute(text("""
+        CREATE TABLE IF NOT EXISTS nfl.historical_tag_snapshot (
+            season      integer     NOT NULL,
+            week        integer     NOT NULL,
+            team_abbr   text        NOT NULL,
+            season_type text        NOT NULL,
+            captured_at timestamptz NOT NULL DEFAULT now(),
+            PRIMARY KEY (season, week, team_abbr, season_type)
+        )"""))
+    await db.commit()
+
+    max_season = (await db.execute(
+        text("SELECT COALESCE(MAX(season), 0) FROM nfl.game_stats")
+    )).scalar() or 0
+    if not max_season:
+        return
+
+    frozen = sorted({int(s) for s in (await db.execute(
+        text("SELECT DISTINCT season FROM nfl.historical_tag_snapshot")
+    )).scalars().all()})
+
+    problems = []
+    for s in frozen:
+        if s >= max_season:
+            continue  # still-live seasons are not frozen
+        cur = {(r[0], r[1], r[2]) for r in (await db.execute(text(
+            "SELECT week, team_abbr, season_type FROM nfl.game_stats WHERE season = :s"
+        ), {"s": s})).all()}
+        old = {(r[0], r[1], r[2]) for r in (await db.execute(text(
+            "SELECT week, team_abbr, season_type FROM nfl.historical_tag_snapshot WHERE season = :s"
+        ), {"s": s})).all()}
+        added, removed = cur - old, old - cur
+        if added or removed:
+            problems.append((s, sorted(added)[:6], sorted(removed)[:6], len(added), len(removed)))
+
+    # Freeze any newly-completed season not yet snapshotted (season < live season).
+    seasons_now = {int(x) for x in (await db.execute(text(
+        "SELECT DISTINCT season FROM nfl.game_stats WHERE season < :m"
+    ), {"m": max_season})).scalars().all()}
+    to_freeze = sorted(seasons_now - set(frozen))
+    for s in to_freeze:
+        await db.execute(text("""
+            INSERT INTO nfl.historical_tag_snapshot (season, week, team_abbr, season_type)
+            SELECT DISTINCT season, week, team_abbr, season_type
+            FROM nfl.game_stats WHERE season = :s
+            ON CONFLICT DO NOTHING"""), {"s": s})
+    if to_freeze:
+        await db.commit()
+        logger.info(f"  QC: froze historical tag snapshot for seasons {to_freeze}")
+
+    if problems:
+        for s, added, removed, na, nr in problems:
+            logger.error(
+                f"  QC FAIL: season {s} tags changed (+{na}/-{nr}) "
+                f"added={added} removed={removed}"
+            )
+        raise RuntimeError(
+            "QC guard: historical game tags changed (seasons "
+            f"{sorted(p[0] for p in problems)}). Refusing to continue: historical "
+            "game data must be immutable (a change silently rewrites historical "
+            "features and drifts every model trained on them)."
+        )
+    logger.info(f"  QC: historical tags unchanged across {len(frozen)} frozen season(s)")
+
+
 async def run(started_at=None, game_type: str = "REG"):
     """Run NFL stats refresh in background.
 
@@ -74,6 +151,13 @@ async def run(started_at=None, game_type: str = "REG"):
     season = date.today().year
 
     async with async_session() as db:
+        # QC guard (pre): historical game tags (season/week/team/season_type) must be
+        # immutable. A change here silently rewrites historical rolling/cumulative
+        # features and therefore every model trained on them. Compare against the
+        # frozen snapshot BEFORE we touch anything so we surface drift from a prior
+        # run loudly instead of silently retraining on mutated history.
+        await _qc_historical_tags(db)
+
         # Step 0: ingest the POSTSEASON schedule so playoff games exist in
         # nfl.games with game_type='POST' BEFORE any stats/rolling rebuild.
         # Keeps future postseasons separated from REG (the 2016-2025 data was
@@ -201,7 +285,7 @@ async def run(started_at=None, game_type: str = "REG"):
     logger.info("[Step 6] Refreshing nfl.team_rolling_stats...")
     try:
         from app.handicapping.nfl.populate_team_rolling_stats import run as run_team_rolling
-        team_res = await run_in_thread(run_team_rolling, game_type)
+        team_res = await run_in_thread(run_team_rolling, game_type, seasons=[season])
         logger.info(f"  team_rolling_stats: {team_res}")
     except Exception as e:
         logger.error(f"  team_rolling_stats failed: {e}")
@@ -221,7 +305,7 @@ async def run(started_at=None, game_type: str = "REG"):
     logger.info("[Step 8] Refreshing nfl.team_badweather_stats...")
     try:
         from app.handicapping.nfl.populate_team_badweather_stats import run as run_team_bad
-        tb_res = await run_in_thread(run_team_bad)
+        tb_res = await run_in_thread(run_team_bad, seasons=[season])
         logger.info(f"  team_badweather_stats: {tb_res}")
     except Exception as e:
         logger.error(f"  team_badweather_stats failed: {e}")
@@ -231,7 +315,7 @@ async def run(started_at=None, game_type: str = "REG"):
     logger.info("[Step 9] Refreshing nfl.qb_badweather_stats...")
     try:
         from app.handicapping.nfl.populate_qb_badweather_stats import run as run_qb_bad
-        qb_bad_res = await run_in_thread(run_qb_bad)
+        qb_bad_res = await run_in_thread(run_qb_bad, seasons=[season])
         logger.info(f"  qb_badweather_stats: {qb_bad_res}")
     except Exception as e:
         logger.error(f"  qb_badweather_stats failed: {e}")
@@ -326,6 +410,11 @@ async def run(started_at=None, game_type: str = "REG"):
     except Exception as e:
         logger.error(f"  stale game_type purge failed: {e}")
         step_failures.append(f"stale_game_type_purge: {e}")
+
+    # QC guard (post): re-check that this refresh did not mutate any historical tag.
+    from app.database import async_session as _qc_session
+    async with _qc_session() as _qc_db:
+        await _qc_historical_tags(_qc_db)
 
     # Report the REAL outcome to task_runs
     if step_failures:

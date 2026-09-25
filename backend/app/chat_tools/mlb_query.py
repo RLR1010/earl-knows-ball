@@ -90,6 +90,135 @@ def _detect_source(stats):
     return "batting", None
 
 
+# --------------------------------------------------------------------------- #
+# Season-level Statcast/Savant + WAR stats (dedicated path — NOT per-game)
+# Same underlying savant_*/bref_war_* tables as app.analytics.mlb_savant so the
+# generic query tool and the dedicated advanced tools agree.
+# stat name -> (table, value column, side, sample column, min sample)
+# --------------------------------------------------------------------------- #
+MLB_SAVANT_STATS: dict[str, tuple[str, str, str, str | None, float]] = {
+    # batting (side='bat')
+    "xba": ("mlb.savant_bat_expected", "est_ba", "bat", "pa", 100),
+    "xslg": ("mlb.savant_bat_expected", "est_slg", "bat", "pa", 100),
+    "xwoba": ("mlb.savant_bat_expected", "est_woba", "bat", "pa", 100),
+    "avg_exit_velocity": ("mlb.savant_bat_exitvelo", "avg_hit_speed", "bat", "attempts", 50),
+    "max_exit_velocity": ("mlb.savant_bat_exitvelo", "max_hit_speed", "bat", "attempts", 50),
+    "barrel_rate": ("mlb.savant_bat_exitvelo", "brl_percent", "bat", "attempts", 50),
+    "hard_hit_rate": ("mlb.savant_bat_exitvelo", "ev95percent", "bat", "attempts", 50),
+    "sprint_speed": ("mlb.savant_sprint_speed", "sprint_speed", "bat", "competitive_runs", 20),
+    "outs_above_average": ("mlb.savant_fielding_oaa", "outs_above_average", "bat", None, 0),
+    "war": ("mlb.bref_war_bat", "war", "bat", "pa", 100),
+    # pitching (side='pitch')
+    "xera": ("mlb.savant_pitch_expected", "xera", "pitch", "pa", 100),
+    "xwoba_allowed": ("mlb.savant_pitch_expected", "est_woba", "pitch", "pa", 100),
+    "xba_allowed": ("mlb.savant_pitch_expected", "est_ba", "pitch", "pa", 100),
+    "xslg_allowed": ("mlb.savant_pitch_expected", "est_slg", "pitch", "pa", 100),
+    "barrel_rate_allowed": ("mlb.savant_pitch_exitvelo", "brl_percent", "pitch", "attempts", 50),
+    "hard_hit_rate_allowed": ("mlb.savant_pitch_exitvelo", "ev95percent", "pitch", "attempts", 50),
+    "avg_exit_velocity_allowed": ("mlb.savant_pitch_exitvelo", "avg_hit_speed", "pitch", "attempts", 50),
+    "k_percentile": ("mlb.savant_pitch_percentile", "k_percent", "pitch", None, 0),
+    "whiff_percentile": ("mlb.savant_pitch_percentile", "whiff_percent", "pitch", None, 0),
+    "pitching_war": ("mlb.bref_war_pitch", "war", "pitch", "pa", 50),
+}
+
+# NOTE: the savant_pitch_percentile columns k_percent/whiff_percent are PERCENTILE RANKS
+# (0-100), not raw K%/whiff%. They are exposed under explicit *_percentile names so
+# callers don't mistake them for the underlying rate.
+
+# metrics where lower is better -> sort ascending on leaderboards
+_SAVANT_ASC = {
+    "xera", "xwoba_allowed", "xba_allowed", "xslg_allowed",
+    "barrel_rate_allowed", "hard_hit_rate_allowed", "avg_exit_velocity_allowed",
+}
+
+
+async def _run_query_savant_player_stats(db: AsyncSession, args: dict, stats: list) -> dict:
+    """Season-level savant/WAR query path (single player or single-stat leaderboard)."""
+    from app.analytics import mlb_savant as _S
+    from .mlb import _search_players
+
+    sides = {MLB_SAVANT_STATS[s][2] for s in stats}
+    if len(sides) != 1:
+        return {"error": "Invalid query spec", "details": ["can't mix batting and pitching savant stats in one query"]}
+    side = sides.pop()
+
+    filt = args.get("filters") or {}
+    season, _label = await _resolve_season(db, {"season": filt.get("season_year")})
+    year = season.year if season else None
+    if not year:
+        return {"error": "Could not resolve a season"}
+    year = int(year)
+
+    player_name = args.get("player_name")
+    if player_name:
+        hits = await _search_players(db, player_name, limit=1)
+        if not hits:
+            return {"error": f"Unknown player '{player_name}'"}
+        hit = hits[0]
+        mlb_id = await _S.mlb_id_for_player_id(db, hit["player_id"])
+        if not mlb_id:
+            return {"error": f"No MLBAM id on file for '{hit['name']}'"}
+        row: dict = {"name": hit["name"], "team": hit.get("team"), "season": year}
+        for s in stats:
+            table, col, _side, _mc, _mv = MLB_SAVANT_STATS[s]
+            if table.startswith("mlb.bref_war"):
+                sql = f"SELECT {col} FROM {table} WHERE mlb_id = :pid AND year_id = :yr ORDER BY {col} DESC NULLS LAST LIMIT 1"
+            else:
+                sql = f"SELECT {col} FROM {table} WHERE player_id = :pid AND year = :yr LIMIT 1"
+            val = (await db.execute(text(sql), {"pid": int(mlb_id), "yr": year})).scalar_one_or_none()
+            row[s] = float(val) if isinstance(val, (int, float)) else val
+        return {
+            "result": [row], "season": year, "source": f"savant_{side}", "stat_names": stats,
+            "note": "Season-level Statcast/Savant + WAR metric (not per-game).",
+        }
+
+    if len(stats) != 1:
+        return {
+            "error": "Invalid query spec",
+            "details": [
+                "league-wide savant leaderboards support exactly one stat per call; "
+                "add 'player_name' to fetch several stats for one player, or use get_advanced_stat_leaders"
+            ],
+        }
+    s = stats[0]
+    table, col, _side, min_col, min_val = MLB_SAVANT_STATS[s]
+    asc = s in _SAVANT_ASC
+    order = "ASC" if asc else "DESC"
+    params: dict = {"yr": year}
+    if table.startswith("mlb.bref_war"):
+        where = [f"b.{col} IS NOT NULL"]
+        if min_col:
+            where.append(f"b.{min_col} >= :minv"); params["minv"] = min_val
+        sql = f"""
+            SELECT COALESCE(wp.name, b.mlb_id::text) AS name, b.{col} AS "{s}"
+            FROM {table} b
+            LEFT JOIN mlb.players wp ON wp.mlb_id = b.mlb_id
+            WHERE b.year_id = :yr AND {' AND '.join(where)}
+            ORDER BY b.{col} {order} NULLS LAST
+        """
+    else:
+        where = [f"t.{col} IS NOT NULL"]
+        if min_col:
+            where.append(f"t.{min_col} >= :minv"); params["minv"] = min_val
+        sql = f"""
+            SELECT COALESCE(wp.name, t.player_id::text) AS name, t.{col} AS "{s}"
+            FROM {table} t
+            LEFT JOIN mlb.players wp ON wp.mlb_id = t.player_id
+            WHERE t.year = :yr AND {' AND '.join(where)}
+            ORDER BY t.{col} {order} NULLS LAST
+        """
+    limited, lim = apply_limit(sql, args.get("top"))
+    if limited is None:
+        return {"error": lim}
+    rows = (await db.execute(text(limited), params)).mappings().all()
+    result = [{k: (float(v) if isinstance(v, (int, float)) else v) for k, v in dict(r).items()} for r in rows]
+    return {
+        "result": result, "season": year, "source": f"savant_{side}", "stat_names": stats,
+        "direction": "ascending (lower is better)" if asc else "descending (higher is better)",
+        "count_note": count_note(lim, len(result), len(result)),
+    }
+
+
 async def _run_query_player_stats(db: AsyncSession, args: dict) -> dict:
     allowed = {"stats", "stat", "aggregate", "group_by", "filters", "top", "order", "player_name"}
     for k in args:
@@ -110,6 +239,10 @@ async def _run_query_player_stats(db: AsyncSession, args: dict) -> dict:
             return {"error": "Invalid query spec", "details": [f"'{misplaced}' inside 'filters' is ignored; pass the player name via the TOP-LEVEL 'player_name' argument instead"]}
     src, err = _detect_source(stats)
     if err:
+        # savant season stats aren't in the per-game allowlists; route them separately
+        sv = [s for s in stats if s in MLB_SAVANT_STATS]
+        if sv and len(sv) == len(stats):
+            return await _run_query_savant_player_stats(db, args, stats)
         return {"error": "Invalid query spec", "details": err}
     gb = args.get("group_by") or []
     order = (args.get("order") or "desc").lower()

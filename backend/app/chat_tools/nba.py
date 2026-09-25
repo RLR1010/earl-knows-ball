@@ -524,6 +524,30 @@ TOOL_DEFINITIONS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_power_ranking",
+            "description": (
+                "Get Earl's NBA power rankings for a season/week (ranked 1..N by a "
+                "points/SRS-style rating that accounts for strength of schedule), "
+                "optionally filtered to ONE team. Each entry has rank, rating, rating "
+                "change, rank change, strength of schedule, record, and Earl's written "
+                "blurb. Use this whenever the user asks about power rankings, who is the "
+                "best team, how teams are rated, or a team's ranking. If no week is "
+                "given, returns the latest published week."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "team_name": {"type": "string", "description": "Optional: one team (name or abbreviation), e.g. 'Celtics' or 'BOS'. Omit for the full 30-team ranking."},
+                    "season_year": {"type": "integer", "description": "Optional: season YEAR (e.g. 2025). Defaults to the latest season with published rankings."},
+                    "week": {"type": "integer", "description": "Optional: week number. Defaults to the latest published week."},
+                },
+                "required": [],
+            },
+        },
+    },
 ]
 
 
@@ -2025,8 +2049,88 @@ async def _get_team_query(db: AsyncSession, args: dict) -> dict:
     return await nba_query._run_query_team_stats(db, args)
 
 
+async def _get_power_ranking(db: AsyncSession, args: dict) -> dict:
+    """Earl's NBA power rankings (points/SRS-style rating + written blurbs)."""
+    team = (args.get("team_name") or "").strip()
+    week = args.get("week")
+    year = args.get("season_year")
+
+    if not year:
+        year = (await db.execute(text("SELECT MAX(season) FROM nba.power_ratings"))).scalar_one_or_none()
+    if not year:
+        return {"error": "No NBA power rankings have been published yet"}
+
+    if not week:
+        week = (await db.execute(
+            text("SELECT MAX(week) FROM nba.power_ratings WHERE season = :y"), {"y": year}
+        )).scalar_one_or_none()
+    if week is None:
+        return {"error": f"No NBA power rankings published for season {year}"}
+
+    team_id = None
+    if team:
+        team_id = await _resolve_team_id(db, team)
+        if not team_id:
+            return {"error": f"Could not resolve NBA team '{team}'"}
+
+    team_clause = "AND p.team_id = :tid" if team_id else ""
+    params = {"y": year, "w": week}
+    if team_id:
+        params["tid"] = team_id
+
+    rows = (await db.execute(text(f"""
+        SELECT p.rank, p.prev_rank, p.rank_delta, p.rating, p.rating_delta,
+               p.sos, p.games_played, p.wins, p.losses, p.ties,
+               p.injury_adj, p.market_delta, p.components,
+               t.abbreviation AS team_abbr, b.blurb
+        FROM nba.power_ratings p
+        LEFT JOIN nba.power_ranking_blurbs b
+               ON b.season = p.season AND b.week = p.week AND b.team_id = p.team_id
+        LEFT JOIN nba.teams t ON t.id = p.team_id
+        WHERE p.season = :y AND p.week = :w {team_clause}
+        ORDER BY p.rank
+    """), params)).mappings().all()
+
+    if not rows:
+        return {"error": f"No NBA power rankings for season {year}, week {week}"}
+
+    def _inj_names(comp):
+        if not isinstance(comp, dict):
+            return []
+        return [i.get("player") or i.get("name")
+                for i in (comp.get("injuries") or []) if isinstance(i, dict)]
+
+    rankings = []
+    for r in rows:
+        rankings.append({
+            "rank": r["rank"],
+            "team": r["team_abbr"],
+            "rating": round(r["rating"], 2) if r["rating"] is not None else None,
+            "rating_change": round(r["rating_delta"], 2) if r["rating_delta"] is not None else None,
+            "prev_rank": r["prev_rank"],
+            "rank_change": r["rank_delta"],
+            "strength_of_schedule": round(r["sos"], 2) if r["sos"] is not None else None,
+            "record": f"{r['wins']}-{r['losses']}" + (f"-{r['ties']}" if r["ties"] else ""),
+            "games_played": r["games_played"],
+            "injury_adj": round(r["injury_adj"], 2) if r["injury_adj"] is not None else None,
+            "market_vs_model": round(r["market_delta"], 2) if r["market_delta"] is not None else None,
+            "key_injuries": _inj_names(r["components"]) or None,
+            "blurb": r["blurb"],
+        })
+
+    return {
+        "sport": "nba",
+        "season_year": year,
+        "week": week,
+        "note": "Power rating is a points-based (SRS-style) score including strength of schedule.",
+        "count": len(rankings),
+        "rankings": rankings,
+    }
+
+
 _TOOL_HANDLERS = {
     "get_team_info": _get_team_info,
+    "get_power_ranking": _get_power_ranking,
     "get_team_stats": _get_team_stats,
     "get_standings": _get_standings,
     "get_todays_games": _get_todays_games,

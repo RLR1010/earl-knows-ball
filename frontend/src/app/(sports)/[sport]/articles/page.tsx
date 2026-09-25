@@ -12,7 +12,8 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
     sport,
     "Articles & Game Previews",
     `Read ${label} original articles, game previews, analysis, and AI handicapping content from Earl Knows Ball.`,
-    `/${sport}/articles`
+    `/${sport}/articles`,
+    `/${sport}/feed.xml`
   );
 }
 

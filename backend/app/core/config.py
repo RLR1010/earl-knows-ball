@@ -70,6 +70,14 @@ class Settings(BaseSettings):
     # hard host allowlist (see app/services/indexnow.py) as defense in depth.
     indexnow_enabled: bool = False
 
+    # --- NFL stat-table rebuild scope -----------------------------------------
+    # When FALSE (default) the nfl-stats-refresh rebuilds rolling/cumulative rows
+    # ONLY for the season(s) it was asked about (the live season) and leaves every
+    # historical row untouched. That keeps historical features immutable so models
+    # stay reproducible. Set REBUILD_HISTORICAL_STATS=true to force a full
+    # historical rebuild (rare; must be intentional).
+    rebuild_historical_stats: bool = False
+
     # X (@earl_knows_ball) social — OAuth1 "acting as ourselves". Optional: if unset,
     # the X admin pages show a "connect" prompt instead of failing import.
     x_consumer_key: str = ""        # API Key (OAuth1 self / acting-as-owner)

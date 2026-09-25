@@ -93,8 +93,20 @@ def _build_row(r, cold, warm, precip, dry):
     }
 
 
-def run(conn=None, min_starts: int = 1) -> dict:
-    """Build and insert qb_badweather_stats for QBs with >= min_starts prior games."""
+def run(conn=None, min_starts: int = 1, seasons=None) -> dict:
+    """Build and insert qb_badweather_stats for QBs with >= min_starts prior games.
+
+    `seasons`: when provided (and settings.rebuild_historical_stats is False) only
+    rows for those seasons are rebuilt; all other (historical) rows are left
+    untouched. Accumulation still runs over the FULL history so per-season values
+    match a full rebuild -- we only scope which rows we write.
+    """
+    from app.core.config import settings
+
+    scope_seasons = None
+    if seasons and not getattr(settings, "rebuild_historical_stats", False):
+        scope_seasons = sorted({int(s) for s in seasons})
+
     own_conn = conn is None
     if own_conn:
         conn = SessionLocal()
@@ -145,8 +157,12 @@ def run(conn=None, min_starts: int = 1) -> dict:
             dry = [g for g in prior if not g["precip"]]
             insert_rows.append(_build_row(r, cold, warm, precip, dry))
 
+        if scope_seasons:
+            keep = set(scope_seasons)
+            insert_rows = [r for r in insert_rows if r["season"] in keep]
+
         if insert_rows:
-            game_ids = sorted({r["game_id"] for r in rows})
+            game_ids = sorted({r["game_id"] for r in insert_rows})
             for i in range(0, len(game_ids), 900):
                 chunk = game_ids[i : i + 900]
                 ph = ", ".join([":g%d" % x for x in range(len(chunk))])

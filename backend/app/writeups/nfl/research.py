@@ -45,6 +45,14 @@ def _season_year_sq(alias: str = "g") -> str:
 # ──────────────────────────────────────────────
 
 
+async def _season_year(db: AsyncSession, season_id: int) -> int | None:
+    """Map internal season_id -> calendar year (they differ: id 15=2023, 17=2026)."""
+    row = (await db.execute(
+        text("SELECT year FROM nfl.seasons WHERE id = :sid"), {"sid": season_id}
+    )).mappings().one_or_none()
+    return row["year"] if row else None
+
+
 async def get_game_summary(db: AsyncSession, game_id: int) -> dict:
     """Basic game info: teams, venue, weather, date."""
     row = await db.execute(text("""
@@ -912,6 +920,15 @@ async def get_situational_context(db: AsyncSession, home_team_id: int, away_team
     """), {"home_id": home_team_id, "away_id": away_team_id, "sid": season_id})
     gi = game_info.mappings().one_or_none()
 
+    # Canonical situational splits (nfl.team_splits) for both teams, current season.
+    from app.analytics import nfl_situational as _sit
+    yr = await _season_year(db, season_id)
+    _rel = ["all", "home", "away", "division", "non_division", "vs_afc", "vs_nfc",
+            "primetime", "dome", "outdoor", "favorite", "underdog",
+            "rest_short", "rest_normal", "rest_long"]
+    home_splits = await _sit.team_situational_splits(db, team_abbr_home, yr, _rel) if (yr and team_abbr_home) else []
+    away_splits = await _sit.team_situational_splits(db, team_abbr_away, yr, _rel) if (yr and team_abbr_away) else []
+
     return {
         "home_team": {
             "rest_days": home_rest,
@@ -929,6 +946,11 @@ async def get_situational_context(db: AsyncSession, home_team_id: int, away_team
         "is_conference_game": is_conference,
         "roof_type": gi["roof_type"] if gi else None,
         "venue": gi["venue"] if gi else None,
+        "situational_splits": {
+            "season": yr,
+            "team_splits_home": home_splits,
+            "team_splits_away": away_splits,
+        },
     }
 
 
@@ -1027,6 +1049,10 @@ async def get_defensive_matchup(db: AsyncSession, offense_abbr: str, defense_abb
     if not off_stats["ypg"] or not def_stats["def_ypg"]:
         return None
 
+    from app.analytics import nfl_situational as _sit
+    _yr = await _season_year(db, season_id)
+    dvp = await _sit.defense_vs_position(db, defense_abbr, None, _yr) if _yr else []
+
     return {
         "offense_vs_defense": {
             "off_pass_ypg": off_stats["pass_ypg"],
@@ -1045,6 +1071,10 @@ async def get_defensive_matchup(db: AsyncSession, offense_abbr: str, defense_abb
         "defense_strength": {
             "sacks_pg": def_stats["sacks_pg"],
             "int_pg": def_stats["int_pg"],
+        },
+        "defense_vs_position": {
+            "season": _yr,
+            "allowed": dvp,
         },
     }
 

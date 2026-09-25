@@ -99,6 +99,8 @@ interface MLBGame {
   venue: string | null;
   scheduled_innings: number;
   actual_innings: number | null;
+  inning?: number | null;
+  inning_half?: string | null;
   attendance: number | null;
   duration_minutes: number | null;
   day_night: string | null;

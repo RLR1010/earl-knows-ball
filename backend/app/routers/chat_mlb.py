@@ -44,6 +44,11 @@ router = APIRouter()
 
 MLB_SYSTEM_EXTRA = """You cover all 30 MLB teams. The current MLB season is in progress.
 
+SEASONS & TIME: The user message begins with the current Central US date/time AND an explicit
+season line (current season year; the MLB season is a calendar year). Always refer to seasons by
+their exact year; NEVER use relative phrases like "last season" or "this season" — name the
+exact season instead.
+
 Key MLB handicapping angles:
 - Pitching matchup is the single most important factor — starting pitcher quality and bullpen depth drive game outcomes
 - Home/away splits matter more in baseball than any other sport (ballpark factors, travel, familiarity)
@@ -213,9 +218,14 @@ async def chat_mlb(
             # Add time-contextualized question
             central_now = datetime.now(ZoneInfo("America/Chicago"))
             time_context = central_now.strftime("%A, %B %d, %Y at %I:%M %p %Z").replace(" 0", " ")
+            # MLB season is a calendar year (Mar-Oct); Nov-Feb belongs to the prior year's season.
+            mlb_year = central_now.year if central_now.month >= 3 else central_now.year - 1
             messages.append({
                 "role": "user",
-                "content": f"[Central US time: {time_context}]\n\n{request.message}",
+                "content": (
+                    f"[Central US time: {time_context} | Current MLB season: {mlb_year} "
+                    f"· Most recently completed season: {mlb_year - 1}]\n\n{request.message}"
+                ),
             })
 
             # Optional game context (from a game-card chat): inject as a system
@@ -279,7 +289,7 @@ async def chat_mlb(
                             messages=[
                                 {"role": "system", "content": chat_engine.system_prompt},
                                 {"role": "user", "content": (
-                                    f"[Central US time: {time_context}]\n\n"
+                                    f"[Central US time: {time_context} | Current MLB season: {mlb_year} · Most recently completed season: {mlb_year - 1}]\n\n"
                                     f"Original question: {request.message}\n\n"
                                     f"--- KEY DATA FROM TOOL RESEARCH ---\n"
                                     f"{answer}\n\n"
