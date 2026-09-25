@@ -21,7 +21,7 @@ SPORT_ID = 1  # MLB
 async def fetch_schedule(game_date: date) -> list[dict]:
     """Fetch MLB schedule for a given date, return game list."""
     date_str = game_date.strftime("%m/%d/%Y")
-    url = f"{STATS_API}/api/v1/schedule?date={date_str}&sportId={SPORT_ID}"
+    url = f"{STATS_API}/api/v1/schedule?date={date_str}&sportId={SPORT_ID}&hydrate=probablePitcher"
     async with httpx.AsyncClient(timeout=15.0) as client:
         resp = await client.get(url)
         resp.raise_for_status()
@@ -241,13 +241,23 @@ async def update_lineups_for_date(db: AsyncSession, game_date: date) -> dict:
             if not db_game:
                 continue
 
-            # Update probable pitchers
+            # Update probable pitchers (set the announced side, clear a stale
+            # side whose starter is still TBD for a pregame game).
             changed = False
-            if game_info.get("home_sp_name") and db_game.home_pitcher_name != game_info["home_sp_name"]:
-                db_game.home_pitcher_name = game_info["home_sp_name"]
+            _pregame = (db_game.status or "").upper() == "SCHEDULED"
+            _home_sp = game_info.get("home_sp_name")
+            _away_sp = game_info.get("away_sp_name")
+            if _home_sp and db_game.home_pitcher_name != _home_sp:
+                db_game.home_pitcher_name = _home_sp
                 changed = True
-            if game_info.get("away_sp_name") and db_game.away_pitcher_name != game_info["away_sp_name"]:
-                db_game.away_pitcher_name = game_info["away_sp_name"]
+            elif _pregame and not _home_sp and db_game.home_pitcher_name:
+                db_game.home_pitcher_name = None
+                changed = True
+            if _away_sp and db_game.away_pitcher_name != _away_sp:
+                db_game.away_pitcher_name = _away_sp
+                changed = True
+            elif _pregame and not _away_sp and db_game.away_pitcher_name:
+                db_game.away_pitcher_name = None
                 changed = True
             if changed:
                 stats["pitchers_updated"] += 1
@@ -279,6 +289,13 @@ async def update_lineups_for_date(db: AsyncSession, game_date: date) -> dict:
             existing_pitchers = r.scalars().all()
             existing_sides = {p.team_side for p in existing_pitchers}
             logger.info(f"  Existing pitcher rows: {existing_sides}")
+            _confirm = await db.execute(
+                select(MLBLineup.team_side).where(
+                    MLBLineup.game_id == db_game.id,
+                    MLBLineup.batting_order > 0,
+                )
+            )
+            confirmed_sides = set(_confirm.scalars().all())
             now = datetime.now(timezone.utc)
 
             # Resolve probable-pitcher NAME -> players.id (accent-insensitive), so
@@ -303,22 +320,36 @@ async def update_lineups_for_date(db: AsyncSession, game_date: date) -> dict:
                         return pid
                 return rows[0] if rows else None
 
-            if db_game.home_pitcher_name and "home" not in existing_sides:
-                pid = await _resolve(db_game.home_pitcher_name)
-                logger.info(f"  Inserting home SP: {db_game.home_pitcher_name} (player_id={pid})")
-                db.add(MLBLineup(
-                    game_id=db_game.id, team_side="home", batting_order=0,
-                    player_id=pid, player_name=db_game.home_pitcher_name,
-                    position="SP", created_at=now, updated_at=now,
-                ))
-            if db_game.away_pitcher_name and "away" not in existing_sides:
-                pid = await _resolve(db_game.away_pitcher_name)
-                logger.info(f"  Inserting away SP: {db_game.away_pitcher_name} (player_id={pid})")
-                db.add(MLBLineup(
-                    game_id=db_game.id, team_side="away", batting_order=0,
-                    player_id=pid, player_name=db_game.away_pitcher_name,
-                    position="SP", created_at=now, updated_at=now,
-                ))
+            # Reconcile the probable-pitcher (batting_order 0) rows for any side
+            # that does not yet have a confirmed lineup. The SP placeholder can
+            # go stale — e.g. a doubleheader nightcap initially inherits game 1's
+            # starter, or its starter is still TBD — so set it to the current
+            # probable pitcher and drop it when the starter is unannounced.
+            _sp_by_side = {p.team_side: p for p in existing_pitchers}
+            for _side, _name in (
+                ("home", db_game.home_pitcher_name),
+                ("away", db_game.away_pitcher_name),
+            ):
+                if _side in confirmed_sides:
+                    continue  # confirmed lineup posted; leave its SP alone
+                _cur = _sp_by_side.get(_side)
+                if _name:
+                    _pid = await _resolve(_name)
+                    if _cur is None:
+                        logger.info(f"  Inserting {_side} SP: {_name} (player_id={_pid})")
+                        db.add(MLBLineup(
+                            game_id=db_game.id, team_side=_side, batting_order=0,
+                            player_id=_pid, player_name=_name,
+                            position="SP", created_at=now, updated_at=now,
+                        ))
+                    elif _cur.player_name != _name:
+                        logger.info(f"  Updating {_side} SP: {_cur.player_name!r} -> {_name!r}")
+                        _cur.player_name = _name
+                        _cur.player_id = _pid
+                        _cur.updated_at = now
+                elif _cur is not None:
+                    logger.info(f"  Removing stale {_side} SP: {_cur.player_name!r}")
+                    await db.delete(_cur)
 
         except Exception as e:
             logger.error(f"Error processing game {game_info.get('game_pk')}: {e}")

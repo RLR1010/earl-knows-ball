@@ -188,6 +188,7 @@ async def snapshot_mlb_opening_lines(
     loaded = 0
     skipped = []
     updated_game_ids = set()
+    matched_gids = set()  # game ids already tied to an odds event this run
 
     for event in data:
         try:
@@ -229,9 +230,16 @@ async def snapshot_mlb_opening_lines(
                 skipped.append(f"DB lookup failed: {away_abbr} @ {home_abbr}")
                 continue
 
-            # Find game matching home, away, and time (within 90-min window)
-            time_lower = game_dt - timedelta(minutes=90)
-            time_upper = game_dt + timedelta(minutes=90)
+            # Find the game matching home, away, and time. A doubleheader puts
+            # two same-matchup games on the same day, and a nightcap whose start
+            # time is TBD can carry a placeholder time from the feed — so instead
+            # of requiring exactly one row in a narrow window (which raised
+            # MultipleResultsFound and skipped the whole event, leaving BOTH
+            # doubleheader games with no lines), gather the day's candidates,
+            # drop any already matched to an earlier event, and take the one
+            # closest to this event's commence time.
+            time_lower = game_dt - timedelta(hours=12)
+            time_upper = game_dt + timedelta(hours=12)
             game_result = await db.execute(
                 select(MLBGames).where(
                     MLBGames.season_id == season.id,
@@ -241,10 +249,17 @@ async def snapshot_mlb_opening_lines(
                     MLBGames.date <= time_upper,
                 )
             )
-            game = game_result.scalar_one_or_none()
-            if not game:
+            candidates = [
+                g for g in game_result.scalars().all() if g.id not in matched_gids
+            ]
+            if not candidates:
                 skipped.append(f"Game not found: {away_abbr} @ {home_abbr} ({game_dt})")
                 continue
+            game = min(
+                candidates,
+                key=lambda g: abs((g.date - game_dt).total_seconds()),
+            )
+            matched_gids.add(game.id)
 
             gid = game.id
 

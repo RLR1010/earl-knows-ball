@@ -23,6 +23,11 @@ export interface ScheduleGameLike {
   clock?: string | null;
   status?: string | null;
   date?: string | null;
+  // Doubleheaders: true when the same matchup plays twice on this date;
+  // game_number is 1 or 2. start_time_tbd means the feed has no first pitch yet.
+  double_header?: boolean | null;
+  game_number?: number | null;
+  start_time_tbd?: boolean | null;
   spread?: number | null;
   over_under?: number | null;
   home_moneyline?: number | null;
@@ -363,11 +368,19 @@ export default function ScheduleGameCard({
         )}
         {!isFinal && !isLive ? (
           <div className="text-xs text-gray-500 mt-1 flex items-center justify-center gap-1.5">
+            {game.double_header && game.game_number ? (
+              <>
+                <span className="px-1.5 py-0.5 rounded bg-gray-800 text-gray-300 text-[10px] font-semibold uppercase tracking-wider">
+                  Game {game.game_number}
+                </span>
+                {game.date ? <span className="text-gray-600">•</span> : null}
+              </>
+            ) : null}
             {game.date ? (
               <>
                 <span className="text-gray-400">{formatDate(game.date)}</span>
                 <span className="text-gray-600">•</span>
-                <span>{formatTime(game.date)}</span>
+                <span>{game.start_time_tbd ? "TBD" : formatTime(game.date)}</span>
               </>
             ) : (
               ""

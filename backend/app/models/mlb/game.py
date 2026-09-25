@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Text, DateTime, Float, ForeignKey, Enum
+from sqlalchemy import Column, Integer, String, Text, DateTime, Float, ForeignKey, Enum, Boolean
 from sqlalchemy.orm import relationship
 from app.database import Base
 import enum
@@ -20,7 +20,8 @@ class MLBGames(Base):
     mlb_game_id = Column(Integer, unique=True, nullable=True, index=True)  # MLB Stats API gamePk
     season_id = Column(Integer, ForeignKey("mlb.seasons.id"), nullable=False)
     game_type = Column(String(10), default="REG")  # REG, PRE, POST, AS (All-Star)
-    game_number = Column(Integer, default=0)  # Doubleheader game number (0 or 1)
+    game_number = Column(Integer, default=0)  # Doubleheader game number (1 or 2)
+    start_time_tbd = Column(Boolean, default=False)  # MLB feed hasn't set first pitch yet (e.g. DH nightcap)
     home_team_id = Column(Integer, ForeignKey("mlb.teams.id"), nullable=False)
     away_team_id = Column(Integer, ForeignKey("mlb.teams.id"), nullable=False)
     date = Column(DateTime(timezone=True), nullable=False, index=True)

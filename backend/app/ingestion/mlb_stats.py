@@ -655,6 +655,7 @@ async def load_games_for_season(
                     pass
 
             status_data = game.get("status", {})
+            start_time_tbd = bool(status_data.get("startTimeTBD", False))
             status_code = status_data.get("codedGameState", "S")
             if status_code in ("F", "O", "FT"):
                 status = GameStatus.FINAL
@@ -692,6 +693,13 @@ async def load_games_for_season(
                 if away_score is not None:
                     existing_game.away_score = _safe_int(away_score)
                 existing_game.status = status
+                # Keep doubleheader markers in sync with the feed. These were
+                # frozen at insert time, so a game that later becomes DH game 2
+                # (or whose nightcap start time is still TBD) never updated and
+                # the site showed "Game 1" twice / a bogus placeholder time.
+                existing_game.game_number = game.get("gameNumber", existing_game.game_number)
+                existing_game.game_type = game.get("gameType", existing_game.game_type)
+                existing_game.start_time_tbd = start_time_tbd
                 if game_date:
                     existing_game.date = game_date
                 existing_game.home_wins = _safe_int(home_record.get("wins"))
@@ -711,6 +719,7 @@ async def load_games_for_season(
                 season_id=season_id,
                 game_type=game.get("gameType", "R"),
                 game_number=game.get("gameNumber", 0),
+                start_time_tbd=start_time_tbd,
                 home_team_id=team_map[home_team_api_id],
                 away_team_id=team_map[away_team_api_id],
                 date=game_date,
@@ -1067,9 +1076,6 @@ async def update_probable_pitchers(db: AsyncSession) -> dict:
                 home_pitcher_name = home_pitcher.get("fullName")
                 away_pitcher_name = away_pitcher.get("fullName")
 
-                if not home_pitcher_name and not away_pitcher_name:
-                    continue
-
                 r = await db.execute(
                     select(MLBGames).where(MLBGames.mlb_game_id == game_pk)
                 )
@@ -1077,12 +1083,30 @@ async def update_probable_pitchers(db: AsyncSession) -> dict:
                 if not db_game:
                     continue
 
+                # Only manage probables before first pitch; once a game has
+                # started the schedule feed stops reporting them and we must not
+                # wipe a confirmed starter.
+                if (db_game.status or "").upper() != "SCHEDULED":
+                    continue
+
                 changed = False
-                if home_pitcher_name and db_game.home_pitcher_name != home_pitcher_name:
-                    db_game.home_pitcher_name = home_pitcher_name
+                # A scheduled game's feed entry always carries the probable
+                # slots; an empty slot means the starter is still TBD, so any
+                # previously stored name is stale (this is how a doubleheader
+                # nightcap ended up showing game 1's starter). Set or clear.
+                if home_pitcher_name:
+                    if db_game.home_pitcher_name != home_pitcher_name:
+                        db_game.home_pitcher_name = home_pitcher_name
+                        changed = True
+                elif db_game.home_pitcher_name:
+                    db_game.home_pitcher_name = None
                     changed = True
-                if away_pitcher_name and db_game.away_pitcher_name != away_pitcher_name:
-                    db_game.away_pitcher_name = away_pitcher_name
+                if away_pitcher_name:
+                    if db_game.away_pitcher_name != away_pitcher_name:
+                        db_game.away_pitcher_name = away_pitcher_name
+                        changed = True
+                elif db_game.away_pitcher_name:
+                    db_game.away_pitcher_name = None
                     changed = True
 
                 if changed:
@@ -1162,6 +1186,18 @@ async def update_game_statuses(db: AsyncSession, days_back: int = 7, days_forwar
                         new_s = new_status.value
                         status_changes[f"{game_pk}"] = {"from": old_s, "to": new_s}
                         db_game.status = new_status
+                        changed = True
+
+                    # Sync doubleheader markers (game_number + startTimeTBD):
+                    # a nightcap's number is often finalized after insert, and
+                    # its start time may stay TBD until MLB announces it.
+                    new_game_number = game.get("gameNumber")
+                    if new_game_number is not None and db_game.game_number != new_game_number:
+                        db_game.game_number = new_game_number
+                        changed = True
+                    new_tbd = bool(status_data.get("startTimeTBD", False))
+                    if db_game.start_time_tbd != new_tbd:
+                        db_game.start_time_tbd = new_tbd
                         changed = True
 
                     game_date_str = game.get("gameDate")

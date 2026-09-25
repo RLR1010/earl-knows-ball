@@ -1028,6 +1028,8 @@ async def mlb_games(
         g.attendance,
         g.duration_minutes,
         g.day_night,
+        g.game_number,
+        g.start_time_tbd,
         g.home_pitcher_name,
         g.away_pitcher_name,
         g.home_team_id,
@@ -1075,6 +1077,16 @@ async def mlb_games(
             if isinstance(g.get(field), decimal.Decimal):
                 g[field] = float(g[field])
         games_list.append(g)
+
+    # Flag doubleheaders (same calendar date + matchup appearing more than once)
+    # so the UI can label "Game 1"/"Game 2" instead of looking like a duplicate.
+    _dh_counts: dict = {}
+    for g in games_list:
+        _k = (g.get("game_date"), g.get("home_team"), g.get("away_team"))
+        _dh_counts[_k] = _dh_counts.get(_k, 0) + 1
+    for g in games_list:
+        _k = (g.get("game_date"), g.get("home_team"), g.get("away_team"))
+        g["double_header"] = _dh_counts.get(_k, 0) > 1
 
     # Team records at the time of each game (batched, matches game-detail behavior)
     # Resolve the season id for this year (schedule is filtered to one calendar year)
@@ -1377,7 +1389,9 @@ async def mlb_game_boxscore(
         g.actual_innings,
         g.attendance,
         g.duration_minutes,
-        g.day_night
+        g.day_night,
+        g.game_number,
+        g.start_time_tbd
     FROM mlb.games g
     JOIN mlb.teams ht ON ht.id = g.home_team_id
     JOIN mlb.teams at ON at.id = g.away_team_id

@@ -104,6 +104,9 @@ interface MLBGame {
   attendance: number | null;
   duration_minutes: number | null;
   day_night: string | null;
+  double_header?: boolean | null;
+  game_number?: number | null;
+  start_time_tbd?: boolean | null;
   spread: number | null;
   over_under: number | null;
   predicted_margin: number | null;

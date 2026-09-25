@@ -692,7 +692,7 @@ function MLBClassicPage({ gameId, backHref, isCurrentSeason = true }: { gameId: 
       case "in_progress": return { label: "LIVE", cls: "text-red-400 animate-pulse" };
       case "postponed": return { label: "PPD", cls: "text-yellow-400" };
       case "cancelled": return { label: "CANC", cls: "text-gray-500" };
-      default: return { label: isUpcoming ? formatTime(game.date) : "SCHEDULED", cls: "text-earl-400" };
+      default: return { label: isUpcoming ? (game.start_time_tbd ? "TBD" : formatTime(game.date)) : "SCHEDULED", cls: "text-earl-400" };
     }
   }
   const badge = statusBadge(game?.status || "");
