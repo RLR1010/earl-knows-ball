@@ -90,6 +90,13 @@ async def nba_player_stats(
     direction = "DESC" if order == "desc" else "ASC"
 
     sql = f"""
+    WITH latest_team AS (
+        SELECT DISTINCT ON (pg.player_id) pg.player_id, gg.season_id, pg.team_id
+        FROM nba.player_game_stats pg
+        JOIN nba.games gg ON gg.id = pg.game_id
+        WHERE gg.season_id = (SELECT id FROM nba.seasons WHERE year = :year)
+        ORDER BY pg.player_id, gg.date DESC
+    )
     SELECT
         p.id AS player_id,
         p.name AS player_name,
@@ -123,8 +130,9 @@ async def nba_player_stats(
         ps.efficiency
     FROM nba.player_season_stats ps
     JOIN nba.players p ON p.id = ps.player_id
-    LEFT JOIN nba.teams t ON t.id = ps.team_id
     JOIN nba.seasons s ON s.id = ps.season_id
+    LEFT JOIN latest_team lt ON lt.player_id = p.id AND lt.season_id = ps.season_id
+    LEFT JOIN nba.teams t ON t.id = lt.team_id
     WHERE s.year = :year AND ps.games_played >= :min_games
     ORDER BY ps.{sort} {direction} NULLS LAST
     LIMIT :limit OFFSET :offset
@@ -160,23 +168,247 @@ async def nba_team_stats(
         t.conference,
         t.division,
         COUNT(g.id) AS games,
-        SUM(CASE WHEN g.status::text = 'final' AND (
+        SUM(CASE WHEN g.status::text = 'FINAL' AND (
             (g.home_team_id = t.id AND g.home_score > g.away_score)
             OR (g.away_team_id = t.id AND g.away_score > g.home_score)
         ) THEN 1 ELSE 0 END) AS wins,
-        SUM(CASE WHEN g.status::text = 'final' AND (
+        SUM(CASE WHEN g.status::text = 'FINAL' AND (
             (g.home_team_id = t.id AND g.home_score < g.away_score)
             OR (g.away_team_id = t.id AND g.away_score < g.home_score)
-        ) THEN 1 ELSE 0 END) AS losses
+        ) THEN 1 ELSE 0 END) AS losses,
+        SUM(CASE WHEN g.home_team_id = t.id THEN g.home_score
+                 WHEN g.away_team_id = t.id THEN g.away_score END) AS points_for,
+        SUM(CASE WHEN g.home_team_id = t.id THEN g.away_score
+                 WHEN g.away_team_id = t.id THEN g.home_score END) AS points_against
     FROM nba.teams t
     LEFT JOIN nba.games g ON (g.home_team_id = t.id OR g.away_team_id = t.id)
         AND g.season_id = (SELECT id FROM nba.seasons WHERE year = :year)
-        AND g.status::text = 'final'
+        AND g.status::text = 'FINAL'
     GROUP BY t.id, t.name, t.abbreviation, t.conference, t.division
     ORDER BY wins {direction} NULLS LAST
     """
     result = await db.execute(text(sql), {"year": year})
     return {"data": [dict(r) for r in result.mappings().all()]}
+
+
+# ── NBA Season Leaders (Yahoo-style category cards) ────────────────────
+# group -> [(key, title, value_expr, unit)]
+_NBA_LEADER_GROUPS = [
+    ("Scoring", [
+        ("points_per_game", "Points/G", "MAX(ps.points_per_game)", "one"),
+        ("points", "Points", "MAX(ps.points)", "int"),
+        ("field_goal_pct", "FG%", "MAX(ps.field_goal_pct)", "pct"),
+    ]),
+    ("Rebounds", [
+        ("rebounds_per_game", "Reb/G", "MAX(ps.rebounds_per_game)", "one"),
+        ("rebounds", "Rebounds", "MAX(ps.rebounds)", "int"),
+    ]),
+    ("Defense", [
+        ("steals_per_game", "Stl/G", "MAX(ps.steals)::numeric / GREATEST(MAX(ps.games_played), 1)", "one"),
+        ("blocks_per_game", "Blk/G", "MAX(ps.blocks)::numeric / GREATEST(MAX(ps.games_played), 1)", "one"),
+    ]),
+    ("Miscellaneous", [
+        ("assists_per_game", "Ast/G", "MAX(ps.assists_per_game)", "one"),
+        ("turnovers_per_game", "TO/G", "MAX(ps.turnovers)::numeric / GREATEST(MAX(ps.games_played), 1)", "one"),
+        ("efficiency", "EFF", "MAX(ps.efficiency)", "one"),
+    ]),
+]
+
+
+async def _nba_leader_rows(db, year: int, expr: str, having: str, limit: int, team: str | None = None):
+    team_clause = " AND lt.team_id = (SELECT id FROM nba.teams WHERE abbreviation = :team)" if team else ""
+    sql = f"""
+        WITH latest_team AS (
+            SELECT DISTINCT ON (pg.player_id) pg.player_id, gg.season_id, pg.team_id
+            FROM nba.player_game_stats pg
+            JOIN nba.games gg ON gg.id = pg.game_id
+            WHERE gg.season_id = (SELECT id FROM nba.seasons WHERE year = :year)
+            ORDER BY pg.player_id, gg.date DESC
+        )
+        SELECT p.id AS player_id,
+               p.name AS player_name,
+               p.position,
+               t.abbreviation AS team_abbr,
+               ({expr}) AS value
+        FROM nba.player_season_stats ps
+        JOIN nba.seasons s ON s.id = ps.season_id
+        JOIN nba.players p ON p.id = ps.player_id
+        LEFT JOIN latest_team lt ON lt.player_id = p.id AND lt.season_id = ps.season_id
+        LEFT JOIN nba.teams t ON t.id = lt.team_id
+        WHERE s.year = :year{team_clause}
+        GROUP BY p.id, p.name, p.position, t.abbreviation
+        HAVING {having}
+        ORDER BY value DESC NULLS LAST
+        LIMIT :limit
+    """
+    result = await db.execute(text(sql), {"year": year, "limit": limit, "team": team})
+    return [dict(r) for r in result.mappings().all()]
+
+
+@router.get("/nba/stats/leaders")
+async def nba_stat_leaders(
+    year: int = Query(...),
+    limit: int = Query(5, ge=1, le=25),
+    group: str = Query("all"),
+    team: str | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+):
+    wanted = None if group.lower() in ("all", "") else group.lower()
+    groups = []
+    for gtitle, cards in _NBA_LEADER_GROUPS:
+        if wanted and gtitle.lower() != wanted:
+            continue
+        out_cards = []
+        for key, title, expr, unit in cards:
+            rows = await _nba_leader_rows(db, year, expr, "MAX(ps.games_played) >= 5", limit, team)
+            out_cards.append({
+                "key": key,
+                "title": title,
+                "unit": unit,
+                "rows": [{"rank": i + 1, **r} for i, r in enumerate(rows)],
+            })
+        groups.append({"title": gtitle, "cards": out_cards})
+    return {"year": year, "limit": limit, "groups": groups}
+
+
+# ── Team season stats (Yahoo-style team page section) ──────────────────
+
+_NBA_TEAM_METRICS = [
+    ("Offense", [
+        ("Points/G", "ppg", True, "one"),
+        ("FG%", "fg_pct", True, "pct"),
+        ("3P%", "fg3_pct", True, "pct"),
+        ("FT%", "ft_pct", True, "pct"),
+        ("Rebounds/G", "rpg", True, "one"),
+        ("Assists/G", "apg", True, "one"),
+    ]),
+    ("Defense", [
+        ("Opp Points/G", "opp_ppg", False, "one"),
+        ("Steals/G", "spg", True, "one"),
+        ("Blocks/G", "bpg", True, "one"),
+        ("Turnovers/G", "tpg", False, "one"),
+    ]),
+]
+
+
+@router.get("/nba/stats/team/{abbr}")
+async def nba_stat_team(abbr: str, year: int = Query(...), db: AsyncSession = Depends(get_db)):
+    abbr = abbr.upper()
+    agg = [dict(r) for r in (await db.execute(text("""
+        WITH latest_team AS (
+            SELECT DISTINCT ON (pg.player_id) pg.player_id, gg.season_id, pg.team_id
+            FROM nba.player_game_stats pg
+            JOIN nba.games gg ON gg.id = pg.game_id
+            WHERE gg.season_id = (SELECT id FROM nba.seasons WHERE year = :year)
+            ORDER BY pg.player_id, gg.date DESC
+        )
+        SELECT t.abbreviation AS abbr,
+               COALESCE(SUM(ps.points), 0) AS pts,
+               COALESCE(SUM(ps.field_goals_made), 0) AS fgm,
+               COALESCE(SUM(ps.field_goals_attempted), 0) AS fga,
+               COALESCE(SUM(ps.three_points_made), 0) AS tpm,
+               COALESCE(SUM(ps.three_points_attempted), 0) AS tpa,
+               COALESCE(SUM(ps.free_throws_made), 0) AS ftm,
+               COALESCE(SUM(ps.free_throws_attempted), 0) AS fta,
+               COALESCE(SUM(ps.rebounds), 0) AS reb,
+               COALESCE(SUM(ps.assists), 0) AS ast,
+               COALESCE(SUM(ps.steals), 0) AS stl,
+               COALESCE(SUM(ps.blocks), 0) AS blk,
+               COALESCE(SUM(ps.turnovers), 0) AS tov
+        FROM nba.player_season_stats ps
+        JOIN nba.seasons s ON s.id = ps.season_id
+        JOIN latest_team lt ON lt.player_id = ps.player_id AND lt.season_id = ps.season_id
+        JOIN nba.teams t ON t.id = lt.team_id
+        WHERE s.year = :year
+        GROUP BY t.abbreviation
+    """), {"year": year})).mappings().all()]
+    rec = [dict(r) for r in (await db.execute(text("""
+        SELECT t.abbreviation AS abbr, COUNT(*) AS g,
+               SUM(CASE WHEN g.home_team_id = t.id THEN g.home_score ELSE g.away_score END) AS pf,
+               SUM(CASE WHEN g.home_team_id = t.id THEN g.away_score ELSE g.home_score END) AS pa,
+               SUM(CASE WHEN (g.home_team_id = t.id AND g.home_score > g.away_score)
+                          OR (g.away_team_id = t.id AND g.away_score > g.home_score) THEN 1 ELSE 0 END) AS wins,
+               SUM(CASE WHEN (g.home_team_id = t.id AND g.home_score < g.away_score)
+                          OR (g.away_team_id = t.id AND g.away_score < g.home_score) THEN 1 ELSE 0 END) AS losses
+        FROM nba.games g
+        JOIN nba.teams t ON t.id = g.home_team_id OR t.id = g.away_team_id
+        JOIN nba.seasons s ON s.id = g.season_id
+        WHERE s.year = :year AND g.status::text = 'FINAL' AND g.game_type::text = 'REG'
+        GROUP BY t.abbreviation
+    """), {"year": year})).mappings().all()]
+
+    by = {r["abbr"]: dict(r) for r in agg}
+    for r in rec:
+        by.setdefault(r["abbr"], {"abbr": r["abbr"]}).update(r)
+
+    teams = []
+    for a, d in by.items():
+        g = d.get("g") or 0
+        if not g:
+            continue
+        d["ppg"] = round((d.get("pts") or 0) / g, 1)
+        d["opp_ppg"] = round((d.get("pa") or 0) / g, 1)
+        d["rpg"] = round((d.get("reb") or 0) / g, 1)
+        d["apg"] = round((d.get("ast") or 0) / g, 1)
+        d["spg"] = round((d.get("stl") or 0) / g, 1)
+        d["bpg"] = round((d.get("blk") or 0) / g, 1)
+        d["tpg"] = round((d.get("tov") or 0) / g, 1)
+        for pct, mk, ma in (("fg_pct", "fgm", "fga"), ("fg3_pct", "tpm", "tpa"), ("ft_pct", "ftm", "fta")):
+            d[pct] = round((d.get(mk) or 0) / (d.get(ma) or 1), 3)
+        d.setdefault("ranks", {})
+        teams.append(d)
+
+    for _title, metrics in _NBA_TEAM_METRICS:
+        for _label, key, higher, _unit in metrics:
+            order = sorted(range(len(teams)), key=lambda i: (teams[i].get(key) is None,
+                                                             -(teams[i].get(key) or 0) if higher else (teams[i].get(key) or 0)))
+            for rank, i in enumerate(order, 1):
+                teams[i]["ranks"][key] = rank
+
+    tgt = next((t for t in teams if t["abbr"] == abbr), None)
+    if not tgt:
+        return {"year": year, "found": False, "team": {"abbr": abbr}}
+
+    sections = []
+    for title, metrics in _NBA_TEAM_METRICS:
+        rows = []
+        for label, key, _h, unit in metrics:
+            rows.append({"label": label, "value": tgt.get(key), "rank": tgt["ranks"].get(key), "unit": unit})
+        sections.append({"title": title, "rows": rows})
+
+    leader_groups = []
+    for gtitle, cards in _NBA_LEADER_GROUPS:
+        out_cards = []
+        for key, title, expr, unit in cards:
+            rows = await _nba_leader_rows(db, year, expr, "MAX(ps.games_played) >= 1", 5, abbr)
+            out_cards.append({"key": key, "title": title, "unit": unit,
+                              "rows": [{"rank": i + 1, **r} for i, r in enumerate(rows)]})
+        leader_groups.append({"title": gtitle, "cards": out_cards})
+
+    return {
+        "year": year,
+        "found": True,
+        "team": {"abbr": abbr},
+        "record": {"wins": tgt.get("wins") or 0, "losses": tgt.get("losses") or 0,
+                   "ties": 0, "games": tgt.get("g") or 0},
+        "sections": sections,
+        "leader_groups": leader_groups,
+    }
+
+
+@router.get("/nba/stats/seasons")
+async def nba_stat_seasons(db: AsyncSession = Depends(get_db)):
+    result = await db.execute(
+        text(
+            """
+            SELECT DISTINCT s.year
+            FROM nba.player_season_stats ps
+            JOIN nba.seasons s ON s.id = ps.season_id
+            ORDER BY s.year DESC
+            """
+        )
+    )
+    return {"years": [r[0] for r in result.fetchall()]}
 
 
 @router.get("/nba/players")

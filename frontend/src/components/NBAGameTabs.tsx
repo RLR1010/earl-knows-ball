@@ -9,6 +9,7 @@ import ShapBreakdown from "./ShapBreakdown";
 import PropBetsTab from "./PropBetsTab";
 import MatchupPanel from "./MatchupPanel";
 import EarlsPicksPanel from "./EarlsPicksPanel";
+import { GameScoreCard } from "./GameScoreCard";
 import { useAuth } from "../lib/auth-context";
 
 interface NBABoxScoreData {
@@ -714,49 +715,41 @@ export default function NBAGameTabs({ gameId, prediction }: NBAGameTabsProps) {
     <div className="max-w-4xl mx-auto space-y-4">
 
       {/* Score Card */}
-      <div className="border border-white/10 rounded-xl p-6 bg-gradient-to-r from-white/5 to-white/0 mb-2">
-        <div className="flex justify-between items-center">
-          {/* Away team */}
-          <div className="flex-1 text-center">
-            <div className="text-2xl font-bold text-gray-300">{a.team || "???"}</div>
-            {a.record != null && (
-              <div className="text-xs text-gray-400 mt-0.5">
-                {a.record.wins}-{a.record.losses}
-              </div>
-            )}
-            <div className="text-5xl font-black mt-2">{a.score ?? "-"}</div>
-          </div>
-
-          {/* Status / @ */}
-          <div className="flex-shrink-0 mx-6 text-center">
-            {isFinal ? (
-              <div className="text-green-400 font-bold text-lg">FINAL</div>
-            ) : (
-              <div className="text-yellow-400 text-sm">{data.status}</div>
-            )}
-            <div className="text-gray-500 text-xs mt-1">{data.game_type === "PRE" ? "Preseason" : data.game_type === "POST" ? "Postseason" : "Regular Season"}</div>
-            {data.date && <div className="text-gray-500 text-xs mt-0.5">{new Date(data.date).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", year: "numeric" })}</div>}
-          </div>
-
-          {/* Home team */}
-          <div className="flex-1 text-center">
-            <div className="text-2xl font-bold text-white">{h.team || "???"}</div>
-            {h.record != null && (
-              <div className="text-xs text-gray-400 mt-0.5">
-                {h.record.wins}-{h.record.losses}
-              </div>
-            )}
-            <div className="text-5xl font-black mt-2">{h.score ?? "-"}</div>
-          </div>
-        </div>
-
-        {(data.venue || data.attendance) && (
-          <div className="text-center text-gray-500 text-xs mt-4">
-            {data.venue && <span>{data.venue}</span>}
-            {data.attendance && <span> &middot; {data.attendance.toLocaleString()}</span>}
-          </div>
-        )}
-      </div>
+      <GameScoreCard
+        badgeLabel={isFinal ? "FINAL" : data.status}
+        badgeClass={isFinal ? "text-green-400" : "text-yellow-400"}
+        subtitle={
+          <>
+            {data.game_type === "PRE" ? "Preseason" : data.game_type === "POST" ? "Postseason" : "Regular Season"}
+            {data.date
+              ? ` · ${new Date(data.date).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", year: "numeric" })}`
+              : ""}
+          </>
+        }
+        final={!!isFinal}
+        away={{
+          abbr: a.team,
+          href: `/nba/teams/${(a.team || "").toLowerCase()}`,
+          record: a.record != null ? `${a.record.wins}-${a.record.losses}` : null,
+          score: a.score,
+          won: !!isFinal && (a.score ?? 0) > (h.score ?? 0),
+        }}
+        home={{
+          abbr: h.team,
+          href: `/nba/teams/${(h.team || "").toLowerCase()}`,
+          record: h.record != null ? `${h.record.wins}-${h.record.losses}` : null,
+          score: h.score,
+          won: !!isFinal && (h.score ?? 0) > (a.score ?? 0),
+        }}
+        meta={
+          data.venue || data.attendance ? (
+            <>
+              {data.venue && <span className="font-medium text-gray-400">{data.venue}</span>}
+              {data.attendance && <span> · {data.attendance.toLocaleString()}</span>}
+            </>
+          ) : undefined
+        }
+      />
 
       {/* Betting Lines Card */}
       {data.betting_lines && data.betting_lines.closing_spread != null && (

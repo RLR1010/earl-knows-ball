@@ -137,8 +137,8 @@ export interface DepthChartEntry {
   player_id?: number;
   player_name: string;
   jersey_number?: number;
-  acquisition_info?: string;
   status: string;
+  injury_status?: string | null;
 }
 
 export interface BoxScorePlayer {

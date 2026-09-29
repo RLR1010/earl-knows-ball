@@ -214,17 +214,17 @@ async def _parse_depth_table(table_html: str, team_id: int) -> list[dict]:
             if not link_text or link_text == "-" or "&nbsp;" in link_text:
                 continue
 
-            # Parse acquisition code from end of name
-            acq_code = ""
+            # Player name is the plain link text. Ourlads also appends a draft/FA/trade code
+            # (e.g. "24/1", "CF23", "U/Hou") in a <span class="dc-key"> after the link — that
+            # acquisition designation is intentionally NOT captured.
             name_text = link_text
-            parts = name_text.rsplit(None, 1)
-            if len(parts) == 2:
-                potential_acq = parts[1]
-                if re.match(r"^[\d]{2}/[\d]+$", potential_acq) or \
-                   re.match(r"^(SF|FA|CF|CC/|T/|W/)[\d/A-Za-z]+", potential_acq) or \
-                   potential_acq == "UDFA":
-                    acq_code = potential_acq
-                    name_text = parts[0]
+
+            injury_status = None
+            badge_match = re.search(r'<span[^>]*class=["\'][^"\']*badge[^"\']*["\'][^>]*>(.*?)</span>', player_cell)
+            if badge_match:
+                badge_text = re.sub(r"<[^>]+>", "", badge_match.group(1)).strip()
+                if badge_text:
+                    injury_status = badge_text.upper()
 
             # Parse jersey number
             jersey = None
@@ -232,19 +232,15 @@ async def _parse_depth_table(table_html: str, team_id: int) -> list[dict]:
             if j_match:
                 jersey = int(j_match.group(1))
 
-            # Determine status from CSS class
-            status = "active"
-            class_match = re.search(r'class="([^"]*)"', player_cell)
-            if class_match:
-                css = class_match.group(1)
-                if "lc_gold" in css:
-                    status = "fa_acq"
-                elif "lc_purple" in css:
-                    status = "rookie"
-                elif "lc_aqua" in css:
-                    status = "udfa"
-                elif "lc_red" in css:
-                    status = "injured"
+            # Rookies are marked by Ourlads' link colour: lc_purple = current-season draft
+            # pick, lc_aqua = current-season UDFA. Both are first-year players. All other
+            # designations (draft round, FA/trade codes) are ignored.
+            is_rookie = False
+            for css in re.findall(r'class=["\']([^"\']*)["\']', player_cell):
+                if "lc_purple" in css or "lc_aqua" in css:
+                    is_rookie = True
+                    break
+            status = "rookie" if is_rookie else "active"
 
             # Slot = (line_number * 2) + pair_number + 1
             pair_number = (i - 1) // 2
@@ -256,8 +252,8 @@ async def _parse_depth_table(table_html: str, team_id: int) -> list[dict]:
                 "slot": slot,
                 "player_name": name_text,
                 "jersey_number": jersey,
-                "acquisition_info": acq_code or None,
                 "status": status,
+                "injury_status": injury_status,
             })
 
     return entries
@@ -343,7 +339,9 @@ async def scrape_team_depth_chart(db: AsyncSession, team_abbr: str) -> dict:
         DepthChart.__table__.delete().where(DepthChart.team_id == team.id)
     )
 
-    # Insert new entries
+    # Insert new entries. All rows from one scrape share a single timestamp so the
+    # "latest scrape" is unambiguous (used by the data loader when picking a starter).
+    scrape_ts = datetime.now(timezone.utc)
     index_full, index_initial, index_surname = await _player_name_index(db)
     for entry in all_entries:
         player_id = _match_player_id(
@@ -358,8 +356,9 @@ async def scrape_team_depth_chart(db: AsyncSession, team_abbr: str) -> dict:
             player_id=player_id,
             player_name=entry["player_name"],
             jersey_number=entry["jersey_number"],
-            acquisition_info=entry["acquisition_info"],
             status=entry["status"],
+            injury_status=entry.get("injury_status"),
+            scraped_at=scrape_ts,
         )
         db.add(dc)
 

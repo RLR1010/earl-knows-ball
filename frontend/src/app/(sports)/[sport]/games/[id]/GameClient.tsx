@@ -7,6 +7,7 @@ import NBAGameTabs from "@/components/NBAGameTabs";
 import MLBGameTabs from "@/components/MLBGameTabs";
 import NFLGameTabs, { BettingLinesCard } from "@/components/NFLGameTabs";
 import EarlsPicksPanel from "@/components/EarlsPicksPanel";
+import { GameScoreCard } from "@/components/GameScoreCard";
 import { usePollingRefresh } from "@/lib/usePollingRefresh";
 
 
@@ -51,42 +52,6 @@ interface GamePrediction {
   line?: { spread: number | null; over_under: number | null };
   /** Backend flag: historical game, picks are public (skip premium gate). */
   unlocked?: boolean;
-}
-
-function StatRow({ label, home, away, fmt, better }: {
-  label: string; home: number | null | undefined; away: number | null | undefined;
-  fmt?: (v: number) => string; better?: "high" | "low";
-}) {
-  const f = fmt || ((v: number) => v.toFixed(0));
-  const hVal = home != null ? f(home) : "-";
-  const aVal = away != null ? f(away) : "-";
-  return (
-    <tr className="border-t border-white/5">
-      <td className="px-3 py-1.5 text-right font-medium text-gray-400">{aVal}</td>
-      <td className="px-3 py-1 text-center text-gray-500">{label}</td>
-      <td className="px-3 py-1.5 text-left font-medium text-gray-400">{hVal}</td>
-    </tr>
-  );
-}
-
-// ── Player rows for NFL boxscore ──
-function NFLPlayerRows(stats: BoxScoreStats | null) {
-  if (!stats?.top_players || stats.top_players.length === 0) {
-    return <tr><td colSpan={5} className="px-3 py-4 text-center text-gray-600">No player stats available</td></tr>;
-  }
-  return stats.top_players.filter((p: any) => ["QB","RB","WR","TE"].includes(p.position)).slice(0, 8).map((p: any, i: number) => {
-    const pass = p.pass_yards ? `${p.pass_completions}/${p.pass_attempts}, ${p.pass_yards}yds, ${p.pass_tds}TD` : "";
-    const rush = p.rush_yards ? `${p.rush_attempts}car, ${p.rush_yards}yds, ${p.rush_tds}TD` : "";
-    const recv = p.receptions ? `${p.receptions}rec, ${p.receiving_yards}yds, ${p.receiving_tds}TD` : "";
-    const summary = [pass, rush, recv].filter(Boolean).join(" | ");
-    return (
-      <tr key={i} className="border-t border-white/5">
-        <td className="px-3 py-1.5 text-gray-300">{p.player_name}</td>
-        <td className="px-3 py-1.5 text-gray-500">{p.position}</td>
-        <td className="px-3 py-1.5 text-gray-400 text-xs" colSpan={3}>{summary}</td>
-      </tr>
-    );
-  });
 }
 
 // ── NFL Pick Card Display ──
@@ -250,103 +215,6 @@ function WeatherIcon({ condition }: { condition?: string | null }) {
   else if (c.includes("part") || c.includes("mix")) icon = "🌤️";
   else if (c.includes("clear") || c.includes("sunny") || c.includes("fair")) icon = "☀️";
   return <span aria-hidden="true">{icon}</span>;
-}
-
-function NFLBoxScore({ data }: { data: NFLBoxScore }) {
-  const { game, home_stats, away_stats } = data;
-  const isLive = game.status?.toLowerCase() === "in_progress";
-  const isFinal = game.status?.toLowerCase() === "final";
-  function nflStatusBadge(s?: string) {
-    switch (s?.toLowerCase()) {
-      case "in_progress": return { label: "LIVE", cls: "text-red-400 animate-pulse" };
-      case "final": return { label: "FINAL", cls: "text-green-400" };
-      default: return { label: (s || "SCHEDULED").toUpperCase(), cls: "text-earl-400" };
-    }
-  }
-  const badge = nflStatusBadge(game.status);
-  function formatDate(iso: string) { const d = new Date(iso); return d.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric", timeZone: "America/New_York" }); }
-  function quarterOrdinal(n?: number | null) {
-    if (n == null) return "";
-    const s = ["", "1st", "2nd", "3rd", "4th", "OT", "2OT", "3OT"][n] || `${n}Q`;
-    return s;
-  }
-  const hWon = isFinal && (game.home_score ?? 0) > (game.away_score ?? 0);
-  const aWon = isFinal && (game.away_score ?? 0) > (game.home_score ?? 0);
-  const roofType = (game.roof_type || "").toLowerCase();
-  // Weather is only shown for open-air / open-roof stadiums (indoor domes don't have weather).
-  const isOutdoor = !roofType || roofType === "outdoor" || roofType === "open";
-
-  return (
-    <div className="space-y-6">
-      <div className="border border-white/10 rounded-xl p-6 bg-gradient-to-r from-white/5 to-white/0 text-center">
-        <span className={`text-sm font-bold ${badge.cls}`}>{badge.label}</span>
-        {isLive && game.quarter != null && (
-          <span className="text-sm font-semibold text-white ml-3">
-            {quarterOrdinal(game.quarter)}
-            {game.clock && <span className="text-gray-400 ml-1">· {game.clock}</span>}
-          </span>
-        )}
-        {game.date && <span className="text-xs text-gray-500 ml-3">{formatDate(game.date)}</span>}
-        <div className="flex items-center justify-center gap-8 md:gap-16 mt-4">
-          <div className="text-right">
-            <div className="text-lg font-semibold text-gray-300">{game.away_team}</div>
-            <div className={`text-5xl font-bold mt-1 ${aWon ? "text-earl-400" : "text-gray-400"}`}>
-              {(isFinal || isLive) && game.away_score != null ? game.away_score : "-"}
-            </div>
-          </div>
-          <div className="text-3xl text-gray-600 font-bold">@</div>
-          <div className="text-left">
-            <div className="text-lg font-semibold text-gray-300">{game.home_team}</div>
-            <div className={`text-5xl font-bold mt-1 ${hWon ? "text-earl-400" : "text-gray-400"}`}>
-              {(isFinal || isLive) && game.home_score != null ? game.home_score : "-"}
-            </div>
-          </div>
-        </div>
-        <div className="flex items-center justify-center flex-wrap gap-x-3 gap-y-1 text-sm text-gray-500 mt-4">
-          {game.venue && <span className="font-medium text-gray-400">{game.venue}</span>}
-          {isOutdoor && (
-            <span className="inline-flex items-center gap-1">
-              <WeatherIcon condition={game.weather_condition} />
-              {game.temperature != null && <span>{Math.round(game.temperature)}°F</span>}
-              {game.weather_condition && <span>{game.weather_condition}</span>}
-              {game.wind_speed != null && (
-                <span className="text-gray-500">Wind {game.wind_speed} mph</span>
-              )}
-            </span>
-          )}
-        </div>
-      </div>
-      <div className="border border-white/10 rounded-xl overflow-hidden">
-        <div className="bg-white/5 px-4 py-2 text-sm font-semibold text-earl-400">Team Stats</div>
-        <table className="w-full text-xs">
-          <thead><tr className="bg-white/[0.03] text-gray-500 uppercase text-[10px] tracking-wider">
-            <th className="px-3 py-1.5 text-right w-[40%]">{game.away_team}</th><th className="px-3 py-1.5 text-center w-[20%]"></th><th className="px-3 py-1.5 text-left w-[40%]">{game.home_team}</th>
-          </tr></thead>
-          <tbody>
-            <StatRow label="Score" home={game.home_score} away={game.away_score} fmt={(v:number)=>v.toFixed(0)} better="high" />
-            <StatRow label="Total Yards" home={home_stats?.total_yards} away={away_stats?.total_yards} better="high" />
-            <StatRow label="Pass Yards" home={home_stats?.pass_yards} away={away_stats?.pass_yards} better="high" />
-            <StatRow label="Rush Yards" home={home_stats?.rush_yards} away={away_stats?.rush_yards} better="high" />
-            <StatRow label="Turnovers" home={home_stats?.turnovers} away={away_stats?.turnovers} better="low" />
-            <StatRow label="First Downs" home={home_stats?.first_downs} away={away_stats?.first_downs} better="high" />
-            <StatRow label="Penalties" home={home_stats?.penalties} away={away_stats?.penalties} better="low" />
-          </tbody>
-        </table>
-      </div>
-      {away_stats && <div className="border border-white/10 rounded-xl overflow-hidden">
-        <div className="bg-white/5 px-4 py-2 text-sm font-semibold">{game.away_team} - Key Players</div>
-        <table className="w-full text-xs"><thead><tr className="bg-white/[0.03] text-gray-500 uppercase text-[10px] tracking-wider">
-          <th className="px-3 py-1.5 text-left">Player</th><th className="px-3 py-1.5 text-left">Pos</th><th className="px-3 py-1.5 text-left">Stats</th>
-        </tr></thead><tbody>{NFLPlayerRows(away_stats)}</tbody></table>
-      </div>}
-      {home_stats && <div className="border border-white/10 rounded-xl overflow-hidden">
-        <div className="bg-white/5 px-4 py-2 text-sm font-semibold">{game.home_team} - Key Players</div>
-        <table className="w-full text-xs"><thead><tr className="bg-white/[0.03] text-gray-500 uppercase text-[10px] tracking-wider">
-          <th className="px-3 py-1.5 text-left">Player</th><th className="px-3 py-1.5 text-left">Pos</th><th className="px-3 py-1.5 text-left">Stats</th>
-        </tr></thead><tbody>{NFLPlayerRows(home_stats)}</tbody></table>
-      </div>}
-    </div>
-  );
 }
 
 // ── Main Page ──
@@ -552,43 +420,39 @@ export default function GameDetailPage({ gameId: gameIdProp }: { gameId?: string
     <div className="max-w-4xl mx-auto space-y-6">
       {/* Score Card */}
       {nflBoxScore && (
-        <div className="border border-white/10 rounded-xl p-6 bg-gradient-to-r from-white/5 to-white/0 text-center">
-          <span className={`text-sm font-bold ${nflBadge.cls}`}>{nflBadge.label}</span>
-          {isNflLive && nflBoxScore.game.quarter != null && (
-            <span className="text-sm font-semibold text-white ml-3">
-              {nflQuarter(nflBoxScore.game.quarter)}
-              {nflBoxScore.game.clock && <span className="text-gray-400 ml-1">· {nflBoxScore.game.clock}</span>}
-            </span>
-          )}
-          {nflBoxScore.game.date && <span className="text-xs text-gray-500 ml-3">{nflFmtDate(nflBoxScore.game.date)}</span>}
-          <div className="flex items-center justify-center gap-8 md:gap-16 mt-4">
-            <div className="flex flex-col items-center gap-1">
-              <div className={`text-2xl font-bold ${aWon ? "opacity-100 text-gray-300" : "opacity-60 text-gray-400"}`}>{nflBoxScore.game.away_team?.slice(0, 3).toUpperCase()}</div>
-              {nflBoxScore.away_record != null && (
-                <div className="text-xs text-gray-400">{nflBoxScore.away_record.wins}-{nflBoxScore.away_record.losses}</div>
-              )}
-              <span className={`text-5xl font-bold mt-1 ${aWon ? "text-earl-400" : "text-gray-400"}`}>
-                {nflBoxScore.game.away_score != null ? nflBoxScore.game.away_score : "-"}
-              </span>
-            </div>
-            <div className="text-4xl text-gray-600 font-black">@</div>
-            <div className="flex flex-col items-center gap-1">
-              <div className={`text-2xl font-bold ${hWon ? "opacity-100 text-white" : "opacity-60 text-gray-400"}`}>{nflBoxScore.game.home_team?.slice(0, 3).toUpperCase()}</div>
-              {nflBoxScore.home_record != null && (
-                <div className="text-xs text-gray-400">{nflBoxScore.home_record.wins}-{nflBoxScore.home_record.losses}</div>
-              )}
-              <span className={`text-5xl font-bold mt-1 ${hWon ? "text-earl-400" : "text-gray-400"}`}>
-                {nflBoxScore.game.home_score != null ? nflBoxScore.game.home_score : "-"}
-              </span>
-            </div>
-          </div>
-          {(() => {
-            if (!nflBoxScore?.game) return null;
+        <GameScoreCard
+          badgeLabel={nflBadge.label}
+          badgeClass={nflBadge.cls}
+          liveDetail={
+            isNflLive && nflBoxScore.game.quarter != null ? (
+              <>
+                {nflQuarter(nflBoxScore.game.quarter)}
+                {nflBoxScore.game.clock && <span className="text-gray-400 ml-1">· {nflBoxScore.game.clock}</span>}
+              </>
+            ) : undefined
+          }
+          subtitle={nflBoxScore.game.date ? nflFmtDate(nflBoxScore.game.date) : undefined}
+          final={isNflFinal}
+          away={{
+            abbr: nflBoxScore.game.away_team?.slice(0, 3),
+            href: `/${sport}/teams/${(nflBoxScore.game.away_team || "").slice(0, 3).toLowerCase()}`,
+            record: nflBoxScore.away_record != null ? `${nflBoxScore.away_record.wins}-${nflBoxScore.away_record.losses}` : null,
+            score: nflBoxScore.game.away_score,
+            won: aWon,
+          }}
+          home={{
+            abbr: nflBoxScore.game.home_team?.slice(0, 3),
+            href: `/${sport}/teams/${(nflBoxScore.game.home_team || "").slice(0, 3).toLowerCase()}`,
+            record: nflBoxScore.home_record != null ? `${nflBoxScore.home_record.wins}-${nflBoxScore.home_record.losses}` : null,
+            score: nflBoxScore.game.home_score,
+            won: hWon,
+          }}
+          meta={(() => {
             const v = nflBoxScore.game;
             const rt = (v.roof_type || "").toLowerCase();
             const outdoor = !rt || rt === "outdoor" || rt === "open";
             return (
-              <div className="flex items-center justify-center flex-wrap gap-x-3 gap-y-1 text-sm text-gray-500 mt-4">
+              <>
                 {v.venue && <span className="font-medium text-gray-400">{v.venue}</span>}
                 {outdoor && (
                   <span className="inline-flex items-center gap-1">
@@ -598,10 +462,10 @@ export default function GameDetailPage({ gameId: gameIdProp }: { gameId?: string
                     {v.wind_speed != null && <span className="text-gray-500">Wind {v.wind_speed} mph</span>}
                   </span>
                 )}
-              </div>
+              </>
             );
           })()}
-        </div>
+        />
       )}
 
       {/* Betting Lines Card — from boxscore endpoint's betting_lines (same pattern as MLB) */}
@@ -707,53 +571,52 @@ function MLBClassicPage({ gameId, backHref, isCurrentSeason = true }: { gameId: 
   return (
     <div className="max-w-4xl mx-auto space-y-6">
       {/* Scoreboard */}
-      <div className="border border-white/10 rounded-xl p-6 bg-gradient-to-r from-white/5 to-white/0 text-center">
-        <span className={`text-sm font-bold ${badge.cls}`}>{badge.label}</span>
-        {isLive && linescore?.currentInning && (
-          <span className="text-sm font-semibold text-white ml-3">
-            {linescore.inningState === "Top" ? "▲" : "▼"} {linescore.currentInningOrdinal || `${linescore.currentInning}`}
-          </span>
-        )}
-        {game.date && <span className="text-xs text-gray-500 ml-3">{formatDate(game.date)}</span>}
-        <div className="flex items-center justify-center gap-8 md:gap-16 mt-4">
-          <div className="text-right">
-            <div className="text-lg font-semibold text-gray-300">{game.away_team}</div>
-            {away_record && (
-              <div className="text-xs font-medium text-gray-500 mt-0.5">{away_record}</div>
-            )}
-            <div className={`text-5xl font-bold mt-1 ${aWon ? "text-earl-400" : "text-gray-400"}`}>
-              {game.away_score != null ? game.away_score : "-"}
-            </div>
-          </div>
-          <div className="text-3xl text-gray-600 font-bold">@</div>
-          <div className="text-left">
-            <div className="text-lg font-semibold text-gray-300">{game.home_team}</div>
-            {home_record && (
-              <div className="text-xs font-medium text-gray-500 mt-0.5">{home_record}</div>
-            )}
-            <div className={`text-5xl font-bold mt-1 ${hWon ? "text-earl-400" : "text-gray-400"}`}>
-              {game.home_score != null ? game.home_score : "-"}
-            </div>
-          </div>
-        </div>
-        <div className="flex items-center justify-center flex-wrap gap-x-3 gap-y-1 text-sm text-gray-500 mt-3">
-          {game.venue && <span className="font-medium text-gray-400">{game.venue}</span>}
-          {(() => {
-            const rt = (game.roof_type || "").toLowerCase();
-            const outdoor = !rt || rt === "outdoor" || rt === "open";
-            return outdoor ? (
-              <span className="inline-flex items-center gap-1">
-                <WeatherIcon condition={game.weather_condition} />
-                {game.temperature != null && <span>{Math.round(game.temperature)}°F</span>}
-                {game.weather_condition && <span>{game.weather_condition}</span>}
-                {game.wind_speed != null && <span className="text-gray-500">Wind {game.wind_speed} mph</span>}
-              </span>
-            ) : null;
-          })()}
-          {game.attendance && <span> · Att: {game.attendance.toLocaleString()}</span>}
-          {game.duration_minutes && <span> · {Math.floor(game.duration_minutes / 60)}:{String(game.duration_minutes % 60).padStart(2, "0")}</span>}
-        </div>
-      </div>
+      <GameScoreCard
+        badgeLabel={badge.label}
+        badgeClass={badge.cls}
+        liveDetail={
+          isLive && linescore?.currentInning ? (
+            <>
+              {linescore.inningState === "Top" ? "▲" : "▼"} {linescore.currentInningOrdinal || `${linescore.currentInning}`}
+            </>
+          ) : undefined
+        }
+        subtitle={game.date ? formatDate(game.date) : undefined}
+        final={isFinal}
+        away={{
+          abbr: game.away_team,
+          href: `/mlb/teams/${(game.away_team || "").toLowerCase()}`,
+          record: away_record,
+          score: game.away_score,
+          won: aWon,
+        }}
+        home={{
+          abbr: game.home_team,
+          href: `/mlb/teams/${(game.home_team || "").toLowerCase()}`,
+          record: home_record,
+          score: game.home_score,
+          won: hWon,
+        }}
+        meta={
+          <>
+            {game.venue && <span className="font-medium text-gray-400">{game.venue}</span>}
+            {(() => {
+              const rt = (game.roof_type || "").toLowerCase();
+              const outdoor = !rt || rt === "outdoor" || rt === "open";
+              return outdoor ? (
+                <span className="inline-flex items-center gap-1">
+                  <WeatherIcon condition={game.weather_condition} />
+                  {game.temperature != null && <span>{Math.round(game.temperature)}°F</span>}
+                  {game.weather_condition && <span>{game.weather_condition}</span>}
+                  {game.wind_speed != null && <span className="text-gray-500">Wind {game.wind_speed} mph</span>}
+                </span>
+              ) : null;
+            })()}
+            {game.attendance && <span> · Att: {game.attendance.toLocaleString()}</span>}
+            {game.duration_minutes && <span> · {Math.floor(game.duration_minutes / 60)}:{String(game.duration_minutes % 60).padStart(2, "0")}</span>}
+          </>
+        }
+      />
 
 
 

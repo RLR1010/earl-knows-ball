@@ -211,16 +211,23 @@ export default function MLBGameTabs({ gameId, game, formatOdds, boxscore, linesc
     // Get position abbreviation from player data
     const getPos = (p: any) => p?.position?.abbreviation || "-";
 
-    // Build batting order from battingOrder array (contains player IDs)
-    const buildBatters = (battingOrder: number[] | undefined, players: Record<string, any>) =>
-      (battingOrder || []).map((pid: number) => lookupPlayer(players, pid)).filter(Boolean);
+    // Build the batting list from EVERY player who occupied a lineup slot, not just the
+    // team-level `battingOrder` array. That array only lists the CURRENT occupant of each
+    // of the 9 slots, so any player who was replaced mid-game (e.g. a starter pinch-hit for)
+    // silently disappears. Each player object carries its own `battingOrder` code instead:
+    // starters are 100/200/.../900, substitutes are X01, X02, ... So we take all players who
+    // have a battingOrder (starters + pinch hitters/runners/defensive subs) and sort by code.
+    const buildBatters = (players: Record<string, any>) =>
+      Object.values(players || {})
+        .filter((p: any) => p?.battingOrder !== undefined && p?.battingOrder !== null)
+        .sort((a: any, b: any) => Number(a.battingOrder) - Number(b.battingOrder));
 
     // Build pitchers from pitchers array (contains player IDs)
     const buildPitchers = (pitcherIds: number[] | undefined, players: Record<string, any>) =>
       (pitcherIds || []).map((pid: number) => lookupPlayer(players, pid)).filter(Boolean);
 
-    const awayBatters = buildBatters(awayTeamData?.battingOrder, awayPlayers);
-    const homeBatters = buildBatters(homeTeamData?.battingOrder, homePlayers);
+    const awayBatters = buildBatters(awayPlayers);
+    const homeBatters = buildBatters(homePlayers);
     const awayPitcherList = buildPitchers(awayTeamData?.pitchers, awayPlayers);
     const homePitcherList = buildPitchers(homeTeamData?.pitchers, homePlayers);
 
@@ -300,7 +307,7 @@ export default function MLBGameTabs({ gameId, game, formatOdds, boxscore, linesc
                     const ss = p?.seasonStats?.batting || {};
                     return (
                       <tr key={i} className="border-b border-white/5 hover:bg-white/[0.02]">
-                        <td className="py-1 px-2 text-white text-xs font-medium">{p?.person?.fullName || "-"}</td>
+                        <td className="py-1 px-2 text-white text-xs font-medium" style={{ paddingLeft: Number(p?.battingOrder) % 100 !== 0 ? "1.1rem" : undefined }}>{p?.person?.fullName || "-"}</td>
                         <td className="py-1 px-2 text-gray-400 text-xs text-center">{getPos(p)}</td>
                         <td className="py-1 px-2 text-gray-400 text-xs text-center">{s.atBats ?? "-"}</td>
                         <td className="py-1 px-2 text-gray-400 text-xs text-center">{s.runs ?? "-"}</td>
@@ -388,7 +395,7 @@ export default function MLBGameTabs({ gameId, game, formatOdds, boxscore, linesc
                     const ss = p?.seasonStats?.batting || {};
                     return (
                       <tr key={i} className="border-b border-white/5 hover:bg-white/[0.02]">
-                        <td className="py-1 px-2 text-white text-xs font-medium">{p?.person?.fullName || "-"}</td>
+                        <td className="py-1 px-2 text-white text-xs font-medium" style={{ paddingLeft: Number(p?.battingOrder) % 100 !== 0 ? "1.1rem" : undefined }}>{p?.person?.fullName || "-"}</td>
                         <td className="py-1 px-2 text-gray-400 text-xs text-center">{getPos(p)}</td>
                         <td className="py-1 px-2 text-gray-400 text-xs text-center">{s.atBats ?? "-"}</td>
                         <td className="py-1 px-2 text-gray-400 text-xs text-center">{s.runs ?? "-"}</td>

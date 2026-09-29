@@ -4,6 +4,9 @@ import { useEffect, useState, useCallback } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { useSeo } from "@/components/Seo";
+import MLBStatsYahoo from "./MLBStatsYahoo";
+import NFLStatsYahoo from "./NFLStatsYahoo";
+import NBAStatsYahoo from "./NBAStatsYahoo";
 
 // ── NFL Types ─────────────────────────────────────────────────────
 
@@ -628,7 +631,7 @@ export default function StatsPage() {
       <h1 className="font-display text-4xl font-bold">
         {sport.toUpperCase()} Stats
       </h1>
-      {sport === "mlb" ? <MLBStats sport={sport} /> : sport === "nba" ? <NBAStats sport={sport} /> : <NFLStats sport={sport} />}
+      {sport === "mlb" ? <MLBStatsYahoo sport={sport} /> : sport === "nfl" ? <NFLStatsYahoo sport={sport} /> : sport === "nba" ? <NBAStatsYahoo sport={sport} /> : <NBAStats sport={sport} />}
     </div>
   );
 }

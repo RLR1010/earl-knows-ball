@@ -66,6 +66,8 @@ export default function TeamLogo({
       alt={alt}
       width={size}
       height={size}
+      loading="lazy"
+      decoding="async"
       className="object-contain"
       style={{
         width: size,

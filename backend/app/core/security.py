@@ -34,22 +34,23 @@ async def get_current_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
     db: AsyncSession = Depends(get_db),
 ) -> User:
-    """Authenticate from the Authorization header (localStorage token), falling
-    back to the httpOnly `earl_token` cookie.
+    """Authenticate the logged-in user.
 
-    The header is preferred when present AND valid. If the header token is
-    present but invalid/expired we still fall back to the cookie, so a stale
-    JS token can never lock an active user out (the cookie keeps them logged in
-    and /auth/me renews it on each visit).
+    The httpOnly `earl_token` COOKIE is the source of truth for login status and
+    access (the durable session, renewed by /auth/me on every visit). The
+    Authorization header (localStorage token) is only a FALLBACK for clients
+    that don't carry the cookie. This guarantees a stale/lapsed JS token — or a
+    cleared localStorage — can never downgrade or override an active cookie
+    session.
     """
     header_token = credentials.credentials if (credentials and credentials.credentials) else None
     cookie_token = request.cookies.get(COOKIE_NAME)
 
     candidates: list[str] = []
-    if header_token:
-        candidates.append(header_token)
-    if cookie_token and cookie_token != header_token:
+    if cookie_token:
         candidates.append(cookie_token)
+    if header_token and header_token != cookie_token:
+        candidates.append(header_token)
 
     for tok in candidates:
         user = await _user_from_token(tok, db)
@@ -66,31 +67,33 @@ async def get_optional_current_user(
     request: Request, db: AsyncSession = Depends(get_db)
 ):
     """Like get_current_user but returns None instead of raising when the request
-    is unauthenticated or the token is invalid. Preferred over Authorization header
-    (localStorage token), falling back to the earl_token cookie — matching the
-    frontend source of truth. Used for endpoints that serve public content to
-    everyone (no auth required) but need to know the caller when premium content
+    is unauthenticated or the token is invalid.
+
+    Mirrors get_current_user EXACTLY: the httpOnly `earl_token` cookie is the
+    source of truth for login/access, and the Authorization header (localStorage
+    token) is only a fallback. Used by endpoints that serve public content to
+    everyone (no auth required) but must resolve the caller when premium content
     is requested.
     """
-    token: str | None = None
+    header_token: str | None = None
     auth_header = request.headers.get("authorization", "")
     if auth_header.startswith("Bearer "):
         cand = auth_header.replace("Bearer ", "", 1).strip()
         if cand:
-            token = cand
-    if token is None:
-        token = request.cookies.get("earl_token")
-    if not token:
-        return None
-    try:
-        payload = jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
-        user_id: str | None = payload.get("sub")
-        if user_id is None:
-            return None
-        user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
-        return user
-    except Exception:
-        return None
+            header_token = cand
+    cookie_token = request.cookies.get(COOKIE_NAME)
+
+    candidates: list[str] = []
+    if cookie_token:
+        candidates.append(cookie_token)
+    if header_token and header_token != cookie_token:
+        candidates.append(header_token)
+
+    for tok in candidates:
+        user = await _user_from_token(tok, db)
+        if user is not None:
+            return user
+    return None
 
 
 async def require_premium(user: User = Depends(get_current_user)) -> User:

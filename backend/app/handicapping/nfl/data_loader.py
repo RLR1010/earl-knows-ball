@@ -1199,35 +1199,67 @@ class NFLDataLoader:
                              qsa.season_attempts DESC NULLS LAST,
                              pws.player_id
                 ),
+                sched_raw AS (
+                    -- nflverse designated starter (gsis id) per game. Authoritative: the
+                    -- actual starter once a game is played, the projected starter before.
+                    SELECT espn::bigint AS game_id, home_qb_id, away_qb_id
+                    FROM nfl.schedules_norm
+                    WHERE espn ~ '^[0-9]+$'
+                ),
+                sched_starter AS (
+                    SELECT sr.game_id,
+                           hp.id AS home_qb_id,
+                           ap.id AS away_qb_id
+                    FROM sched_raw sr
+                    LEFT JOIN nfl.players hp ON hp.nflverse_id = sr.home_qb_id
+                    LEFT JOIN nfl.players ap ON ap.nflverse_id = sr.away_qb_id
+                ),
                 projected_starter AS (
-                    -- Per (game, team): actual starter if available,
-                    -- else depth-chart QB1 (always-updated for upcoming games)
+                    -- Per (game, team): actual starter if available, else the nflverse
+                    -- designated starter for that game, else the highest-ranked AVAILABLE
+                    -- depth-chart QB (always-updated for upcoming games)
                     SELECT
                         g.id AS game_id,
                         g.home_team_id AS team_id,
-                        COALESCE(as_.player_id, dc.player_id) AS player_id
+                        COALESCE(as_.player_id, sch.home_qb_id, dc.player_id) AS player_id
                     FROM nfl.games g
                     LEFT JOIN actual_starters as_
                         ON as_.game_id = g.id AND as_.team_id = g.home_team_id
+                    LEFT JOIN sched_starter sch ON sch.game_id = g.id
                     LEFT JOIN (
+                        -- Prefer the highest-ranked AVAILABLE QB: take the latest depth
+                        -- chart scrape, skip players flagged unavailable by the Ourlads
+                        -- injury designation (Out/IR/PUP/Suspended/NFI/Illness/Inactive),
+                        -- then fall back to depth order. If all are flagged, keeps slot 1.
                         SELECT DISTINCT ON (team_id) team_id, player_id
                         FROM nfl.depth_charts
-                        WHERE position = 'QB' AND slot = 1
-                        ORDER BY team_id, scraped_at DESC NULLS LAST, id DESC
+                        WHERE position = 'QB'
+                        ORDER BY team_id,
+                                 scraped_at DESC NULLS LAST,
+                                 COALESCE(injury_status = ANY(ARRAY['O','IR','PUP','SUS','NFI','ILL','IA']), FALSE) ASC,
+                                 slot ASC,
+                                 id DESC
                     ) dc ON dc.team_id = g.home_team_id
                     UNION ALL
                     SELECT
                         g.id AS game_id,
                         g.away_team_id AS team_id,
-                        COALESCE(as_.player_id, dc.player_id) AS player_id
+                        COALESCE(as_.player_id, sch.away_qb_id, dc.player_id) AS player_id
                     FROM nfl.games g
                     LEFT JOIN actual_starters as_
                         ON as_.game_id = g.id AND as_.team_id = g.away_team_id
+                    LEFT JOIN sched_starter sch ON sch.game_id = g.id
                     LEFT JOIN (
+                        -- Prefer the highest-ranked AVAILABLE QB (latest scrape; skip players
+                        -- flagged unavailable via the Ourlads injury designation).
                         SELECT DISTINCT ON (team_id) team_id, player_id
                         FROM nfl.depth_charts
-                        WHERE position = 'QB' AND slot = 1
-                        ORDER BY team_id, scraped_at DESC NULLS LAST, id DESC
+                        WHERE position = 'QB'
+                        ORDER BY team_id,
+                                 scraped_at DESC NULLS LAST,
+                                 COALESCE(injury_status = ANY(ARRAY['O','IR','PUP','SUS','NFI','ILL','IA']), FALSE) ASC,
+                                 slot ASC,
+                                 id DESC
                     ) dc ON dc.team_id = g.away_team_id
                 )
                 SELECT

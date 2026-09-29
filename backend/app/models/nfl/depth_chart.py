@@ -15,8 +15,14 @@ class DepthChart(Base):
     player_id = Column(Integer, ForeignKey("nfl.players.id"), nullable=True)
     player_name = Column(String(100), nullable=False)
     jersey_number = Column(Integer, nullable=True)
-    acquisition_info = Column(String(50), nullable=True)  # e.g., "23/3", "FA25", "SF25"
-    status = Column(String(20), default="active")  # active, injured, rookie, fa_acq, udfa
+    # "active" or "rookie" (first-year player). Draft round / FA / trade designations are
+    # deliberately not stored — the depth chart only marks out-or-not and rookie-or-not.
+    status = Column(String(20), default="active")
+    # Ourlads injury / availability designation, scraped from the badge next to the player
+    # (e.g. "O"=Out, "IR"=Injured Reserve, "PUP", "Q"=Questionable, "D"=Doubtful,
+    #  "SUS"=Suspended, "IA"=Inactive, "DNP", "ILL", "NFI", "NIR", "REST", "GTD", "LP", "FP").
+    # NULL = no designation shown (= available).
+    injury_status = Column(String(16), nullable=True)
     scraped_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 

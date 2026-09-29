@@ -823,11 +823,34 @@ async def mlb_batting_stats(
     limit: int = Query(200, ge=1, le=500),
     offset: int = Query(0, ge=0),
     min_games: int = Query(1, ge=0),
+    league: str = Query("MLB"),
+    position: str = Query("ALL"),
+    qualify: bool = Query(False),
     db: AsyncSession = Depends(get_db),
 ):
     if sort not in BATTING_SORT_COLS:
         sort = "home_runs"
     direction = "DESC" if order == "desc" else "ASC"
+
+    _extra = ""
+    _params = {"year": year, "limit": limit, "offset": offset, "min_games": min_games}
+    _lg = (league or "MLB").upper()
+    if _lg in ("AL", "NL"):
+        _extra += " AND t.league = :league"
+        _params["league"] = _lg
+    _pos = (position or "ALL").upper()
+    if _pos and _pos != "ALL":
+        if _pos == "OF":
+            _extra += " AND p.position IN ('LF','CF','RF','OF')"
+        else:
+            _extra += " AND p.position = :position"
+            _params["position"] = _pos
+    if qualify:
+        _extra += (
+            " AND bs.plate_appearances >= 3.1 * COALESCE((SELECT MAX(b2.games_played) "
+            "FROM mlb.batting_stats b2 JOIN mlb.seasons s2 ON s2.id = b2.season_id "
+            "WHERE s2.year = :year), 0)"
+        )
 
     sql = f"""
     SELECT
@@ -864,23 +887,25 @@ async def mlb_batting_stats(
     JOIN mlb.players p ON p.id = bs.player_id
     LEFT JOIN mlb.teams t ON t.id = bs.team_id
     JOIN mlb.seasons s ON s.id = bs.season_id
-    WHERE s.year = :year AND bs.games_played >= :min_games
+    WHERE s.year = :year AND bs.games_played >= :min_games{_extra}
     ORDER BY bs.{sort} {direction} NULLS LAST
     LIMIT :limit OFFSET :offset
     """
-    result = await db.execute(
-        text(sql),
-        {"year": year, "limit": limit, "offset": offset, "min_games": min_games},
-    )
+    result = await db.execute(text(sql), _params)
     rows = result.mappings().all()
 
     # Total count
-    count_sql = """
+    count_sql = f"""
     SELECT COUNT(*) AS total FROM mlb.batting_stats bs
+    JOIN mlb.players p ON p.id = bs.player_id
+    LEFT JOIN mlb.teams t ON t.id = bs.team_id
     JOIN mlb.seasons s ON s.id = bs.season_id
-    WHERE s.year = :year AND bs.games_played >= :min_games
+    WHERE s.year = :year AND bs.games_played >= :min_games{_extra}
     """
-    count_result = await db.execute(text(count_sql), {"year": year, "min_games": min_games})
+    count_result = await db.execute(
+        text(count_sql),
+        {k: v for k, v in _params.items() if k not in ("limit", "offset")},
+    )
     total = count_result.scalar()
 
     return {"data": [dict(r) for r in rows], "total": total, "limit": limit, "offset": offset, "sort": sort, "order": order}
@@ -897,11 +922,26 @@ async def mlb_pitching_stats(
     limit: int = Query(200, ge=1, le=500),
     offset: int = Query(0, ge=0),
     min_games: int = Query(1, ge=0),
+    league: str = Query("MLB"),
+    qualify: bool = Query(False),
     db: AsyncSession = Depends(get_db),
 ):
     if sort not in PITCHING_SORT_COLS:
         sort = "era"
     direction = "DESC" if order == "desc" else "ASC"
+
+    _extra = ""
+    _params = {"year": year, "limit": limit, "offset": offset, "min_games": min_games}
+    _lg = (league or "MLB").upper()
+    if _lg in ("AL", "NL"):
+        _extra += " AND t.league = :league"
+        _params["league"] = _lg
+    if qualify:
+        _extra += (
+            " AND ps.innings_pitched >= COALESCE((SELECT MAX(b2.games_played) "
+            "FROM mlb.batting_stats b2 JOIN mlb.seasons s2 ON s2.id = b2.season_id "
+            "WHERE s2.year = :year), 0)"
+        )
 
     sql = f"""
     SELECT
@@ -942,28 +982,444 @@ async def mlb_pitching_stats(
     JOIN mlb.players p ON p.id = ps.player_id
     LEFT JOIN mlb.teams t ON t.id = ps.team_id
     JOIN mlb.seasons s ON s.id = ps.season_id
-    WHERE s.year = :year AND ps.games_played >= :min_games
+    WHERE s.year = :year AND ps.games_played >= :min_games{_extra}
     ORDER BY ps.{sort} {direction} NULLS LAST
     LIMIT :limit OFFSET :offset
     """
-    result = await db.execute(
-        text(sql),
-        {"year": year, "limit": limit, "offset": offset, "min_games": min_games},
-    )
+    result = await db.execute(text(sql), _params)
     rows = result.mappings().all()
 
-    count_sql = """
+    count_sql = f"""
     SELECT COUNT(*) AS total FROM mlb.pitching_stats ps
+    JOIN mlb.players p ON p.id = ps.player_id
+    LEFT JOIN mlb.teams t ON t.id = ps.team_id
     JOIN mlb.seasons s ON s.id = ps.season_id
-    WHERE s.year = :year AND ps.games_played >= :min_games
+    WHERE s.year = :year AND ps.games_played >= :min_games{_extra}
     """
-    count_result = await db.execute(text(count_sql), {"year": year, "min_games": min_games})
+    count_result = await db.execute(
+        text(count_sql),
+        {k: v for k, v in _params.items() if k not in ("limit", "offset")},
+    )
     total = count_result.scalar()
 
     return {"data": [dict(r) for r in rows], "total": total, "limit": limit, "offset": offset, "sort": sort, "order": order}
 
 
 # ── MLB Game Schedule ─────────────────────────────────────────────────
+
+
+# ── Yahoo-style stats hub: league leaders + team season tables ───────
+
+_BATTING_LEADER_CATS = [
+    {"stat_id": "avg", "label": "Batting Average", "abbr": "AVG", "col": "bs.avg",
+     "direction": "DESC", "qualified": True, "format": "rate3"},
+    {"stat_id": "home_runs", "label": "Home Runs", "abbr": "HR", "col": "bs.home_runs",
+     "direction": "DESC", "qualified": False, "format": "int"},
+    {"stat_id": "runs_batted_in", "label": "RBI", "abbr": "RBI", "col": "bs.runs_batted_in",
+     "direction": "DESC", "qualified": False, "format": "int"},
+    {"stat_id": "hits", "label": "Hits", "abbr": "H", "col": "bs.hits",
+     "direction": "DESC", "qualified": False, "format": "int"},
+    {"stat_id": "stolen_bases", "label": "Stolen Bases", "abbr": "SB", "col": "bs.stolen_bases",
+     "direction": "DESC", "qualified": False, "format": "int"},
+    {"stat_id": "ops", "label": "On-Base + Slugging", "abbr": "OPS", "col": "bs.ops",
+     "direction": "DESC", "qualified": True, "format": "rate3"},
+]
+
+_PITCHING_LEADER_CATS = [
+    {"stat_id": "wins", "label": "Wins", "abbr": "W", "col": "ps.wins",
+     "direction": "DESC", "qualified": False, "format": "int"},
+    {"stat_id": "era", "label": "Earned Run Average", "abbr": "ERA", "col": "ps.era",
+     "direction": "ASC", "qualified": True, "format": "rate2"},
+    {"stat_id": "strikeouts", "label": "Strikeouts", "abbr": "SO", "col": "ps.strikeouts",
+     "direction": "DESC", "qualified": False, "format": "int"},
+    {"stat_id": "saves", "label": "Saves", "abbr": "SV", "col": "ps.saves",
+     "direction": "DESC", "qualified": False, "format": "int"},
+    {"stat_id": "whip", "label": "Walks + Hits per IP", "abbr": "WHIP", "col": "ps.whip",
+     "direction": "ASC", "qualified": True, "format": "rate2"},
+    {"stat_id": "innings_pitched", "label": "Innings Pitched", "abbr": "IP",
+     "col": "ps.innings_pitched", "direction": "DESC", "qualified": False, "format": "ip"},
+]
+
+
+def _mlb_fmt_stat(value, kind):
+    if value is None:
+        return "—"
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if kind == "rate3":
+        s = f"{v:.3f}"
+        return s[1:] if s.startswith("0.") else s
+    if kind == "rate2":
+        return f"{v:.2f}"
+    if kind == "ip":
+        return f"{v:g}"
+    return str(int(round(v)))
+
+
+async def _mlb_season_games(db, year: int) -> int:
+    res = await db.execute(
+        text(
+            "SELECT COALESCE(MAX(b.games_played), 0) FROM mlb.batting_stats b "
+            "JOIN mlb.seasons s ON s.id = b.season_id WHERE s.year = :year"
+        ),
+        {"year": year},
+    )
+    return int(res.scalar() or 0)
+
+
+async def _mlb_cat_leaders(db, cat, kind, year, league, season_games, limit, team=None):
+    col = cat["col"]
+    if kind == "batting":
+        base = (
+            "FROM mlb.batting_stats bs "
+            "JOIN mlb.players p ON p.id = bs.player_id "
+            "LEFT JOIN mlb.teams t ON t.id = bs.team_id "
+            "JOIN mlb.seasons s ON s.id = bs.season_id "
+        )
+        qual = (
+            f"AND bs.plate_appearances >= 3.1 * {season_games} "
+            if cat["qualified"]
+            else ""
+        )
+    else:
+        base = (
+            "FROM mlb.pitching_stats ps "
+            "JOIN mlb.players p ON p.id = ps.player_id "
+            "LEFT JOIN mlb.teams t ON t.id = ps.team_id "
+            "JOIN mlb.seasons s ON s.id = ps.season_id "
+        )
+        qual = (
+            f"AND ps.innings_pitched >= {season_games} "
+            if cat["qualified"]
+            else ""
+        )
+    lg = f"AND t.league = '{league}' " if league else ""
+    tm = "AND t.abbreviation = :team " if team else ""
+    sql = (
+        "SELECT p.id AS player_id, p.name AS player_name, p.position, "
+        f"t.abbreviation AS team_abbr, {col} AS value {base}"
+        f"WHERE s.year = :year AND {col} IS NOT NULL {qual}{lg}{tm}"
+        f"ORDER BY {col} {cat['direction']} NULLS LAST LIMIT :lim"
+    )
+    res = await db.execute(text(sql), {"year": year, "lim": limit, "team": team})
+    leaders = []
+    for i, r in enumerate(res.mappings().all(), start=1):
+        leaders.append({
+            "rank": i,
+            "player_id": r["player_id"],
+            "player_name": r["player_name"],
+            "team_abbr": r["team_abbr"],
+            "position": r["position"],
+            "value": float(r["value"]) if r["value"] is not None else None,
+            "display": _mlb_fmt_stat(r["value"], cat["format"]),
+        })
+    return {
+        "stat_id": cat["stat_id"],
+        "label": cat["label"],
+        "abbreviation": cat["abbr"],
+        "format": cat["format"],
+        "leaders": leaders,
+    }
+
+
+@router.get("/mlb/stats/leaders")
+async def mlb_stats_leaders(
+    year: int = Query(...),
+    limit: int = Query(5, ge=1, le=25),
+    db: AsyncSession = Depends(get_db),
+):
+    """Yahoo-style leaderboard cards, grouped into MLB / AL / NL sections."""
+    season_games = await _mlb_season_games(db, year)
+
+    async def _section(key: str, label: str, league):
+        bat = [await _mlb_cat_leaders(db, c, "batting", year, league, season_games, limit)
+               for c in _BATTING_LEADER_CATS]
+        pit = [await _mlb_cat_leaders(db, c, "pitching", year, league, season_games, limit)
+               for c in _PITCHING_LEADER_CATS]
+        return {
+            "key": key,
+            "label": label,
+            "groups": [
+                {"key": "batting", "label": "Batting", "categories": bat},
+                {"key": "pitching", "label": "Pitching", "categories": pit},
+            ],
+        }
+
+    return {
+        "year": year,
+        "limit": limit,
+        "season_games": season_games,
+        "sections": [
+            await _section("mlb", "MLB Stat Leaders", None),
+            await _section("al", "American League Leaders", "AL"),
+            await _section("nl", "National League Leaders", "NL"),
+        ],
+    }
+
+
+# ── Team season stats (Yahoo-style team page section) ──────────────────
+
+_MLB_TEAM_METRICS = [
+    ("Batting", [
+        ("AVG", "avg", True, "rate3"),
+        ("OPS", "ops", True, "rate3"),
+        ("Runs", "runs", True, "int"),
+        ("Home Runs", "home_runs", True, "int"),
+        ("Stolen Bases", "stolen_bases", True, "int"),
+    ]),
+    ("Pitching", [
+        ("ERA", "era", False, "rate2"),
+        ("WHIP", "whip", False, "rate2"),
+        ("Strikeouts", "strikeouts", True, "int"),
+    ]),
+]
+
+
+def _mlb_leader_unit(fmt: str) -> str:
+    if fmt == "rate3":
+        return "rate3"
+    if fmt == "rate2":
+        return "rate2"
+    if fmt == "ip":
+        return "one"
+    return "int"
+
+
+@router.get("/mlb/stats/team/{abbr}")
+async def mlb_stats_team(abbr: str, year: int = Query(...), db: AsyncSession = Depends(get_db)):
+    abbr = abbr.upper()
+    bat = [dict(r) for r in (await db.execute(text("""
+        SELECT t.abbreviation AS abbr,
+               COALESCE(SUM(bs.at_bats), 0) AS ab,
+               COALESCE(SUM(bs.hits), 0) AS h,
+               COALESCE(SUM(bs.total_bases), 0) AS tb,
+               COALESCE(SUM(bs.base_on_balls), 0) AS bb,
+               COALESCE(SUM(bs.hit_by_pitch), 0) AS hbp,
+               COALESCE(SUM(bs.sacrifice_flies), 0) AS sf,
+               COALESCE(SUM(bs.runs), 0) AS runs,
+               COALESCE(SUM(bs.home_runs), 0) AS home_runs,
+               COALESCE(SUM(bs.stolen_bases), 0) AS stolen_bases
+        FROM mlb.batting_stats bs
+        JOIN mlb.teams t ON t.id = bs.team_id
+        JOIN mlb.seasons s ON s.id = bs.season_id
+        WHERE s.year = :year
+        GROUP BY t.abbreviation
+    """), {"year": year})).mappings().all()]
+    pit = [dict(r) for r in (await db.execute(text("""
+        SELECT t.abbreviation AS abbr,
+               COALESCE(SUM(ps.innings_pitched), 0) AS ip,
+               COALESCE(SUM(ps.earned_runs), 0) AS er,
+               COALESCE(SUM(ps.hits), 0) AS pit_h,
+               COALESCE(SUM(ps.base_on_balls), 0) AS pit_bb,
+               COALESCE(SUM(ps.strikeouts), 0) AS strikeouts
+        FROM mlb.pitching_stats ps
+        JOIN mlb.teams t ON t.id = ps.team_id
+        JOIN mlb.seasons s ON s.id = ps.season_id
+        WHERE s.year = :year
+        GROUP BY t.abbreviation
+    """), {"year": year})).mappings().all()]
+    rec = [dict(r) for r in (await db.execute(text("""
+        SELECT t.abbreviation AS abbr, COUNT(*) AS g,
+               SUM(CASE WHEN g.home_team_id = t.id THEN g.home_score ELSE g.away_score END) AS pf,
+               SUM(CASE WHEN g.home_team_id = t.id THEN g.away_score ELSE g.home_score END) AS pa,
+               SUM(CASE WHEN (g.home_team_id = t.id AND g.home_score > g.away_score)
+                          OR (g.away_team_id = t.id AND g.away_score > g.home_score) THEN 1 ELSE 0 END) AS wins,
+               SUM(CASE WHEN (g.home_team_id = t.id AND g.home_score < g.away_score)
+                          OR (g.away_team_id = t.id AND g.away_score < g.home_score) THEN 1 ELSE 0 END) AS losses
+        FROM mlb.games g
+        JOIN mlb.teams t ON t.id = g.home_team_id OR t.id = g.away_team_id
+        JOIN mlb.seasons s ON s.id = g.season_id
+        WHERE s.year = :year AND g.status::text = 'FINAL' AND g.game_type::text = 'R'
+        GROUP BY t.abbreviation
+    """), {"year": year})).mappings().all()]
+
+    by = {r["abbr"]: dict(r) for r in bat}
+    for r in pit:
+        by.setdefault(r["abbr"], {"abbr": r["abbr"]}).update(r)
+    for r in rec:
+        by.setdefault(r["abbr"], {"abbr": r["abbr"]}).update(r)
+
+    teams = []
+    for a, d in by.items():
+        g = d.get("g") or 0
+        if not g:
+            continue
+        ab = d.get("ab") or 0
+        h = d.get("h") or 0
+        tb = d.get("tb") or 0
+        bb = d.get("bb") or 0
+        hbp = d.get("hbp") or 0
+        sf = d.get("sf") or 0
+        ip = d.get("ip") or 0
+        er = d.get("er") or 0
+        pit_h = d.get("pit_h") or 0
+        d["avg"] = round(h / ab, 3) if ab else None
+        obp = (h + bb + hbp) / (ab + bb + hbp + sf) if (ab + bb + hbp + sf) else 0
+        slg = tb / ab if ab else 0
+        d["ops"] = round(obp + slg, 3)
+        pit_bb = d.get("pit_bb") or 0
+        d["era"] = round(9.0 * er / ip, 2) if ip else None
+        d["whip"] = round((pit_h + pit_bb) / ip, 2) if ip else None
+        d["runs"] = int(d.get("runs") or 0)
+        d["home_runs"] = int(d.get("home_runs") or 0)
+        d["stolen_bases"] = int(d.get("stolen_bases") or 0)
+        d["strikeouts"] = int(d.get("strikeouts") or 0)
+        d.setdefault("ranks", {})
+        teams.append(d)
+
+    for _title, metrics in _MLB_TEAM_METRICS:
+        for _label, key, higher, _unit in metrics:
+            order = sorted(range(len(teams)), key=lambda i: (teams[i].get(key) is None,
+                                                             -(teams[i].get(key) or 0) if higher else (teams[i].get(key) or 0)))
+            for rank, i in enumerate(order, 1):
+                teams[i]["ranks"][key] = rank
+
+    tgt = next((t for t in teams if t["abbr"] == abbr), None)
+    if not tgt:
+        return {"year": year, "found": False, "team": {"abbr": abbr}}
+
+    sections = []
+    for title, metrics in _MLB_TEAM_METRICS:
+        rows = []
+        for label, key, _h, unit in metrics:
+            rows.append({"label": label, "value": tgt.get(key), "rank": tgt["ranks"].get(key), "unit": unit})
+        sections.append({"title": title, "rows": rows})
+
+    season_games = await _mlb_season_games(db, year)
+    leader_groups = []
+    for grp, cats, kind in (("Batting", _BATTING_LEADER_CATS, "batting"), ("Pitching", _PITCHING_LEADER_CATS, "pitching")):
+        out_cards = []
+        for c in cats:
+            res = await _mlb_cat_leaders(db, c, kind, year, None, season_games, 5, abbr)
+            out_cards.append({
+                "key": c["stat_id"],
+                "title": c["label"],
+                "unit": _mlb_leader_unit(c["format"]),
+                "rows": [{"rank": r["rank"], "player_name": r["player_name"],
+                          "team_abbr": r["team_abbr"], "position": r["position"],
+                          "value": r["value"]} for r in res["leaders"]],
+            })
+        leader_groups.append({"title": grp, "cards": out_cards})
+
+    return {
+        "year": year,
+        "found": True,
+        "team": {"abbr": abbr},
+        "record": {"wins": tgt.get("wins") or 0, "losses": tgt.get("losses") or 0,
+                   "ties": 0, "games": tgt.get("g") or 0},
+        "sections": sections,
+        "leader_groups": leader_groups,
+    }
+
+
+_TEAM_BATTING_SORT = {
+    "games": "games", "runs": "runs", "hits": "hits", "doubles": "doubles",
+    "triples": "triples", "home_runs": "home_runs", "runs_batted_in": "rbi",
+    "stolen_bases": "stolen_bases", "base_on_balls": "base_on_balls",
+    "strikeouts": "strikeouts", "avg": "avg", "obp": "obp", "slg": "slg", "ops": "ops",
+}
+
+
+@router.get("/mlb/stats/team-batting")
+async def mlb_team_batting(
+    year: int = Query(...),
+    sort: str = Query("home_runs"),
+    order: str = Query("desc"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Team season batting totals, aggregated from player stats."""
+    sort_col = _TEAM_BATTING_SORT.get(sort, "home_runs")
+    direction = "DESC" if order == "desc" else "ASC"
+    sql = f"""
+    SELECT x.*, (COALESCE(x.obp, 0) + COALESCE(x.slg, 0)) AS ops
+    FROM (
+        SELECT t.id AS team_id, t.abbreviation AS team_abbr, t.name AS team_name, t.league,
+            SUM(bs.games_played) AS games,
+            SUM(bs.plate_appearances) AS plate_appearances,
+            SUM(bs.at_bats) AS at_bats,
+            SUM(bs.runs) AS runs,
+            SUM(bs.hits) AS hits,
+            SUM(bs.doubles) AS doubles,
+            SUM(bs.triples) AS triples,
+            SUM(bs.home_runs) AS home_runs,
+            SUM(bs.runs_batted_in) AS rbi,
+            SUM(bs.stolen_bases) AS stolen_bases,
+            SUM(bs.base_on_balls) AS base_on_balls,
+            SUM(bs.strikeouts) AS strikeouts,
+            CASE WHEN SUM(bs.at_bats) > 0
+                 THEN SUM(bs.hits)::float / SUM(bs.at_bats) END AS avg,
+            CASE WHEN (SUM(bs.at_bats) + SUM(bs.base_on_balls) + SUM(bs.hit_by_pitch)
+                       + SUM(bs.sacrifice_flies)) > 0
+                 THEN (SUM(bs.hits) + SUM(bs.base_on_balls) + SUM(bs.hit_by_pitch))::float
+                      / (SUM(bs.at_bats) + SUM(bs.base_on_balls) + SUM(bs.hit_by_pitch)
+                         + SUM(bs.sacrifice_flies)) END AS obp,
+            CASE WHEN SUM(bs.at_bats) > 0
+                 THEN SUM(bs.total_bases)::float / SUM(bs.at_bats) END AS slg
+        FROM mlb.batting_stats bs
+        JOIN mlb.teams t ON t.id = bs.team_id
+        JOIN mlb.seasons s ON s.id = bs.season_id
+        WHERE s.year = :year
+        GROUP BY t.id, t.abbreviation, t.name, t.league
+    ) x
+    ORDER BY {sort_col} {direction} NULLS LAST
+    """
+    res = await db.execute(text(sql), {"year": year})
+    return {"year": year, "sort": sort, "order": order,
+            "data": [dict(r) for r in res.mappings().all()]}
+
+
+_TEAM_PITCHING_SORT = {
+    "games": "games", "wins": "wins", "losses": "losses", "saves": "saves",
+    "innings_pitched": "innings_pitched", "hits": "hits", "runs": "runs",
+    "earned_runs": "earned_runs", "home_runs": "home_runs", "base_on_balls": "base_on_balls",
+    "strikeouts": "strikeouts", "era": "era", "whip": "whip", "strikeouts_per_9": "strikeouts_per_9",
+}
+
+
+@router.get("/mlb/stats/team-pitching")
+async def mlb_team_pitching(
+    year: int = Query(...),
+    sort: str = Query("era"),
+    order: str = Query("asc"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Team season pitching totals, aggregated from player stats."""
+    sort_col = _TEAM_PITCHING_SORT.get(sort, "era")
+    direction = "DESC" if order == "desc" else "ASC"
+    sql = f"""
+    SELECT x.*
+    FROM (
+        SELECT t.id AS team_id, t.abbreviation AS team_abbr, t.name AS team_name, t.league,
+            SUM(ps.games_played) AS games,
+            SUM(ps.wins) AS wins,
+            SUM(ps.losses) AS losses,
+            SUM(ps.saves) AS saves,
+            SUM(ps.innings_pitched) AS innings_pitched,
+            SUM(ps.hits) AS hits,
+            SUM(ps.runs) AS runs,
+            SUM(ps.earned_runs) AS earned_runs,
+            SUM(ps.home_runs) AS home_runs,
+            SUM(ps.base_on_balls) AS base_on_balls,
+            SUM(ps.strikeouts) AS strikeouts,
+            CASE WHEN SUM(ps.innings_pitched) > 0
+                 THEN 9.0 * SUM(ps.earned_runs)::float / SUM(ps.innings_pitched) END AS era,
+            CASE WHEN SUM(ps.innings_pitched) > 0
+                 THEN (SUM(ps.hits) + SUM(ps.base_on_balls))::float / SUM(ps.innings_pitched) END AS whip,
+            CASE WHEN SUM(ps.innings_pitched) > 0
+                 THEN 9.0 * SUM(ps.strikeouts)::float / SUM(ps.innings_pitched) END AS strikeouts_per_9
+        FROM mlb.pitching_stats ps
+        JOIN mlb.teams t ON t.id = ps.team_id
+        JOIN mlb.seasons s ON s.id = ps.season_id
+        WHERE s.year = :year
+        GROUP BY t.id, t.abbreviation, t.name, t.league
+    ) x
+    ORDER BY {sort_col} {direction} NULLS LAST
+    """
+    res = await db.execute(text(sql), {"year": year})
+    return {"year": year, "sort": sort, "order": order,
+            "data": [dict(r) for r in res.mappings().all()]}
 
 
 @router.get("/mlb/seasons")

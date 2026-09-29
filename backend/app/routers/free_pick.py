@@ -18,13 +18,15 @@ CURRENT vs HISTORICAL (2026-09-10; refined 2026-09-21):
   completely — it must NOT fall back to a previously-featured pick. Retention prune
   orders by `published_at` (never `free_featured_at`), so a pick stays unlocked for
   indexing even after it is no longer the current pick.
-Only writeups with premium_content (a real paid analysis) are eligible.
+Only writeups with premium_content (a real paid analysis) are eligible, and only for
+games that have NOT been played yet (game start time in the future) — a played game can
+never be chosen, and the set handler rejects it server-side.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -57,7 +59,11 @@ FROM {schema}.game_writeups w
 LEFT JOIN {schema}.games g ON g.id = w.game_id
 WHERE w.is_historical = FALSE
   AND w.published_at IS NOT NULL
-ORDER BY has_premium DESC, w.published_at DESC
+  -- Only games that have NOT been played yet are eligible to be featured.
+  -- (A game is "played" once its start time passes; exclude null dates too.)
+  AND g.date IS NOT NULL
+  AND g.date > NOW()
+ORDER BY g.date ASC, has_premium DESC, w.published_at DESC
 LIMIT :limit
 """
 
@@ -167,6 +173,33 @@ async def _build_premium_card(db: AsyncSession, sport: str, game_id: int, slug: 
     return rel
 
 
+async def _is_game_completed(db: AsyncSession, sport: str, game_id) -> bool:
+    """True once the featured game is COMPLETED (final).
+
+    Drives "stop showing the free-pick feature on the homepage when the game is
+    completed". Uses the games row's `status` (FINAL); falls back to wall-clock
+    time only when status is unavailable. Never raises — a lookup failure must
+    not break the public endpoint (it just keeps showing the feature).
+    """
+    try:
+        res = await db.execute(
+            text(f"SELECT status::text AS status, date FROM {sport}.games WHERE id = :gid"),
+            {"gid": int(game_id)},
+        )
+        g = res.mappings().first()
+    except Exception as e:  # noqa: BLE001 - defensive: never break the public endpoint
+        logger.warning("free-pick completion check failed (%s %s): %s", sport, game_id, e)
+        return False
+    if not g:
+        return False
+    status = str(g.get("status") or "").strip().upper()
+    if status == "FINAL":
+        return True
+    if not status and g.get("date") is not None:
+        return g["date"] < (datetime.now(timezone.utc) - timedelta(hours=6))
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Public
 # ---------------------------------------------------------------------------
@@ -182,6 +215,10 @@ async def get_free_pick(
     pick = await _get_active(db)
     if not pick or not pick.get("sport"):
         raise HTTPException(status_code=404, detail="No free pick is currently featured")
+    # Once the featured game is COMPLETED, stop showing the feature on the public
+    # site (homepage). The admin page still shows it so it can be cleared/replaced.
+    if await _is_game_completed(db, pick["sport"], pick["game_id"]):
+        raise HTTPException(status_code=404, detail="Free pick game is complete")
     # Attach the matchup teams (away/home logo + record) for the homepage card art.
     try:
         pick["teams"] = await asyncio.to_thread(
@@ -257,8 +294,9 @@ async def set_free_pick(
     sport = _check_sport(sport)
     writeup = await db.execute(
         text(
-            f"SELECT game_id, title, slug, published_at, premium_social_card FROM {sport}.game_writeups "
-            "WHERE game_id = :gid LIMIT 1"
+            f"SELECT w.game_id, w.title, w.slug, w.published_at, w.premium_social_card, "
+            f"g.date AS game_date FROM {sport}.game_writeups w "
+            f"LEFT JOIN {sport}.games g ON g.id = w.game_id WHERE w.game_id = :gid LIMIT 1"
         ),
         {"gid": int(game_id)},
     )
@@ -269,6 +307,15 @@ async def set_free_pick(
         raise HTTPException(status_code=400, detail="Cannot feature an unpublished writeup")
 
     now = datetime.now(timezone.utc)
+
+    # Only games that have NOT been played yet can be featured (free pick of the
+    # day/week). Guard server-side so a played game can never be set via the API
+    # even if it slips past the candidates list.
+    if w["game_date"] is not None and w["game_date"] <= now:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot feature a game that has already been played",
+        )
 
     # Set this one FIRST (so it is always kept), then prune older picks beyond the
     # retention window. Publishing a new pick does NOT re-gate recent/ past picks:

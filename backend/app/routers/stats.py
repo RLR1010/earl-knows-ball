@@ -17,6 +17,9 @@ PLAYER_SORT_COLS = {
     "rush_attempts", "rush_yards", "rush_tds", "yards_per_carry",
     # Receiving
     "targets", "receptions", "receiving_yards", "receiving_tds", "yards_per_rec",
+    # Defense
+    "tackles_combined", "sacks", "tackles_for_loss", "qb_hits",
+    "fumbles_forced", "interceptions", "passes_defended",
     # Misc
     "fumbles", "fumbles_lost", "games_played", "snaps_offense",
     "games",
@@ -57,7 +60,7 @@ async def player_stats(
         p.id AS player_id,
         p.name AS player_name,
         p.position,
-        STRING_AGG(DISTINCT t.abbreviation, '/' ORDER BY t.abbreviation) AS team_abbr,
+        (ARRAY_AGG(t.abbreviation ORDER BY pws.week DESC))[1] AS team_abbr,
         COUNT(pws.id)::int AS games,
         SUM(pws.pass_attempts)::int AS pass_attempts,
         SUM(pws.pass_completions)::int AS pass_completions,
@@ -95,12 +98,19 @@ async def player_stats(
             ELSE 0 END AS yards_per_rec,
         SUM(pws.fumbles)::int AS fumbles,
         SUM(pws.fumbles_lost)::int AS fumbles_lost,
-        COALESCE(SUM(pws.snaps_offense), 0)::int AS snaps_offense
+        COALESCE(SUM(pws.snaps_offense), 0)::int AS snaps_offense,
+        COALESCE(SUM(pws.tackles_combined), 0)::int AS tackles_combined,
+        COALESCE(SUM(pws.sacks), 0)::numeric AS sacks,
+        COALESCE(SUM(pws.tackles_for_loss), 0)::int AS tackles_for_loss,
+        COALESCE(SUM(pws.qb_hits), 0)::int AS qb_hits,
+        COALESCE(SUM(pws.fumbles_forced), 0)::int AS fumbles_forced,
+        COALESCE(SUM(pws.interceptions), 0)::int AS interceptions,
+        COALESCE(SUM(pws.passes_defended), 0)::int AS passes_defended
     FROM player_weekly_stats pws
     JOIN seasons s ON s.id = pws.season_id
     JOIN players p ON p.id = pws.player_id
     JOIN teams t ON t.id = pws.team_id
-    WHERE s.year = :year {pos_filter}
+    WHERE s.year = :year AND pws.game_type = 'REG' {pos_filter}
     GROUP BY p.id, p.name, p.position
     HAVING COUNT(pws.id) >= :min_games
     ORDER BY {sort} {direction} NULLS LAST
@@ -120,7 +130,7 @@ async def player_stats(
         SELECT 1 FROM player_weekly_stats pws
         JOIN seasons s ON s.id = pws.season_id
         JOIN players p ON p.id = pws.player_id
-        WHERE s.year = :year {pos_filter}
+        WHERE s.year = :year AND pws.game_type = 'REG' {pos_filter}
         GROUP BY p.id
         HAVING COUNT(pws.id) >= :min_games
     ) sub
@@ -196,6 +206,7 @@ async def team_stats(
                COALESCE(SUM(receiving_yards), 0)::int AS rec_yds,
                COALESCE(SUM(pass_int + fumbles_lost), 0)::int AS giveaways
         FROM player_weekly_stats
+        WHERE game_type = 'REG'
         GROUP BY game_id, team_id
     )
     SELECT
@@ -269,4 +280,227 @@ async def team_stats(
         "offset": offset,
         "sort": sort,
         "order": order,
+    }
+
+
+# ── Seasons (available years) ─────────────────────────────────────────
+
+
+@router.get("/stats/seasons")
+async def stat_seasons(db: AsyncSession = Depends(get_db)):
+    result = await db.execute(
+        text(
+            """
+            SELECT DISTINCT s.year
+            FROM seasons s
+            JOIN player_weekly_stats pws ON pws.season_id = s.id
+            ORDER BY s.year DESC
+            """
+        )
+    )
+    return {"years": [r[0] for r in result.fetchall()]}
+
+
+# ── Season Leaders (Yahoo-style category cards) ───────────────────────
+
+_RATING_EXPR = (
+    "(LEAST(GREATEST((SUM(pws.pass_completions)::numeric / SUM(pws.pass_attempts) - 0.3) * 5, 0), 2.375)"
+    " + LEAST(GREATEST((SUM(pws.pass_yards)::numeric / SUM(pws.pass_attempts) - 3) * 0.25, 0), 2.375)"
+    " + LEAST(GREATEST(SUM(pws.pass_tds)::numeric / SUM(pws.pass_attempts) * 20, 0), 2.375)"
+    " + LEAST(GREATEST(2.375 - SUM(pws.pass_int)::numeric / SUM(pws.pass_attempts) * 25, 0), 2.375)"
+    ") / 6 * 100"
+)
+
+# group -> [(key, title, value_expr, having, unit)]
+_LEADER_GROUPS = [
+    ("Passing", [
+        ("pass_yards", "Pass Yds", "SUM(pws.pass_yards)::int", "SUM(pws.pass_attempts) >= 50", "int"),
+        ("pass_tds", "Pass TD", "SUM(pws.pass_tds)::int", "SUM(pws.pass_attempts) >= 50", "int"),
+        ("passer_rating", "Passer Rating", _RATING_EXPR, "SUM(pws.pass_attempts) >= 50", "rating"),
+    ]),
+    ("Rushing", [
+        ("rush_yards", "Rush Yds", "SUM(pws.rush_yards)::int", "SUM(pws.rush_attempts) >= 25", "int"),
+        ("rush_tds", "Rush TD", "SUM(pws.rush_tds)::int", "SUM(pws.rush_attempts) >= 25", "int"),
+        ("yards_per_carry", "Yds/Carry", "ROUND(SUM(pws.rush_yards)::numeric / NULLIF(SUM(pws.rush_attempts), 0), 1)", "SUM(pws.rush_attempts) >= 25", "one"),
+    ]),
+    ("Receiving", [
+        ("receiving_yards", "Rec Yds", "SUM(pws.receiving_yards)::int", "SUM(pws.targets) >= 10", "int"),
+        ("receptions", "Rec", "SUM(pws.receptions)::int", "SUM(pws.targets) >= 10", "int"),
+        ("receiving_tds", "Rec TD", "SUM(pws.receiving_tds)::int", "SUM(pws.targets) >= 10", "int"),
+    ]),
+    ("Defense", [
+        ("tackles_combined", "Tackles", "COALESCE(SUM(pws.tackles_combined), 0)::int", "COALESCE(SUM(pws.tackles_combined), 0) > 0", "int"),
+        ("sacks", "Sacks", "COALESCE(SUM(pws.sacks), 0)::numeric", "COALESCE(SUM(pws.sacks), 0) > 0", "one"),
+        ("interceptions", "INT", "COALESCE(SUM(pws.interceptions), 0)::int", "COALESCE(SUM(pws.interceptions), 0) > 0", "int"),
+        ("passes_defended", "PD", "COALESCE(SUM(pws.passes_defended), 0)::int", "COALESCE(SUM(pws.passes_defended), 0) > 0", "int"),
+    ]),
+]
+
+
+async def _leader_rows(db, year: int, expr: str, having: str, limit: int, team: str | None = None):
+    team_clause = " AND t.abbreviation = :team" if team else ""
+    sql = f"""
+        SELECT p.id AS player_id,
+               p.name AS player_name,
+               p.position,
+               (ARRAY_AGG(t.abbreviation ORDER BY pws.week DESC))[1] AS team_abbr,
+               ({expr}) AS value
+        FROM player_weekly_stats pws
+        JOIN seasons s ON s.id = pws.season_id
+        JOIN players p ON p.id = pws.player_id
+        JOIN teams t ON t.id = pws.team_id
+        WHERE s.year = :year AND pws.game_type = 'REG'{team_clause}
+        GROUP BY p.id, p.name, p.position
+        HAVING {having}
+        ORDER BY value DESC NULLS LAST
+        LIMIT :limit
+    """
+    result = await db.execute(text(sql), {"year": year, "limit": limit, "team": team})
+    return [dict(r._mapping) for r in result.fetchall()]
+
+
+@router.get("/stats/leaders")
+async def stat_leaders(
+    year: int = Query(...),
+    limit: int = Query(5, ge=1, le=25),
+    group: str = Query("all"),
+    team: str | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+):
+    wanted = None if group.lower() in ("all", "") else group.lower()
+    groups = []
+    for gtitle, cards in _LEADER_GROUPS:
+        if wanted and gtitle.lower() != wanted:
+            continue
+        out_cards = []
+        for key, title, expr, having, unit in cards:
+            rows = await _leader_rows(db, year, expr, having, limit, team)
+            out_cards.append({
+                "key": key,
+                "title": title,
+                "unit": unit,
+                "rows": [{"rank": i + 1, **r} for i, r in enumerate(rows)],
+            })
+        groups.append({"title": gtitle, "cards": out_cards})
+    return {"year": year, "limit": limit, "groups": groups}
+
+
+# ── Team season stats (Yahoo-style team page section) ──────────────────
+
+_NFL_TEAM_METRICS = [
+    ("Offense", [
+        ("Points/G", "ppg", True),
+        ("Total Yds/G", "tot_ypg", True),
+        ("Pass Yds/G", "pass_ypg", True),
+        ("Rush Yds/G", "rush_ypg", True),
+        ("Giveaways", "giveaways", False),
+    ]),
+    ("Defense", [
+        ("Points Allowed/G", "papg", False),
+        ("Sacks", "sacks", True),
+        ("Takeaways", "takeaways", True),
+        ("Interceptions", "def_int", True),
+    ]),
+]
+
+
+@router.get("/stats/team/{abbr}")
+async def stat_team(abbr: str, year: int = Query(...), db: AsyncSession = Depends(get_db)):
+    abbr = abbr.upper()
+    tw = [dict(r) for r in (await db.execute(text("""
+        SELECT tw.team AS abbr, COUNT(*) AS g,
+               COALESCE(SUM(tw.passing_yards), 0) AS pass_yds,
+               COALESCE(SUM(tw.rushing_yards), 0) AS rush_yds,
+               COALESCE(SUM(tw.passing_interceptions), 0) AS pass_int,
+               COALESCE(SUM(tw.fumbles_lost_total), 0) AS fum_lost,
+               COALESCE(SUM(tw.def_sacks), 0) AS sacks,
+               COALESCE(SUM(tw.def_interceptions), 0) AS def_int,
+               COALESCE(SUM(tw.fumble_recovery_opp), 0) AS fum_rec_opp
+        FROM nfl.stats_team_week tw
+        WHERE tw.season = :year AND tw.season_type = 'REG'
+        GROUP BY tw.team
+    """), {"year": year})).mappings().all()]
+    sc = [dict(r) for r in (await db.execute(text("""
+        SELECT t.abbreviation AS abbr, COUNT(*) AS g,
+               SUM(CASE WHEN g.home_team_id = t.id THEN g.home_score ELSE g.away_score END) AS pf,
+               SUM(CASE WHEN g.home_team_id = t.id THEN g.away_score ELSE g.home_score END) AS pa,
+               SUM(CASE WHEN (g.home_team_id = t.id AND g.home_score > g.away_score)
+                          OR (g.away_team_id = t.id AND g.away_score > g.home_score) THEN 1 ELSE 0 END) AS wins,
+               SUM(CASE WHEN (g.home_team_id = t.id AND g.home_score < g.away_score)
+                          OR (g.away_team_id = t.id AND g.away_score < g.home_score) THEN 1 ELSE 0 END) AS losses,
+               SUM(CASE WHEN g.home_score = g.away_score THEN 1 ELSE 0 END) AS ties
+        FROM nfl.games g
+        JOIN nfl.teams t ON t.id = g.home_team_id OR t.id = g.away_team_id
+        WHERE g.season_id = (SELECT id FROM nfl.seasons WHERE year = :year)
+          AND g.status::text = 'FINAL' AND g.week <= 18
+        GROUP BY t.abbreviation
+    """), {"year": year})).mappings().all()]
+
+    by = {r["abbr"]: dict(r) for r in tw}
+    for r in sc:
+        if r["abbr"] in by:
+            by[r["abbr"]]["g_tw"] = by[r["abbr"]].get("g")
+            by[r["abbr"]].update(r)
+        else:
+            by[r["abbr"]] = dict(r)
+
+    teams = []
+    for a, d in by.items():
+        g_sc = d.get("g") or 0
+        g_tw = d.get("g_tw") or g_sc
+        if not g_sc:
+            continue
+        pf = d.get("pf") or 0
+        pa = d.get("pa") or 0
+        pass_yds = d.get("pass_yds") or 0
+        rush_yds = d.get("rush_yds") or 0
+        d["ppg"] = round(pf / g_sc, 1)
+        d["papg"] = round(pa / g_sc, 1)
+        d["pass_ypg"] = round(pass_yds / g_tw, 1)
+        d["rush_ypg"] = round(rush_yds / g_tw, 1)
+        d["tot_ypg"] = round((pass_yds + rush_yds) / g_tw, 1)
+        d["giveaways"] = int((d.get("pass_int") or 0) + (d.get("fum_lost") or 0))
+        d["takeaways"] = int((d.get("def_int") or 0) + (d.get("fum_rec_opp") or 0))
+        d["sacks"] = round(float(d.get("sacks") or 0), 1)
+        d["def_int"] = int(d.get("def_int") or 0)
+        d.setdefault("ranks", {})
+        teams.append(d)
+
+    for _title, metrics in _NFL_TEAM_METRICS:
+        for _label, key, higher in metrics:
+            order = sorted(range(len(teams)), key=lambda i: (teams[i].get(key) is None,
+                                                             -(teams[i].get(key) or 0) if higher else (teams[i].get(key) or 0)))
+            for rank, i in enumerate(order, 1):
+                teams[i]["ranks"][key] = rank
+
+    tgt = next((t for t in teams if t["abbr"] == abbr), None)
+    if not tgt:
+        return {"year": year, "found": False, "team": {"abbr": abbr}}
+
+    sections = []
+    for title, metrics in _NFL_TEAM_METRICS:
+        rows = []
+        for label, key, _h in metrics:
+            v = tgt.get(key)
+            rows.append({"label": label, "value": v, "rank": tgt["ranks"].get(key),
+                         "unit": "one" if isinstance(v, float) else "int"})
+        sections.append({"title": title, "rows": rows})
+
+    leader_groups = []
+    for gtitle, cards in _LEADER_GROUPS:
+        out_cards = []
+        for key, title, expr, having, unit in cards:
+            rows = await _leader_rows(db, year, expr, having, 5, abbr)
+            out_cards.append({"key": key, "title": title, "unit": unit,
+                              "rows": [{"rank": i + 1, **r} for i, r in enumerate(rows)]})
+        leader_groups.append({"title": gtitle, "cards": out_cards})
+
+    return {
+        "year": year,
+        "found": True,
+        "team": {"abbr": abbr},
+        "record": {"wins": tgt.get("wins") or 0, "losses": tgt.get("losses") or 0,
+                   "ties": tgt.get("ties") or 0, "games": tgt.get("g") or 0},
+        "sections": sections,
+        "leader_groups": leader_groups,
     }

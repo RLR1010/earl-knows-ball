@@ -201,37 +201,34 @@ async def get_token_user(auth_header: str, db: AsyncSession) -> User:
 
 
 async def get_current_user(request: Request, db: AsyncSession = Depends(get_db)) -> User:
-    """Dependency: extract user from the Authorization header (localStorage
-    token) or the earl_token cookie.
+    """Dependency: extract the logged-in user.
 
-    The Authorization header is preferred when present and valid: the frontend
-    treats the localStorage token as the source of truth for "who is logged in",
-    so a stale/outdated cookie must NOT silently override it (which previously
-    left a premium user looking non-premium because an old free-tier cookie won).
-    We fall back to the cookie only when there's no valid Bearer token. That
-    keeps the cookie-based "stay logged in" flow working.
+    The httpOnly `earl_token` COOKIE is the source of truth for login status and
+    access (it is the durable session; /auth/me re-issues it on every visit, so
+    it slides forward while the user keeps coming back). The Authorization header
+    (localStorage token) is only a fallback for clients that don't carry the
+    cookie. This guarantees a stale/lapsed JS token — or a cleared localStorage —
+    can never downgrade or override an active cookie session.
     """
-    # Preferred: Authorization header (localStorage token)
+    cookie_token = request.cookies.get(COOKIE_NAME)
     auth_header = request.headers.get("authorization", "")
     header_token = (
         auth_header.replace("Bearer ", "", 1).strip()
         if auth_header.startswith("Bearer ")
         else ""
     )
-    if header_token:
-        try:
-            user = await get_user_from_token(header_token, db)
-            record_activity(request, user.id)
-            return user
-        except HTTPException:
-            # Stale/invalid JS token: fall through to the durable cookie session
-            # instead of locking the user out.
-            pass
 
-    # Fall back to cookie (persistent login)
-    token = request.cookies.get(COOKIE_NAME)
-    if token:
-        user = await get_user_from_token(token, db)
+    candidates: list[str] = []
+    if cookie_token:
+        candidates.append(cookie_token)
+    if header_token and header_token != cookie_token:
+        candidates.append(header_token)
+
+    for tok in candidates:
+        try:
+            user = await get_user_from_token(tok, db)
+        except HTTPException:
+            continue
         record_activity(request, user.id)
         return user
 

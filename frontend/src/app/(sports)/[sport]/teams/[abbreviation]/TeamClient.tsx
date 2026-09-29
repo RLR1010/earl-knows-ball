@@ -181,26 +181,42 @@ function formatYards(yds: number): string {
   return yds.toFixed(0);
 }
 
-type Tab = "schedule" | "articles" | "depth-chart" | "news" | "roster";
+import TeamStatsSection from "./TeamStatsSection";
 
-function StatusBadge({ status }: { status: string }) {
-  const colors: Record<string, string> = {
-    active: "bg-green-900/50 text-green-400 border-green-700",
-    injured: "bg-red-900/50 text-red-400 border-red-700",
-    rookie: "bg-blue-900/50 text-blue-400 border-blue-700",
-    fa_acq: "bg-amber-900/50 text-amber-400 border-amber-700",
-    udfa: "bg-purple-900/50 text-purple-400 border-purple-700",
-    drafted: "bg-indigo-900/50 text-indigo-400 border-indigo-700",
-    trade: "bg-cyan-900/50 text-cyan-400 border-cyan-700",
-  };
-  const label: Record<string, string> = {
-    active: "Active", injured: "Injured", rookie: "Rookie",
-    fa_acq: "FA Acq.", udfa: "UDFA", drafted: "Drafted", trade: "Trade",
-  };
-  const cls = colors[status] || "bg-gray-800 text-gray-400 border-gray-600";
+type Tab = "schedule" | "articles" | "stats" | "depth-chart" | "news" | "roster";
+
+// The depth chart only marks two things per player: rookie-or-not, and out-or-not.
+function RookieBadge() {
   return (
-    <span className={`inline-block text-[10px] px-1.5 py-0.5 rounded border font-semibold uppercase tracking-wider ${cls}`}>
-      {label[status] || status}
+    <span
+      title="Rookie"
+      className="inline-block text-[10px] px-1.5 py-0.5 rounded border font-semibold uppercase tracking-wider bg-blue-900/50 text-blue-300 border-blue-700"
+    >
+      Rookie
+    </span>
+  );
+}
+
+// Ourlads availability codes → human label (see nfl.depth_charts.injury_status)
+const INJURY_LABELS: Record<string, string> = {
+  O: "Out", IR: "IR", PUP: "PUP", SUS: "Susp", NFI: "NFI", IA: "Inactive",
+  ILL: "Illness", Q: "Questionable", D: "Doubtful", DNP: "DNP", NIR: "NIR",
+  GTD: "GTD", REST: "Rest", LP: "LP", FP: "FP", P: "P",
+};
+// Codes that mean the player definitely will not play.
+const UNAVAILABLE_INJURY = new Set(["O", "IR", "PUP", "SUS", "NFI", "IA", "ILL"]);
+function InjuryBadge({ code }: { code: string }) {
+  const c = code.toUpperCase();
+  const out = UNAVAILABLE_INJURY.has(c);
+  const cls = out
+    ? "bg-red-900/60 text-red-300 border-red-700"
+    : "bg-amber-900/50 text-amber-300 border-amber-700";
+  return (
+    <span
+      title={INJURY_LABELS[c] || c}
+      className={`inline-block text-[10px] px-1.5 py-0.5 rounded border font-semibold uppercase tracking-wider ${cls}`}
+    >
+      {INJURY_LABELS[c] || c}
     </span>
   );
 }
@@ -468,7 +484,7 @@ export default function TeamDetailPage() {
 
   const [depthChart, setDepthChart] = useState<DepthChartEntry[]>([]);
   const [depthLoading, setDepthLoading] = useState(false);
-  const VALID_TABS: Tab[] = ["schedule", "articles", "depth-chart", "news", "roster"];
+  const VALID_TABS: Tab[] = ["schedule", "articles", "stats", "depth-chart", "news", "roster"];
   const initTabParam = searchParams.get("tab") as Tab;
   const [tab, setTab] = useState<Tab>(VALID_TABS.includes(initTabParam) ? initTabParam : "schedule");
 
@@ -633,6 +649,7 @@ export default function TeamDetailPage() {
       <div className="flex gap-1 border-b border-white/10">
         <button onClick={() => setTab("schedule")} className={`px-5 py-3 text-sm font-semibold transition rounded-t-lg ${tab === "schedule" ? "text-earl-400 border-b-2 border-earl-400" : "text-gray-500 hover:text-gray-300"}`}>Schedule</button>
         <button onClick={() => setTab("articles")} className={`px-5 py-3 text-sm font-semibold transition rounded-t-lg ${tab === "articles" ? "text-earl-400 border-b-2 border-earl-400" : "text-gray-500 hover:text-gray-300"}`}>Articles</button>
+        <button onClick={() => setTab("stats")} className={`px-5 py-3 text-sm font-semibold transition rounded-t-lg ${tab === "stats" ? "text-earl-400 border-b-2 border-earl-400" : "text-gray-500 hover:text-gray-300"}`}>Stats</button>
         {sport === "nfl" && (
           <button onClick={() => setTab("depth-chart")} className={`px-5 py-3 text-sm font-semibold transition rounded-t-lg ${tab === "depth-chart" ? "text-earl-400 border-b-2 border-earl-400" : "text-gray-500 hover:text-gray-300"}`}>Depth Chart</button>
         )}
@@ -735,13 +752,13 @@ export default function TeamDetailPage() {
                               {entry.slot === 1 ? <span className="text-earl-400 font-bold">1</span> : entry.slot}
                             </span>
                             <div className="min-w-0">
-                              <span className="text-sm font-medium truncate block">{entry.player_name}</span>
+                              <span className={`text-sm font-medium truncate block ${entry.injury_status && UNAVAILABLE_INJURY.has(entry.injury_status.toUpperCase()) ? "line-through text-gray-500" : ""}`}>{entry.player_name}</span>
                               {entry.jersey_number && <span className="text-[10px] text-gray-600">#{entry.jersey_number}</span>}
                             </div>
                           </div>
                           <div className="flex items-center gap-2 shrink-0">
-                            {entry.acquisition_info && <span className="text-[10px] text-gray-500 font-mono">{entry.acquisition_info}</span>}
-                            {entry.status && entry.status !== "active" && <StatusBadge status={entry.status} />}
+                            {entry.injury_status && <InjuryBadge code={entry.injury_status} />}
+                            {entry.status === "rookie" && <RookieBadge />}
                           </div>
                         </div>
                       ))}
@@ -760,6 +777,11 @@ export default function TeamDetailPage() {
       )}
 
       {/* News Tab */}
+      {tab === "stats" && (
+        <div className="p-4 sm:p-6">
+          <TeamStatsSection sport={sport} abbr={abbrUpper} year={seasonYear} />
+        </div>
+      )}
       {tab === "news" && (
         <TeamNews sport={sport} abbreviation={abbrUpper} />
       )}

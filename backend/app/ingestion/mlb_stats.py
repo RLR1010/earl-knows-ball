@@ -303,6 +303,19 @@ async def sync_all_rosters(db: AsyncSession, team_map: dict[int, int]) -> dict[i
     return results
 
 
+def _pick_season_splits(splits: list) -> list:
+    """Choose the split(s) that represent a player's FULL season total.
+
+    statsapi returns, for a TRADED player, a team-less COMBINED season split first,
+    followed by one split per team stint. For a NON-traded player there is a single
+    team-tagged split. So: prefer the team-less combined split(s) when present,
+    otherwise keep the team-tagged split(s). Never drop a team-tagged split outright
+    — that skips non-traded players entirely and silently freezes the season tables.
+    """
+    combined = [s for s in splits if not s.get("team")]
+    return combined or list(splits)
+
+
 # ── Step 3: Season Stats (Batting) ────────────────────────────────────
 
 async def load_batting_season(
@@ -365,19 +378,14 @@ async def load_batting_season(
                         for se in sd.get("stats", []):
                             if se.get("group", {}).get("displayName", "").lower() != "hitting":
                                 continue
-                            for sp in se.get("splits", []):
+                            for sp in _pick_season_splits(se.get("splits", [])):
                                 await _upsert_batting_row(db, sp, year, season_id, team_db_id)
                 continue
 
             for stat_entry in stats_data.get("stats", []):
                 if stat_entry.get("group", {}).get("displayName", "").lower() != "hitting":
                     continue
-                for split in stat_entry.get("splits", []):
-                    # Only the combined season split (team is None). statsapi also returns
-                    # one split per team stint for traded players; using those would store a
-                    # single stint and under-count the season (traded-player gap).
-                    if split.get("team"):
-                        continue
+                for split in _pick_season_splits(stat_entry.get("splits", [])):
                     stat = split.get("stat", {})
                     if not stat.get("gamesPlayed"):
                         continue
@@ -502,17 +510,14 @@ async def load_pitching_season(
                         for se in sd.get("stats", []):
                             if se.get("group", {}).get("displayName", "").lower() != "pitching":
                                 continue
-                            for sp in se.get("splits", []):
+                            for sp in _pick_season_splits(se.get("splits", [])):
                                 await _upsert_pitching_row(db, sp, year, season_id, team_db_id)
                 continue
 
             for stat_entry in stats_data.get("stats", []):
                 if stat_entry.get("group", {}).get("displayName", "").lower() != "pitching":
                     continue
-                for split in stat_entry.get("splits", []):
-                    # Only the combined season split (team is None) — see batting note.
-                    if split.get("team"):
-                        continue
+                for split in _pick_season_splits(stat_entry.get("splits", [])):
                     stat = split.get("stat", {})
                     if not stat.get("gamesPlayed"):
                         continue
@@ -753,9 +758,8 @@ async def load_games_for_season(
 
 async def _upsert_batting_row(db: AsyncSession, split: dict, year: int, season_id: int, team_db_id: int):
     """Upsert a single batting stats row from an API split."""
-    # Only the combined season split (team is None); skip per-team stints (traded-player gap).
-    if split.get("team"):
-        return
+    # NOTE: callers pre-filter via _pick_season_splits(); do NOT drop team-tagged
+    # splits here or non-traded players are skipped entirely.
     stat = split.get("stat", {})
     if not stat.get("gamesPlayed"):
         return
@@ -810,9 +814,8 @@ async def _upsert_batting_row(db: AsyncSession, split: dict, year: int, season_i
 
 async def _upsert_pitching_row(db: AsyncSession, split: dict, year: int, season_id: int, team_db_id: int):
     """Upsert a single pitching stats row from an API split."""
-    # Only the combined season split (team is None); skip per-team stints (traded-player gap).
-    if split.get("team"):
-        return
+    # NOTE: callers pre-filter via _pick_season_splits(); do NOT drop team-tagged
+    # splits here or non-traded players are skipped entirely.
     stat = split.get("stat", {})
     if not stat.get("gamesPlayed"):
         return
