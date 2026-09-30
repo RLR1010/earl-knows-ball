@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, Float, ForeignKey, UniqueConstraint
+from sqlalchemy import Column, Integer, Float, String, ForeignKey, UniqueConstraint
 from sqlalchemy.orm import relationship
 from app.database import Base
 
@@ -12,6 +12,7 @@ class PlayerWeeklyStats(Base):
     week = Column(Integer, nullable=False)
     team_id = Column(Integer, ForeignKey("nfl.teams.id"), nullable=False)
     opponent_id = Column(Integer, ForeignKey("nfl.teams.id"), nullable=False)
+    game_type = Column(String(8), nullable=True)
 
     # Passing
     pass_attempts = Column(Integer, default=0)

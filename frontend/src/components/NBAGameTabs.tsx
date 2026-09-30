@@ -138,7 +138,7 @@ function PlayerTable({ players }: { players: NBAPlayerStat[] }) {
         <tbody>
           {players.map((p) => (
             <tr key={p.player_id} className="border-t border-white/5">
-              <td className="px-2 py-1 sticky left-0 bg-[#0a0a1a] text-white font-medium whitespace-nowrap">{p.name || "—"}</td>
+              <td className="px-2 py-1 sticky left-0 bg-[#0a0a1a] text-white font-medium whitespace-nowrap">{p.player_id ? <Link href={`/nba/players/${p.player_id}`} className="hover:text-earl-400">{p.name || "—"}</Link> : (p.name || "—")}</td>
               <td className="px-2 py-1 text-center text-gray-400">{p.minutes || "—"}</td>
               <td className="px-2 py-1 text-center">{p.field_goals_made ?? "—"}/{p.field_goals_attempted ?? "—"}</td>
               <td className="px-2 py-1 text-center">{p.three_pointers_made ?? "—"}/{p.three_pointers_attempted ?? "—"}</td>

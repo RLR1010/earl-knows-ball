@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
+import Link from "next/link";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import PremiumGate from "./PremiumGate";
@@ -307,7 +308,7 @@ export default function MLBGameTabs({ gameId, game, formatOdds, boxscore, linesc
                     const ss = p?.seasonStats?.batting || {};
                     return (
                       <tr key={i} className="border-b border-white/5 hover:bg-white/[0.02]">
-                        <td className="py-1 px-2 text-white text-xs font-medium" style={{ paddingLeft: Number(p?.battingOrder) % 100 !== 0 ? "1.1rem" : undefined }}>{p?.person?.fullName || "-"}</td>
+                        <td className="py-1 px-2 text-white text-xs font-medium" style={{ paddingLeft: Number(p?.battingOrder) % 100 !== 0 ? "1.1rem" : undefined }}>{p?.person?.id ? <Link href={`/mlb/players/${p.person.id}`} className="hover:text-earl-400">{p?.person?.fullName || "-"}</Link> : (p?.person?.fullName || "-")}</td>
                         <td className="py-1 px-2 text-gray-400 text-xs text-center">{getPos(p)}</td>
                         <td className="py-1 px-2 text-gray-400 text-xs text-center">{s.atBats ?? "-"}</td>
                         <td className="py-1 px-2 text-gray-400 text-xs text-center">{s.runs ?? "-"}</td>
@@ -351,7 +352,7 @@ export default function MLBGameTabs({ gameId, game, formatOdds, boxscore, linesc
                     const pss = p?.seasonStats?.pitching || {};
                     return (
                       <tr key={i} className="border-b border-white/5 hover:bg-white/[0.02]">
-                        <td className="py-1 px-2 text-white text-xs font-medium">{p?.person?.fullName || "-"}</td>
+                        <td className="py-1 px-2 text-white text-xs font-medium">{p?.person?.id ? <Link href={`/mlb/players/${p.person.id}`} className="hover:text-earl-400">{p?.person?.fullName || "-"}</Link> : (p?.person?.fullName || "-")}</td>
                         <td className="py-1 px-2 text-gray-400 text-xs text-center">{ps.inningsPitched ?? "-"}</td>
                         <td className="py-1 px-2 text-gray-400 text-xs text-center">{ps.hits ?? "-"}</td>
                         <td className="py-1 px-2 text-gray-400 text-xs text-center">{ps.runs ?? "-"}</td>
@@ -395,7 +396,7 @@ export default function MLBGameTabs({ gameId, game, formatOdds, boxscore, linesc
                     const ss = p?.seasonStats?.batting || {};
                     return (
                       <tr key={i} className="border-b border-white/5 hover:bg-white/[0.02]">
-                        <td className="py-1 px-2 text-white text-xs font-medium" style={{ paddingLeft: Number(p?.battingOrder) % 100 !== 0 ? "1.1rem" : undefined }}>{p?.person?.fullName || "-"}</td>
+                        <td className="py-1 px-2 text-white text-xs font-medium" style={{ paddingLeft: Number(p?.battingOrder) % 100 !== 0 ? "1.1rem" : undefined }}>{p?.person?.id ? <Link href={`/mlb/players/${p.person.id}`} className="hover:text-earl-400">{p?.person?.fullName || "-"}</Link> : (p?.person?.fullName || "-")}</td>
                         <td className="py-1 px-2 text-gray-400 text-xs text-center">{getPos(p)}</td>
                         <td className="py-1 px-2 text-gray-400 text-xs text-center">{s.atBats ?? "-"}</td>
                         <td className="py-1 px-2 text-gray-400 text-xs text-center">{s.runs ?? "-"}</td>
@@ -439,7 +440,7 @@ export default function MLBGameTabs({ gameId, game, formatOdds, boxscore, linesc
                     const pss = p?.seasonStats?.pitching || {};
                     return (
                       <tr key={i} className="border-b border-white/5 hover:bg-white/[0.02]">
-                        <td className="py-1 px-2 text-white text-xs font-medium">{p?.person?.fullName || "-"}</td>
+                        <td className="py-1 px-2 text-white text-xs font-medium">{p?.person?.id ? <Link href={`/mlb/players/${p.person.id}`} className="hover:text-earl-400">{p?.person?.fullName || "-"}</Link> : (p?.person?.fullName || "-")}</td>
                         <td className="py-1 px-2 text-gray-400 text-xs text-center">{ps.inningsPitched ?? "-"}</td>
                         <td className="py-1 px-2 text-gray-400 text-xs text-center">{ps.hits ?? "-"}</td>
                         <td className="py-1 px-2 text-gray-400 text-xs text-center">{ps.runs ?? "-"}</td>

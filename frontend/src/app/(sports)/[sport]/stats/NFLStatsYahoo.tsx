@@ -243,10 +243,10 @@ function LeaderCardView({ card, sport, onSeeAll }: { card: LeaderCard; sport: st
               <span className="w-5 h-5 inline-block" />
             )}
             <div className="min-w-0 flex-1">
-              <div className="flex-1 truncate text-sm hover:text-earl-400">
+              <Link href={`/${sport}/players/${r.player_id}`} className="block flex-1 truncate text-sm hover:text-earl-400">
                 <span className="font-medium">{r.player_name}</span>
                 {r.position ? <span className="text-gray-600 ml-1.5 text-xs">{r.position}</span> : null}
-              </div>
+              </Link>
             </div>
             <span className="text-sm font-semibold tabular-nums">{fmtLeader(card.unit, r.value)}</span>
           </div>

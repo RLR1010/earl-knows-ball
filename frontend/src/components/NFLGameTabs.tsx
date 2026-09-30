@@ -205,7 +205,7 @@ function PlayerStatRow({ p }: { p: NFLPlayerStat }) {
   return (
     <tr className="border-b border-white/5 hover:bg-white/[0.02]">
       <td className="py-2 px-3 text-sm font-medium whitespace-nowrap">
-        {p.player_name}
+        {p.player_id ? <Link href={`/nfl/players/${p.player_id}`} className="hover:text-earl-400">{p.player_name}</Link> : p.player_name}
         {p.position ? <span className="text-gray-500 text-[10px] ml-1">({p.position})</span> : null}
       </td>
       {cols.map(c => <td key={c.key} className="py-2 px-3 text-sm text-right">{c.value}</td>)}

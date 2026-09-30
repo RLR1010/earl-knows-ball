@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import joinedload
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
@@ -73,6 +73,7 @@ async def get_player(player_id: int, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/players/{player_id}/profile")
+@router.get("/nfl/players/{player_id}/profile")
 async def get_player_profile(player_id: int, db: AsyncSession = Depends(get_db)):
     """Return full player profile data: stats, draft, injuries, transactions, depth chart."""
     from datetime import datetime
@@ -128,78 +129,83 @@ async def get_player_profile(player_id: int, db: AsyncSession = Depends(get_db))
             "status": dc.status,
         }
 
-    # Career stats
-    r = await db.execute(
-        select(
-            func.count(PlayerWeeklyStats.id).label("games"),
-            func.sum(PlayerWeeklyStats.pass_yards).label("pass_yds"),
-            func.sum(PlayerWeeklyStats.pass_tds).label("pass_tds"),
-            func.sum(PlayerWeeklyStats.pass_int).label("pass_int"),
-            func.sum(PlayerWeeklyStats.rush_yards).label("rush_yds"),
-            func.sum(PlayerWeeklyStats.rush_tds).label("rush_tds"),
-            func.sum(PlayerWeeklyStats.receptions).label("rec"),
-            func.sum(PlayerWeeklyStats.receiving_yards).label("rec_yds"),
-            func.sum(PlayerWeeklyStats.receiving_tds).label("rec_tds"),
-            func.min(Season.year).label("first_year"),
-            func.max(Season.year).label("last_year"),
+    # Career stats — canonical nflverse weekly stats (nfl.stats_player_week), REGULAR SEASON only.
+    # stats_player_week.player_id is the nflverse/gsis id (players.nflverse_id), NOT our surrogate
+    # players.id, and it holds only players who actually recorded a stat line — so row count ==
+    # games played (no preseason weeks and no inactive/roster placeholder rows, unlike the legacy
+    # nfl.player_weekly_stats which stored a row per rostered player per game).
+    if player.nflverse_id:
+        r = await db.execute(
+            text(
+                """
+                SELECT count(*) AS games,
+                       min(season) AS first_year,
+                       max(season) AS last_year,
+                       coalesce(sum(passing_yards), 0) AS pass_yds,
+                       coalesce(sum(passing_tds), 0) AS pass_tds,
+                       coalesce(sum(passing_interceptions), 0) AS pass_int,
+                       coalesce(sum(rushing_yards), 0) AS rush_yds,
+                       coalesce(sum(rushing_tds), 0) AS rush_tds,
+                       coalesce(sum(receptions), 0) AS rec,
+                       coalesce(sum(receiving_yards), 0) AS rec_yds,
+                       coalesce(sum(receiving_tds), 0) AS rec_tds
+                FROM nfl.stats_player_week
+                WHERE player_id = :gsis AND season_type = 'REG'
+                """
+            ),
+            {"gsis": player.nflverse_id},
         )
-        .join(Season, PlayerWeeklyStats.season_id == Season.id)
-        .where(PlayerWeeklyStats.player_id == player.id)
-    )
-    s = r.one()
-    if s.games and s.games > 0:
-        profile["stats"] = {
-            "games": s.games,
-            "first_year": s.first_year,
-            "last_year": s.last_year,
-            "pass_yds": int(s.pass_yds or 0),
-            "pass_tds": int(s.pass_tds or 0),
-            "pass_int": int(s.pass_int or 0),
-            "rush_yds": int(s.rush_yds or 0),
-            "rush_tds": int(s.rush_tds or 0),
-            "rec": int(s.rec or 0),
-            "rec_yds": int(s.rec_yds or 0),
-            "rec_tds": int(s.rec_tds or 0),
-        }
+        s = r.one()
+        if s.games and s.games > 0:
+            profile["stats"] = {
+                "games": int(s.games),
+                "first_year": s.first_year,
+                "last_year": s.last_year,
+                "pass_yds": int(s.pass_yds or 0),
+                "pass_tds": int(s.pass_tds or 0),
+                "pass_int": int(s.pass_int or 0),
+                "rush_yds": int(s.rush_yds or 0),
+                "rush_tds": int(s.rush_tds or 0),
+                "rec": int(s.rec or 0),
+                "rec_yds": int(s.rec_yds or 0),
+                "rec_tds": int(s.rec_tds or 0),
+            }
 
-        # Recent seasons (last 3)
-        recent_years = sorted(set([s.last_year, s.last_year - 1, s.last_year - 2]), reverse=True) if s.last_year else []
-        for yr in recent_years:
-            if yr is None:
-                continue
-            r_sid = await db.execute(select(Season.id).where(Season.year == yr))
-            sid = r_sid.scalar_one_or_none()
-            if not sid:
-                continue
+            # Recent seasons (last 3, regular season)
             r2 = await db.execute(
-                select(
-                    func.count(PlayerWeeklyStats.id).label("gp"),
-                    func.sum(PlayerWeeklyStats.pass_yards).label("pyd"),
-                    func.sum(PlayerWeeklyStats.pass_tds).label("ptd"),
-                    func.sum(PlayerWeeklyStats.pass_int).label("pint"),
-                    func.sum(PlayerWeeklyStats.rush_yards).label("ryd"),
-                    func.sum(PlayerWeeklyStats.rush_tds).label("rtd"),
-                    func.sum(PlayerWeeklyStats.receptions).label("rec"),
-                    func.sum(PlayerWeeklyStats.receiving_yards).label("recy"),
-                    func.sum(PlayerWeeklyStats.receiving_tds).label("rectd"),
-                ).where(
-                    PlayerWeeklyStats.player_id == player.id,
-                    PlayerWeeklyStats.season_id == sid,
-                )
+                text(
+                    """
+                    SELECT season AS year,
+                           count(*) AS games,
+                           coalesce(sum(passing_yards), 0) AS pass_yds,
+                           coalesce(sum(passing_tds), 0) AS pass_tds,
+                           coalesce(sum(passing_interceptions), 0) AS pass_int,
+                           coalesce(sum(rushing_yards), 0) AS rush_yds,
+                           coalesce(sum(rushing_tds), 0) AS rush_tds,
+                           coalesce(sum(receptions), 0) AS rec,
+                           coalesce(sum(receiving_yards), 0) AS rec_yds,
+                           coalesce(sum(receiving_tds), 0) AS rec_tds
+                    FROM nfl.stats_player_week
+                    WHERE player_id = :gsis AND season_type = 'REG'
+                    GROUP BY season
+                    ORDER BY season DESC
+                    LIMIT 3
+                    """
+                ),
+                {"gsis": player.nflverse_id},
             )
-            s2 = r2.one()
-            if s2.gp and s2.gp > 0:
+            for row in r2.mappings().all():
                 profile["recent_seasons"].append({
-                    "year": yr,
-                    "games": s2.gp,
-                    "pass_yds": int(s2.pyd or 0),
-                    "pass_tds": int(s2.ptd or 0),
-                    "pass_int": int(s2.pint or 0),
-                    "rush_yds": int(s2.ryd or 0),
-                    "rush_tds": int(s2.rtd or 0),
-                    "rec": int(s2.rec or 0),
-                    "rec_yds": int(s2.recy or 0),
-                    "rec_tds": int(s2.rectd or 0),
+                    "year": row["year"],
+                    "games": int(row["games"]),
+                    "pass_yds": int(row["pass_yds"] or 0),
+                    "pass_tds": int(row["pass_tds"] or 0),
+                    "pass_int": int(row["pass_int"] or 0),
+                    "rush_yds": int(row["rush_yds"] or 0),
+                    "rush_tds": int(row["rush_tds"] or 0),
+                    "rec": int(row["rec"] or 0),
+                    "rec_yds": int(row["rec_yds"] or 0),
+                    "rec_tds": int(row["rec_tds"] or 0),
                 })
 
     # Injury history

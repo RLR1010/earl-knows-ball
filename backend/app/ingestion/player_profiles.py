@@ -9,7 +9,7 @@ import logging
 from datetime import datetime, timezone
 
 import httpx
-from sqlalchemy import select, func
+from sqlalchemy import select, func, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Player, PlayerWeeklyStats, DepthChart, Team, Season
@@ -27,25 +27,32 @@ async def _generate_career_summary(player: Player, db: AsyncSession) -> str:
         "college": player.college or "unknown",
     }
 
-    # Gather career stats
-    r = await db.execute(
-        select(
-            func.count(PlayerWeeklyStats.id).label("games"),
-            func.sum(PlayerWeeklyStats.pass_yards).label("pass_yds"),
-            func.sum(PlayerWeeklyStats.pass_tds).label("pass_tds"),
-            func.sum(PlayerWeeklyStats.rush_yards).label("rush_yds"),
-            func.sum(PlayerWeeklyStats.rush_tds).label("rush_tds"),
-            func.sum(PlayerWeeklyStats.receptions).label("rec"),
-            func.sum(PlayerWeeklyStats.receiving_yards).label("rec_yds"),
-            func.sum(PlayerWeeklyStats.receiving_tds).label("rec_tds"),
-            func.min(Season.year).label("first_year"),
-            func.max(Season.year).label("last_year"),
+    # Gather career stats — canonical nflverse weekly stats (nfl.stats_player_week), REGULAR
+    # SEASON only. Keyed by players.nflverse_id (stats_player_week.player_id is the nflverse/gsis
+    # id), and it holds only players who recorded a stat line, so row count == games played.
+    s = None
+    if player.nflverse_id:
+        r = await db.execute(
+            text(
+                """
+                SELECT count(*) AS games,
+                       min(season) AS first_year,
+                       max(season) AS last_year,
+                       coalesce(sum(passing_yards), 0) AS pass_yds,
+                       coalesce(sum(passing_tds), 0) AS pass_tds,
+                       coalesce(sum(rushing_yards), 0) AS rush_yds,
+                       coalesce(sum(rushing_tds), 0) AS rush_tds,
+                       coalesce(sum(receptions), 0) AS rec,
+                       coalesce(sum(receiving_yards), 0) AS rec_yds,
+                       coalesce(sum(receiving_tds), 0) AS rec_tds
+                FROM nfl.stats_player_week
+                WHERE player_id = :gsis AND season_type = 'REG'
+                """
+            ),
+            {"gsis": player.nflverse_id},
         )
-        .join(Season, PlayerWeeklyStats.season_id == Season.id)
-        .where(PlayerWeeklyStats.player_id == player.id)
-    )
-    s = r.one()
-    has_stats = s.games and s.games > 0
+        s = r.one()
+    has_stats = bool(s and s.games and s.games > 0)
 
     # Team name
     team_name = ""

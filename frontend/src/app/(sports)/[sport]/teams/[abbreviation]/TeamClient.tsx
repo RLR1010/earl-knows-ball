@@ -752,7 +752,11 @@ export default function TeamDetailPage() {
                               {entry.slot === 1 ? <span className="text-earl-400 font-bold">1</span> : entry.slot}
                             </span>
                             <div className="min-w-0">
-                              <span className={`text-sm font-medium truncate block ${entry.injury_status && UNAVAILABLE_INJURY.has(entry.injury_status.toUpperCase()) ? "line-through text-gray-500" : ""}`}>{entry.player_name}</span>
+                              {entry.player_id ? (
+                                <Link href={`/${sport}/players/${entry.player_id}`} className={`text-sm font-medium truncate block hover:text-earl-400 ${entry.injury_status && UNAVAILABLE_INJURY.has(entry.injury_status.toUpperCase()) ? "line-through text-gray-500" : ""}`}>{entry.player_name}</Link>
+                              ) : (
+                                <span className={`text-sm font-medium truncate block ${entry.injury_status && UNAVAILABLE_INJURY.has(entry.injury_status.toUpperCase()) ? "line-through text-gray-500" : ""}`}>{entry.player_name}</span>
+                              )}
                               {entry.jersey_number && <span className="text-[10px] text-gray-600">#{entry.jersey_number}</span>}
                             </div>
                           </div>

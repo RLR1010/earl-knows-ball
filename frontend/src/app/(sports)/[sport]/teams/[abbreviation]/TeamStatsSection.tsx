@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import TeamLogo from "@/components/TeamLogo";
 
 /**
@@ -15,7 +16,7 @@ type Unit = "int" | "one" | "pct" | "rate3" | "rate2";
 
 interface StatRow { label: string; value: number | null; rank: number | null; unit: Unit }
 interface Section { title: string; rows: StatRow[] }
-interface LeaderRow { rank: number; player_name: string; team_abbr: string | null; position?: string | null; value: number }
+interface LeaderRow { rank: number; player_id?: number; player_name: string; team_abbr: string | null; position?: string | null; value: number }
 interface LeaderCard { key: string; title: string; unit: Unit; rows: LeaderRow[] }
 interface LeaderGroup { title: string; cards: LeaderCard[] }
 interface TeamStats {
@@ -161,7 +162,13 @@ export default function TeamStatsSection({
                           <div key={r.player_name} className="flex items-center gap-3 px-4 py-2 hover:bg-white/5">
                             <span className="text-xs text-gray-500 w-4 text-right">{r.rank}</span>
                             {a ? <TeamLogo abbr={a} sport={sport} size={20} /> : <span className="w-5 h-5 inline-block" />}
-                            <span className="flex-1 truncate text-sm font-medium">{r.player_name}</span>
+                            <span className="flex-1 truncate text-sm font-medium">
+                              {r.player_id ? (
+                                <Link href={`/${sport}/players/${r.player_id}`} className="hover:text-earl-400">{r.player_name}</Link>
+                              ) : (
+                                r.player_name
+                              )}
+                            </span>
                             <span className="text-sm font-semibold tabular-nums">{fmt(c.unit, r.value)}</span>
                           </div>
                         );

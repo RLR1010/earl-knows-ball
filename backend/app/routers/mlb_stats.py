@@ -1297,7 +1297,7 @@ async def mlb_stats_team(abbr: str, year: int = Query(...), db: AsyncSession = D
                 "key": c["stat_id"],
                 "title": c["label"],
                 "unit": _mlb_leader_unit(c["format"]),
-                "rows": [{"rank": r["rank"], "player_name": r["player_name"],
+                "rows": [{"rank": r["rank"], "player_id": r["player_id"], "player_name": r["player_name"],
                           "team_abbr": r["team_abbr"], "position": r["position"],
                           "value": r["value"]} for r in res["leaders"]],
             })

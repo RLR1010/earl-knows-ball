@@ -238,7 +238,7 @@ function LeaderCardView({
               {abbr ? <TeamLogo abbr={abbr} sport={sport} size={20} /> : <span className="w-5 h-5 inline-block" />}
               <div className="min-w-0 flex-1">
                 <div className="flex-1 truncate text-sm">
-                  <span className="font-medium">{r.player_name}</span>
+                  <Link href={`/${sport}/players/${r.player_id}`} className="font-medium hover:text-earl-400">{r.player_name}</Link>
                   {r.position ? <span className="text-gray-600 ml-1.5 text-xs">{r.position}</span> : null}
                 </div>
               </div>
@@ -314,7 +314,11 @@ function StatTable<T extends Record<string, any>>({
                 <td className="px-3 py-2">
                   <div className="flex items-center gap-2">
                     {abbr ? <TeamLogo abbr={abbr} sport={sport} size={20} /> : null}
-                    <span className="font-medium whitespace-nowrap">{name}</span>
+                    {r.player_id ? (
+                      <Link href={`/${sport}/players/${r.player_id}`} className="font-medium whitespace-nowrap hover:text-earl-400">{name}</Link>
+                    ) : (
+                      <span className="font-medium whitespace-nowrap">{name}</span>
+                    )}
                     {badgeKey && r[badgeKey] ? (
                       <span className="text-[10px] text-gray-500 border border-white/10 rounded px-1">{r[badgeKey]}</span>
                     ) : null}
