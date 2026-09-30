@@ -31,7 +31,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 log = logging.getLogger("seed_power_rankings_task")
 
 NAME = "power-rankings-nfl"
-CRON = "0 9 * * 2"          # weekly, Tuesday 09:00 (after MNF + overnight ingest)
+CRON = "0 9 * * tue"        # weekly, Tuesday 09:00 (after MNF + overnight ingest)
 TZ = "America/New_York"
 
 

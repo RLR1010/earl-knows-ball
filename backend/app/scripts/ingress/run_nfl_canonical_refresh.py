@@ -51,7 +51,104 @@ def main() -> None:
     _run([PY, "-m", "app.ingestion.nfl_player_splits"])
     _run([PY, "-m", "app.ingestion.nfl_def_vs_position"])
 
+    # 3) freshness guard — fail LOUDLY if the canonical weekly tables are behind the
+    # latest PLAYED week. Without this, a stale local download cache (or an upstream
+    # hiccup) left the tables a week behind while the task still reported success.
+    # (One event loop for both the check and the outcome report — the async engine
+    # cannot be shared across two asyncio.run() calls.)
+    started = datetime.datetime.now(datetime.timezone.utc)
+
+    async def _verify_and_report() -> list[str]:
+        problems = await _collect_problems(year)
+        for p in problems:
+            print(f"[canonical-refresh] STALE: {p}", flush=True)
+        try:
+            from app.scripts.ingress._ingest_common import report_task_outcome
+
+            await report_task_outcome(
+                "nfl-canonical-refresh",
+                success=not problems,
+                error="; ".join(problems),
+                started_at=started,
+            )
+        except Exception as exc:  # never let the reporting helper break the job
+            print(f"[canonical-refresh] outcome report skipped: {exc}", flush=True)
+        return problems
+
+    try:
+        import asyncio
+
+        asyncio.run(_verify_and_report())
+    except Exception as exc:
+        print(f"[canonical-refresh] freshness guard skipped: {exc}", flush=True)
+
     print("[canonical-refresh] done", flush=True)
+
+
+async def _collect_problems(year: int) -> list[str]:
+    """Return stale-table problems (empty list == healthy).
+
+    Compares each canonical weekly table's max REG week for `year` against the
+    latest week actually PLAYED (FINAL REG games in nfl.games).
+    """
+    try:
+        from sqlalchemy import text
+
+        from app.database import async_session
+    except Exception as exc:  # pragma: no cover
+        return [f"freshness check unavailable: {exc}"]
+
+    out: list[str] = []
+    async with async_session() as db:
+        played = (
+            await db.execute(
+                text(
+                    """
+                    SELECT max(g.week) FROM nfl.games g
+                    JOIN nfl.seasons s ON s.id = g.season_id
+                    WHERE s.year = :y AND g.game_type::text = 'REG'
+                      AND g.status::text = 'FINAL'
+                    """
+                ),
+                {"y": year},
+            )
+        ).scalar()
+        if not played:
+            return out  # nothing played yet — nothing to be stale against
+        # (table, extra filter) — column conventions differ per nflverse asset
+        checks = [
+            ("stats_team_week", "AND season_type = 'REG'"),
+            ("stats_player_week", "AND season_type = 'REG'"),
+            ("pbp", "AND season_type = 'REG'"),
+            ("snap_counts", "AND game_type = 'REG'"),
+            ("ftn_charting", ""),
+            ("ngs_passing", "AND season_type = 'REG'"),
+            ("pfr_advstats_pass", ""),
+        ]
+        for tbl, extra in checks:
+            try:
+                got = (
+                    await db.execute(
+                        text(f"SELECT max(week) FROM nfl.{tbl} WHERE season = :y {extra}"),
+                        {"y": year},
+                    )
+                ).scalar()
+            except Exception as exc:
+                out.append(f"{tbl}: check failed ({str(exc)[:60]})")
+                continue
+            if got is None or int(got) < int(played):
+                out.append(f"{tbl} at week {got} < played week {played} (season {year})")
+    return out
+
+
+def _freshness_report(year: int) -> list[str]:
+    """Sync helper for ad-hoc/CLI use."""
+    import asyncio
+
+    try:
+        return asyncio.run(_collect_problems(year))
+    except Exception as exc:
+        return [f"freshness query failed: {exc}"]
 
 
 if __name__ == "__main__":

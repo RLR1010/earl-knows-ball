@@ -18,6 +18,7 @@ CLI: app/scripts/backfill_nflverse_history.py
 from __future__ import annotations
 
 import asyncio
+import datetime
 import gzip
 import io
 import os
@@ -126,10 +127,32 @@ def _local_path(ds: Dataset, season: int | None) -> Path:
     return CACHE_DIR / f"{ds.tag}__{name}"
 
 
+def _current_season_year() -> int:
+    """NFL league year: rolls over in March (Jan/Feb still belong to the prior season)."""
+    now = datetime.datetime.now(datetime.timezone.utc)
+    return now.year if now.month >= 3 else now.year - 1
+
+
+def _cache_reusable(ds: Dataset, season: int | None, path: Path) -> bool:
+    """True only when the cached asset is safe to reuse.
+
+    Weekly nflverse assets for the in-progress season (and rolling assets such as
+    schedules/ngs_*) are UPDATED every week, so the cache must not be trusted for
+    them — otherwise the daily canonical refresh silently re-ingests a stale file
+    and the newest week never lands. Historical seasons are immutable, so their
+    cached copy is kept (keeps full backfills cheap).
+    """
+    if not path.exists() or path.stat().st_size <= 0:
+        return False
+    if ds.rolling or season is None:
+        return False
+    return season < _current_season_year() - 1
+
+
 def download(ds: Dataset, season: int | None, *, force: bool = False,
              retries: int = 4) -> Path:
     path = _local_path(ds, season)
-    if path.exists() and not force and path.stat().st_size > 0:
+    if not force and _cache_reusable(ds, season, path):
         return path
     url = asset_url(ds, season)
     last = None

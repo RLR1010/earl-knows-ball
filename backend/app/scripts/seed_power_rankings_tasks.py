@@ -11,7 +11,7 @@ backend directory, so the same script works on dev and prod.
 Usage:
     cd <backend> && PYTHONPATH=$PWD <venv>/bin/python app/scripts/seed_power_rankings_tasks.py
     ... --dry-run
-    ... --cron "0 9 * * 2" --timezone America/New_York
+    ... --cron "0 9 * * tue" --timezone America/New_York
 """
 from __future__ import annotations
 
@@ -85,7 +85,7 @@ async def main(cron: str, tz: str, timeout: int, dry_run: bool) -> None:
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="Seed weekly power-rankings tasks (one per sport)")
-    ap.add_argument("--cron", default="0 9 * * 2")
+    ap.add_argument("--cron", default="0 9 * * tue")
     ap.add_argument("--timezone", default="America/New_York")
     ap.add_argument("--timeout", type=int, default=1800)
     ap.add_argument("--dry-run", action="store_true")
