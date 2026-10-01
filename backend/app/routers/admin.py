@@ -4152,13 +4152,13 @@ class TaskRunOut(BaseModel):
 
 @router.get("/tasks", response_model=list[TaskStatusOut])
 async def get_tasks(admin: User = Depends(get_admin_user)):
-    """List all tasks with last run info + next run times."""
-    from app.task_scheduler import get_task_statuses, get_next_run_times
-    tasks = await get_task_statuses()
-    next_runs = get_next_run_times()
-    for t in tasks:
-        t["next_run"] = next_runs.get(t["name"])
-    return tasks
+    """List all tasks with last run info + next run times.
+
+    ``get_task_statuses`` sources next-run times from the shared job store so
+    this is correct regardless of which worker serves the request.
+    """
+    from app.task_scheduler import get_task_statuses
+    return await get_task_statuses()
 
 
 @router.get("/tasks/{name}/runs", response_model=list[TaskRunOut])
@@ -4184,7 +4184,14 @@ async def trigger_task(name: str, admin: User = Depends(get_admin_user)):
 
 @router.patch("/tasks/{name}/enabled")
 async def set_task_enabled(name: str, body: dict, admin: User = Depends(get_admin_user), db: AsyncSession = Depends(get_db)):
-    """Enable or disable a task by name. Reloads the scheduler job immediately."""
+    """Enable or disable a task by name.
+
+    The change is persisted first (task_config.enabled). If this request lands
+    on the scheduler worker the reload is immediate; otherwise the scheduler
+    worker's reconcile loop (every ~10s) picks it up. A disabled task stays
+    disabled: load_tasks drops both the in-memory job and the persisted
+    apscheduler_jobs row.
+    """
     enabled = bool(body.get("enabled"))
     result = await db.execute(
         text("UPDATE task_config SET enabled = :enabled WHERE name = :name"),
@@ -4194,24 +4201,35 @@ async def set_task_enabled(name: str, body: dict, admin: User = Depends(get_admi
     if result.rowcount == 0:
         raise HTTPException(status_code=404, detail=f"Task not found: {name}")
 
-    from app.task_scheduler import _scheduler, load_tasks, _update_next_runs
-    if _scheduler is None:
-        raise HTTPException(status_code=503, detail="Scheduler not running")
-    await load_tasks(_scheduler)
-    _update_next_runs()
-    return {"status": "ok", "name": name, "enabled": enabled}
+    from app.task_scheduler import _scheduler, _reconcile_tasks
+    applied_now = False
+    if _scheduler is not None:
+        applied_now = await _reconcile_tasks()
+    return {
+        "status": "ok",
+        "name": name,
+        "enabled": enabled,
+        "applied": applied_now,
+        "note": None if applied_now else "Will apply on the scheduler worker within ~10s",
+    }
 
 
 @router.post("/tasks/refresh")
 async def refresh_tasks(admin: User = Depends(get_admin_user)):
-    """Reload tasks from DB into scheduler."""
-    from app.task_scheduler import _scheduler, load_tasks
-    if _scheduler is None:
-        raise HTTPException(status_code=503, detail="Scheduler not running")
-    await load_tasks(_scheduler)
-    from app.task_scheduler import _update_next_runs
-    _update_next_runs()
-    return {"status": "refreshed", "jobs": len(_scheduler.get_jobs())}
+    """Reload tasks from DB into the scheduler (scheduler worker applies it)."""
+    from app.task_scheduler import _scheduler, _reconcile_tasks, get_task_statuses
+    if _scheduler is not None:
+        await _reconcile_tasks()
+        jobs = len(_scheduler.get_jobs())
+    else:
+        # Not the scheduler worker: the scheduler worker's reconcile loop will
+        # sync shortly. Report the number of enabled tasks for consistency.
+        from app.database import async_session as _sess
+        async with _sess() as _db:
+            jobs = await _db.scalar(
+                text("SELECT count(*) FROM task_config WHERE enabled = true")
+            )
+    return {"status": "refreshed", "jobs": jobs, "tasks": await get_task_statuses()}
 
 
 # ── Database Explorer ───────────────────────────────────────────────

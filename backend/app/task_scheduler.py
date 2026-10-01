@@ -311,35 +311,106 @@ async def _purge_persisted_jobs(db, keep_names):
             pass
 
 
+def _format_next_run(next_run_time: datetime | None) -> str:
+    """Humanise a next-run timestamp as e.g. 'in 3d 4h'."""
+    if not next_run_time:
+        return "—"
+    now = datetime.now(TZ)
+    diff = next_run_time - now
+    mins = int(diff.total_seconds() / 60)
+    if mins < 0:
+        return "now"
+    if mins < 60:
+        return f"in {mins}m"
+    if mins < 1440:
+        return f"in {mins // 60}h {mins % 60}m"
+    days = mins // 1440
+    return f"in {days}d {(mins % 1440) // 60}h"
+
+
 def _update_next_runs():
-    """Refresh in-memory next_run from scheduler."""
+    """Refresh in-memory next_run from scheduler (scheduler worker only)."""
     global _next_runs
     if _scheduler is None:
         return
-    now = datetime.now(TZ)
-    next_runs = {}
-    for job in _scheduler.get_jobs():
-        if job.next_run_time:
-            diff = job.next_run_time - now
-            mins = int(diff.total_seconds() / 60)
-            if mins < 0:
-                next_runs[job.id] = "now"
-            elif mins < 60:
-                next_runs[job.id] = f"in {mins}m"
-            elif mins < 1440:
-                next_runs[job.id] = f"in {mins // 60}h {mins % 60}m"
-            else:
-                days = mins // 1440
-                next_runs[job.id] = f"in {days}d {(mins % 1440) // 60}h"
-        else:
-            next_runs[job.id] = "—"
-    _next_runs = next_runs
+    _next_runs = {job.id: _format_next_run(job.next_run_time) for job in _scheduler.get_jobs()}
+
+
+# Signature of the config last applied to the scheduler. Used to detect
+# task_config changes (enable/disable/cron/tz) so updates made by ANY worker
+# are reflected by the single scheduler worker without a restart.
+_applied_config_sig: dict[str, tuple[str, str, bool]] | None = None
+
+
+async def _config_signature() -> dict[str, tuple[str, str, bool]]:
+    """Snapshot of (cron, tz, enabled) per task from the shared task_config."""
+    async with async_session() as db:
+        rows = await db.execute(
+            text("SELECT name, cron_expr, timezone, enabled FROM task_config")
+        )
+        return {n: ((c or ""), (tz or ""), bool(e)) for n, c, tz, e in rows}
+
+
+async def _reconcile_tasks() -> bool:
+    """Re-sync scheduler jobs with task_config; reload only when it changed.
+
+    The scheduler lives in ONE worker (advisory lock) while admin enable/disable
+    requests are served by ANY worker. Without this poll, a disabled task keeps
+    firing (and a re-enabled task never starts) until a restart. ``load_tasks``
+    both adds/removes in-memory jobs and purges stale ``apscheduler_jobs`` rows,
+    so a disabled task stays disabled across restarts too.
+    """
+    global _applied_config_sig
+    if _scheduler is None:
+        return False
+    try:
+        sig = await _config_signature()
+    except Exception as e:  # noqa: BLE001
+        logger.error("Task reconcile: could not read task_config: %s", e)
+        return False
+    if sig == _applied_config_sig:
+        return False
+    try:
+        await load_tasks(_scheduler)
+    except Exception as e:  # noqa: BLE001
+        logger.error("Task reconcile: load_tasks failed: %s", e)
+        return False
+    _applied_config_sig = sig
+    _update_next_runs()
+    logger.info("Scheduler reconciled with task_config (%d jobs)", len(_scheduler.get_jobs()))
+    return True
 
 
 # ── Admin Helpers ───────────────────────────────────────────────────
 
 def get_next_run_times() -> dict[str, str]:
     return _next_runs
+
+
+async def get_next_run_times_db(db: AsyncSession | None = None) -> dict[str, str]:
+    """Next-run map sourced from the shared APScheduler job store.
+
+    The scheduler runs in a single Granian worker (guarded by a Postgres
+    advisory lock), so the in-memory ``_next_runs`` map above is only
+    populated in that one process. Every other worker would otherwise report
+    no next-run time for any task. Reading the persistent job store
+    (``apscheduler_jobs``, shared by all workers) makes next-run info correct
+    from ANY worker.
+    """
+
+    async def _collect(session: AsyncSession) -> dict[str, str]:
+        rows = await session.execute(text("SELECT id, next_run_time FROM apscheduler_jobs"))
+        return {
+            job_id: _format_next_run(
+                datetime.fromtimestamp(nrt, tz=timezone.utc) if nrt else None
+            )
+            for job_id, nrt in rows
+        }
+
+    if db is not None:
+        return await _collect(db)
+    async with async_session() as session:
+        return await _collect(session)
 
 
 async def get_task_statuses() -> list[dict[str, Any]]:
@@ -360,8 +431,9 @@ async def get_task_statuses() -> list[dict[str, Any]]:
         """))
         cols = rows.keys()
         result = [dict(zip(cols, row)) for row in rows]
+        next_runs = await get_next_run_times_db(db)
         for r in result:
-            r["next_run"] = _next_runs.get(r["name"])
+            r["next_run"] = next_runs.get(r["name"])
         return result
 
 
@@ -412,10 +484,24 @@ async def start_scheduler():
     _update_next_runs()
     logger.info("Scheduler started with %d jobs", len(_scheduler.get_jobs()))
 
-    # Periodic next-run refresh
+    # Record the config we just applied so the reconcile loop below knows what
+    # is already loaded (avoids re-adding jobs every tick).
+    global _applied_config_sig
+    try:
+        _applied_config_sig = await _config_signature()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Could not snapshot task_config at startup: %s", e)
+
+    # Periodic next-run refresh + task_config reconcile. The reconcile step lets
+    # an enable/disable made on ANY worker take effect here (add/remove the job)
+    # without a restart, so disabled tasks actually stop firing.
     async def _refresh():
         while True:
-            await asyncio.sleep(30)
+            await asyncio.sleep(10)
+            try:
+                await _reconcile_tasks()
+            except Exception as e:  # noqa: BLE001
+                logger.error("Scheduler reconcile loop error: %s", e)
             _update_next_runs()
     asyncio.create_task(_refresh())
 

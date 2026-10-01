@@ -291,6 +291,70 @@ _NBA_TEAM_METRICS = [
 ]
 
 
+_NBA_TEAM_STAT_SQL = """
+    WITH latest_team AS (
+        SELECT DISTINCT ON (pg.player_id) pg.player_id, gg.season_id, pg.team_id
+        FROM nba.player_game_stats pg
+        JOIN nba.games gg ON gg.id = pg.game_id
+        WHERE gg.season_id = (SELECT id FROM nba.seasons WHERE year = :year)
+        ORDER BY pg.player_id, gg.date DESC
+    )
+    SELECT p.id AS player_id, p.name AS player_name, p.position,
+           ps.games_played AS g, ps.games_started AS gs,
+           ps.minutes_played AS min, ps.points AS pts, ps.rebounds AS reb,
+           ps.assists AS ast, ps.steals AS stl, ps.blocks AS blk,
+           ps.turnovers AS tov, ps.personal_fouls AS pf,
+           ROUND(ps.minutes_played::numeric / GREATEST(ps.games_played, 1), 1) AS mpg,
+           ps.points_per_game AS ppg, ps.rebounds_per_game AS rpg, ps.assists_per_game AS apg,
+           ROUND(ps.steals::numeric / GREATEST(ps.games_played, 1), 1) AS spg,
+           ROUND(ps.blocks::numeric / GREATEST(ps.games_played, 1), 1) AS bpg,
+           ROUND(ps.turnovers::numeric / GREATEST(ps.games_played, 1), 1) AS tpg,
+           ROUND((ps.field_goal_pct * 100)::numeric, 1) AS fg_pct,
+           ROUND((ps.three_point_pct * 100)::numeric, 1) AS fg3_pct,
+           ROUND((ps.free_throw_pct * 100)::numeric, 1) AS ft_pct
+    FROM nba.player_season_stats ps
+    JOIN latest_team lt ON lt.player_id = ps.player_id AND lt.season_id = ps.season_id
+    JOIN nba.teams t ON t.id = lt.team_id
+    JOIN nba.players p ON p.id = ps.player_id
+    WHERE t.abbreviation = :team AND ps.games_played > 0
+"""
+
+# (key, title, default_sort, default_dir, [(label, col_key, fmt), ...])
+_NBA_TEAM_TABLES = [
+    ("per_game", "Per Game", "ppg", "desc", [
+        ("G", "g", "int"), ("GS", "gs", "int"), ("MIN", "mpg", "dec1"),
+        ("PTS", "ppg", "dec1"), ("REB", "rpg", "dec1"), ("AST", "apg", "dec1"),
+        ("STL", "spg", "dec1"), ("BLK", "bpg", "dec1"), ("TO", "tpg", "dec1"),
+        ("FG%", "fg_pct", "pct1"), ("3P%", "fg3_pct", "pct1"), ("FT%", "ft_pct", "pct1"),
+    ]),
+    ("totals", "Totals", "pts", "desc", [
+        ("G", "g", "int"), ("GS", "gs", "int"), ("MIN", "min", "int"),
+        ("PTS", "pts", "int"), ("REB", "reb", "int"), ("AST", "ast", "int"),
+        ("STL", "stl", "int"), ("BLK", "blk", "int"), ("TO", "tov", "int"),
+    ]),
+]
+
+
+async def _nba_team_tables(db, year: int, team: str) -> list[dict]:
+    res = await db.execute(text(_NBA_TEAM_STAT_SQL), {"year": year, "team": team})
+    rows = [dict(r) for r in res.mappings().all()]
+    tables = []
+    for key, title, default_sort, default_dir, cols in _NBA_TEAM_TABLES:
+        keep = ("player_id", "player_name", "position") + tuple(c[1] for c in cols)
+        srows = sorted(
+            rows,
+            key=lambda r: (r.get(default_sort) is None, r.get(default_sort) or 0),
+            reverse=(default_dir == "desc"),
+        )
+        tables.append({
+            "key": key, "title": title,
+            "default_sort": default_sort, "default_dir": default_dir,
+            "columns": [{"key": ck, "label": cl, "fmt": cf} for cl, ck, cf in cols],
+            "rows": [{k: r.get(k) for k in keep} for r in srows],
+        })
+    return tables
+
+
 @router.get("/nba/stats/team/{abbr}")
 async def nba_stat_team(abbr: str, year: int = Query(...), db: AsyncSession = Depends(get_db)):
     abbr = abbr.upper()
@@ -376,15 +440,6 @@ async def nba_stat_team(abbr: str, year: int = Query(...), db: AsyncSession = De
             rows.append({"label": label, "value": tgt.get(key), "rank": tgt["ranks"].get(key), "unit": unit})
         sections.append({"title": title, "rows": rows})
 
-    leader_groups = []
-    for gtitle, cards in _NBA_LEADER_GROUPS:
-        out_cards = []
-        for key, title, expr, unit in cards:
-            rows = await _nba_leader_rows(db, year, expr, "MAX(ps.games_played) >= 1", 5, abbr)
-            out_cards.append({"key": key, "title": title, "unit": unit,
-                              "rows": [{"rank": i + 1, **r} for i, r in enumerate(rows)]})
-        leader_groups.append({"title": gtitle, "cards": out_cards})
-
     return {
         "year": year,
         "found": True,
@@ -392,7 +447,7 @@ async def nba_stat_team(abbr: str, year: int = Query(...), db: AsyncSession = De
         "record": {"wins": tgt.get("wins") or 0, "losses": tgt.get("losses") or 0,
                    "ties": 0, "games": tgt.get("g") or 0},
         "sections": sections,
-        "leader_groups": leader_groups,
+        "tables": await _nba_team_tables(db, year, abbr),
     }
 
 

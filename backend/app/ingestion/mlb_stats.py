@@ -12,10 +12,11 @@ Data loaded:
 import asyncio
 import logging
 import re
+from collections import defaultdict
 from datetime import datetime, timezone, timedelta
 
 import httpx
-from sqlalchemy import select, delete
+from sqlalchemy import select, delete, text, bindparam, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import async_session, Base, engine
@@ -630,6 +631,8 @@ async def load_games_for_season(
         return 0
 
     count = 0
+    seen_game_pks: set[int] = set()
+    feed_status: dict[int, str] = {}
 
     # Pre-load valid venue IDs to avoid FK violations on historical venues
     venue_id_rows = await db.execute(select(MLBVenue.mlb_venue_id))
@@ -640,6 +643,9 @@ async def load_games_for_season(
             game_pk = game.get("gamePk")
             if not game_pk:
                 continue
+            game_pk = int(game_pk)
+            seen_game_pks.add(game_pk)
+            feed_status[game_pk] = (game.get("status") or {}).get("detailedState") or ""
 
             teams_data = game.get("teams", {})
             away = teams_data.get("away", {})
@@ -749,8 +755,161 @@ async def load_games_for_season(
             db.add(db_game)
             count += 1
 
+    await _prune_decided_series_games(db, season_id, year)
+    await _prune_dropped_schedule_games(db, season_id, seen_game_pks, feed_status, year)
     await db.commit()
     return count
+
+
+# Postseason rounds and the wins needed to clinch the series. Games in a
+# decided series are "if necessary" fixtures that will never be played.
+_SERIES_CLINCH = {"F": 2, "D": 3, "L": 4, "W": 4}  # WC(bo3), DS(bo5), LCS/WS(bo7)
+
+
+async def _hard_delete_games(db: AsyncSession, game_ids: list[int]) -> int:
+    """Delete games by id, clearing non-cascading FK children first.
+
+    `mlb.game_writeups`/`mlb.lineups`/batting+pitching game stats cascade on
+    delete, but `weather_forecasts`/`game_predictions`/`betting_lines_old`/
+    `pitcher_game_stats` are NO-ACTION and would block the delete, and the
+    slug-alias table has no FK at all, so we clear those explicitly.
+    """
+    if not game_ids:
+        return 0
+
+    def _ids(stmt: str):
+        return text(stmt).bindparams(bindparam("ids", expanding=True))
+
+    params = {"ids": list(game_ids)}
+    await db.execute(_ids("DELETE FROM mlb.weather_forecasts WHERE game_id IN :ids"), params)
+    await db.execute(_ids("DELETE FROM mlb.game_predictions WHERE game_id IN :ids"), params)
+    await db.execute(_ids("DELETE FROM mlb.betting_lines_old WHERE game_id IN :ids"), params)
+    await db.execute(_ids("DELETE FROM mlb.pitcher_game_stats WHERE game_id IN :ids"), params)
+    await db.execute(
+        _ids(
+            "DELETE FROM mlb.game_writeup_slug_aliases WHERE game_writeup_id IN "
+            "(SELECT id FROM mlb.game_writeups WHERE game_id IN :ids)"
+        ),
+        params,
+    )
+    await db.execute(delete(MLBGames).where(MLBGames.id.in_(list(game_ids))))
+    return len(game_ids)
+
+
+async def _prune_decided_series_games(db: AsyncSession, season_id: int, year: int) -> int:
+    """Delete unplayed games belonging to a postseason series that is already over.
+
+    A best-of-N series exposes a fixed number of fixtures (e.g. a Wild Card
+    Game 3 "if necessary"). When the series is clinched early, the remaining
+    fixtures are never played -- yet they are still dated today/tomorrow, so a
+    "game is in the past" test will never catch them. We instead detect the
+    clinch from our own FINAL results: group a season's postseason games by
+    (round, team pair); if either side has reached the wins needed to win that
+    round, every still-unplayed game in that series is dead and is removed.
+
+    This is independent of the feed, so it removes future-dated phantoms the
+    moment the series is decided. Only postseason game types are considered and
+    only SCHEDULED/POSTPONED rows are touched (played/in-progress games are kept).
+    """
+    rows = (
+        await db.execute(
+            select(
+                MLBGames.id,
+                MLBGames.game_type,
+                MLBGames.status,
+                MLBGames.home_team_id,
+                MLBGames.away_team_id,
+                MLBGames.home_score,
+                MLBGames.away_score,
+            ).where(MLBGames.season_id == season_id)
+        )
+    ).all()
+
+    groups: dict[tuple, list] = defaultdict(list)
+    for gid, gtype, status, home_id, away_id, hs, aws in rows:
+        if gtype not in _SERIES_CLINCH or home_id is None or away_id is None:
+            continue
+        groups[(gtype, frozenset((home_id, away_id)))].append(
+            (gid, status, home_id, away_id, hs, aws)
+        )
+
+    doomed: list[int] = []
+    for (gtype, _pair), games in groups.items():
+        wins: dict[int, int] = defaultdict(int)
+        for _gid, status, home_id, away_id, hs, aws in games:
+            if status == GameStatus.FINAL and hs is not None and aws is not None:
+                if hs > aws:
+                    wins[home_id] += 1
+                elif aws > hs:
+                    wins[away_id] += 1
+        if wins and max(wins.values()) >= _SERIES_CLINCH[gtype]:
+            for gid, status, _h, _a, _hs, _aws in games:
+                if status in (GameStatus.SCHEDULED, GameStatus.POSTPONED):
+                    doomed.append(gid)
+
+    if not doomed:
+        return 0
+    removed = await _hard_delete_games(db, doomed)
+    logger.warning(
+        "MLB decided-series prune (%s): removed %d unplayed game(s): %s", year, removed, doomed
+    )
+    return removed
+
+
+async def _prune_dropped_schedule_games(
+    db: AsyncSession,
+    season_id: int,
+    seen_game_pks: set[int],
+    feed_status: dict[int, str],
+    year: int,
+) -> int:
+    """Backstop: delete past-dated games the MLB feed no longer lists.
+
+    Once a series ends early the feed either drops the unplayed fixture
+    entirely (2026 behavior) or leaves it marked "Postponed" (older seasons).
+    The decided-series prune handles the postseason case directly; this cleans
+    up any remaining past-dated stale row that the feed has disowned.
+
+    A sanity guard skips the prune entirely when the feed comes back
+    implausibly short (guards against a truncated API response mass-deleting
+    real games).
+    """
+    seen = {int(p) for p in seen_game_pks}
+    db_total = (
+        await db.execute(
+            select(func.count()).select_from(MLBGames).where(MLBGames.season_id == season_id)
+        )
+    ).scalar_one()
+    if db_total and len(seen) < max(50, int(db_total * 0.5)):
+        logger.warning(
+            "MLB schedule prune skipped for %s: feed listed %d games vs %d in DB",
+            year, len(seen), db_total,
+        )
+        return 0
+
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=72)
+    rows = (
+        await db.execute(
+            select(MLBGames.id, MLBGames.mlb_game_id).where(
+                MLBGames.season_id == season_id,
+                MLBGames.status.in_([GameStatus.SCHEDULED, GameStatus.POSTPONED]),
+                MLBGames.date < cutoff,
+            )
+        )
+    ).all()
+    doomed = []
+    for gid, pk in rows:
+        if pk is None or int(pk) not in seen:
+            doomed.append(gid)          # dropped from the feed entirely
+        elif feed_status.get(int(pk)) == "Postponed":
+            doomed.append(gid)          # left behind as a never-played game
+    if not doomed:
+        return 0
+    removed = await _hard_delete_games(db, doomed)
+    logger.warning(
+        "MLB schedule prune (%s): removed %d dropped game(s): %s", year, removed, doomed
+    )
+    return removed
 
 
 # ── Upsert helpers ───────────────────────────────────────────────────

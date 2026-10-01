@@ -3,16 +3,19 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import TeamLogo from "@/components/TeamLogo";
+import StatTable, { type StatTableData } from "./StatTable";
 
 /**
  * Yahoo-style "Stats" section for a team/season page.
  * Consumes a uniform shape from each sport's backend:
  *   { found, team:{abbr}, record:{wins,losses,ties,games},
  *     sections:[{title, rows:[{label,value,rank,unit}]}],
- *     leader_groups:[{title, cards:[{key,title,unit,rows:[{rank,player_name,team_abbr,value}]}]}] }
+ *     leader_groups:[{title, cards:[{key,title,unit,rows:[{rank,player_name,team_abbr,value}]}]}],
+ *     tables:[{key,title,default_sort,columns:[{key,label,fmt}],rows:[...]}] }
+ * NFL returns `tables` (full sortable category tables) instead of `leader_groups`.
  */
 
-type Unit = "int" | "one" | "pct" | "rate3" | "rate2";
+type Unit = "int" | "one" | "pct" | "pct1" | "time" | "rate3" | "rate2";
 
 interface StatRow { label: string; value: number | null; rank: number | null; unit: Unit }
 interface Section { title: string; rows: StatRow[] }
@@ -26,11 +29,17 @@ interface TeamStats {
   record?: { wins: number; losses: number; ties: number; games: number };
   sections?: Section[];
   leader_groups?: LeaderGroup[];
+  tables?: StatTableData[];
 }
 
 function fmt(unit: Unit, v: number | null) {
   if (v == null) return "—";
   if (unit === "pct") return (Number(v) * 100).toFixed(1);
+  if (unit === "pct1") return (Number(v) * 100).toFixed(1) + "%";
+  if (unit === "time") {
+    const s = Math.round(Number(v));
+    return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+  }
   if (unit === "rate3") return Number(v).toFixed(3).replace(/^0\./, ".");
   if (unit === "rate2") return Number(v).toFixed(2);
   if (unit === "int") return Math.round(Number(v)).toLocaleString();
@@ -143,7 +152,15 @@ export default function TeamStatsSection({
         </div>
       ) : null}
 
-      {data.leader_groups?.some((g) => g.cards.some((c) => c.rows.length)) && (
+      {data.tables?.length ? (
+        <div className="space-y-6">
+          {data.tables.map((t) => (
+            <StatTable key={t.key} sport={sport} table={t} />
+          ))}
+        </div>
+      ) : null}
+
+      {!data.tables?.length && data.leader_groups?.some((g) => g.cards.some((c) => c.rows.length)) && (
         <div className="space-y-6">
           <h3 className="text-xs uppercase tracking-widest text-gray-500">Team Leaders</h3>
           {data.leader_groups.map((g) => (

@@ -1069,6 +1069,82 @@ async def _mlb_season_games(db, year: int) -> int:
     return int(res.scalar() or 0)
 
 
+# ── MLB team full stat tables (Yahoo-style, sortable) ──────────────────
+# Full per-player Batting/Pitching season stats for a team/season.
+
+_MLB_TEAM_BATTING_SQL = """
+    SELECT p.id AS player_id, p.name AS player_name, p.position,
+           t.abbreviation AS team_abbr,
+           b.games_played AS g, b.at_bats AS ab, b.runs AS r, b.hits AS h,
+           b.doubles AS d2, b.triples AS t3, b.home_runs AS hr, b.runs_batted_in AS rbi,
+           b.total_bases AS tb, b.base_on_balls AS bb, b.strikeouts AS so,
+           b.stolen_bases AS sb, b.caught_stealing AS cs,
+           b.avg, b.obp, b.slg, b.ops
+    FROM mlb.batting_stats b
+    JOIN mlb.players p ON p.id = b.player_id
+    JOIN mlb.teams t ON t.id = b.team_id
+    JOIN mlb.seasons s ON s.id = b.season_id
+    WHERE s.year = :year AND t.abbreviation = :team AND b.games_played > 0
+"""
+
+_MLB_TEAM_PITCHING_SQL = """
+    SELECT p.id AS player_id, p.name AS player_name, p.position,
+           t.abbreviation AS team_abbr,
+           pi.wins AS w, pi.losses AS l, pi.era, pi.games_played AS g,
+           pi.games_started AS gs, pi.complete_games AS cg, pi.shutouts AS sho,
+           pi.saves AS sv, pi.innings_pitched AS ip, pi.hits AS h, pi.runs AS r,
+           pi.earned_runs AS er, pi.home_runs AS hr, pi.base_on_balls AS bb,
+           pi.strikeouts AS so, pi.whip
+    FROM mlb.pitching_stats pi
+    JOIN mlb.players p ON p.id = pi.player_id
+    JOIN mlb.teams t ON t.id = pi.team_id
+    JOIN mlb.seasons s ON s.id = pi.season_id
+    WHERE s.year = :year AND t.abbreviation = :team AND pi.games_played > 0
+"""
+
+# (key, title, default_sort, default_dir, sql, [(label, col_key, fmt), ...])
+_MLB_TEAM_TABLES = [
+    ("batting", "Batting", "avg", "desc", _MLB_TEAM_BATTING_SQL, [
+        ("G", "g", "int"), ("AB", "ab", "int"), ("R", "r", "int"),
+        ("H", "h", "int"), ("2B", "d2", "int"), ("3B", "t3", "int"),
+        ("HR", "hr", "int"), ("RBI", "rbi", "int"), ("TB", "tb", "int"),
+        ("BB", "bb", "int"), ("SO", "so", "int"), ("SB", "sb", "int"),
+        ("CS", "cs", "int"), ("AVG", "avg", "rate3"), ("OBP", "obp", "rate3"),
+        ("SLG", "slg", "rate3"), ("OPS", "ops", "rate3"),
+    ]),
+    ("pitching", "Pitching", "era", "asc", _MLB_TEAM_PITCHING_SQL, [
+        ("W", "w", "int"), ("L", "l", "int"), ("ERA", "era", "rate2"),
+        ("G", "g", "int"), ("GS", "gs", "int"), ("CG", "cg", "int"),
+        ("SHO", "sho", "int"), ("SV", "sv", "int"), ("IP", "ip", "ip"),
+        ("H", "h", "int"), ("R", "r", "int"), ("ER", "er", "int"),
+        ("HR", "hr", "int"), ("BB", "bb", "int"), ("SO", "so", "int"),
+        ("WHIP", "whip", "rate2"),
+    ]),
+]
+
+
+async def _mlb_team_tables(db, year: int, team: str) -> list[dict]:
+    tables = []
+    for key, title, default_sort, default_dir, sql, cols in _MLB_TEAM_TABLES:
+        res = await db.execute(text(sql), {"year": year, "team": team})
+        rows = [dict(r) for r in res.mappings().all()]
+        keep = ("player_id", "player_name", "position", "team_abbr") + tuple(c[1] for c in cols)
+
+        def sortkey(r):
+            v = r.get(default_sort)
+            return (v is None, v if v is not None else 0)
+        rows.sort(key=sortkey, reverse=(default_dir == "desc"))
+        tables.append({
+            "key": key,
+            "title": title,
+            "default_sort": default_sort,
+            "default_dir": default_dir,
+            "columns": [{"key": ck, "label": cl, "fmt": cf} for cl, ck, cf in cols],
+            "rows": [{k: r.get(k) for k in keep} for r in rows],
+        })
+    return tables
+
+
 async def _mlb_cat_leaders(db, cat, kind, year, league, season_games, limit, team=None):
     col = cat["col"]
     if kind == "batting":
@@ -1288,20 +1364,6 @@ async def mlb_stats_team(abbr: str, year: int = Query(...), db: AsyncSession = D
         sections.append({"title": title, "rows": rows})
 
     season_games = await _mlb_season_games(db, year)
-    leader_groups = []
-    for grp, cats, kind in (("Batting", _BATTING_LEADER_CATS, "batting"), ("Pitching", _PITCHING_LEADER_CATS, "pitching")):
-        out_cards = []
-        for c in cats:
-            res = await _mlb_cat_leaders(db, c, kind, year, None, season_games, 5, abbr)
-            out_cards.append({
-                "key": c["stat_id"],
-                "title": c["label"],
-                "unit": _mlb_leader_unit(c["format"]),
-                "rows": [{"rank": r["rank"], "player_id": r["player_id"], "player_name": r["player_name"],
-                          "team_abbr": r["team_abbr"], "position": r["position"],
-                          "value": r["value"]} for r in res["leaders"]],
-            })
-        leader_groups.append({"title": grp, "cards": out_cards})
 
     return {
         "year": year,
@@ -1310,7 +1372,7 @@ async def mlb_stats_team(abbr: str, year: int = Query(...), db: AsyncSession = D
         "record": {"wins": tgt.get("wins") or 0, "losses": tgt.get("losses") or 0,
                    "ties": 0, "games": tgt.get("g") or 0},
         "sections": sections,
-        "leader_groups": leader_groups,
+        "tables": await _mlb_team_tables(db, year, abbr),
     }
 
 

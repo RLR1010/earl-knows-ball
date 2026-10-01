@@ -359,6 +359,183 @@ async def _leader_rows(db, year: int, expr: str, having: str, limit: int, team: 
     return [dict(r._mapping) for r in result.fetchall()]
 
 
+# ── NFL team full stat tables (Yahoo-style, sortable) ──────────────────
+# One aggregated row per player for the team/season, then split into the
+# Yahoo category tables: Passing, Rushing, Receiving, Kicking, Kickoffs,
+# Punts, Returns, Defense. Derived rates/averages are computed here so the
+# frontend only has to format + sort.
+
+_NFL_TEAM_STAT_SQL = """
+    SELECT p.id AS player_id,
+           p.name AS player_name,
+           p.position,
+           (ARRAY_AGG(t.abbreviation ORDER BY pws.week DESC))[1] AS team_abbr,
+           COUNT(DISTINCT pws.game_id) AS gp,
+           COALESCE(SUM(pws.pass_completions), 0) AS pass_completions,
+           COALESCE(SUM(pws.pass_attempts), 0) AS pass_attempts,
+           COALESCE(SUM(pws.pass_yards), 0) AS pass_yards,
+           COALESCE(SUM(pws.pass_tds), 0) AS pass_tds,
+           COALESCE(SUM(pws.pass_int), 0) AS pass_int,
+           COALESCE(SUM(pws.pass_sacks), 0) AS pass_sacks,
+           COALESCE(SUM(pws.rush_attempts), 0) AS rush_attempts,
+           COALESCE(SUM(pws.rush_yards), 0) AS rush_yards,
+           COALESCE(SUM(pws.rush_tds), 0) AS rush_tds,
+           COALESCE(MAX(pws.rush_long), 0) AS rush_long,
+           COALESCE(SUM(pws.fumbles), 0) AS fumbles,
+           COALESCE(SUM(pws.targets), 0) AS targets,
+           COALESCE(SUM(pws.receptions), 0) AS receptions,
+           COALESCE(SUM(pws.receiving_yards), 0) AS receiving_yards,
+           COALESCE(SUM(pws.receiving_tds), 0) AS receiving_tds,
+           COALESCE(MAX(pws.receiving_long), 0) AS receiving_long,
+           COALESCE(SUM(pws.yards_after_catch), 0) AS yards_after_catch,
+           COALESCE(SUM(pws.field_goals_made), 0) AS fg_made,
+           COALESCE(SUM(pws.field_goals_attempted), 0) AS fg_att,
+           COALESCE(MAX(pws.long_field_goal), 0) AS fg_long,
+           COALESCE(SUM(pws.extra_points_made), 0) AS xp_made,
+           COALESCE(SUM(pws.extra_points_attempted), 0) AS xp_att,
+           COALESCE(SUM(pws.kick_returns), 0) AS kr,
+           COALESCE(SUM(pws.kick_return_yards), 0) AS kr_yds,
+           COALESCE(SUM(pws.kick_return_tds), 0) AS kr_td,
+           COALESCE(MAX(pws.long_kick_return), 0) AS kr_long,
+           COALESCE(SUM(pws.punt_returns), 0) AS pr,
+           COALESCE(SUM(pws.punt_return_yards), 0) AS pr_yds,
+           COALESCE(SUM(pws.punt_return_tds), 0) AS pr_td,
+           COALESCE(MAX(pws.long_punt_return), 0) AS pr_long,
+           COALESCE(SUM(pws.fair_catches), 0) AS fair_catches,
+           COALESCE(SUM(pws.punts), 0) AS punts,
+           COALESCE(SUM(pws.punt_yards), 0) AS punt_yards,
+           COALESCE(MAX(pws.long_punt), 0) AS punt_long,
+           COALESCE(SUM(pws.punts_inside_20), 0) AS p20,
+           COALESCE(SUM(pws.punts_inside_10), 0) AS p10,
+           COALESCE(SUM(pws.punts_over_50), 0) AS p50,
+           COALESCE(SUM(pws.touchbacks_punting), 0) AS punt_tb,
+           COALESCE(SUM(pws.tackles_solo), 0) AS tackles_solo,
+           COALESCE(SUM(pws.tackles_assist), 0) AS tackles_assist,
+           COALESCE(SUM(pws.tackles_combined), 0) AS tackles_combined,
+           COALESCE(SUM(pws.tackles_for_loss), 0) AS tfl,
+           COALESCE(SUM(pws.sacks), 0) AS sacks,
+           COALESCE(SUM(pws.qb_hits), 0) AS qb_hits,
+           COALESCE(SUM(pws.passes_defended), 0) AS passes_defended,
+           COALESCE(SUM(pws.interceptions), 0) AS interceptions,
+           COALESCE(SUM(pws.fumbles_forced), 0) AS forced_fumbles,
+           COALESCE(SUM(pws.fumbles_recovered), 0) AS fumble_recoveries,
+           COALESCE(SUM(pws.defensive_tds), 0) AS defensive_tds,
+           COALESCE(SUM(pws.safeties), 0) AS safeties
+    FROM player_weekly_stats pws
+    JOIN seasons s ON s.id = pws.season_id
+    JOIN players p ON p.id = pws.player_id
+    JOIN teams t ON t.id = pws.team_id
+    WHERE s.year = :year AND pws.game_type = 'REG' AND t.abbreviation = :team
+    GROUP BY p.id, p.name, p.position
+"""
+
+# (key, title, default_sort, need(row)->bool, [(label, col_key, fmt), ...])
+_NFL_TEAM_TABLES = [
+    ("passing", "Passing", "pass_yards", lambda r: r["pass_attempts"] > 0, [
+        ("CMP", "pass_completions", "int"), ("ATT", "pass_attempts", "int"),
+        ("YDS", "pass_yards", "int"), ("AVG", "pass_avg", "dec1"),
+        ("TD", "pass_tds", "int"), ("INT", "pass_int", "int"),
+        ("SCK", "pass_sacks", "int"), ("RATE", "pass_rating", "rate"),
+    ]),
+    ("rushing", "Rushing", "rush_yards", lambda r: r["rush_attempts"] > 0, [
+        ("CAR", "rush_attempts", "int"), ("YDS", "rush_yards", "int"),
+        ("AVG", "rush_avg", "dec1"), ("LNG", "rush_long", "int"),
+        ("TD", "rush_tds", "int"), ("FUM", "fumbles", "int"),
+    ]),
+    ("receiving", "Receiving", "receiving_yards", lambda r: r["targets"] > 0, [
+        ("REC", "receptions", "int"), ("TGTS", "targets", "int"),
+        ("YDS", "receiving_yards", "int"), ("AVG", "rec_avg", "dec1"),
+        ("LNG", "receiving_long", "int"), ("TD", "receiving_tds", "int"),
+        ("YAC", "yards_after_catch", "int"),
+    ]),
+    ("kicking", "Kicking", "kick_pts",
+     lambda r: r["fg_att"] > 0 or r["xp_att"] > 0, [
+        ("FGM", "fg_made", "int"), ("FGA", "fg_att", "int"),
+        ("FG%", "fg_pct", "pct"), ("LNG", "fg_long", "int"),
+        ("XPM", "xp_made", "int"), ("XPA", "xp_att", "int"),
+        ("PTS", "kick_pts", "int"),
+    ]),
+    ("kickoffs", "Kickoffs", "kr_yds", lambda r: r["kr"] > 0, [
+        ("KR", "kr", "int"), ("YDS", "kr_yds", "int"),
+        ("AVG", "kr_avg", "dec1"), ("LNG", "kr_long", "int"),
+        ("TD", "kr_td", "int"),
+    ]),
+    # NOTE: punters carry punt-return stats *against* them in this source
+    # (punting block), so a genuine returner is one who does not punt.
+    ("returns", "Returns", "pr_yds", lambda r: r["pr"] > 0 and (r.get("punts") or 0) == 0, [
+        ("PR", "pr", "int"), ("YDS", "pr_yds", "int"),
+        ("AVG", "pr_avg", "dec1"), ("LNG", "pr_long", "int"),
+        ("TD", "pr_td", "int"), ("FC", "fair_catches", "int"),
+    ]),
+    ("punts", "Punts", "punts", lambda r: r["punts"] > 0, [
+        ("PUNTS", "punts", "int"), ("YDS", "punt_yards", "int"),
+        ("AVG", "punt_avg", "dec1"), ("LNG", "punt_long", "int"),
+        ("IN20", "p20", "int"), ("IN10", "p10", "int"),
+        ("50+", "p50", "int"), ("TB", "punt_tb", "int"),
+    ]),
+    ("defense", "Defense", "tackles_combined",
+     lambda r: r["tackles_combined"] > 0 or r["sacks"] > 0 or r["interceptions"] > 0, [
+        ("TKL", "tackles_combined", "int"), ("SOLO", "tackles_solo", "int"),
+        ("AST", "tackles_assist", "int"), ("SACK", "sacks", "dec1"),
+        ("TFL", "tfl", "int"), ("QBH", "qb_hits", "int"),
+        ("PD", "passes_defended", "int"), ("INT", "interceptions", "int"),
+        ("FF", "forced_fumbles", "int"), ("FR", "fumble_recoveries", "int"),
+        ("TD", "defensive_tds", "int"), ("SAF", "safeties", "int"),
+    ]),
+]
+
+
+def _passer_rating(r: dict):
+    att = r.get("pass_attempts") or 0
+    if not att:
+        return None
+    def cl(x):
+        return max(0.0, min(2.375, x))
+    a = cl((r["pass_completions"] / att - 0.3) * 5)
+    b = cl((r["pass_yards"] / att - 3) * 0.25)
+    c = cl(r["pass_tds"] / att * 20)
+    d = cl(2.375 - r["pass_int"] / att * 25)
+    return round((a + b + c + d) / 6 * 100, 1)
+
+
+def _nfl_team_tables(rows: list[dict]) -> list[dict]:
+    def avg(n, d):
+        return round(n / d, 1) if d else None
+
+    for r in rows:
+        r["pass_avg"] = avg(r.get("pass_yards") or 0, r.get("pass_attempts") or 0)
+        r["pass_rating"] = _passer_rating(r)
+        r["rush_avg"] = avg(r.get("rush_yards") or 0, r.get("rush_attempts") or 0)
+        r["rec_avg"] = avg(r.get("receiving_yards") or 0, r.get("receptions") or 0)
+        r["fg_pct"] = (round((r.get("fg_made") or 0) / r["fg_att"] * 100, 1)
+                       if (r.get("fg_att") or 0) else None)
+        r["kick_pts"] = (r.get("fg_made") or 0) * 3 + (r.get("xp_made") or 0)
+        r["kr_avg"] = avg(r.get("kr_yds") or 0, r.get("kr") or 0)
+        r["pr_avg"] = avg(r.get("pr_yds") or 0, r.get("pr") or 0)
+        r["punt_avg"] = avg(r.get("punt_yards") or 0, r.get("punts") or 0)
+
+    base_keys = ("player_id", "player_name", "position", "team_abbr", "gp")
+    tables = []
+    for key, title, default_sort, need, cols in _NFL_TEAM_TABLES:
+        trows = [r for r in rows if need(r)]
+        keep = base_keys + tuple(c[1] for c in cols)
+        trows.sort(key=lambda r: ((r.get(default_sort) is None), -(r.get(default_sort) or 0)))
+        tables.append({
+            "key": key,
+            "title": title,
+            "default_sort": default_sort,
+            "default_dir": "desc",
+            "columns": [{"key": ck, "label": cl, "fmt": cf} for cl, ck, cf in cols],
+            "rows": [{k: r.get(k) for k in keep} for r in trows],
+        })
+    return tables
+
+
+async def _nfl_team_stat_rows(db, year: int, team: str):
+    result = await db.execute(text(_NFL_TEAM_STAT_SQL), {"year": year, "team": team})
+    return [dict(r._mapping) for r in result.fetchall()]
+
+
 @router.get("/stats/leaders")
 async def stat_leaders(
     year: int = Query(...),
@@ -393,10 +570,15 @@ _NFL_TEAM_METRICS = [
         ("Total Yds/G", "tot_ypg", True),
         ("Pass Yds/G", "pass_ypg", True),
         ("Rush Yds/G", "rush_ypg", True),
+        ("3rd Down Efficiency", "third_down_pct", True, "pct1"),
+        ("Time of Possession", "top", True, "time"),
         ("Giveaways", "giveaways", False),
     ]),
     ("Defense", [
         ("Points Allowed/G", "papg", False),
+        ("Total Yds Allowed/G", "def_tot_ypg", False),
+        ("Pass Yds Allowed/G", "def_pass_ypg", False),
+        ("Rush Yds Allowed/G", "def_rush_ypg", False),
         ("Sacks", "sacks", True),
         ("Takeaways", "takeaways", True),
         ("Interceptions", "def_int", True),
@@ -436,7 +618,32 @@ async def stat_team(abbr: str, year: int = Query(...), db: AsyncSession = Depend
         GROUP BY t.abbreviation
     """), {"year": year})).mappings().all()]
 
+    # Defensive yards allowed = the opponent's offensive yards in each game.
+    dy = [dict(r) for r in (await db.execute(text("""
+        SELECT tw.team AS abbr, COUNT(*) AS g,
+               COALESCE(SUM(opp.passing_yards), 0) AS def_pass_yds,
+               COALESCE(SUM(opp.rushing_yards), 0) AS def_rush_yds
+        FROM nfl.stats_team_week tw
+        JOIN nfl.stats_team_week opp
+          ON opp.game_id = tw.game_id AND opp.team = tw.opponent_team
+         AND opp.season = tw.season AND opp.season_type = tw.season_type
+        WHERE tw.season = :year AND tw.season_type = 'REG'
+        GROUP BY tw.team
+    """), {"year": year})).mappings().all()]
+
     by = {r["abbr"]: dict(r) for r in tw}
+
+    # Time of possession + third-down efficiency (from game_stats, per team/game).
+    tops = [dict(r) for r in (await db.execute(text("""
+        SELECT team_abbr AS abbr, COUNT(*) AS g,
+               COALESCE(SUM(time_of_possession_secs), 0) AS top_secs,
+               COALESCE(SUM(third_down_conversions), 0) AS td_conv,
+               COALESCE(SUM(third_down_attempts), 0) AS td_att
+        FROM nfl.game_stats
+        WHERE season = :year AND season_type = 'REG'
+        GROUP BY team_abbr
+    """), {"year": year})).mappings().all()]
+    topd = {r["abbr"]: dict(r) for r in tops}
     for r in sc:
         if r["abbr"] in by:
             by[r["abbr"]]["g_tw"] = by[r["abbr"]].get("g")
@@ -445,6 +652,7 @@ async def stat_team(abbr: str, year: int = Query(...), db: AsyncSession = Depend
             by[r["abbr"]] = dict(r)
 
     teams = []
+    dyd = {r["abbr"]: dict(r) for r in dy}
     for a, d in by.items():
         g_sc = d.get("g") or 0
         g_tw = d.get("g_tw") or g_sc
@@ -456,9 +664,20 @@ async def stat_team(abbr: str, year: int = Query(...), db: AsyncSession = Depend
         rush_yds = d.get("rush_yds") or 0
         d["ppg"] = round(pf / g_sc, 1)
         d["papg"] = round(pa / g_sc, 1)
-        d["pass_ypg"] = round(pass_yds / g_tw, 1)
-        d["rush_ypg"] = round(rush_yds / g_tw, 1)
-        d["tot_ypg"] = round((pass_yds + rush_yds) / g_tw, 1)
+        d["pass_ypg"] = round(float(pass_yds) / g_tw, 1)
+        d["rush_ypg"] = round(float(rush_yds) / g_tw, 1)
+        d["tot_ypg"] = round((float(pass_yds) + float(rush_yds)) / g_tw, 1)
+        dd = dyd.get(a) or {}
+        g_def = dd.get("g") or g_tw
+        def_pass = float(dd.get("def_pass_yds") or 0)
+        def_rush = float(dd.get("def_rush_yds") or 0)
+        d["def_pass_ypg"] = round(def_pass / g_def, 1) if g_def else 0.0
+        d["def_rush_ypg"] = round(def_rush / g_def, 1) if g_def else 0.0
+        d["def_tot_ypg"] = round((def_pass + def_rush) / g_def, 1) if g_def else 0.0
+        td = topd.get(a) or {}
+        g_td = td.get("g") or g_tw
+        d["top"] = round(float(td.get("top_secs") or 0) / g_td, 1) if g_td else 0.0
+        d["third_down_pct"] = (float(td.get("td_conv") or 0) / float(td["td_att"])) if td.get("td_att") else 0.0
         d["giveaways"] = int((d.get("pass_int") or 0) + (d.get("fum_lost") or 0))
         d["takeaways"] = int((d.get("def_int") or 0) + (d.get("fum_rec_opp") or 0))
         d["sacks"] = round(float(d.get("sacks") or 0), 1)
@@ -467,7 +686,7 @@ async def stat_team(abbr: str, year: int = Query(...), db: AsyncSession = Depend
         teams.append(d)
 
     for _title, metrics in _NFL_TEAM_METRICS:
-        for _label, key, higher in metrics:
+        for _label, key, higher, *_r in metrics:
             order = sorted(range(len(teams)), key=lambda i: (teams[i].get(key) is None,
                                                              -(teams[i].get(key) or 0) if higher else (teams[i].get(key) or 0)))
             for rank, i in enumerate(order, 1):
@@ -480,20 +699,11 @@ async def stat_team(abbr: str, year: int = Query(...), db: AsyncSession = Depend
     sections = []
     for title, metrics in _NFL_TEAM_METRICS:
         rows = []
-        for label, key, _h in metrics:
+        for label, key, _h, *rest in metrics:
             v = tgt.get(key)
             rows.append({"label": label, "value": v, "rank": tgt["ranks"].get(key),
-                         "unit": "one" if isinstance(v, float) else "int"})
+                         "unit": rest[0] if rest else ("one" if isinstance(v, float) else "int")})
         sections.append({"title": title, "rows": rows})
-
-    leader_groups = []
-    for gtitle, cards in _LEADER_GROUPS:
-        out_cards = []
-        for key, title, expr, having, unit in cards:
-            rows = await _leader_rows(db, year, expr, having, 5, abbr)
-            out_cards.append({"key": key, "title": title, "unit": unit,
-                              "rows": [{"rank": i + 1, **r} for i, r in enumerate(rows)]})
-        leader_groups.append({"title": gtitle, "cards": out_cards})
 
     return {
         "year": year,
@@ -502,5 +712,5 @@ async def stat_team(abbr: str, year: int = Query(...), db: AsyncSession = Depend
         "record": {"wins": tgt.get("wins") or 0, "losses": tgt.get("losses") or 0,
                    "ties": tgt.get("ties") or 0, "games": tgt.get("g") or 0},
         "sections": sections,
-        "leader_groups": leader_groups,
+        "tables": _nfl_team_tables(await _nfl_team_stat_rows(db, year, abbr)),
     }
