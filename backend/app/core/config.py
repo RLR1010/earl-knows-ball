@@ -96,6 +96,15 @@ class Settings(BaseSettings):
     x_pixel_token: str = ""          # X-Pixel-Token (chmod-600 .env)
     x_pixel_id: str = "rf02z"        # Pixel ID (path segment of the measurement endpoint)
 
+    # --- Substack cross-posting (MANUAL) ----------------------------------------
+    # Substack has NO public API and its password login forces a captcha, so we do
+    # NOT auto-post. Earl formats each article into a copy-paste package (title /
+    # subtitle / Markdown body) that an admin pastes into the Substack composer.
+    # No credentials are stored — the 'Copy for Substack' action needs none.
+    substack_publication_url: str = "earlknowsball.substack.com"
+    # Comma-separated tags SUGGESTED for each cross-posted post (admin types them in).
+    substack_default_tags: str = "NFL,NBA,MLB,Sports Betting,Data"
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     @field_validator("jwt_secret")

@@ -29,6 +29,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import JSONResponse
 from openai import AsyncOpenAI
 from pydantic import BaseModel, Field
 from sqlalchemy import text
@@ -39,6 +40,11 @@ from app.core.security import get_optional_current_user, require_admin, user_is_
 from app.database import async_session, get_db
 from app.models import User
 from app.services.team_extractor import extract_teams
+
+# Substack cross-posting is MANUAL (copy-paste): this module just formats an
+# article into a paste-ready package. No API, no credentials, no heavy deps, so
+# importing it on the api role is free.
+from app.social import substack as substack_pkg
 
 # Per-sport chat engines (reused so articles get the same research tools as chat).
 from app.routers.chat import nfl_chat_engine
@@ -175,6 +181,7 @@ class GenerateRequest(BaseModel):
     section: str = Field("article", pattern="^(article|daily_picks|earls_winners)$")
     title_mode: Optional[str] = Field(None, pattern="^(fixed|llm)?$")  # 'fixed' => use req.title verbatim
     title: Optional[str] = Field(None, min_length=1, max_length=200)  # fixed title when title_mode='fixed'
+    background: bool = Field(False)  # True => return immediately + finish generation async (avoids HTTP/CF ~100s timeout)
 
 
 class PublishRequest(BaseModel):
@@ -1125,12 +1132,136 @@ async def _correct_original_article(
 # ──────────────────────────────────────────────
 
 
+# ---------------------------------------------------------------------------
+# Background generation (2026-10-01): the admin "Generate" button was hitting
+# Cloudflare's ~100s origin timeout (HTTP 524) because generation is one long
+# synchronous request (research -> write -> fact-check, often 2-6 min). The route
+# now accepts `background: true`: it creates the row immediately with
+# status='generating' and returns the id, then finishes in an asyncio task.
+# Callers that need the old synchronous behaviour (e.g. the scheduler) simply omit
+# the flag and still receive the full payload.
+# ---------------------------------------------------------------------------
+_GENERATION_TASKS: "set[asyncio.Task]" = set()
+
+
+def _spawn_generation(row_id: int, sport: str, req: "GenerateRequest") -> None:
+    task = asyncio.create_task(_background_generate(row_id, sport, req))
+    _GENERATION_TASKS.add(task)
+    task.add_done_callback(_GENERATION_TASKS.discard)
+
+
+async def _background_generate(row_id: int, sport: str, req: "GenerateRequest") -> None:
+    """Run the generation pipeline off-request and write it into `row_id`."""
+    try:
+        async with async_session() as db:
+            await _run_original_generation(row_id, sport, req, db)
+    except Exception as exc:  # noqa: BLE001 - never crash the worker
+        logger.exception("background original-article generation failed (row=%s)", row_id)
+        try:
+            async with async_session() as db:
+                await db.execute(
+                    text(
+                        """
+                        UPDATE public.original_articles
+                        SET status = 'failed',
+                            title = :title,
+                            updated_at = now(),
+                            rejection_history = COALESCE(rejection_history, '[]'::jsonb)
+                                || CAST(:err AS jsonb)
+                        WHERE id = :row_id
+                        """
+                    ),
+                    {
+                        "row_id": row_id,
+                        "title": f"Generation failed - {sport.upper()}",
+                        "err": json.dumps([{"stage": "generate", "error": str(exc)[:1000]}]),
+                    },
+                )
+                await db.commit()
+        except Exception:  # noqa: BLE001
+            logger.exception("could not mark generation row %s as failed", row_id)
+
+
+async def _sweep_stale_generations(db: AsyncSession) -> None:
+    """Fail any 'generating' rows that are clearly stuck (worker died / restart)."""
+    await db.execute(
+        text(
+            """
+            UPDATE public.original_articles
+            SET status = 'failed',
+                title = CASE WHEN title LIKE 'Generating%'
+                             THEN 'Generation failed (stalled)'
+                             ELSE title END,
+                updated_at = now()
+            WHERE status = 'generating'
+              AND created_at < now() - interval '25 minutes'
+            """
+        )
+    )
+    await db.commit()
+
+
 @router.post("/original-articles/{sport}/generate")
 async def generate_original_article(
     sport: str,
     req: GenerateRequest,
     db: AsyncSession = Depends(get_db),
 ):
+    sport = _validate_sport(sport)
+
+    reasoning = (req.reasoning or "medium").strip().lower()
+    _allowed_reasoning = {"minimal", "low", "medium", "high", "xhigh", "max"}
+    if reasoning not in _allowed_reasoning:
+        raise HTTPException(
+            status_code=422, detail=f"reasoning must be one of {sorted(_allowed_reasoning)}."
+        )
+    if req.word_count is not None:
+        _lo, _hi = req.word_count
+        if _lo <= 0 or _hi < _lo:
+            raise HTTPException(status_code=422, detail="word_count range is invalid.")
+
+    await _sweep_stale_generations(db)
+
+    ins = await db.execute(
+        text(
+            """
+            INSERT INTO public.original_articles
+                (sport, title, content, instructions, status, visibility, author,
+                 reasoning, word_min, word_max, created_at, updated_at)
+            VALUES
+                (:sport, :title, '', :instructions, 'generating', 'draft', 'Earl',
+                 :reasoning, :word_lo, :word_hi, now(), now())
+            RETURNING id
+            """
+        ),
+        {
+            "sport": sport,
+            "title": f"Generating {sport.upper()} article",
+            "instructions": req.instructions,
+            "reasoning": reasoning,
+            "word_lo": (req.word_count[0] if req.word_count else None),
+            "word_hi": (req.word_count[1] if req.word_count else None),
+        },
+    )
+    row_id = int(ins.scalar_one())
+    await db.commit()
+
+    if req.background:
+        _spawn_generation(row_id, sport, req)
+        return JSONResponse(
+            {"id": row_id, "draft_id": row_id, "status": "generating", "sport": sport},
+            status_code=202,
+        )
+
+    return await _run_original_generation(row_id, sport, req, db)
+
+
+async def _run_original_generation(
+    row_id: int,
+    sport: str,
+    req: "GenerateRequest",
+    db: AsyncSession,
+) -> dict:
     sport = _validate_sport(sport)
     engine = ENGINES[sport]
 
@@ -1294,25 +1425,27 @@ async def generate_original_article(
     insert = await db.execute(
         text(
             """
-            INSERT INTO public.original_articles
-                (sport, title, summary, content, instructions, status, slug, section,
-                 created_at, updated_at, prompt_json, research_json, author, tokens_used,
-                 reasoning, word_min, word_max, word_count, teams,
-                 accuracy_check, accuracy_check_tokens, rejection_history, visibility,
-                 seo_description, seo_keywords, usage_json)
-            VALUES
-                (:sport, :title, :summary, :content, :instructions, 'draft', :slug, :section,
-                 :now, :now, CAST(:prompt AS jsonb), CAST(:research AS jsonb),
-                 :author, :tokens_used, :reasoning, :word_lo, :word_hi, :word_count,
-                 CAST(:teams AS jsonb),
-                 CAST(:accuracy AS jsonb), :accuracy_tokens, CAST(:rej AS jsonb), :visibility,
-                 :seo_description, :seo_keywords, CAST(:usage AS jsonb))
+            UPDATE public.original_articles SET
+                title = :title, summary = :summary, content = :content,
+                instructions = :instructions, status = 'draft', slug = :slug,
+                section = :section, updated_at = :now,
+                prompt_json = CAST(:prompt AS jsonb), research_json = CAST(:research AS jsonb),
+                author = :author, tokens_used = :tokens_used, reasoning = :reasoning,
+                word_min = :word_lo, word_max = :word_hi, word_count = :word_count,
+                teams = CAST(:teams AS jsonb),
+                accuracy_check = CAST(:accuracy AS jsonb),
+                accuracy_check_tokens = :accuracy_tokens,
+                rejection_history = CAST(:rej AS jsonb), visibility = :visibility,
+                seo_description = :seo_description, seo_keywords = :seo_keywords,
+                usage_json = CAST(:usage AS jsonb)
+            WHERE id = :row_id
             RETURNING id, sport, title, summary, content, instructions, status, slug, section,
                       created_at, author, tokens_used, visibility,
                       seo_description, seo_keywords
             """
         ),
         {
+            "row_id": row_id,
             "sport": sport,
             "title": title,
             "summary": _guess_summary(answer),
@@ -2029,6 +2162,7 @@ async def admin_list_original_articles(
     db: AsyncSession = Depends(get_db),
 ):
     sport = _validate_sport(sport)
+    await _sweep_stale_generations(db)
     result = await db.execute(
         text(
             """
@@ -2040,7 +2174,8 @@ async def admin_list_original_articles(
                    (prompt_json IS NOT NULL) AS has_prompt,
                    (research_json IS NOT NULL) AS has_research,
                    jsonb_array_length(COALESCE(research_json, '[]'::jsonb)) AS research_steps,
-                   accuracy_check
+                   accuracy_check,
+                   substack_draft_id, substack_url, substack_synced_at, substack_published_at
             FROM public.original_articles
             WHERE sport = :sport
             ORDER BY created_at DESC
@@ -2094,6 +2229,7 @@ async def admin_get_original_article(
                    author, tokens_used, reasoning, word_min, word_max, word_count,
                    seo_description, seo_keywords, visibility,
                    teams, preview_image, card_accent, social_caption,
+                   substack_draft_id, substack_url, substack_synced_at, substack_published_at,
                    accuracy_check, accuracy_check_tokens, rejection_history, usage_json
             FROM public.original_articles
             WHERE id = :aid AND sport = :sport
@@ -2704,3 +2840,81 @@ async def _auto_original_social_card(sport: str, article_id: int) -> None:
             logger.info("Auto social card done for original %s/%s -> %s", sport, article_id, rel)
     except Exception as e:  # noqa: BLE001
         logger.exception("Auto social card failed for original %s/%s: %s", sport, article_id, e)
+
+
+# ---------------------------------------------------------------------------
+# Substack cross-posting — MANUAL (copy-paste). No API, no auto-posting.
+# ---------------------------------------------------------------------------
+@admin_router.get("/original-articles/{sport}/{article_id}/substack-package")
+async def get_substack_package(
+    sport: str,
+    article_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """Return the paste-ready Substack package for an article.
+
+    title / subtitle / Markdown body / canonical link / suggested tags, plus a
+    deep link to Substack's composer. Nothing is sent anywhere — the admin copies
+    and pastes into Substack themselves.
+    """
+    sport = _validate_sport(sport)
+    row = (
+        await db.execute(
+            text(
+                """
+                SELECT id, sport, title, summary, content, slug,
+                       substack_url, substack_published_at, substack_synced_at
+                FROM public.original_articles
+                WHERE id = :id AND sport = :sport
+                """
+            ),
+            {"id": article_id, "sport": sport},
+        )
+    ).mappings().first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Original article not found")
+
+    pkg = substack_pkg.package_article(dict(row))
+    pkg["substack_url"] = row["substack_url"]
+    pkg["substack_published_at"] = row["substack_published_at"]
+    return pkg
+
+
+class SubstackLinkRequest(BaseModel):
+    url: Optional[str] = Field(
+        None, description="Public Substack post URL once you've published it."
+    )
+
+
+@admin_router.post("/original-articles/{sport}/{article_id}/substack-link")
+async def set_substack_link(
+    sport: str,
+    article_id: int,
+    body: SubstackLinkRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Record (or clear) the live Substack URL for an article once it's posted.
+
+    Purely a bookmark so the admin list can show which articles have been
+    cross-posted and deep-link to them. An empty/null url clears the mark.
+    """
+    sport = _validate_sport(sport)
+    url = (body.url or "").strip() or None
+    now = datetime.now(timezone.utc) if url else None
+    res = await db.execute(
+        text(
+            """
+            UPDATE public.original_articles
+               SET substack_url = :url,
+                   substack_published_at = :now,
+                   substack_synced_at = :now
+             WHERE id = :id AND sport = :sport
+            """
+        ),
+        {"url": url, "now": now, "id": article_id, "sport": sport},
+    )
+    if res.rowcount == 0:
+        raise HTTPException(status_code=404, detail="Original article not found")
+    await db.commit()
+    logger.info("Substack link %s for original %s/%s", url or "(cleared)", sport, article_id)
+    return {"ok": True, "substack_url": url, "substack_published_at": now}

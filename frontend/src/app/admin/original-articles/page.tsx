@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useSeo } from "@/components/Seo";
@@ -41,6 +41,10 @@ interface Article {
   preview_image?: string | null;
   card_accent?: string | null;
   social_caption?: string | null;
+  substack_draft_id?: number | null;
+  substack_url?: string | null;
+  substack_synced_at?: string | null;
+  substack_published_at?: string | null;
 }
 
 interface ArticleDetail extends Article {
@@ -111,6 +115,7 @@ export default function AdminOriginalArticles() {
   const [editCardAccent, setEditCardAccent] = useState("");
   const [editSocialPreview, setEditSocialPreview] = useState<string | null>(null);
   const [socialBusy, setSocialBusy] = useState(false);
+  const [substackModal, setSubstackModal] = useState<{ article: Article } | null>(null);
   const [includeResearch, setIncludeResearch] = useState(true);
   const [reediting, setReediting] = useState(false);
   const [regenerating, setRegenerating] = useState(false);
@@ -147,6 +152,61 @@ export default function AdminOriginalArticles() {
   //  Create Article
   // ───────────────────────────
 
+  /** Open the "Copy to Substack" package for an article (manual cross-post). */
+  const handleOpenSubstack = (a: Article) => setSubstackModal({ article: a });
+
+  // Poll the async generation row until it leaves the 'generating' state, then
+  // load the finished article into the draft editor.
+  const pollGeneration = async (jobId: number) => {
+    const deadline = Date.now() + 20 * 60 * 1000; // generation can run several minutes
+    const parse = (v: any) => {
+      if (typeof v === "string") {
+        try {
+          return JSON.parse(v);
+        } catch {
+          return v;
+        }
+      }
+      return v ?? null;
+    };
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 5000));
+      let rows: any[] = [];
+      try {
+        const res = await fetch(`/api/admin/original-articles/${sport}`, { headers: authHeaders() });
+        if (!res.ok) continue; // transient — keep polling
+        rows = (await res.json()).articles ?? [];
+      } catch {
+        continue;
+      }
+      const row = rows.find((a) => a.id === jobId);
+      if (!row || row.status === "generating") continue;
+      await fetchArticles();
+      if (row.status === "failed") {
+        throw new Error("the server could not finish generation (open the row for details).");
+      }
+      const det = await fetch(`/api/admin/original-articles/${sport}/${jobId}`, {
+        headers: authHeaders(),
+      });
+      if (!det.ok) throw new Error(`HTTP ${det.status}`);
+      const art = (await det.json()).article;
+      setDraftId(jobId);
+      setDraft({
+        title: art.title,
+        content: art.content,
+        summary: art.summary,
+        tokens: art.tokens_used,
+        prompt: parse(art.prompt_json),
+        research: parse(art.research_json),
+        accuracy_check: art.accuracy_check ?? null,
+        rejection_history: Array.isArray(art.rejection_history) ? art.rejection_history : [],
+      });
+      return;
+    }
+    await fetchArticles();
+    throw new Error("timed out waiting for generation to finish.");
+  };
+
   const handleGenerate = async () => {
     if (!instructions.trim()) {
       alert("Enter instructions for the article first.");
@@ -158,7 +218,15 @@ export default function AdminOriginalArticles() {
       const res = await fetch(`/api/original-articles/${sport}/generate`, {
         method: "POST",
         headers: authHeaders(),
-        body: JSON.stringify({ instructions, reasoning, word_count: wordRange, visibility }),
+        // background:true => server creates the row immediately and finishes
+        // generation async; the request can't hit the ~100s CDN timeout (HTTP 524).
+        body: JSON.stringify({
+          instructions,
+          reasoning,
+          word_count: wordRange,
+          visibility,
+          background: true,
+        }),
       });
       if (!res.ok) {
         let detail = `HTTP ${res.status}`;
@@ -169,6 +237,12 @@ export default function AdminOriginalArticles() {
         throw new Error(detail);
       }
       const data = await res.json();
+      const jobId: number | null = data.id ?? data.draft_id ?? null;
+      if (data.status === "generating" && jobId != null) {
+        await pollGeneration(jobId);
+        return;
+      }
+      // Synchronous fallback (server didn't honour background).
       setDraftId(data.draft_id ?? null);
       setDraft({
         title: data.title,
@@ -846,6 +920,14 @@ Manage it under Admin → Auto Generation.`);
       ) : tab === "edit" ? (
         /* ── Edit Articles ── */
         <div>
+          {substackModal && (
+            <SubstackCopyModal
+              article={substackModal.article}
+              authHeaders={authHeaders}
+              onClose={() => setSubstackModal(null)}
+              onSaved={fetchArticles}
+            />
+          )}
           {loading ? (
             <div className="text-sm text-gray-500">Loading…</div>
           ) : articles.length === 0 ? (
@@ -960,6 +1042,24 @@ Manage it under Admin → Auto Generation.`);
                       >
                         {a.status === "published" ? "→ Draft" : "→ Publish"}
                       </button>
+                      <button
+                        onClick={() => handleOpenSubstack(a)}
+                        className="text-xs text-orange-400 hover:text-orange-300"
+                        title="Copy this article for Substack (title, subtitle, body)"
+                      >
+                        Copy for Substack
+                      </button>
+                      {a.substack_url ? (
+                        <a
+                          href={a.substack_url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-xs text-green-400 hover:text-green-300"
+                          title="Live on Substack"
+                        >
+                          Substack ✓
+                        </a>
+                      ) : null}
                       <button
                         onClick={() => handleDelete(a.id, a.title)}
                         className="text-xs text-red-400 hover:text-red-300"
@@ -1904,6 +2004,231 @@ function ResearchPanel({
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Substack copy-paste modal.
+// Substack has no public API, so we don't auto-post. This shows the article
+// formatted for Substack (title / subtitle / body) with one-click copy buttons.
+// ---------------------------------------------------------------------------
+function SubstackCopyModal({
+  article,
+  authHeaders,
+  onClose,
+  onSaved,
+}: {
+  article: Article;
+  authHeaders: () => Record<string, string>;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [pkg, setPkg] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [copied, setCopied] = useState<string | null>(null);
+  const [postedUrl, setPostedUrl] = useState<string>(article.substack_url || "");
+  const [saving, setSaving] = useState(false);
+  const bodyRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch(
+          `/api/admin/original-articles/${article.sport}/${article.id}/substack-package`,
+          { headers: authHeaders() },
+        );
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+        setPkg(data);
+      } catch (e: any) {
+        setError(e.message);
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, [article.id, article.sport, authHeaders]);
+
+  const flash = (label: string) => {
+    setCopied(label);
+    setTimeout(() => setCopied(null), 1600);
+  };
+
+  const copyText = async (text: string, label: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      flash(label);
+    } catch {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+      flash(label);
+    }
+  };
+
+  const copyRichBody = async () => {
+    const el = bodyRef.current;
+    if (!el || !pkg) return;
+    try {
+      await navigator.clipboard.write([
+        new ClipboardItem({
+          "text/html": new Blob([el.innerHTML], { type: "text/html" }),
+          "text/plain": new Blob([pkg.markdown], { type: "text/plain" }),
+        }),
+      ]);
+      flash("rich");
+    } catch {
+      copyText(pkg.markdown, "md");
+    }
+  };
+
+  const savePosted = async () => {
+    setSaving(true);
+    try {
+      const res = await fetch(
+        `/api/admin/original-articles/${article.sport}/${article.id}/substack-link`,
+        {
+          method: "POST",
+          headers: { ...JSON_HEADERS, ...authHeaders() },
+          body: JSON.stringify({ url: postedUrl }),
+        },
+      );
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      onSaved();
+      onClose();
+    } catch (e: any) {
+      alert(`Save failed: ${e.message}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const CopyBtn = ({ onClick, label, k }: { onClick: () => void; label: string; k: string }) => (
+    <button onClick={onClick} className="text-xs text-blue-400 hover:text-blue-300">
+      {copied === k ? "Copied ✓" : label}
+    </button>
+  );
+
+  return (
+    <div
+      className="fixed inset-0 z-50 bg-black/70 flex items-start justify-center p-4 overflow-auto"
+      onClick={onClose}
+    >
+      <div
+        className="bg-[#141414] border border-white/15 rounded-xl w-full max-w-3xl my-8"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between px-5 py-3 border-b border-white/10">
+          <div className="font-medium text-gray-100">Copy to Substack</div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-200 text-sm">
+            ✕
+          </button>
+        </div>
+
+        {loading ? (
+          <div className="p-6 text-sm text-gray-400">Loading package…</div>
+        ) : error ? (
+          <div className="p-6 text-sm text-red-400">{error}</div>
+        ) : pkg ? (
+          <div className="p-5 space-y-4">
+            <div className="text-xs text-gray-400">
+              Substack has no API, so this formats the article for you to paste in.{" "}
+              <a
+                href={pkg.composer_url}
+                target="_blank"
+                rel="noreferrer"
+                className="text-blue-400 hover:text-blue-300"
+              >
+                Open Substack composer ↗
+              </a>
+            </div>
+
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-xs uppercase tracking-wide text-gray-500">Title</span>
+                <CopyBtn k="title" label="Copy" onClick={() => copyText(pkg.title, "title")} />
+              </div>
+              <div className="bg-white/[0.04] border border-white/10 rounded px-3 py-2 text-sm text-gray-200">
+                {pkg.title}
+              </div>
+            </div>
+
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-xs uppercase tracking-wide text-gray-500">Subtitle</span>
+                <CopyBtn
+                  k="subtitle"
+                  label="Copy"
+                  onClick={() => copyText(pkg.subtitle || "", "subtitle")}
+                />
+              </div>
+              <div className="bg-white/[0.04] border border-white/10 rounded px-3 py-2 text-sm text-gray-200">
+                {pkg.subtitle || <span className="text-gray-500">(none — optional)</span>}
+              </div>
+            </div>
+
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-xs uppercase tracking-wide text-gray-500">Body</span>
+                <div className="flex gap-3">
+                  <CopyBtn k="rich" label="Copy formatted" onClick={copyRichBody} />
+                  <CopyBtn k="md" label="Copy Markdown" onClick={() => copyText(pkg.markdown, "md")} />
+                </div>
+              </div>
+              <div
+                ref={bodyRef}
+                className="bg-white/[0.04] border border-white/10 rounded px-4 py-3 text-sm text-gray-200 max-h-[45vh] overflow-auto"
+              >
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{pkg.markdown}</ReactMarkdown>
+              </div>
+              <div className="text-[11px] text-gray-500 mt-1">
+                “Copy formatted” pastes into Substack’s editor with headings, bold and links intact.
+              </div>
+            </div>
+
+            {pkg.suggested_tags?.length ? (
+              <div className="text-xs text-gray-400">
+                Suggested tags: <span className="text-gray-300">{pkg.suggested_tags.join(", ")}</span>
+                <button
+                  onClick={() => copyText(pkg.suggested_tags.join(", "), "tags")}
+                  className="ml-2 text-blue-400 hover:text-blue-300"
+                >
+                  {copied === "tags" ? "Copied ✓" : "Copy"}
+                </button>
+              </div>
+            ) : null}
+
+            <div className="border-t border-white/10 pt-4">
+              <div className="text-xs uppercase tracking-wide text-gray-500 mb-1">
+                Mark as posted (optional)
+              </div>
+              <div className="flex gap-2">
+                <input
+                  value={postedUrl}
+                  onChange={(e) => setPostedUrl(e.target.value)}
+                  placeholder="Paste the live Substack post URL after you publish"
+                  className="flex-1 bg-white/[0.04] border border-white/10 rounded px-3 py-2 text-sm text-gray-200"
+                />
+                <button
+                  onClick={savePosted}
+                  disabled={saving}
+                  className="px-3 py-2 text-sm rounded bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white"
+                >
+                  {saving ? "Saving…" : "Save"}
+                </button>
+              </div>
+              <div className="text-[11px] text-gray-500 mt-1">
+                Bookmarks the article as cross-posted so the list shows a ✓ link. Leave blank and Save
+                to clear.
+              </div>
+            </div>
+          </div>
+        ) : null}
+      </div>
     </div>
   );
 }
